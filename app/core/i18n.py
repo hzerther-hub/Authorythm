@@ -788,6 +788,7 @@ T["ja"] = _t(T["en"], app_title="易好短劇", nav_projects="プロジェクト
  aspect_ratio="画面比", ethnicity="顔のタイプ", create="作成", cancel="キャンセル", save="保存", delete="削除", close="閉じる",
  episodes="エピソード", asset_library="素材ライブラリ", add_episode="エピソード追加", enter_production="制作へ",
  episode_n="第 {} 話", back="戻る", raw_content="原文", ai_rewrite="AI リライト", production="素材制作", storyboard="絵コンテ",
+ in_progress="生成中", stop="停止",
  comic="漫画", export_stage="結合・書き出し", chars="キャラクター", scenes="シーン", props="小道具", redraw="再生成", upload="アップロード",
  face_swap="顔交換", final_prompt="最終プロンプト", narration="ナレーション", merge_list="完成動画", download="ダウンロード",
  refresh="更新", tasks="タスク", settings="設定", ai_services="AI サービス", general="全般", style_presets="スタイル",
@@ -1078,23 +1079,33 @@ def tr(key: str, *args) -> str:
     """取界面文案。
 
     优先级:
-      1. 当前语言主词典里**真正翻译过**的值(与中文基线不同才算翻译);
+      1. 当前语言主词典里**真正翻译过**的值;
       2. 补充词典 ui_strings(15 语言齐全);
       3. 英文主词典 / 英文补充词典;
       4. 中文基线 Z;
       5. key 本身。
 
-    为什么要判「是否等于中文基线」:主词典是用中文基线铺满的,未翻译的键在每张表里
-    都是同一个中文字面量。若只看「当前语言表里有没有这个键」,切到任何语言都会拿到中文
-    (实测 save/close/novel_settings 等键在英文下都返回中文)。
+    两种「没翻」都要顶掉:
+      - 值==中文基线:首轮建表用中文铺满,未翻键每张表都是同一中文字面量;
+      - 值==英文表值(且键在 Z 里,即它是 zh 基线键):各语言表 _t(T[en]) 建表,
+        没翻到的键直接继承英文,实测 119~128 键(如 Project settings/Promo copy
+        在日文下显示英文)。补充词典的当前语言槽有正确译文,用它顶掉。
+        键不在 Z 的(纯英文新键)继承 en 是合法的,不动。
     """
     from .ui_strings import ui_lookup
     zh_base = Z.get(key)
+    en_val = T.get("en", {}).get(key)
     val = T.get(_current, {}).get(key)
-    if not val or (zh_base is not None and val == zh_base):
+    inherited_en = (val is not None and val == en_val and zh_base is not None
+                    and val != zh_base)
+    if not val or (zh_base is not None and val == zh_base) or inherited_en:
         sup = ui_lookup(_current, key)
         if sup and sup != zh_base:
             val = sup
-    if not val:
+    # 英文兜底仅在「en 表也没独立值(en_val==zh_base)」时进行:val==zh_base 但 en 有
+    # 独立值,说明当前语言表写的是有意的中文(如 ja 表 in_progress='生成中'),
+    # 回退英文反而丢掉已写好的译文(实测 Processing 盖掉 生成中)。
+    if not val or (zh_base is not None and val == zh_base and _current != "zh"
+                   and en_val == zh_base):
         val = T.get("en", {}).get(key) or ui_lookup("en", key) or zh_base or key
     return val.format(*args) if args else val
