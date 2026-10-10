@@ -14,6 +14,8 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
 
+from ..core.i18n import tr
+
 COLORS = {
     "info": ("#1f2937", "#ffffff"),
     "success": ("#16a34a", "#ffffff"),

@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainT
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
 from . import widgets as W
+from ..core.i18n import tr
 
 # ── 通用小件 ──
 def section_title(text: str, add_label: str = "", on_add=None) -> QWidget:

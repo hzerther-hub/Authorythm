@@ -20,6 +20,7 @@ from ..core.taskmgr import TASKMGR
 from . import widgets as W
 from .braille import BrailleBar, WaitingButton
 from .toast import err, ok
+from ..core.i18n import tr
 
 
 class BookImportDialog(QDialog):

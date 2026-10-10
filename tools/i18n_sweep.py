@@ -181,17 +181,25 @@ _TR_IMPORT = re.compile(r"^from\s+\.{1,2}[\w.]*i18n\s+import\s+[^\n]*\btr\b", re
 def _ensure_tr_import(src: str, path: pathlib.Path) -> str:
     """文件里用到 tr() 就必须能 import 到它。
 
-    锚点不能只找 `from ..`:braille.py 一个相对导入都没有,全都走 PySide6 绝对导入,
-    照原样插不进去,模块一 import 就 NameError。
+    两个坑:
+    1. 锚点不能只找 `from ..`:braille.py 一个相对导入都没有,全都走 PySide6 绝对导入,
+       照原样插不进去,模块一 import 就 NameError。
+    2. 插入点不能是"最后一条匹配行":多行括号导入(from x import (a,\\n b))的续行也匹配
+       `^(from|import)`,插在续行后会把括号列表劈成两半(toast.py 踩过)。
+       所以只在 ast 的顶层 ImportFrom/Import 节点(带准确的 end_lineno)之后插。
     """
     if _TR_IMPORT.search(src):
         return src
     line = "from ..core.i18n import tr"
-    last = None
-    for m in re.finditer(r"^(?:import|from)\s+.*$", src, re.M):
-        last = m
-    if last:                      # 插到最后一条 import 之后
-        return src[:last.end()] + "\n" + line + src[last.end():]
+    tree = ast.parse(src)
+    last_end = None
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            last_end = node.end_lineno
+    if last_end:
+        lines = src.split("\n")
+        lines.insert(last_end, line)
+        return "\n".join(lines)
     return line + "\n\n" + src
 
 
