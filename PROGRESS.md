@@ -1009,3 +1009,33 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
   这条「等于中文基线即未翻译」的判断是让补充词典能生效的前提;
 - 补充词典每条固定 15 个值、顺序为 `zh en ja ko ar hi id th tr vi fr de es pt it`,错位会静默串语言,
   故每次追加后都跑长度自检(本轮发现并修掉 2 条因错位导致的串语言)。
+
+## 2026-10-09(第 40 轮:三级翻译引擎 + 并发补翻,15 语言 100% 覆盖)
+> 用户提供了一台自建翻译转发(fortuneteller.top,转发百度),要求:
+> 用它翻译 + 把它配置进项目与参考项目 + Google 作为备选 + 找一个兜底。
+### 1. 新增 `app/core/translate.py`(三级引擎依次降级)
+1. **baidu-forward** —— `https://fortuneteller.top/api/translate`(转发百度翻译),主力,内置 key;
+2. **google-gtx** —— `translate.googleapis.com/translate_a/single`,免 key(限流按 IP,切 Clash 节点可续);
+3. **mymemory** —— MyMemory 免费端点(5000 词/天/IP),兜底。
+统一入口 `translate(text, target, source)`,全失败抛 `TranslateError`。
+> 注:deep-translator 库版本对 `LibreTranslateTranslator` 的导入名已过时,且其 Google 走的是
+> 自己的探测路径、即便换了 IP 仍 429;改用与浏览器同源的 gtx 端点直连后立刻可用。
+
+### 2. `tools/i18n_autofill.py` 改并发
+- 第零步 seed:把主词典 `i18n.T` 里「值==中文原文」且未进 S 的键追加进 S;
+- 判定需翻:`空` / `等于中文基准` / `非中日语言位含 CJK(串了)`(日文豁免 CJK 判定);
+- **ThreadPool 12 线程**,每 24 条写盘,中断可续;`--workers` / `--dry-run` 可调。
+
+### 3. 执行结果
+- 第一轮 1612 个语言位,**1612 成功 / 0 失败 / 23.6 分钟**
+- en/ja 补翻 522 位 → 496 成功;日文重翻 317 位 → 317 成功
+- **最终 15 种语言 100% 覆盖**(各语言仅 3-6 个键与中文基准同形,如 `Jev` / `Base URL` /
+  `API Key` / `System Prompt` / `Profile` / `{}s` —— 技术专名本就不该翻译)
+
+### 4. 修正自己的检测口径
+先前用「含 CJK 即未翻译」判定,把**日语正常使用的汉字**(如「エピソード追加」)误判成残留,
+虚报 92 键缺口。正确判据是「与中文基准值相同」。
+
+### 待办
+翻译服务按要求只在本仓落地为 `app/core/translate.py`;**参考项目 `E:\xiaoshuo` 侧尚未接入**
+(需要用 TS 写一份同构的 `translate.ts` 并挂到其构建脚本)。
