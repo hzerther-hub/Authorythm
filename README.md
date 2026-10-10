@@ -2,7 +2,7 @@
 
 **简体中文** | [English](#english) | [日本語](#日本語) | [한국어](#한국어)
 
-基于 **PySide6(Python 3.10+)** 的 AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [chatfire-AI/yihao-drama](https://github.com/chatfire-AI/yihao-drama)(Web 版),并集成了两个社区工具的核心能力:
+基于 **PySide6(Python 3.10+)** 的 AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git)(Web 版),并集成了两个社区工具的核心能力:
 
 - **[golanse/easymerger](https://github.com/golanse/easymerger)** — 无损视频合并(参数检测/智能直通/一键对齐异类)
 - **[liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)** — 同款复刻(爆款视频结构迁移到你的产品)
@@ -151,7 +151,7 @@ docs/          分析报告/计划/过程/截图
 <a name="english"></a>
 # 🎬 Yihao Shorts (PySide6 Edition)
 
-**A one-stop AI studio for short dramas, novels and comics**, rebuilt in PySide6 (Python 3.10+). Feature-complete rewrite of [chatfire-AI/yihao-drama](https://github.com/chatfire-AI/yihao-drama), plus core logic from [golanse/easymerger](https://github.com/golanse/easymerger) (lossless merging) and [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite) (viral-video cloning).
+**A one-stop AI studio for short dramas, novels and comics**, rebuilt in PySide6 (Python 3.10+). Feature-complete rewrite of [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git), plus core logic from [golanse/easymerger](https://github.com/golanse/easymerger) (lossless merging) and [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite) (viral-video cloning).
 
 ## 🌐 Languages — 15 supported
 
@@ -253,7 +253,7 @@ License: CC BY-NC-SA 4.0 (inherited from the original project).
 <a name="日本語"></a>
 # 🎬 易好短劇 PySide6 版(日本語)
 
-**AI によるショートドラマ・小説・漫画のワンストップ制作ツール**(Python 3.10+ / PySide6)。オープンソース [chatfire-AI/yihao-drama](https://github.com/chatfire-AI/yihao-drama) の全機能を再実装し、[golanse/easymerger](https://github.com/golanse/easymerger)(ロスレス結合)と [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)(動画複製)の核心ロジックを統合しました。
+**AI によるショートドラマ・小説・漫画のワンストップ制作ツール**(Python 3.10+ / PySide6)。オープンソース [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git) の全機能を再実装し、[golanse/easymerger](https://github.com/golanse/easymerger)(ロスレス結合)と [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)(動画複製)の核心ロジックを統合しました。
 
 ## 🌐 対応言語 — 15 言語
 
@@ -349,7 +349,7 @@ python app/main.py
 <a name="한국어"></a>
 # 🎬 이하오 숏드라마 PySide6 판(한국어)
 
-**AI로 만드는 숏드라마·소설·만화 올인원 제작 도구**(Python 3.10+ / PySide6). 오픈소스 [chatfire-AI/yihao-drama](https://github.com/chatfire-AI/yihao-drama)의 전체 기능을 재구현하고, [golanse/easymerger](https://github.com/golanse/easymerger)(무손실 병합)와 [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)(영상 복제)의 핵심 로직을 통합했습니다.
+**AI로 만드는 숏드라마·소설·만화 올인원 제작 도구**(Python 3.10+ / PySide6). 오픈소스 [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git)의 전체 기능을 재구현하고, [golanse/easymerger](https://github.com/golanse/easymerger)(무손실 병합)와 [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)(영상 복제)의 핵심 로직을 통합했습니다.
 
 ## 🌐 지원 언어 — 15 개
 
