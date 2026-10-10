@@ -189,7 +189,8 @@ class SettingsDialog(QDialog):
             registry.update_config(cfg["id"], provider=d["provider"], base_url=d["base_url"],
                                     model=d["model"], api_key=d["api_key"],
                                     remark=d["name"], priority=d["priority"],
-                                    models=d["models"], temperature=d["temperature"])
+                                    models=d["models"], temperature=d["temperature"],
+                                    settings=d.get("settings"))
             self._fill_services(st)
 
     def _toggle_service(self, cfg: dict, on: bool):
@@ -1003,6 +1004,13 @@ class ServiceDialog(QDialog):
         self.temperature = QLineEdit()
         self.temperature.setPlaceholderText(tr("如 0.6"))
         form.addRow(tr("Temperature (留空跟随服务默认)"), self.temperature)
+        # 本地生图扩展设置(JSON):comfyui_workflow / comfyui_negative_prompt / image_base_size /
+        # image_steps / image_cfg_scale / image_sampler / image_negative_prompt /
+        # fooocus_performance / fooocus_styles —— 留空走内置默认
+        self.settings_edit = QPlainTextEdit()
+        self.settings_edit.setPlaceholderText(tr("本地服务扩展设置 JSON,如") + ' {"image_base_size": 1024, "comfyui_workflow": "..."}')
+        self.settings_edit.setMaximumHeight(64)
+        form.addRow(tr("扩展设置 (JSON)"), self.settings_edit)
         form.addRow("", _muted("部分模型强制固定温度(如 kimi-k2 只允许 0.6),遇 invalid temperature 错误时在此填入对应值"))
         root.addLayout(form)
         root.addStretch(1)
@@ -1072,6 +1080,13 @@ class ServiceDialog(QDialog):
         self.models_editor.set_models(models)
         if e.get("temperature") is not None:
             self.temperature.setText(str(e["temperature"]))
+        import json as _sj
+        raw_settings = e.get("settings")
+        if raw_settings:
+            try:
+                self.settings_edit.setPlainText(_sj.dumps(_sj.loads(raw_settings), ensure_ascii=False, indent=1))
+            except (ValueError, TypeError):
+                self.settings_edit.setPlainText(raw_settings)
 
     def _current_provider(self) -> str:
         """当前服务商标识:选中模板取其 provider,选自定义取输入框文本。"""
@@ -1097,7 +1112,8 @@ class ServiceDialog(QDialog):
                 "priority": self.priority_spin.value(),
                 "models": models,
                 "model": models[0],
-                "temperature": temperature}
+                "temperature": temperature,
+                "settings": self.settings_edit.toPlainText().strip()}
 
     def _test(self):
         cfg = self._collect()

@@ -1101,3 +1101,25 @@ STAGE_CN(写正文/审校中…)、REF_PLACEHOLDER(角/景/具)整批漏网。
 - 审计方法论:无头遍历全页 QLabel/QPushButton/QComboBox/QTab/placeholder 收 CJK 文本,
   比截图+视觉模型可靠(视觉模型两读不一致,还把日文汉字誤报成中文残留);剩余 CJK 全为
   用户数据(人物外貌/场景光照/分镜内容/项目标题/服务配置名),属内容不翻
+
+## 第 47 轮(2026-10-11): 本地生图三 provider + 局部重绘 inpaint + 去背景(对齐参考 0117459/9272acf/ecda917)
+
+- **本地生图(零云额度,数据不出本机)**: 新增 `app/ai/local_image.py` ——
+  comfyui(原生 /prompt+history+queue+/view;内置 SDXL/SD1.5 模板;自定义工作流占位符替换;
+  缺素材节点级联裁剪含 /object_info 必填校验;参考图自动 /upload/image)、
+  sdwebui(A1111/Forge /sdapi/v1/txt2img 同步;Key「用户名:密码」=Basic)、
+  fooocus(Fooocus-API txt2img/IP-Adapter ≤4 张;SDXL 比例档就近)。registry 三个本地预设
+  (localhost 默认端口)+ 探针(/system_stats //sdapi/v1/options /根路径)免真出图;
+  NO_KEY_PROVIDERS 豁免;ai_service_configs 加 settings JSON 列(comfyui_workflow 等);
+  ServiceDialog 加「扩展设置 (JSON)」回填/保存。
+- **局部重绘 inpaint**: `app/pipeline/inpaint.py`(纯 Pillow 无 numpy,两级流水线:
+  低分辨率补丁式结构填充 + Push-Pull 金字塔兜底 + 自适应颗粒/羽化合成)。
+  `app/pipeline/erase.py` 通用擦除(panel/character/scene/prop × main/comic 双图版本;
+  首次擦除备份最早原图;erase-backup/<type>/<id>/)。`app/ui/mask_erase_dialog.py`
+  画笔涂抹对话框(笔刷粗细/橡皮/撤销/清空;导出「白笔迹+alpha 形状」契约)。
+  入口:漫画格卡右上 🩹 角标、素材详情弹窗 🩹 擦除/还原原图按钮。
+- **去背景**: erase.bg_remove/bg_remove_health 走换脸边车 rembg /remove(可选依赖,
+  未安装 503 不影响换脸;/health bg_ready 决定按钮显隐;结果存 static/bg-remove/ 不覆盖原图,
+  角色卡写回 image_url)。素材详情弹窗「去背景」按钮(边车探针通过才显示)。
+- 实测:工作流渲染/裁剪/尺寸/比例/鉴权 7 组断言;comfyui 探针失败可读;
+  擦除→回写→备份→还原全流程通过(物体完全填回背景色,还原逐像素一致);机翻 201 槽 0 失败。

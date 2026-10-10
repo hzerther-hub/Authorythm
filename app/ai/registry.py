@@ -33,6 +33,14 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "百炼图像 · Qwen-Image / 万相", "provider": "qwen-image",
          "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com",
          "models": ["qwen-image-3.0-pro", "wan2.7-image", "wan2.7-image-pro"]},
+        # 本地生图(零云额度、数据不出本机;对齐参考 0117459 移植的三个 provider)
+        {"name": "本地 ComfyUI", "provider": "comfyui",
+         "base_url": "http://127.0.0.1:8188",
+         "models": ["sd_xl_base_1.0.safetensors", "default"]},
+        {"name": "本地 SD WebUI (AUTOMATIC1111)", "provider": "sdwebui",
+         "base_url": "http://127.0.0.1:7860", "models": ["default"]},
+        {"name": "本地 Fooocus-API", "provider": "fooocus",
+         "base_url": "http://127.0.0.1:8888", "models": ["default"]},
     ],
     "video": [
         {"name": "Agnes 官方", "provider": "agnes", "base_url": "https://apihub.agnes-ai.com",
@@ -124,6 +132,9 @@ def update_config(cid: int, **fields) -> None:
     for k in ("provider", "base_url", "api_key", "model", "remark"):
         if k in fields and fields[k] is not None:
             sets.append(f"{k}=?"); vals.append(fields[k])
+    if "settings" in fields:                     # 本地生图扩展设置(JSON 字符串;空串存 NULL)
+        sets.append("settings=?")
+        vals.append(fields["settings"] or None)
     if "models" in fields and fields["models"] is not None:
         sets.append("models=?")
         vals.append(_json.dumps(fields["models"], ensure_ascii=False))
@@ -222,7 +233,7 @@ def seed_jev_default() -> None:
 SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
                 "faceswap": "换脸", "jev": "Jev"}
 # 不需要 API Key 的 provider(本地服务)
-NO_KEY_PROVIDERS = {"local-faceswap"}
+NO_KEY_PROVIDERS = {"local-faceswap", 'comfyui', 'sdwebui', 'fooocus'}
 
 
 class NotConfigured(RuntimeError):

@@ -549,7 +549,7 @@ class ComicPanelCard(QFrame):
     """漫画格卡:3:4 缩略 + 序号 + 描述/台词/构图 + 旁白说明框 + 错误 + 出图提示词。"""
 
     def __init__(self, row: dict, labels: dict, *, busy: bool = False, failed: str = "",
-                 on_draw=None, on_open=None, on_narration_save=None):
+                 on_draw=None, on_open=None, on_narration_save=None, on_erase=None):
         super().__init__()
         self.setObjectName("comicCard")
         self.setProperty("state", "failed" if failed else "")
@@ -593,12 +593,25 @@ class ComicPanelCard(QFrame):
         idx.setObjectName("comicIndex")
         tg.addWidget(idx, 0, 0, Qt.AlignLeft | Qt.AlignTop)
         if url:
+            # 右上双角标:⟳ 重绘 / 🩹 擦除(局部重绘,对齐参考 ecda917)
+            corner = QHBoxLayout()
+            corner.setSpacing(4)
             redo = QPushButton("⟳")
             redo.setFixedSize(24, 24)
             redo.setToolTip(labels["redraw"])
             redo.setCursor(Qt.PointingHandCursor)
             redo.clicked.connect(lambda _=False: on_draw() if on_draw else None)
-            tg.addWidget(redo, 0, 0, Qt.AlignRight | Qt.AlignTop)
+            corner.addWidget(redo)
+            if on_erase:
+                er = QPushButton("🩹")
+                er.setFixedSize(24, 24)
+                er.setToolTip(tr("擦除漫画格"))
+                er.setCursor(Qt.PointingHandCursor)
+                er.clicked.connect(lambda _=False: on_erase())
+                corner.addWidget(er)
+            corner_wrap = QWidget()
+            corner_wrap.setLayout(corner)
+            tg.addWidget(corner_wrap, 0, 0, Qt.AlignRight | Qt.AlignTop)
         lay.addWidget(thumb)
 
         body = QWidget()

@@ -2771,7 +2771,8 @@ class EpisodePage(QWidget):
                 r, labels, busy=(r["id"] in busy_ids),
                 on_draw=lambda _=False, i=r["id"]: self._one_panel_image(i),
                 on_open=lambda _=False, u=r["image_url"]: self._open_image(u),
-                on_narration_save=lambda t, i=r["id"]: self._save_panel_narration(i, t))
+                on_narration_save=lambda t, i=r["id"]: self._save_panel_narration(i, t),
+                on_erase=lambda _=False, i=r["id"], u=r["image_url"]: self._erase_panel(i, u))
             grid.addWidget(card, i // 3, i % 3)
         grid.setRowStretch((len(rows) + 2) // 3, 1)
         self._reload_comic_stitch()
@@ -2800,6 +2801,22 @@ class EpisodePage(QWidget):
     def _open_image(self, url: str):
         from .asset_dialogs import ImageViewerDialog
         ImageViewerDialog(self, url).exec()
+
+    def _erase_panel(self, panel_id: int, url: str):
+        """漫画格擦除:画笔涂抹 → 程序化填充 → 刷新漫画板。"""
+        from .mask_erase_dialog import open_erase_dialog
+        open_erase_dialog(self, url, "panel", panel_id,
+                          on_done=self._reload_comic, title=tr("擦除漫画格"))
+
+    def _restore_panel(self, panel_id: int):
+        from ..pipeline import erase as ER
+        from .toast import err, ok
+        try:
+            ER.restore_original("panel", panel_id)
+            ok(tr("已还原原图"))
+            self._reload_comic()
+        except Exception as e:  # noqa: BLE001
+            err(str(e)[:200])
 
     def _split_panels(self):
         def job(tid):

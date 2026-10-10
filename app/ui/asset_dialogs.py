@@ -387,6 +387,21 @@ class AssetDetailDialog(QDialog):
         delete = W.danger_btn(tr("delete"))
         delete.clicked.connect(self._delete)
         footer.addWidget(delete)
+        if self.row.get("image_url"):
+            erase_btn = QPushButton("🩹 " + tr("擦除"))
+            erase_btn.setToolTip(tr("涂抹要擦掉的区域,程序化填充(线条/地面等结构会自然延续)"))
+            erase_btn.clicked.connect(self._erase_region)
+            footer.addWidget(erase_btn)
+            restore_btn = QPushButton(tr("还原原图"))
+            restore_btn.setToolTip(tr("还原到最早擦除前的原图"))
+            restore_btn.clicked.connect(self._restore_original)
+            footer.addWidget(restore_btn)
+            # 去背景(换脸边车 rembg /remove;可用性探针决定置灰)
+            if self._bg_available():
+                bg_btn = QPushButton(tr("去背景"))
+                bg_btn.setToolTip(tr("rembg 抠出主体,输出带透明通道的 PNG(不覆盖原图)"))
+                bg_btn.clicked.connect(self._bg_remove)
+                footer.addWidget(bg_btn)
         footer.addStretch(1)
         upload = QPushButton(tr("upload"))
         upload.clicked.connect(self._upload)
@@ -399,6 +414,55 @@ class AssetDetailDialog(QDialog):
         for b in (upload, gen_img, save, close):
             footer.addWidget(b)
         root.addLayout(footer)
+
+    def _bg_available(self) -> bool:
+        from ..pipeline import erase as ER
+        from ..ai import registry
+        try:
+            cfg = registry.check_ready("faceswap", None)
+        except Exception:  # noqa: BLE001 —— 换脸服务未配置,去背景不可用
+            return False
+        ok, _ = ER.bg_remove_health(cfg)
+        return ok
+
+    def _erase_region(self):
+        from .mask_erase_dialog import open_erase_dialog
+        open_erase_dialog(self, self.row["image_url"], self.kind, self.row["id"],
+                          on_done=self._reload_after_edit, title=self.windowTitle())
+
+    def _restore_original(self):
+        from ..pipeline import erase as ER
+        from .toast import err, ok
+        try:
+            ER.restore_original(self.kind, self.row["id"])
+            ok(tr("已还原原图"))
+            self._reload_after_edit()
+        except Exception as e:  # noqa: BLE001
+            err(str(e)[:200])
+
+    def _reload_after_edit(self):
+        """擦除/还原后刷新详情弹窗里的预览图。"""
+        from ..core import db
+        row = db.q1(f"SELECT * FROM {self.table} WHERE id=?", (self.row["id"],))
+        if row:
+            self.row = dict(row)
+        self.img.setPixmap(W.pixmap_from_media(self.row.get("image_url"), 280, 280))
+
+    def _bg_remove(self):
+        from ..ai import registry
+        from ..pipeline import erase as ER
+        from .toast import err, ok
+        cfg = registry.check_ready("faceswap", None)
+        try:
+            p = config.media_url_to_path(self.row["image_url"])
+            new_path = ER.bg_remove(cfg, p)
+            # 结果写回资产(带透明通道的新 PNG),对齐参考 apply_to 语义
+            db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?",
+                  (config.path_to_media_url(new_path), db.now(), self.row["id"]))
+            ok(tr("去背景完成"))
+            self._reload_after_edit()
+        except Exception as e:  # noqa: BLE001
+            err(str(e)[:200])
 
     def _collect(self) -> dict:
         d = {"name": self.name.text().strip() or self.row["name"]}

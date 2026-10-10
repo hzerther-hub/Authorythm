@@ -113,6 +113,12 @@ def generate_image(prompt: str, out_name: str | None = None,
     negative = build_image_negative_guard(people) if not skip_guard else None
     cfg = registry.check_ready("image", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
+    # 本地生图扩展设置(comfyui_workflow/image_base_size/steps/cfg/sampler…,JSON 列)
+    import json as _json
+    try:
+        cfg["settings"] = _json.loads(cfg["settings"]) if cfg.get("settings") else None
+    except (ValueError, TypeError):
+        cfg["settings"] = None
     out_name = out_name or f"{uuid.uuid4().hex}.png"
     out = config.STATIC_DIR / "images" / out_name
     headers = {"Content-Type": "application/json"}
@@ -202,13 +208,48 @@ def generate_image(prompt: str, out_name: str | None = None,
                 raise AIError(f"Agnes 生图任务失败: {str(payload)[:300]}")
         raise AIError("Agnes 生图任务轮询超时(10 分钟)")
 
+    if provider == "comfyui":
+        # 本地 ComfyUI:渲染工作流(内置 SDXL/SD1.5 模板或自定义)→ /prompt → history 轮询
+        from .local_image import gen_comfyui
+        url_v = gen_comfyui(cfg, prompt, negative, size, reference_images)
+        _download(url_v, out, headers=_download_headers(cfg))
+        return out, provider
+
+    if provider == "sdwebui":
+        # 本地 SD WebUI(A1111/Forge,--api 启动):同步 txt2img
+        from .local_image import gen_sdwebui
+        out.write_bytes(gen_sdwebui(cfg, prompt, negative, size))
+        return out, provider
+
+    if provider == "fooocus":
+        # 本地 Fooocus-API:txt2img / IP-Adapter 参考图生图
+        from .local_image import gen_fooocus
+        out.write_bytes(gen_fooocus(cfg, prompt, negative, size, reference_images))
+        return out, provider
+
     raise AIError(f"不支持的图片 provider: {provider}")
 
 
-def test_config(cfg: dict) -> tuple[bool, str]:
+def _download_headers(cfg: dict) -> dict | None:
+    """ComfyUI /view 下载可能要鉴权(Bearer)。"""
+    return {"Authorization": f"Bearer {cfg['api_key']}"} if cfg.get("api_key") else None
+
+
+def test_config(cfg: dict | None = None, config_id: int | None = None) -> tuple[bool, str]:
+    """设置页「测试」。本地三 provider(comfyui/sdwebui/fooocus)走轻量探针(不真出图),
+    云端 provider 真实生成一张测试图。"""
+    if cfg is None and config_id is not None:
+        import sqlite3
+        from ..core import db as _db
+        cfg = _db.q1("SELECT * FROM ai_configs WHERE id=?", (config_id,))
+    cfg = dict(cfg or {})
+    if cfg.get("provider") in ("comfyui", "sdwebui", "fooocus"):
+        from .local_image import probe_local
+        return probe_local(cfg["provider"], cfg)
     try:
         out, _ = generate_image("a red apple on white background, product photo",
-                                out_name=f"_test_{uuid.uuid4().hex[:8]}.png")
+                                out_name=f"_test_{uuid.uuid4().hex[:8]}.png",
+                                config_id=cfg.get("id"))
         out.unlink(missing_ok=True)
         return True, "OK"
     except Exception as e:  # noqa: BLE001
