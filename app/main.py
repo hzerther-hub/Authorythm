@@ -11,7 +11,7 @@ from PySide6.QtWidgets import QApplication
 
 from .agents.prompts import seed_prompt_files
 from .core import db
-from .core.i18n import set_language
+from .core.i18n import detect_system_language, set_language
 from .core.theme import apply_theme, load_bundled_fonts
 
 
@@ -44,7 +44,11 @@ def main() -> int:
     seed_faceswap_default()
     seed_jev_default()      # 仅当环境变量给了 JEV_API_KEY 才落一条启用配置
 
+    # 界面语言:用户明确选过的(ui_language_explicit=1)尊重所存值;
+    # 从没选过的跟随系统语言,系统不在 15 语种内/判断失败回退英文。
     lang = db.get_setting("ui_language", "zh")
+    if db.get_setting("ui_language_explicit", "0") != "1":
+        lang = detect_system_language()
     set_language(lang)
     _apply_drama_font(app)
     apply_theme(app, db.get_setting("theme", "light"))

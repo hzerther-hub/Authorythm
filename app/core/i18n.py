@@ -927,6 +927,24 @@ def current_language() -> str:
     return _current
 
 
+def detect_system_language() -> str:
+    """按系统区域推断界面语言;推断不出(不在 15 语种内/拿不到区域)回退英文。
+
+    QLocale.system().name() 形如 zh_CN / en_US / pt_BR,取下划线前的语种码比对。
+    只在「用户从未明确选过语言」时用它(见 main.py 的 ui_language_explicit 闸),
+    避免盖掉用户手选的语言。
+    """
+    try:
+        from PySide6.QtCore import QLocale
+        name = QLocale.system().name() or ""
+        base = name.replace("-", "_").split("_")[0].lower()
+        if base in T:
+            return base
+    except Exception:  # noqa: BLE001 —— 拿不到系统区域也算"分析不出来",回退英文
+        pass
+    return "en"
+
+
 def tr(key: str, *args) -> str:
     """取界面文案。
 

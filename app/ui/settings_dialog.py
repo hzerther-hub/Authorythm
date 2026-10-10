@@ -315,6 +315,7 @@ class SettingsDialog(QDialog):
             b.setChecked(code == lang)
         db.set_setting("content_language", lang)
         db.set_setting("ui_language", lang)
+        db.set_setting("ui_language_explicit", "1")   # 用户手选,此后不再跟随系统
         from ..core.i18n import set_language
         set_language(lang)
         if self._on_lang:

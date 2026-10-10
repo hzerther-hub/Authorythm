@@ -1039,3 +1039,17 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
 ### 待办
 翻译服务按要求只在本仓落地为 `app/core/translate.py`;**参考项目 `E:\xiaoshuo` 侧尚未接入**
 (需要用 TS 写一份同构的 `translate.ts` 并挂到其构建脚本)。
+
+## 第 41 轮(2026-10-10): 启动语言跟随系统 + 进入制作修复
+
+- **启动语言判定**: `i18n.detect_system_language()`(QLocale 取 `zh_CN` 这类区域码的语种部分,
+  比对 15 语种;不在表内/取不到 → 回退英文)。main.py 启动时:`ui_language_explicit=1`
+  (用户手选过)尊重所存值;否则跟随系统。两个语言选择器(顶栏 ◎ + 设置页)落库时都会
+  打上 explicit 标记,之后不再被系统语言盖掉。
+- **进入制作无响应修复**: 第 40 轮 sweep 批量改写时 3 个文件(book_import_dialog/episode_cards/
+  toast)漏注入 `tr` 导入,NameError 藏在方法体里 import 检查查不出,点击才炸;toast.py 还被
+  插进括号续行中间劈断了 import。`_ensure_tr_import` 改用 AST 顶层 Import 节点的 end_lineno
+  定位;新增静态检查(调了 tr 却没导入)确认全仓无漏网;无头实测进入制作→切语言重建→返回
+  项目→返回列表全链路通过(`8329566`)。
+- 翻译服务已同步参考项目:`backend/src/services/translate.ts` + `POST /api/v1/translate`
+  (单条/批量,zod 校验),CRLF 保持,tsc 通过 —— 上一轮"待办"清账。

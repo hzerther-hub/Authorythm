@@ -378,9 +378,10 @@ def init_db() -> None:
         db.execute(
             "INSERT OR IGNORE INTO style_presets(name,value,prompt,description,work_type,sort_order,is_active,created_at) VALUES(?,?,?,?,?,?,1,?)",
             (name, value, prompt, desc, wt, order, now()))
-    # 默认设置
+    # 默认设置(ui_language_explicit=0:未手选过语言,启动时跟随系统,判断不出回退英文)
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('content_language','zh',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('ui_language','zh',?)", (now(),))
+    db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('ui_language_explicit','0',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('theme','light',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('tours_seen','0',?)", (now(),))
     # 恢复中断任务(对齐原版):按"产出是否已落"归位,而不是一律标 failed

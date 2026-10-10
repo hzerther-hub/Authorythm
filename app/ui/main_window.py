@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
             lang = lw.currentItem().data(Qt.UserRole)
             db.set_setting("ui_language", lang)
             db.set_setting("content_language", lang)
+            db.set_setting("ui_language_explicit", "1")   # 用户手选,此后不再跟随系统
             set_language(lang)          # 触发监听器 → 界面即时重建,不需要重启
 
     def _toggle_theme(self):
