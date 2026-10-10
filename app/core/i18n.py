@@ -740,6 +740,9 @@ Z = {  # 中文(基准)
  'retry': 'retry',
  'style': 'style',
  'default': 'default',
+ 'ai_edit_shortcut_hint': 'ai_edit_shortcut_hint',
+ '保存成功,可按 Ctrl+L 让 AI 修改本段': '保存成功,可按 Ctrl+L 让 AI 修改本段',
+ '本章已完成,且没有待写的后续章节(想重写请用「批量」确认框里的重写,或先添加新集)': '本章已完成,且没有待写的后续章节(想重写请用「批量」确认框里的重写,或先添加新集)',
 
 }
 

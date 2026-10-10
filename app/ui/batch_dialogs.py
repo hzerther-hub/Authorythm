@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
                                QListWidget, QProgressBar, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
@@ -111,6 +111,18 @@ class _BatchProgressDialog(QDialog):
         btns.addWidget(close)
         root.addLayout(btns)
         self._render_ledger()
+        # on_progress 在工作线程里只改共享变量(跨线程碰 UI 会炸),这里用 1s 心跳把
+        # page._batch_done 反映到进度条/阶段(对齐成片「拼接中」卡的心跳模式)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._poll_progress)
+        self._timer.start(1000)
+
+    def _poll_progress(self):
+        if not self.page:
+            return
+        done = getattr(self.page, "_batch_done", 0)
+        if done:
+            self.update_progress(done, self.total)
 
     # 进度
     def update_progress(self, done: int, total: int):

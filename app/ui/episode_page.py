@@ -34,6 +34,7 @@ from ..pipeline import stitch as stitch_pipe
 from . import widgets as W
 from .toast import err, info, ok, warn
 from .braille import WaitingButton
+from .project_page import _chapter_name_missing
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -770,12 +771,12 @@ class EpisodePage(QWidget):
         self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit)
         self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.ai_edit_btn = QPushButton("✨ " + tr("ai_edit"))
-        self.ai_edit_btn.setToolTip(tr("ai_edit_tip"))
-        self.ai_edit_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
+        # AI 修改不走按钮:Ctrl+L 快捷键触发;这里只放文字提示
         raw_row = QHBoxLayout()
         raw_row.setContentsMargins(12, 4, 12, 0)
-        raw_row.addWidget(self.ai_edit_btn)
+        self.ai_edit_hint = QLabel("✨ " + tr("ai_edit_shortcut_hint"))
+        self.ai_edit_hint.setObjectName("muted")
+        raw_row.addWidget(self.ai_edit_hint)
         raw_row.addStretch(1)
         lay.addLayout(raw_row)
         lay.addWidget(self.raw_edit, 1)
@@ -968,7 +969,7 @@ class EpisodePage(QWidget):
         db.ex("UPDATE episodes SET content=?, target_words=?, updated_at=? WHERE id=?",
               (self.raw_edit.toPlainText(), self.words_spin.value(), db.now(), self.episode_id))
         self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
-        QMessageBox.information(self, tr("save"), "OK")
+        ok(tr("保存成功,可按 Ctrl+L 让 AI 修改本段"))
 
     def _novel_redline_hint(self) -> str:
         """写作红线闸门:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。"""
@@ -1037,11 +1038,17 @@ class EpisodePage(QWidget):
     def _set_raw_row_enabled(self, on: bool):
         """原文页工具行整体禁用/恢复(生成期间防误点其它按钮)。"""
         for b in (getattr(self, "batch_btn", None), getattr(self, "chapter_name_btn", None),
-                  getattr(self, "save_btn", None), getattr(self, "ai_edit_btn", None),
-                  getattr(self, "style_combo", None), getattr(self, "style_combo2", None),
+                  getattr(self, "save_btn", None), getattr(self, "style_combo", None), getattr(self, "style_combo2", None),
                   getattr(self, "rewrite_btn", None)):
             if b is not None:
                 b.setEnabled(on)
+
+    def _cfg_for(self, service_type: str):
+        """该类型服务当前下拉选中的配置 id(ensure_ready 用;未选返回 None=默认最高优先级)。"""
+        return {"text": getattr(self, "text_model", None),
+                "image": getattr(self, "image_model", None),
+                "video": getattr(self, "video_model", None),
+                "faceswap": getattr(self, "face_model", None)}.get(service_type)
 
     def _batch_novel(self):
         """批量写本章及后续(对齐原版未提交批次的语义重定义 + 进度条 + 阶段)。"""
@@ -1051,7 +1058,8 @@ class EpisodePage(QWidget):
         if hint:
             warn(hint)
             return
-        if not ensure_ready("text", self._cfg_for("text")):
+        combo = self._cfg_for("text")
+        if not ensure_ready("text", combo.currentData() if combo else None):
             return
         self._save_raw_silent()
         all_eps = [dict(r) for r in db.q(
@@ -1072,7 +1080,8 @@ class EpisodePage(QWidget):
         pending = [e for e in all_eps if e["episode_number"] > cur["episode_number"]
                    and len((e["content"] or "").strip()) < 200]
         if not pending:
-            warn(tr("后续章节都已有正文,没有待写内容"))
+            # 单集项目 / 后续都写完了:给出可操作的下一步,而不是让用户觉得"点了没反应"
+            warn(tr("本章已完成,且没有待写的后续章节(想重写请用「批量」确认框里的重写,或先添加新集)"))
             return
         self._run_batch([e["id"] for e in pending[:10]], force=False)
 
@@ -1098,19 +1107,18 @@ class EpisodePage(QWidget):
         self._batch_ok = 0
         self._batch_failed = 0
         self._batch_stage = ""
+        from .batch_dialogs import _BatchProgressDialog
         self._batch_dialog = _BatchProgressDialog(self, len(episode_ids), self)
         self._batch_dialog.show()
         self._batch_start_ts = 0
         def job(tid):
+            import threading
             from ..core import taskmgr as TM
             self._batch_start_ts = 1
             def on_progress(done, total, num):
+                # 工作线程只改共享变量;UI 刷新交给已有的浮窗心跳(_tick_merge_elapsed 类),
+                # 这里不能 QMetaObject 跨线程碰 UI —— 页面被切换/重建后 C++ 对象已删,会炸
                 self._batch_done = done
-                from PySide6.QtCore import QMetaObject, Qt as _Qt
-                def _ui():
-                    if self._batch_dialog:
-                        self._batch_dialog.update_progress(done, total)
-                QMetaObject.invokeMethod(self, "_noop", _Qt.QueuedConnection)
             return novel_pipe.batch_write_chapters(
                 self.drama_id, episode_ids, force=force,
                 config_id=self.text_model.currentData(),
@@ -1213,7 +1221,7 @@ class EpisodePage(QWidget):
             return novel_pipe.review_chapter(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             else:
                 ReviewDialog(self, result or {}, self._ep["episode_number"]).exec()
         TASKMGR.submit("review", job, done, episode_id=self.episode_id)
@@ -1229,7 +1237,7 @@ class EpisodePage(QWidget):
             return novel_pipe.edit_chapter(self.episode_id, instr, config_id=self.text_model.currentData())
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             else:
                 self._reload_raw()
                 self.edit_instr.clear()
@@ -1370,7 +1378,7 @@ class EpisodePage(QWidget):
             if btn:
                 btn.setEnabled(True)
             if error:
-                err("AI")
+                err(str(error)[:220])
                 self._reload_rewrite()
                 return
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
@@ -1526,7 +1534,7 @@ class EpisodePage(QWidget):
                                                 config_id=self.image_model.currentData())
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             self._reload_comic_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
@@ -1570,7 +1578,7 @@ class EpisodePage(QWidget):
             return extract_pipe.extract_assets(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             else:
                 self._reload_assets()
         TASKMGR.submit("extract", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
@@ -1729,7 +1737,7 @@ class EpisodePage(QWidget):
             return fn(row_id, config_id=self.text_model.currentData())
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             self._reload_assets()
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id, character_id=row_id if kind == "character" else None)
 
@@ -1749,7 +1757,7 @@ class EpisodePage(QWidget):
             return url
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             self._reload_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
@@ -2477,7 +2485,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             btn.idle()
             if error:
-                err("AI")
+                err(str(error)[:220])
                 return
             text = (result or "").strip()
             if not text:
@@ -2575,7 +2583,8 @@ class EpisodePage(QWidget):
     def _split_sb(self):
         """重新拆分分镜(改后台任务 + 轮询,对齐原版 split-async)。"""
         from ..core.preflight import ensure_ready
-        if not ensure_ready("text", self._cfg_for("text")):
+        combo = self._cfg_for("text")
+        if not ensure_ready("text", combo.currentData() if combo else None):
             return
         if self._sb_split_running:
             return
@@ -2616,7 +2625,7 @@ class EpisodePage(QWidget):
             return sb_pipe.gen_video_prompts(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             else:
                 QMessageBox.information(self, tr("batch_prompts"), f"OK: {result}")
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
@@ -2871,7 +2880,7 @@ class EpisodePage(QWidget):
             return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, error):
             if error:
-                err("AI")
+                err(str(error)[:220])
             self._reload_comic()
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
 
@@ -2891,7 +2900,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             self._comic_busy.discard(panel_id)
             if error:
-                err("AI")
+                err(str(error)[:220])
             self._reload_comic()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 

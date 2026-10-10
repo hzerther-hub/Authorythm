@@ -111,16 +111,26 @@ class _FnTask(QRunnable):
         try:
             result = self.fn(self.task_id)
             finish_task(self.task_id, "completed")
-            if self.done_cb:
-                self.signals.done_cb.emit(self.done_cb, result, None)
+            self._emit_done(self.done_cb, result, None)
         except Exception:  # noqa: BLE001
             err = traceback.format_exc(limit=6)
             finish_task(self.task_id, "failed", err)
-            if self.done_cb:
-                self.signals.done_cb.emit(self.done_cb, None, err)
+            self._emit_done(self.done_cb, None, err)
         finally:
-            self.signals.finished.emit(self.task_id, "done")
-            self.signals.busy_changed.emit(active_count() > 0, "")
+            self._emit(self.signals.finished, self.task_id, "done")
+            self._emit(self.signals.busy_changed, active_count() > 0, "")
+
+    def _emit_done(self, cb, result, error):
+        try:
+            self.signals.done_cb.emit(cb, result, error)
+        except RuntimeError:  # noqa: BLE001 —— 进程退出中,C++ 端已删;任务状态已落库,无需回调
+            pass
+
+    def _emit(self, sig, *args):
+        try:
+            sig.emit(*args)
+        except RuntimeError:  # noqa: BLE001
+            pass
 
 
 class TaskManager(QObject):

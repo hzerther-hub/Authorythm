@@ -261,6 +261,7 @@ def check_ready(service_type: str, config_id: int | None = None) -> dict:
             raise NotConfigured(service_type, "所选配置不存在", config_id)
         if not cfg["is_active"]:
             raise NotConfigured(service_type, "所选配置已停用,请在「设置 → AI 服务」启用", config_id)
+        cfg = dict(cfg)          # sqlite3.Row 没有 .get,后面统一按 dict 处理
     else:
         active = [r for r in rows if r["is_active"]]
         if not active:

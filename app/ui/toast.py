@@ -133,7 +133,15 @@ class ToastManager:
     def toast(cls, text: str, kind: str = "info", msec: int = 3600):
         if cls._host is None:
             return
-        # 最多 5 条
+        # 最多 5 条(弹出前把已销毁的僵尸引用清掉,否则 len 虚高挤掉活 toast)
+        alive = []
+        for t in cls._stack:
+            try:
+                if t.parent() is cls._host:
+                    alive.append(t)
+            except RuntimeError:
+                continue
+        cls._stack[:] = alive
         while len(cls._stack) >= 5:
             oldest = cls._stack.pop(0)
             oldest.deleteLater()
@@ -164,7 +172,15 @@ class ToastManager:
     def _reposition(cls):
         if not cls._host:
             return
-        cls._stack[:] = [t for t in cls._stack if t.parent() is cls._host]
+        # C++ 对象可能已被 deleteLater 销毁但 Python 引用还在(shiboken RuntimeError),剔除
+        alive = []
+        for t in cls._stack:
+            try:
+                if t.parent() is cls._host:
+                    alive.append(t)
+            except RuntimeError:
+                continue
+        cls._stack[:] = alive
         y = 16
         for t in cls._stack:
             t.adjustSize()

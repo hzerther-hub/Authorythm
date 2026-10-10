@@ -328,8 +328,13 @@ def save_characters(drama_id: int, chars: list) -> int:
     return len(chars)
 
 
-def write_chapter(episode_id: int, config_id: int | None = None) -> str:
-    """按章节计划写当前章正文(自动带前情+设定),写回 episodes.content。"""
+def write_chapter(episode_id: int, config_id: int | None = None,
+                  lang: str | None = None) -> str:
+    """按章节计划写当前章正文(自动带前情+设定),写回 episodes.content。
+
+    lang: AI 产出语言(透传 run_agent;None=跟随文本提示词文件默认)。
+    """
+    
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集(章)不存在")
@@ -359,7 +364,7 @@ def write_chapter(episode_id: int, config_id: int | None = None) -> str:
 章节名优先沿用上面【本章计划】里的标题(原样使用,不要改写);
 无计划标题时再自行起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀)。
 把章节名作为独立一行写在正文最前面,格式为 `# 章节名`。"""
-    content = runner.run_agent("novel_writer", prompt, config_id=config_id)
+    content = runner.run_agent("novel_writer", prompt, config_id=config_id, lang=lang)
     _save_with_title(episode_id, content)
     return content
 
