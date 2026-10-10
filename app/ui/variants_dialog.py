@@ -29,18 +29,18 @@ class VariantsDialog(QDialog):
         self.resize(680, 560)
         root = QVBoxLayout(self)
         root.addWidget(W.h2(f"◑ {character['name']} · 造型变体"))
-        root.addWidget(W.muted("为角色添加多套造型(如 便装/战斗/回忆青年);生成形象后可「用作角色形象」。"))
+        root.addWidget(W.muted(tr("为角色添加多套造型(如 便装/战斗/回忆青年);生成形象后可「用作角色形象」。")))
 
         add_box = W.make_card()
         a_lay = QHBoxLayout(add_box)
         a_lay.setContentsMargins(10, 8, 10, 8)
         self.label_edit = QLineEdit()
-        self.label_edit.setPlaceholderText("变体标签(如 战斗服)")
+        self.label_edit.setPlaceholderText(tr("变体标签(如 战斗服)"))
         self.costume_edit = QLineEdit()
-        self.costume_edit.setPlaceholderText("服装/造型描述(如 黑色劲装,束发,佩剑)")
+        self.costume_edit.setPlaceholderText(tr("服装/造型描述(如 黑色劲装,束发,佩剑)"))
         self.tags_edit = QLineEdit()
-        self.tags_edit.setPlaceholderText("场景标签(逗号分隔,如 战斗,雨夜)")
-        self.tags_edit.setToolTip("分镜带这些标签时优先命中本变体(参考图里出现「战斗服」就选战斗变体)")
+        self.tags_edit.setPlaceholderText(tr("场景标签(逗号分隔,如 战斗,雨夜)"))
+        self.tags_edit.setToolTip(tr("分镜带这些标签时优先命中本变体(参考图里出现「战斗服」就选战斗变体)"))
         add_btn = W.primary_btn("＋ " + tr("add"))
         add_btn.clicked.connect(self._add_variant)
         a_lay.addWidget(self.label_edit, 1)
@@ -65,7 +65,7 @@ class VariantsDialog(QDialog):
         for r in rows:
             self.list_lay.addWidget(self._row(dict(r)))
         if not rows:
-            empty = QLabel("— 暂无变体,上方新增 —")
+            empty = QLabel(tr("— 暂无变体,上方新增 —"))
             empty.setObjectName("muted")
             empty.setAlignment(Qt.AlignCenter)
             self.list_lay.addWidget(empty)
@@ -82,7 +82,7 @@ class VariantsDialog(QDialog):
         head = QHBoxLayout()
         head.addWidget(W.h2(r["label"]))
         if r["is_default"]:
-            head.addWidget(W.tag("默认"))
+            head.addWidget(W.tag(tr("默认")))
         if r["image_url"]:
             head.addWidget(W.tag(tr("generated")))
         head.addStretch(1)
@@ -93,10 +93,10 @@ class VariantsDialog(QDialog):
         info.addWidget(desc)
         lay.addLayout(info, 1)
         btns = QVBoxLayout()
-        use = W.primary_btn("用作角色形象")
+        use = W.primary_btn(tr("用作角色形象"))
         use.setEnabled(bool(r["image_url"]))
         use.clicked.connect(lambda _=False, rr=r: self._set_default(rr))
-        gen = QPushButton(tr("redraw") + "(生成形象)")
+        gen = QPushButton(tr("redraw") + tr("(生成形象)"))
         gen.clicked.connect(lambda _=False, rr=r: self._gen_image(rr))
         btns.addWidget(use)
         btns.addWidget(gen)
@@ -146,7 +146,7 @@ class VariantsDialog(QDialog):
         def job(tid):
             fp = r["final_prompt"]
             if not fp:
-                raise RuntimeError("该变体还没有提示词,请稍后重试或补充造型描述后重新打开")
+                raise RuntimeError(tr("该变体还没有提示词,请稍后重试或补充造型描述后重新打开"))
             out, _p = image_client.generate_image(fp)
             db.ex("UPDATE character_variants SET image_url=? WHERE id=?",
                   (config.path_to_media_url(out), r["id"]))

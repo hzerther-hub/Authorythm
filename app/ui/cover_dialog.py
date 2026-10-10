@@ -22,7 +22,7 @@ class CoverPreviewDialog(QDialog):
     """封面放大预览。"""
     def __init__(self, parent, url: str | None, title: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("封面预览" + (f" · {title}" if title else ""))
+        self.setWindowTitle(tr("封面预览") + (f" · {title}" if title else ""))
         self.resize(560, 760)
         root = QVBoxLayout(self)
         img = QLabel()
@@ -53,7 +53,7 @@ class CoverPanel(QWidget):
         root.setSpacing(6)
 
         head = QHBoxLayout()
-        head.addWidget(W.muted("项目封面:AI 生成竖版封面;有角色/场景资产时自动以资产图为参考,保证与正片一致"))
+        head.addWidget(W.muted(tr("项目封面:AI 生成竖版封面;有角色/场景资产时自动以资产图为参考,保证与正片一致")))
         head.addStretch(1)
         root.addLayout(head)
 
@@ -65,12 +65,12 @@ class CoverPanel(QWidget):
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;background:#f7f8fa;")
         self.img.setPixmap(W.pixmap_from_media(d["thumbnail"] if d else None, 146, 196))
         self.img.mousePressEvent = lambda _e: CoverPreviewDialog(self, self._url, d["title"] if d else "").exec()
-        self.img.setToolTip("点击查看大图")
+        self.img.setToolTip(tr("点击查看大图"))
         row.addWidget(self.img)
         right = QVBoxLayout()
         self.prompt = QLineEdit()
-        self.prompt.setPlaceholderText("封面提示词(留空则按项目标题/简介/画风自动生成)")
-        gen = WaitingButton("⟳ 生成封面", primary=True)
+        self.prompt.setPlaceholderText(tr("封面提示词(留空则按项目标题/简介/画风自动生成)"))
+        gen = WaitingButton(tr("⟳ 生成封面"), primary=True)
         gen.clicked.connect(self._generate)
         self.gen_btn = gen
         right.addWidget(self.prompt)
@@ -84,10 +84,10 @@ class CoverPanel(QWidget):
         if self._busy:
             return
         self._busy = True
-        self.gen_btn.busy("正在生成封面")
+        self.gen_btn.busy(tr("正在生成封面"))
         self.img.setPixmap(W.pixmap_from_media(None, 146, 196))
         self.status = BrailleSpinner(color="#f97316", size=17)
-        self.status.start("AI 正在绘制封面…")
+        self.status.start(tr("AI 正在绘制封面…"))
         self.gen_btn.layout().addWidget(self.status)
 
         def job(tid):
@@ -106,7 +106,7 @@ class CoverPanel(QWidget):
                 return
             self._url = result
             self.img.setPixmap(W.pixmap_from_media(result, 146, 196))
-            ok("封面已生成")
+            ok(tr("封面已生成"))
             if self._on_changed:
                 self._on_changed()
 
@@ -121,10 +121,10 @@ class CoverPanel(QWidget):
 class EpisodeCoverButton(QPushButton):
     """剧集卡上的章封面生成按钮。"""
     def __init__(self, episode: dict, on_done=None, parent=None):
-        super().__init__("▣ 章封面", parent)
+        super().__init__(tr("▣ 章封面"), parent)
         self.episode = dict(episode)
         self._on_done = on_done
-        self.setToolTip("AI 生成单章封面(3:4 竖版)")
+        self.setToolTip(tr("AI 生成单章封面(3:4 竖版)"))
         self.setCursor(Qt.PointingHandCursor)
         self.clicked.connect(self._gen)
 
@@ -137,7 +137,7 @@ class EpisodeCoverButton(QPushButton):
             if error:
                 err(e_)
                 return
-            ok("章封面已生成")
+            ok(tr("章封面已生成"))
             if self._on_done:
                 self._on_done()
         TASKMGR.submit("image", job, done, episode_id=ep_id)

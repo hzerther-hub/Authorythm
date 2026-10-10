@@ -35,7 +35,17 @@ SIZE_FAIL_PX = 256          # 短边低于此值直接判失败
 SIZE_WARN_PX = 512          # 低于此值给警告
 LAST_SELECTION_KEY = "yihao:face_swap:last_selection"
 
-STYLES = [("photorealistic", "写实真人"), ("cinematic", "电影质感"), ("anime", "动漫风格")]
+# 模块级写 tr() 会在 import 时就把语言定死(踩过:模块级常量里的语言永远切不动),
+# 所以这里只存键,标签由 style_label() 现取。
+STYLE_KEYS = ["photorealistic", "cinematic", "anime"]
+
+
+def style_label(key: str) -> str:
+    return {"photorealistic": tr("写实真人"), "cinematic": tr("电影质感"),
+            "anime": tr("动漫风格")}.get(key, key)
+
+
+STYLES = [(k, style_label(k)) for k in STYLE_KEYS]
 STYLE_PROMPT = {
     "photorealistic": "写实真人摄影,自然皮肤纹理,真实光影",
     "cinematic": "电影质感,戏剧化布光,浅景深",
@@ -160,8 +170,8 @@ class FaceSwapPage(QWidget):
         opt.addSpacing(10)
         opt.addWidget(QLabel(tr("style") + ":"))
         self.style_combo = QComboBox()
-        for key, label in STYLES:
-            self.style_combo.addItem(label, key)
+        for key in STYLE_KEYS:
+            self.style_combo.addItem(style_label(key), key)
         self.style_combo.setCurrentIndex(1)
         opt.addWidget(self.style_combo)
         self.all_faces = QCheckBox(tr("replace_all_faces"))

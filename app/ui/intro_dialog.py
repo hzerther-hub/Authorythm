@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                QLineEdit, QPushButton, QSlider, QSpinBox,
                                QVBoxLayout, QWidget)
 
+from ..core.i18n import tr
 from ..core import config, db
 from ..pipeline import intro as INTRO
 from . import widgets as W
@@ -113,7 +114,7 @@ class IntroEditorDialog(QDialog):
         self.drama_id = drama_id
         self._on_saved = on_saved
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.setWindowTitle("片头设置")
+        self.setWindowTitle(tr("片头设置"))
         self.resize(680, 620)
         root = QVBoxLayout(self)
 
@@ -128,14 +129,14 @@ class IntroEditorDialog(QDialog):
         mode_row = QWidget()
         m_lay = QHBoxLayout(mode_row)
         m_lay.setContentsMargins(0, 0, 0, 0)
-        self.card_cb = QCheckBox("黑底标题卡(前置)")
+        self.card_cb = QCheckBox(tr("黑底标题卡(前置)"))
         self.card_cb.setChecked(bool(d["intro_card"]))
-        self.overlay_cb = QCheckBox("文字叠加正片开头")
+        self.overlay_cb = QCheckBox(tr("文字叠加正片开头"))
         self.overlay_cb.setChecked(bool(d["intro_overlay"]))
         m_lay.addWidget(self.card_cb)
         m_lay.addWidget(self.overlay_cb)
         m_lay.addStretch(1)
-        f.addRow("显示方式", mode_row)
+        f.addRow(tr("显示方式"), mode_row)
         # 叠加模式的预览背景:取本集首个有 first_frame_image / composed_image 的分镜
         # (storyboards 表没有 image_url 列,用错字段会让预览永远黑底)
         self.overlay_cb.toggled.connect(self._sync_preview_bg)
@@ -143,7 +144,7 @@ class IntroEditorDialog(QDialog):
 
         self.title_edit = QLineEdit(d["intro_title"] or d["title"] or "")
         self.title_edit.setMaxLength(60)
-        f.addRow("片头名", self.title_edit)
+        f.addRow(tr("片头名"), self.title_edit)
 
         self.font_combo = QComboBox()
         for it in INTRO.list_fonts():
@@ -151,41 +152,41 @@ class IntroEditorDialog(QDialog):
         if d["intro_font"]:
             i = self.font_combo.findData(d["intro_font"])
             self.font_combo.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow("字体", self.font_combo)
+        f.addRow(tr("字体"), self.font_combo)
 
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(2, 50)
         self.size_slider.setValue(int((d["intro_font_size"] or 0.09) * 100))
-        f.addRow("字号", self.size_slider)
+        f.addRow(tr("字号"), self.size_slider)
 
         self.x_slider = QSlider(Qt.Horizontal)
         self.x_slider.setRange(2, 98)
         self.x_slider.setValue(int((d["intro_pos_x"] if d["intro_pos_x"] is not None else 0.5) * 100))
-        f.addRow("位置X", self.x_slider)
+        f.addRow(tr("位置X"), self.x_slider)
         self.y_slider = QSlider(Qt.Horizontal)
         self.y_slider.setRange(2, 98)
         self.y_slider.setValue(int((d["intro_pos_y"] if d["intro_pos_y"] is not None else 0.5) * 100))
-        f.addRow("位置Y", self.y_slider)
+        f.addRow(tr("位置Y"), self.y_slider)
 
         self.dur_spin = QSpinBox()
         self.dur_spin.setRange(0, 10)
         self.dur_spin.setSingleStep(1)
-        self.dur_spin.setSpecialValueText("自动")
+        self.dur_spin.setSpecialValueText(tr("自动"))
         self.dur_spin.setValue(int(d["intro_duration"] or 0))
-        f.addRow("时长(秒)", self.dur_spin)
+        f.addRow(tr("时长(秒)"), self.dur_spin)
         root.addLayout(f)
 
-        hint = W.muted("在预览区拖拽文字可调整位置;点「播放」预览淡入淡出效果")
+        hint = W.muted(tr("在预览区拖拽文字可调整位置;点「播放」预览淡入淡出效果"))
         root.addWidget(hint)
 
         btns = QHBoxLayout()
-        self.play_btn = QPushButton("▶ 播放预览")
+        self.play_btn = QPushButton(tr("▶ 播放预览"))
         self.play_btn.clicked.connect(self._play)
-        reset = QPushButton("重置布局")
+        reset = QPushButton(tr("重置布局"))
         reset.clicked.connect(self._reset)
-        save = W.primary_btn(tr := "保存")
+        save = W.primary_btn(tr := tr("保存"))
         save.clicked.connect(self._save)
-        close = QPushButton("关闭")
+        close = QPushButton(tr("关闭"))
         close.clicked.connect(self.accept)
         for b in (self.play_btn, reset, save, close):
             btns.addWidget(b)

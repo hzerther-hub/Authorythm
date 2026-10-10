@@ -29,7 +29,7 @@ _failed = 0
 
 def to_translate(row: list[str], lang_idx: int) -> bool:
     lang = U.LANGS[lang_idx]
-    if lang in ("zh", "en"):
+    if lang == "zh":                       # 中文是基准,不用翻
         return False
     cur = row[lang_idx]
     if not cur or not cur.strip():
@@ -93,15 +93,24 @@ def main() -> int:
             row[li] = (out or "").strip()
             with _lock:
                 _done += 1
-                if _done % 24 == 0:
+                # 每 10 条报一条在翻什么,每 100 条落一次盘 —— 跑到一半被 Ctrl+C 也不丢
+                if _done % 10 == 0 or _done == len(jobs):
+                    src = row[0].replace("\n", "⏎")[:34]
+                    dst = (row[li] or "…").replace("\n", "⏎")[:34]
+                    print(f"  {_done:>5}/{len(jobs)}  {lang}  {src}  →  {dst}", flush=True)
+                if _done % 100 == 0:
                     _write(U, path)
-                    rate = _done / max(1e-9, time.time() - t0)
-                    print(f"[save] {_done}/{len(jobs)} · {rate:.1f}/s", flush=True)
+                    el = time.time() - t0
+                    rate = _done / max(1e-9, el)
+                    left = (len(jobs) - _done) / max(1e-9, rate)
+                    print(f"[save] {_done}/{len(jobs)} · {rate:.1f}/s · 剩余约 {left/60:.0f} 分"
+                          f" · 失败 {_failed}", flush=True)
             return True
         except Exception as exc:  # noqa: BLE001
             with _lock:
                 _failed += 1
-                print(f"[fail] {key}/{lang}: {str(exc)[:90]}", flush=True)
+                if _failed <= 20:
+                    print(f"[fail] {key[:24]}/{lang}: {str(exc)[:80]}", flush=True)
             return False
 
     with ThreadPoolExecutor(max_workers=workers) as pool:

@@ -154,7 +154,7 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
     lay = QVBoxLayout(box)
     lay.setContentsMargins(0, 5, 0, 0)
     lay.setSpacing(2)
-    lab = QLabel("最终提示词")
+    lab = QLabel(tr("最终提示词"))
     lab.setObjectName("finalLabel")
     lay.addWidget(lab)
     body = QLabel(text or placeholder)
@@ -206,7 +206,7 @@ class CharacterAssetCard(QFrame):
                 row.get("role_type") or "", labels["extra"])))
         lay.addWidget(name_wrap)
         summary = QHBoxLayout()
-        for key, lab in (("appearance", "样貌"), ("styling", "妆造")):
+        for key, lab in (("appearance", tr("样貌")), ("styling", tr("妆造"))):
             v = (row.get(key) or "").strip()
             l = QLabel(f"{lab}:{v[:22]}{'…' if len(v) > 22 else ''}")
             l.setObjectName("muted")
@@ -336,7 +336,7 @@ class ComicAssetRow(QFrame):
         nm.setObjectName("muted")
         nm.setToolTip(name)
         lay.addWidget(nm, 1)
-        text = "生成中" if pending else ("已生成" if ready else "待生成")
+        text = tr("生成中") if pending else (tr("已生成") if ready else tr("待生成"))
         lay.addWidget(status_pill("pending" if pending else ("ready" if ready else "todo"), text))
         btn = QPushButton("📕")
         btn.setToolTip(button_tip)
@@ -469,10 +469,11 @@ class RefCard(QFrame):
             lay.addWidget(m)
         st = QLabel(state)
         st.setObjectName("refState")
-        st.setProperty("ok", "1" if state == "可参考" else "0")
+        # state 传进来已经是 tr("ref_ok") 之类翻好的文案,拿原键比会永远不相等
+        st.setProperty("ok", "1" if state == tr("ref_ok") else "0")
         lay.addWidget(st)
         if on_generate:
-            lay.addWidget(link_label("去生成 →", on_generate))
+            lay.addWidget(link_label(tr("去生成 →"), on_generate))
 
 
 # ── 漫画格 ──
@@ -492,11 +493,11 @@ class NarrationBox(QFrame):
         hl.setObjectName("narrationHead")
         head.addWidget(hl)
         head.addStretch(1)
-        self._reset_btn = QPushButton("还原")
+        self._reset_btn = QPushButton(tr("还原"))
         self._reset_btn.setFixedHeight(20)
         self._reset_btn.setVisible(False)
         self._reset_btn.clicked.connect(self._reset)
-        self._save_btn = W.primary_btn("保存")
+        self._save_btn = W.primary_btn(tr("保存"))
         self._save_btn.setFixedHeight(20)
         self._save_btn.setVisible(False)
         self._save_btn.clicked.connect(self._commit)

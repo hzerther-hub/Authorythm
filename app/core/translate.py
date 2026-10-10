@@ -83,6 +83,27 @@ def _via_mymemory(text: str, target: str, source: str) -> str:
 # 顺序即优先级
 ENGINES = [("baidu", _via_baidu), ("google", _via_google), ("mymemory", _via_mymemory)]
 
+# 与中文同形、翻过去基本不变的词(品牌/技术名词),别拿它们当"没翻"的证据
+_OK_IDENTITY = {"jev", "api key", "base url", "system prompt", "profile", "prompt",
+                "id", "url", "token", "json", "sse", "csv", "png", "jpg", "mp4",
+                "ai", "llm", "h264", "720p", "1080p"}
+
+
+def _is_identity(text: str, out: str, target: str, source: str = "zh") -> bool:
+    """判断引擎是不是把原文原样吐回来了。
+
+    百度转发遇到拿不准的短词会直接透传,不报错也不换语言 —— 日文那档最明显,
+    「生成封面」原样返回。拿这种结果去填语言包,等于把中文写进日文槽,比空着还糟。
+    """
+    if target == source or out != text:
+        return False
+    low = text.strip().lower()
+    if low in _OK_IDENTITY:
+        return False
+    if any(ord(c) > 0x2000 and not (0x4E00 <= ord(c) <= 0x9FFF) for c in text):
+        return False      # 已经是外文,不是中文原文
+    return True
+
 
 def translate(text: str, target: str, source: str = "zh") -> str:
     """三级降级翻译;全部失败抛 TranslateError(带最后一次的错误摘要)。"""
@@ -90,14 +111,22 @@ def translate(text: str, target: str, source: str = "zh") -> str:
     if not text:
         return ""
     last = ""
+    identity = ""
     for name, fn in ENGINES:
         try:
             out = fn(text, target, source)
+            if out and _is_identity(text, out, target, source):
+                identity = out
+                last = f"{name}: 原文透传(未翻译)"
+                continue
             if out:
                 return out
             last = f"{name}: 空响应"
         except Exception as exc:  # noqa: BLE001
             last = f"{name}: {str(exc)[:110]}"
+    if identity:
+        # 全程只有透传:与其报错让调用方留空,不如把原文交回去,至少界面显示得出来
+        return identity
     raise TranslateError(f"全部翻译引擎失败 —— {last}")
 
 

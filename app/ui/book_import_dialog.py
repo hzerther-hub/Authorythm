@@ -27,7 +27,7 @@ class BookImportDialog(QDialog):
         super().__init__(parent)
         self.drama_id = drama_id
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.setWindowTitle("▤ 导入整本书 · 分析 · 仿写")
+        self.setWindowTitle(tr("▤ 导入整本书 · 分析 · 仿写"))
         self.resize(720, 560)
         root = QVBoxLayout(self)
 
@@ -36,30 +36,30 @@ class BookImportDialog(QDialog):
         head.addStretch(1)
         root.addLayout(head)
         root.addWidget(W.muted(
-            "导入会替换本项目现有全部章节(旧章节与分镜一并删除)。"
-            "分析只读不改;仿写会新建一个项目,原项目不受影响。"))
+            tr("导入会替换本项目现有全部章节(旧章节与分镜一并删除)。"
+            "分析只读不改;仿写会新建一个项目,原项目不受影响。")))
 
         # ── 段① 导入 ──
         box1 = QWidget()
         box1.setObjectName("card")
         l1 = QVBoxLayout(box1)
-        l1.addWidget(W.h2("① 导入整本书"))
+        l1.addWidget(W.h2(tr("① 导入整本书")))
         row1 = QHBoxLayout()
         self.file_edit = QLineEdit()
-        self.file_edit.setPlaceholderText("选择 .txt 文件(UTF-8 / GBK / GB18030 / Big5 自动识别)")
+        self.file_edit.setPlaceholderText(tr("选择 .txt 文件(UTF-8 / GBK / GB18030 / Big5 自动识别)"))
         row1.addWidget(self.file_edit, 1)
-        pick = W.primary_btn("选择文件")
+        pick = W.primary_btn(tr("选择文件"))
         pick.clicked.connect(self._pick)
         row1.addWidget(pick)
-        enc = W.muted("编码")
+        enc = W.muted(tr("编码"))
         row1.addWidget(enc)
         self.enc_combo = QLineEdit("auto")
         self.enc_combo.setFixedWidth(90)
-        self.enc_combo.setToolTip("留空或填 auto = 自动判定;也可填 gbk / utf-8 等")
+        self.enc_combo.setToolTip(tr("留空或填 auto = 自动判定;也可填 gbk / utf-8 等"))
         row1.addWidget(self.enc_combo)
         l1.addLayout(row1)
         row1b = QHBoxLayout()
-        self.import_btn = WaitingButton("▶ 开始导入")
+        self.import_btn = WaitingButton(tr("▶ 开始导入"))
         self.import_btn.clicked.connect(self._do_import)
         row1b.addWidget(self.import_btn)
         self.import_stat = W.muted("")
@@ -72,12 +72,12 @@ class BookImportDialog(QDialog):
         box2 = QWidget()
         box2.setObjectName("card")
         l2 = QVBoxLayout(box2)
-        l2.addWidget(W.h2("② 结构分析(Map → Reduce)"))
+        l2.addWidget(W.h2(tr("② 结构分析(Map → Reduce)")))
         l2.addWidget(W.muted(
             "每 12 章一组交给文本模型抽取节拍,再汇总成「仿写档案」。"
             "失败率≥30%(且已跑满 50 组)会自动暂停,不基于残缺数据出档案。"))
         row2 = QHBoxLayout()
-        self.analyze_btn = WaitingButton("▶ 开始分析")
+        self.analyze_btn = WaitingButton(tr("▶ 开始分析"))
         self.analyze_btn.clicked.connect(self._do_analyze)
         row2.addWidget(self.analyze_btn)
         self.analyze_bar = BrailleBar(cells=16)
@@ -88,7 +88,7 @@ class BookImportDialog(QDialog):
         self.profile_view = QPlainTextEdit()
         self.profile_view.setReadOnly(True)
         self.profile_view.setMaximumHeight(140)
-        self.profile_view.setPlaceholderText("分析完成后,仿写档案(题材/结构/角色/冲突线/节奏/文风)显示在这里")
+        self.profile_view.setPlaceholderText(tr("分析完成后,仿写档案(题材/结构/角色/冲突线/节奏/文风)显示在这里"))
         l2.addWidget(self.profile_view)
         root.addWidget(box2)
 
@@ -96,18 +96,18 @@ class BookImportDialog(QDialog):
         box3 = QWidget()
         box3.setObjectName("card")
         l3 = QVBoxLayout(box3)
-        l3.addWidget(W.h2("③ 依样仿写(新建项目)"))
+        l3.addWidget(W.h2(tr("③ 依样仿写(新建项目)")))
         form = QFormLayout()
         self.imit_title = QLineEdit()
-        self.imit_title.setPlaceholderText("留空 = 由 AI 依档案起名")
-        form.addRow("新书名", self.imit_title)
+        self.imit_title.setPlaceholderText(tr("留空 = 由 AI 依档案起名"))
+        form.addRow(tr("新书名"), self.imit_title)
         self.imit_count = QLineEdit()
-        self.imit_count.setPlaceholderText("留空 = 由 AI 依档案与节拍时间线决定")
-        form.addRow("计划章数", self.imit_count)
+        self.imit_count.setPlaceholderText(tr("留空 = 由 AI 依档案与节拍时间线决定"))
+        form.addRow(tr("计划章数"), self.imit_count)
         l3.addLayout(form)
-        l3.addWidget(W.muted("三条铁律:专名全换 · 情节仿而不抄 · 结构与节奏保留"))
+        l3.addWidget(W.muted(tr("三条铁律:专名全换 · 情节仿而不抄 · 结构与节奏保留")))
         row3 = QHBoxLayout()
-        self.imitate_btn = WaitingButton("▶ 开始仿写")
+        self.imitate_btn = WaitingButton(tr("▶ 开始仿写"))
         self.imitate_btn.clicked.connect(self._do_imitate)
         row3.addWidget(self.imitate_btn)
         self.imitate_stat = W.muted("")
@@ -119,7 +119,7 @@ class BookImportDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.addStretch(1)
-        close = W.primary_btn("关闭")
+        close = W.primary_btn(tr("关闭"))
         close.clicked.connect(self.accept)
         bottom.addWidget(close)
         root.addLayout(bottom)
@@ -139,7 +139,7 @@ class BookImportDialog(QDialog):
     def _refresh_state(self):
         n = self._chapter_count()
         analysis = self._analysis()
-        self.import_stat.setText(f"当前 {n} 章" if n else "尚未导入任何章节")
+        self.import_stat.setText(f"当前 {n} 章" if n else tr("尚未导入任何章节"))
         prof = analysis.get("profile")
         if prof:
             self.profile_view.setPlainText(json.dumps(prof, ensure_ascii=False, indent=1))
@@ -149,13 +149,13 @@ class BookImportDialog(QDialog):
                 f"成功 {analysis.get('done')} 组。请检查文本模型配置后重跑)")
         # 依赖:导入 → 分析 → 仿写
         self.analyze_btn.setEnabled(bool(n))
-        self.analyze_btn.setToolTip("" if n else "先导入整本书")
+        self.analyze_btn.setToolTip("" if n else tr("先导入整本书"))
         self.imitate_btn.setEnabled(bool(prof))
-        self.imitate_btn.setToolTip("" if prof else "先完成章节分析")
+        self.imitate_btn.setToolTip("" if prof else tr("先完成章节分析"))
 
     # ── 段① ──
     def _pick(self):
-        path, _ = QFileDialog.getOpenFileName(self, "选择小说 TXT", "", "文本文件 (*.txt);;所有文件 (*)")
+        path, _ = QFileDialog.getOpenFileName(self, tr("选择小说 TXT"), "", tr("文本文件 (*.txt);;所有文件 (*)"))
         if path:
             self.file_edit.setText(path)
 
@@ -163,7 +163,7 @@ class BookImportDialog(QDialog):
         from ..core.preflight import ensure_ready
         path = self.file_edit.text().strip()
         if not path:
-            err("请先选择 TXT 文件")
+            err(tr("请先选择 TXT 文件"))
             return
         try:
             with open(path, "rb") as f:
@@ -177,7 +177,7 @@ class BookImportDialog(QDialog):
         if not ensure_ready("text", None):
             return
         btn = self.import_btn
-        btn.busy("切章入库中")
+        btn.busy(tr("切章入库中"))
 
         def job(tid):
             from ..pipeline import book_import
@@ -199,7 +199,7 @@ class BookImportDialog(QDialog):
         if not ensure_ready("text", None):
             return
         btn = self.analyze_btn
-        btn.busy("分析中")
+        btn.busy(tr("分析中"))
         self.analyze_bar.start()
         self.analyze_stat.setText("…")
 
@@ -236,7 +236,7 @@ class BookImportDialog(QDialog):
         title = self.imit_title.text().strip()
         count = self.imit_count.text().strip()
         btn = self.imitate_btn
-        btn.busy("四阶段生成中")
+        btn.busy(tr("四阶段生成中"))
 
         def job(tid):
             from ..core import db as _db

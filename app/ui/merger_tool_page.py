@@ -67,7 +67,7 @@ class MergerToolPage(QWidget):
                                               tr("codec") if c == "codec" else
                                               tr("profile") if c == "profile" else
                                               tr("fps") if c == "fps" else
-                                              tr("sample_rate") if c == "sample_rate" else "文件"
+                                              tr("sample_rate") if c == "sample_rate" else tr("文件")
                                               for c in PARAM_COLS])
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)

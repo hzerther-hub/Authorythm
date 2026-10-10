@@ -36,13 +36,13 @@ class CharacterFaceSwapDialog(QDialog):
         root.setSpacing(12)
 
         root.addWidget(W.h2(f"🎭 {tr('face_swap')} · {character['name']}"))
-        root.addWidget(W.muted("为角色形象换脸:选择源脸照片(可上传或取自其他角色),换脸预览满意后替换角色形象。"
+        root.addWidget(W.muted(tr("为角色形象换脸:选择源脸照片(可上传或取自其他角色),换脸预览满意后替换角色形象。")
                               + (f"  换脸模型:{face_cfg_label}" if face_cfg_label else "")))
 
         cols = QHBoxLayout()
         # 当前形象
         cur_box = QVBoxLayout()
-        cur_box.addWidget(QLabel(tr("appearance") + "(当前形象)"))
+        cur_box.addWidget(QLabel(tr("appearance") + tr("(当前形象)")))
         self.cur_img = QLabel()
         self.cur_img.setFixedSize(240, 240)
         self.cur_img.setAlignment(Qt.AlignCenter)
@@ -52,8 +52,8 @@ class CharacterFaceSwapDialog(QDialog):
         cols.addLayout(cur_box)
         # 源脸
         src_box = QVBoxLayout()
-        src_box.addWidget(QLabel("源脸照片"))
-        self.src_img = QLabel("未选择")
+        src_box.addWidget(QLabel(tr("源脸照片")))
+        self.src_img = QLabel(tr("未选择"))
         self.src_img.setFixedSize(240, 240)
         self.src_img.setAlignment(Qt.AlignCenter)
         self.src_img.setStyleSheet("border:1px dashed rgba(128,128,128,80);border-radius:8px;color:#888;")
@@ -62,7 +62,7 @@ class CharacterFaceSwapDialog(QDialog):
         up = QPushButton("▣ " + tr("upload"))
         up.clicked.connect(self._pick_source)
         other = QComboBox()
-        other.addItem("从其他角色形象选…", None)
+        other.addItem(tr("从其他角色形象选…"), None)
         for r in db.q("SELECT id,name,image_url FROM characters WHERE id!=? AND image_url IS NOT NULL",
                       (character["id"],)):
             other.addItem(r["name"], r["image_url"])
@@ -73,7 +73,7 @@ class CharacterFaceSwapDialog(QDialog):
         cols.addLayout(src_box)
         # 结果
         res_box = QVBoxLayout()
-        res_box.addWidget(QLabel("换脸预览"))
+        res_box.addWidget(QLabel(tr("换脸预览")))
         self.res_img = QLabel("—")
         self.res_img.setFixedSize(240, 240)
         self.res_img.setAlignment(Qt.AlignCenter)
@@ -83,14 +83,14 @@ class CharacterFaceSwapDialog(QDialog):
         root.addLayout(cols, 1)
 
         opt = QHBoxLayout()
-        self.all_faces = QCheckBox("替换图中所有脸")
+        self.all_faces = QCheckBox(tr("替换图中所有脸"))
         self.all_faces.setChecked(True)          # 对齐原版:默认全替换
-        self.enhance = QCheckBox("人脸增强")
+        self.enhance = QCheckBox(tr("人脸增强"))
         self.style_combo = QComboBox()
-        for k, label in (("photorealistic", "写实"), ("cinematic", "电影感"), ("anime", "动漫")):
+        for k, label in (("photorealistic", tr("写实")), ("cinematic", tr("电影感")), ("anime", tr("动漫"))):
             self.style_combo.addItem(label, k)
         self.style_combo.setCurrentIndex(1)     # 默认 cinematic
-        opt.addWidget(QLabel("引擎"))
+        opt.addWidget(QLabel(tr("引擎")))
         self.engine_combo = QComboBox()
         self._engines = []
         for st in ("faceswap", "image"):       # 换脸组 + 图片组(风格化重绘)
@@ -98,9 +98,9 @@ class CharacterFaceSwapDialog(QDialog):
                           "WHERE service_type=? AND is_active=1 ORDER BY priority DESC", (st,)):
                 self.engine_combo.addItem(f"{r['remark'] or r['provider']}", (r["id"], r["provider"]))
         if self.engine_combo.count() == 0:
-            self.engine_combo.addItem("本地 InsightFace", (None, "local-faceswap"))
+            self.engine_combo.addItem(tr("本地 InsightFace"), (None, "local-faceswap"))
         opt.addWidget(self.engine_combo)
-        opt.addWidget(QLabel("风格"))
+        opt.addWidget(QLabel(tr("风格")))
         opt.addWidget(self.style_combo)
         opt.addSpacing(10)
         opt.addWidget(self.all_faces)
@@ -114,12 +114,12 @@ class CharacterFaceSwapDialog(QDialog):
         root.addLayout(opt)
 
         mid_row = QHBoxLayout()
-        self.batch_btn = QPushButton("▶ 批量换脸(全部形象)")
+        self.batch_btn = QPushButton(tr("▶ 批量换脸(全部形象)"))
         self.batch_btn.clicked.connect(self._batch)
-        self.download_btn = QPushButton("↓ 批量下载结果")
+        self.download_btn = QPushButton(tr("↓ 批量下载结果"))
         self.download_btn.setEnabled(False)
         self.download_btn.clicked.connect(self._download_all)
-        revert_btn = QPushButton("↺ 恢复原貌")
+        revert_btn = QPushButton(tr("↺ 恢复原貌"))
         revert_btn.clicked.connect(self._restore_original)
         self.results: dict[str, str] = {}  # label -> 结果路径
         mid_row.addWidget(self.batch_btn)
@@ -132,7 +132,7 @@ class CharacterFaceSwapDialog(QDialog):
         bottom.addStretch(1)
         cancel = QPushButton(tr("cancel"))
         cancel.clicked.connect(self.reject)
-        self.apply_btn = W.primary_btn("✅ 应用替换形象")
+        self.apply_btn = W.primary_btn(tr("✅ 应用替换形象"))
         self.apply_btn.setEnabled(False)
         self.apply_btn.clicked.connect(self._apply)
         bottom.addWidget(cancel)
@@ -147,10 +147,10 @@ class CharacterFaceSwapDialog(QDialog):
         c = self.character
         items: list[tuple[str, str, str]] = []
         if c.get("image_url"):
-            items.append(("基础形象", c["image_url"], str(config.media_url_to_path(c["image_url"]))))
+            items.append((tr("基础形象"), c["image_url"], str(config.media_url_to_path(c["image_url"]))))
         for v in db.q("SELECT * FROM character_variants WHERE character_id=? AND image_url IS NOT NULL",
                       (c["id"],)):
-            items.append((v["label"] or "变体", v["image_url"],
+            items.append((v["label"] or tr("变体"), v["image_url"],
                           str(config.media_url_to_path(v["image_url"]))))
         if not self._original_snapshot and c.get("image_url"):
             self._original_snapshot = {"image_url": c["image_url"]}
@@ -218,10 +218,10 @@ class CharacterFaceSwapDialog(QDialog):
     # ── 换脸 ──
     def _run(self):
         if not self.character["image_url"]:
-            QMessageBox.information(self, tr("face_swap"), "该角色还没有形象图,请先生成或上传")
+            QMessageBox.information(self, tr("face_swap"), tr("该角色还没有形象图,请先生成或上传"))
             return
         if not self.source_path:
-            QMessageBox.information(self, tr("face_swap"), "请先选择源脸照片")
+            QMessageBox.information(self, tr("face_swap"), tr("请先选择源脸照片"))
             return
         healthy, msg = face_swap.health(config_id=self.cfg_id)
         if not healthy:
@@ -247,13 +247,13 @@ class CharacterFaceSwapDialog(QDialog):
             self.res_img.setPixmap(W.pixmap_from_media(result, 236, 236))
             self.res_img.setStyleSheet("border:1px solid rgba(128,128,128,50);border-radius:8px;")
             self.apply_btn.setEnabled(True)
-            self.status.setText("✅ 完成,可预览后应用")
+            self.status.setText(tr("✅ 完成,可预览后应用"))
         TASKMGR.submit("face_swap", job, done)
 
     def _batch(self):
         """批量换脸:对该角色全部形象(基础+变体)逐张换脸,单张失败不中断。"""
         if not self.source_path:
-            QMessageBox.information(self, tr("face_swap"), "请先选择源脸照片")
+            QMessageBox.information(self, tr("face_swap"), tr("请先选择源脸照片"))
             return
         ok_, msg = face_swap.health(config_id=self.cfg_id)
         if not ok_:
@@ -261,7 +261,7 @@ class CharacterFaceSwapDialog(QDialog):
             return
         items = self._load_char_images()
         if not items:
-            QMessageBox.information(self, tr("face_swap"), "该角色还没有形象图")
+            QMessageBox.information(self, tr("face_swap"), tr("该角色还没有形象图"))
             return
         self._batch_running = True
         self.batch_btn.setEnabled(False)

@@ -54,7 +54,7 @@ class MainWindow(QMainWindow):
         wl = QVBoxLayout(word)
         wl.setContentsMargins(4, 0, 0, 0)
         wl.setSpacing(0)
-        logo = QLabel("易好网文短剧")
+        logo = QLabel(tr("易好网文短剧"))
         logo.setObjectName("brandName")
         wl.addWidget(logo)
         sub = QLabel("Yihao Shorts")
@@ -159,9 +159,9 @@ class MainWindow(QMainWindow):
         """全局盲文等待态(D 类):任何 AI 任务在跑时顶栏显示点字变化,避免"点了没反应"。"""
         from .braille import BrailleSpinner
         if on:
-            self.busy_spin.start(message or "处理中…")
+            self.busy_spin.start(message or tr("处理中…"))
             self.busy_bar.start()
-            self.status.showMessage(f"⠿ {message or '处理中…'}")
+            self.status.showMessage(f"⠿ {message or tr('处理中…')}")
         else:
             self.busy_spin.stop()
             self.busy_bar.stop()
@@ -453,7 +453,7 @@ class ClonePage(QWidget):
         bar = QHBoxLayout()
         analyze_btn = W.primary_btn("1️⃣ " + tr("detect") + " · AI " + tr("storyboard"))
         analyze_btn.clicked.connect(self._analyze)
-        presenter_btn = QPushButton("2️⃣ AI " + "生成出镜模特")
+        presenter_btn = QPushButton("2️⃣ AI " + tr("生成出镜模特"))
         presenter_btn.clicked.connect(self._presenter)
         merge_btn = W.primary_btn("4️⃣ " + tr("merge_now"))
         merge_btn.clicked.connect(self._merge)
@@ -495,7 +495,7 @@ class ClonePage(QWidget):
             steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
             action_txt = "；".join(f"{i}.{s}" for i, s in enumerate(steps, 1)) if steps else b.get("action", "")
             head_bits = " · ".join(x for x in (b.get("shot", ""), b.get("camera", "")) if x)
-            desc = QLabel(f"{head_bits}  {action_txt}  {('产品:' + b.get('product_use','')) if b.get('product_use') else ''}")
+            desc = QLabel(f"{head_bits}  {action_txt}  {(tr('产品:') + b.get('product_use','')) if b.get('product_use') else ''}")
             desc.setWordWrap(True)
             info.addWidget(desc)
             if b.get("line"):
@@ -504,7 +504,7 @@ class ClonePage(QWidget):
                 info.addWidget(line)
             lay.addLayout(info, 1)
             btns = QVBoxLayout()
-            img_btn = QPushButton("3️⃣ " + tr("redraw") + " · 首帧图")
+            img_btn = QPushButton("3️⃣ " + tr("redraw") + tr(" · 首帧图"))
             img_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_image(n))
             vid_btn = W.primary_btn("▷ " + tr("batch_video"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))

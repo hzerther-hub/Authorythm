@@ -18,8 +18,13 @@ from .toast import err, ok
 from .cover_dialog import CoverPanel, EpisodeCoverButton
 
 EP_STAGES = ["novel", "script", "assets", "storyboard", "video"]
-EP_STAGE_CN = {"novel": "正文", "script": "剧本", "assets": "资产",
-               "storyboard": "分镜", "video": "成片"}
+_EP_STAGE_LABEL_KEY = {"novel": "正文", "script": "剧本", "assets": "资产",
+                       "storyboard": "分镜", "video": "成片"}
+
+
+def ep_stage_label(stage: str) -> str:
+    """阶段名现取 —— 模块级 dict 里写 tr() 会把语言定死在 import 那一刻。"""
+    return tr(_EP_STAGE_LABEL_KEY.get(stage, stage))
 
 
 def ep_stage_index(ep: dict) -> int:
@@ -127,10 +132,10 @@ class EpisodeCard(QFrame):
                 seg.setStyleSheet("background:#f97316;border-radius:2px;")
             else:
                 seg.setStyleSheet("background:#dfe3e8;border-radius:2px;")
-            seg.setToolTip(EP_STAGE_CN[st])
+            seg.setToolTip(ep_stage_label(st))
             track.addWidget(seg)
         stage_row.addLayout(track)
-        stage_text = QLabel(EP_STAGE_CN[EP_STAGES[idx]])
+        stage_text = QLabel(ep_stage_label(EP_STAGES[idx]))
         stage_text.setStyleSheet("color:#86909c; font-size:10.5px;")
         stage_row.addWidget(stage_text)
         stage_row.addStretch(1)
@@ -143,7 +148,7 @@ class EpisodeCard(QFrame):
         tw = ep.get("target_words") or 0
         if wc:
             warn = bool(tw) and wc < int(tw * 0.8)
-            wl = QLabel(f"✎ {wc}" + (f" / {tw}" if tw else "") + " 字")
+            wl = QLabel(f"✎ {wc}" + (f" / {tw}" if tw else "") + tr(" 字"))
             wl.setStyleSheet(("color:#e0794b;" if warn else "color:#86909c;")
                              + " font-size:11px;")
         else:
@@ -226,7 +231,7 @@ class EpisodeCard(QFrame):
                 err(error)
                 return
             name, src = result
-            ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))
+            ok((tr("已提取章节名:") if src == "content" else tr("章节名已写入:")) + str(name))
             if self._reload_needed:
                 self._reload_needed.emit()
 
@@ -264,7 +269,7 @@ class EpisodeCard(QFrame):
 
     def _res_menu(self):
         m = QMenu(self)
-        for res, label in (("720p", "720p · 高清"), ("480p", "480p · 流畅")):
+        for res, label in (("720p", tr("720p · 高清")), ("480p", tr("480p · 流畅"))):
             m.addAction(label).triggered.connect(lambda _=False, r=res: self._set_res(r))
         m.exec()
 
@@ -304,7 +309,7 @@ def _rel_time(ts: str) -> str:
     except Exception:  # noqa: BLE001
         return ts[:16]
     if secs < 60:
-        return "刚刚"
+        return tr("刚刚")
     if secs < 3600:
         return f"{int(secs // 60)} 分钟前"
     if secs < 86400:
@@ -353,13 +358,13 @@ class NewEpisodeDialog(QDialog):
         outer = QVBoxLayout(self)
         self.title = QLineEdit(tr("episode_n").format(number))
         self.title.setPlaceholderText("例如:第 2 集 · 归乡")
-        f.addRow("标题", self.title)
+        f.addRow(tr("标题"), self.title)
         self.res = QComboBox()
         for r in ("480p", "720p", "1080p"):
             self.res.addItem(r)
         self.res.setCurrentText("720p")
-        f.addRow("分辨率", self.res)
-        f.addRow("", W.muted("创建后可在剧集卡上随时修改标题、状态与分辨率。"))
+        f.addRow(tr("分辨率"), self.res)
+        f.addRow("", W.muted(tr("创建后可在剧集卡上随时修改标题、状态与分辨率。")))
         outer.addLayout(f)
         row = QHBoxLayout()
         cancel = QPushButton(tr("cancel"))
@@ -388,21 +393,21 @@ class AddAssetDialog(QDialog):
         outer = QVBoxLayout(self)
         outer.addLayout(f)
         self.name = QLineEdit()
-        f.addRow("名称", self.name)
+        f.addRow(tr("名称"), self.name)
         self.role = QComboBox()
         for v, l in (("lead", tr("lead")), ("supporting", tr("supporting")), ("extra", tr("extra"))):
             self.role.addItem(l, v)
         self.desc = QLineEdit()
         self.time = QLineEdit()
         if kind == "character":
-            f.addRow("角色定位", self.role)
+            f.addRow(tr("角色定位"), self.role)
             f.addRow(tr("appearance"), self.desc)
             f.addRow(tr("styling"), self.time)
         elif kind == "scene":
-            f.addRow("地点", self.desc)
-            f.addRow("时间", self.time)
+            f.addRow(tr("地点"), self.desc)
+            f.addRow(tr("时间"), self.time)
         else:
-            f.addRow("外貌", self.desc)
+            f.addRow(tr("外貌"), self.desc)
         row = QHBoxLayout()
         cancel = QPushButton(tr("cancel"))
         cancel.clicked.connect(self.reject)
@@ -487,21 +492,21 @@ class PromoDialog(QDialog):
             self.fmt.addItem(n, v)
         f.addRow(tr("output_format"), self.fmt)
         self.extra = QLineEdit()
-        self.extra.setPlaceholderText("补充说明(可选),如 突出性价比")
-        f.addRow("补充", self.extra)
+        self.extra.setPlaceholderText(tr("补充说明(可选),如 突出性价比"))
+        f.addRow(tr("补充"), self.extra)
         root.addLayout(f)
-        self.gen_btn = W.primary_btn("✨ 生成文案")
+        self.gen_btn = W.primary_btn(tr("✨ 生成文案"))
         self.gen_btn.clicked.connect(self._gen)
         root.addWidget(self.gen_btn)
         self.result = QLineEdit()
         self.result.setReadOnly(True)
-        root.addWidget(W.muted("标题"))
+        root.addWidget(W.muted(tr("标题")))
         root.addWidget(self.result)
         self.body = QLineEdit()
         self.body.setReadOnly(True)
-        root.addWidget(W.muted("正文"))
+        root.addWidget(W.muted(tr("正文")))
         root.addWidget(self.body)
-        copy_btn = QPushButton("▤ 复制全文")
+        copy_btn = QPushButton(tr("▤ 复制全文"))
         copy_btn.clicked.connect(self._copy)
         row = QHBoxLayout()
         row.addWidget(copy_btn)
@@ -530,7 +535,7 @@ class PromoDialog(QDialog):
         from PySide6.QtWidgets import QApplication
         text = f"{self.result.text()}\n\n{self.body.text()}"
         QApplication.clipboard().setText(text)
-        ok("已复制到剪贴板")
+        ok(tr("已复制到剪贴板"))
 
 
 class ProjectPage(QWidget):
@@ -589,7 +594,7 @@ class ProjectPage(QWidget):
         self.novel_btn.clicked.connect(self._open_novel_settings)
         head.addWidget(self.novel_btn)
         self.book_btn = QPushButton("▤ " + tr("import_book"))
-        self.book_btn.setToolTip("导入整本 TXT → 结构分析 → 依样仿写(新建项目)")
+        self.book_btn.setToolTip(tr("导入整本 TXT → 结构分析 → 依样仿写(新建项目)"))
         self.book_btn.clicked.connect(self._book_import)
         head.addWidget(self.book_btn)
         root.addWidget(head_card)
@@ -629,11 +634,11 @@ class ProjectPage(QWidget):
             self.lib_filter.addItem(label, key)
         self.lib_filter.currentIndexChanged.connect(self.reload)
         lib_bar.addWidget(self.lib_filter)
-        self.add_char = QPushButton("＋ 角色")
+        self.add_char = QPushButton(tr("＋ 角色"))
         self.add_char.clicked.connect(lambda: self._add_asset("character"))
-        self.add_scene = QPushButton("＋ 场景")
+        self.add_scene = QPushButton(tr("＋ 场景"))
         self.add_scene.clicked.connect(lambda: self._add_asset("scene"))
-        self.add_prop = QPushButton("＋ 道具")
+        self.add_prop = QPushButton(tr("＋ 道具"))
         self.add_prop.clicked.connect(lambda: self._add_asset("prop"))
         for b in (self.add_char, self.add_scene, self.add_prop):
             lib_bar.addWidget(b)
@@ -710,7 +715,7 @@ class ProjectPage(QWidget):
         from .asset_dialogs import ProjectSettingsDialog
         if ProjectSettingsDialog(self, self.drama_id).exec() == QDialog.Accepted:
             self.load(self.drama_id)
-            ok("项目设置已保存")
+            ok(tr("项目设置已保存"))
 
     def can_add_episode(self) -> bool:
         """集数限制(对齐原版 canAddEpisode):未配置→不限制;集数=1→单集完结;已达总数→禁止。"""
@@ -782,7 +787,7 @@ class ProjectPage(QWidget):
             card._on_click = lambda k=kind, r=row: self._open_asset(k, r)
             self.lib_grid.addWidget(card, i // cols, i % cols)
         if not items:
-            empty = QLabel("暂无素材")
+            empty = QLabel(tr("暂无素材"))
             empty.setObjectName("muted")
             empty.setAlignment(Qt.AlignCenter)
             self.lib_grid.addWidget(empty, 0, 0)
@@ -797,7 +802,7 @@ class ProjectPage(QWidget):
         if dlg.exec() == QDialog.Accepted:
             dlg.save()
             self.reload()
-            ok("已添加")
+            ok(tr("已添加"))
 
     def _add_episode(self):
         n = (db.q1("SELECT MAX(episode_number) m FROM episodes WHERE drama_id=?", (self.drama_id,))["m"] or 0) + 1

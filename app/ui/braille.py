@@ -19,6 +19,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from ..core.i18n import tr
 
 # 盲文点字(Unicode Braille Patterns)——8 点一格,循环即"变化"的等待感
 BRAILLE_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧",
@@ -162,7 +163,7 @@ class BrailleBar(QWidget):
         p.end()
 
 
-def braille_wait(parent_widget, message: str = "处理中…"):
+def braille_wait(parent_widget, message: str = tr("处理中…")):
     """快捷方式:在 parent 上挂一个盲文等待条(调用方负责 stop)。"""
     bar = BrailleBar(parent=parent_widget)
     bar.start()

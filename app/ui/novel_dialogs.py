@@ -25,7 +25,12 @@ PREREQ: dict[str, list[str]] = {
     "contract": ["outline", "world"],   # 叙事视角/调性/硬约束要匹配世界观
     "volume": ["outline"],  # 分卷是把总纲切成卷,依赖总纲与计划章数
 }
-PREREQ_NAME = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
+PREREQ_NAME_KEY = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
+
+
+def prereq_name(key: str) -> str:
+    """前置板块名现取 —— 模块级写 tr() 会把语言定死在 import 那一刻。"""
+    return tr(PREREQ_NAME_KEY.get(key, key))
 
 
 def missing_prereq(drama_id: int, key: str) -> list[str]:
@@ -34,7 +39,7 @@ def missing_prereq(drama_id: int, key: str) -> list[str]:
     for p in PREREQ.get(key, []):
         row = db.q1(f"SELECT novel_{p} FROM dramas WHERE id=?", (drama_id,))
         if not (row and (row[0] or "").strip()):
-            out.append(PREREQ_NAME[p])
+            out.append(prereq_name(p))
     return out
 
 
@@ -45,13 +50,13 @@ class NovelPlanDialog(QDialog):
         super().__init__(parent)
         self.drama_id = drama_id
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.setWindowTitle("§ 小说策划与设定")
+        self.setWindowTitle(tr("§ 小说策划与设定"))
         self.resize(760, 620)
         root = QVBoxLayout(self)
         head = QHBoxLayout()
         head.addWidget(W.h2(f"§ {d['title']}"))
         head.addStretch(1)
-        cover_btn = QPushButton("◑ AI 生成封面")
+        cover_btn = QPushButton(tr("◑ AI 生成封面"))
         cover_btn.clicked.connect(self._gen_cover)
         head.addWidget(cover_btn)
         root.addLayout(head)
@@ -59,12 +64,12 @@ class NovelPlanDialog(QDialog):
         meta0 = db.jload(d["metadata"], {}) or {}
         meta_row = QHBoxLayout()
         self.intro_edit = QLineEdit(meta0.get("intro", ""))
-        self.intro_edit.setPlaceholderText("项目简介(AI 起草会读取)")
+        self.intro_edit.setPlaceholderText(tr("项目简介(AI 起草会读取)"))
         self.genre_edit = QLineEdit(meta0.get("genre", ""))
-        self.genre_edit.setPlaceholderText("题材")
-        meta_row.addWidget(QLabel("简介"))
+        self.genre_edit.setPlaceholderText(tr("题材"))
+        meta_row.addWidget(QLabel(tr("简介")))
         meta_row.addWidget(self.intro_edit, 2)
-        meta_row.addWidget(QLabel("题材"))
+        meta_row.addWidget(QLabel(tr("题材")))
         meta_row.addWidget(self.genre_edit, 1)
         root.addLayout(meta_row)
 
@@ -83,9 +88,9 @@ class NovelPlanDialog(QDialog):
         size_row.addWidget(QLabel("每章字数"))
         size_row.addWidget(self.word_spin)
         size_row.addSpacing(16)
-        size_row.addWidget(QLabel("全书章数"))
+        size_row.addWidget(QLabel(tr("全书章数")))
         size_row.addWidget(self.chapter_spin)
-        size_row.addWidget(W.muted("  · 改这里后,「AI 生成章节计划」按新规模重排;已建的集不变"))
+        size_row.addWidget(W.muted(tr("  · 改这里后,「AI 生成章节计划」按新规模重排;已建的集不变")))
         size_row.addStretch(1)
         root.addLayout(size_row)
 
@@ -100,8 +105,8 @@ class NovelPlanDialog(QDialog):
         self.tabs = QTabWidget()
         self._draft_btns: dict[str, WaitingButton] = {}
         self._save_btns: dict[str, QPushButton] = {}
-        for i, (key, name) in enumerate((("outline", "总纲"), ("world", "世界观"),
-                                        ("contract", "故事合约"), ("volume", "分卷战略"))):
+        for i, (key, name) in enumerate((("outline", tr("总纲")), ("world", tr("世界观")),
+                                        ("contract", tr("故事合约")), ("volume", tr("分卷战略")))):
             page = QWidget()
             lay = QVBoxLayout(page)
             lay.setContentsMargins(0, 8, 0, 0)
@@ -109,11 +114,11 @@ class NovelPlanDialog(QDialog):
             edit = QPlainTextEdit(d[f"novel_{key}"] or "")
             edit.setMinimumHeight(260)
             self.edits[key] = edit
-            btn = WaitingButton("✨ AI 起草" + (f"第 {i + 1} 步" if i else ""))
+            btn = WaitingButton(tr("✨ AI 起草") + (f"第 {i + 1} 步" if i else ""))
             btn.clicked.connect(lambda _=False, k=key, n=name: self._draft_section(k, n))
             self._draft_btns[key] = btn
-            save_btn = QPushButton("保存")
-            save_btn.setToolTip("把当前内容写入项目")
+            save_btn = QPushButton(tr("保存"))
+            save_btn.setToolTip(tr("把当前内容写入项目"))
             save_btn.clicked.connect(lambda _=False, k=key: self._save_section(k))
             self._save_btns[key] = save_btn
             row.addWidget(btn)
@@ -122,11 +127,11 @@ class NovelPlanDialog(QDialog):
             self._order_lab = self._order_lab if hasattr(self, "_order_lab") else {}
             self._order_lab[key] = W.muted("")
             row.addWidget(self._order_lab[key])
-            row.addWidget(W.muted("AI 起草会覆盖当前内容"))
+            row.addWidget(W.muted(tr("AI 起草会覆盖当前内容")))
             lay.addLayout(row)
             lay.addWidget(edit, 1)
             self.tabs.addTab(page, name)
-        self.tabs.addTab(self._build_plan_tab(d), "章节计划")
+        self.tabs.addTab(self._build_plan_tab(d), tr("章节计划"))
         root.addWidget(self.tabs, 1)
 
         bottom = QHBoxLayout()
@@ -148,11 +153,11 @@ class NovelPlanDialog(QDialog):
         lay.setContentsMargins(0, 8, 0, 0)
 
         row = QHBoxLayout()
-        self.chapters_btn = WaitingButton("✨ AI 生成章节计划")
+        self.chapters_btn = WaitingButton(tr("✨ AI 生成章节计划"))
         self.chapters_btn.clicked.connect(self._ai_chapters)
-        self.chars_btn = WaitingButton("✨ AI 生成主要角色")
+        self.chars_btn = WaitingButton(tr("✨ AI 生成主要角色"))
         self.chars_btn.clicked.connect(self._ai_characters)
-        save_btn = QPushButton("保存本章节与角色")
+        save_btn = QPushButton(tr("保存本章节与角色"))
         save_btn.clicked.connect(self._save_plan_tab)
         row.addWidget(self.chapters_btn)
         row.addWidget(self.chars_btn)
@@ -162,7 +167,7 @@ class NovelPlanDialog(QDialog):
         row.addWidget(self.plan_stat)
         lay.addLayout(row)
 
-        lay.addWidget(W.h2("章节计划"))
+        lay.addWidget(W.h2(tr("章节计划")))
         self.chapters_edit = QPlainTextEdit(novel_pipe.chapters_to_text(db.jload(d["novel_chapters"], [])))
         self.chapters_edit.setPlaceholderText(
             "尚未生成章节计划。格式:第1章 标题 | 目标:… | 事件:… | 钩子:…\n"
@@ -170,7 +175,7 @@ class NovelPlanDialog(QDialog):
         self.chapters_edit.setMinimumHeight(200)
         lay.addWidget(self.chapters_edit, 3)
 
-        lay.addWidget(W.h2("主要角色"))
+        lay.addWidget(W.h2(tr("主要角色")))
         nm = db.jload(d["novel_meta"], {}) or {}
         self.chars_edit = QPlainTextEdit(
             json.dumps(nm.get("main_characters", []), ensure_ascii=False, indent=1))
@@ -194,7 +199,7 @@ class NovelPlanDialog(QDialog):
             chars = len(data) if isinstance(data, list) else 0
         except Exception:  # noqa: BLE001
             chars = -1
-        self.plan_stat.setText(f"共 {len(chapters)} 章 · {chars if chars >= 0 else '角色 JSON 有误'} 个角色")
+        self.plan_stat.setText(f"共 {len(chapters)} 章 · {chars if chars >= 0 else tr('角色 JSON 有误')} 个角色")
 
     def _on_size_changed(self):
         """规模改动即时落库,保证 AI 任务在后台读到的是用户当前设定。"""
@@ -240,6 +245,7 @@ class NovelPlanDialog(QDialog):
             err(f"章节计划生成失败:{msg[:160]}")
 
         worker = stream_into(editor, novel_pipe.chapters_prompt(self.drama_id, n, words),
+                             # 板块名是提示词路由键(SECTION_SPEC 按中文名匹配),翻了模型就认不出要写哪一块
                              system=novel_pipe._draft_system("章节计划"),
                              config_id=None, temperature=0.4, json_mode=True,
                              on_finished=finished, on_failed=failed, owner=self)
@@ -254,7 +260,7 @@ class NovelPlanDialog(QDialog):
         d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (self.drama_id,))
         need_plan = not (db.jload(d["novel_chapters"], []) if d else [])
         btn = self.chars_btn
-        btn.busy("先生成章节计划…" if need_plan else "生成角色中")
+        btn.busy(tr("先生成章节计划…") if need_plan else tr("生成角色中"))
         self._save_project_meta()
         self._on_size_changed()
 
@@ -276,7 +282,7 @@ class NovelPlanDialog(QDialog):
         try:
             raw = json.loads(self.chars_edit.toPlainText() or "[]")
             if not isinstance(raw, list):
-                raise ValueError("主要角色需要是 JSON 数组")
+                raise ValueError(tr("主要角色需要是 JSON 数组"))
         except Exception as exc:  # noqa: BLE001
             err(f"主要角色 JSON 有误:{exc}")
             return
@@ -301,7 +307,7 @@ class NovelPlanDialog(QDialog):
         self.close()
 
     # ── AI 起草(对齐原版 draftNovelSection)──
-    SECTION_CN = {"outline": "总纲", "world": "世界观", "contract": "故事合约", "volume": "分卷战略"}
+    SECTION_CN = {"outline": tr("总纲"), "world": tr("世界观"), "contract": tr("故事合约"), "volume": tr("分卷战略")}
     SECTION_MAP = {"outline": ("novel_outline", "outline"),
                    "world": ("novel_world", "world"),
                    "contract": ("novel_contract", "contract"),
@@ -429,12 +435,12 @@ class ReviewDialog(QDialog):
 
     def __init__(self, parent, review: dict, episode_number: int = 0):
         super().__init__(parent)
-        self.setWindowTitle("◇ 六维审校结果")
+        self.setWindowTitle(tr("◇ 六维审校结果"))
         self.resize(640, 520)
         root = QVBoxLayout(self)
         overall = review.get("overall", "")
         head = QHBoxLayout()
-        head.addWidget(W.h2(f"◇ 第 {episode_number} 章审校 · " + ("✅ 通过" if overall == "pass" else "⚠️ 需修复")))
+        head.addWidget(W.h2(f"◇ 第 {episode_number} 章审校 · " + (tr("✅ 通过") if overall == "pass" else tr("⚠️ 需修复"))))
         head.addStretch(1)
         root.addLayout(head)
         if review.get("summary"):
@@ -460,8 +466,13 @@ class ReviewDialog(QDialog):
 
 # 写作红线:NOVEL_REQUIRED_STEPS 全部完成才能生成小说(对齐原版 5933)
 NOVEL_REQUIRED_STEPS = [1, 2, 3, 4, 5, 7]
-STEP_NAMES = {1: "项目设定", 2: "总纲", 3: "世界观", 4: "故事合约",
-              5: "角色设定", 6: "卷战略", 7: "章节计划"}
+STEP_NAME_KEY = {1: "项目设定", 2: "总纲", 3: "世界观", 4: "故事合约",
+                 5: "角色设定", 6: "卷战略", 7: "章节计划"}
+
+
+def step_name(step: int) -> str:
+    """向导步骤名现取 —— 同 prereq_name,模块级不能写 tr()。"""
+    return tr(STEP_NAME_KEY.get(step, ""))
 
 
 def wizard_step_done(drama_id: int, step: int) -> bool:
@@ -505,4 +516,4 @@ def gate_message(drama_id: int) -> str:
     miss = missing_steps(drama_id)
     if not miss:
         return ""
-    return "、".join(f"{s}({STEP_NAMES.get(s,'')})" for s in miss)
+    return tr("、").join(f"{s}({step_name(s)})" for s in miss)

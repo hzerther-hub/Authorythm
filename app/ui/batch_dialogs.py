@@ -70,7 +70,7 @@ class _BatchProgressDialog(QDialog):
         super().__init__(parent)
         self.page = page
         self.total = max(1, total)
-        self.setWindowTitle("批量生成小说")
+        self.setWindowTitle(tr("批量生成小说"))
         self.resize(560, 480)
         root = QVBoxLayout(self)
 
@@ -91,7 +91,7 @@ class _BatchProgressDialog(QDialog):
         root.addWidget(scroll, 1)
 
         # 伏笔台账
-        self.ledger_btn = QPushButton("▾ 伏笔台账")
+        self.ledger_btn = QPushButton(tr("▾ 伏笔台账"))
         self.ledger_btn.setCheckable(True)
         self.ledger_btn.toggled.connect(self._toggle_ledger)
         root.addWidget(self.ledger_btn)
@@ -102,7 +102,7 @@ class _BatchProgressDialog(QDialog):
         root.addWidget(self.ledger_box)
 
         btns = QHBoxLayout()
-        self.rewrite_btn = QPushButton("↻ 重写已完成章节")
+        self.rewrite_btn = QPushButton(tr("↻ 重写已完成章节"))
         self.rewrite_btn.clicked.connect(lambda: page and page._rewrite_done_chapters())
         close = QPushButton(tr("close"))
         close.clicked.connect(self.accept)
@@ -124,7 +124,7 @@ class _BatchProgressDialog(QDialog):
         self._fail = fail
         self.bar.set_counts(ok, fail, 0, self.total)
         self.legend.setText(f"100%  ·  成功 {ok}  ·  失败 {fail}")
-        self.stage_lab.setText("完成")
+        self.stage_lab.setText(tr("完成"))
         self._render_ledger()
 
     def _refresh_stage(self):
@@ -137,7 +137,7 @@ class _BatchProgressDialog(QDialog):
     # 伏笔台账
     def _toggle_ledger(self, on: bool):
         self.ledger_box.setVisible(on)
-        self.ledger_btn.setText("▾ 伏笔台账" if on else "▸ 伏笔台账")
+        self.ledger_btn.setText(tr("▾ 伏笔台账") if on else tr("▸ 伏笔台账"))
 
     def _render_ledger(self):
         if not self.page:
@@ -150,7 +150,7 @@ class _BatchProgressDialog(QDialog):
                 w.deleteLater()
         data = N.get_ledger(self.page.drama_id)
         if not data["items"]:
-            lab = W.muted("(台账为空)")
+            lab = W.muted(tr("(台账为空)"))
             self.ledger_list.addWidget(lab)
             return
         for item in data["items"]:
@@ -193,7 +193,7 @@ class ReviewPanelDialog(QDialog):
 
     def __init__(self, parent, issues: list, chapter: int = 0, title: str = ""):
         super().__init__(parent)
-        self.setWindowTitle("审校问题明细")
+        self.setWindowTitle(tr("审校问题明细"))
         self.resize(560, 460)
         root = QVBoxLayout(self)
         root.addWidget(W.h2(f"第 {chapter} 章 · {title}" if title else f"第 {chapter} 章"))
@@ -212,7 +212,7 @@ class ReviewPanelDialog(QDialog):
             rl.addWidget(lab, 1)
             self.boxes[i] = cb
             root.addWidget(row)
-        root.addWidget(W.muted("勾选表示你已处理该项(仅本地标记,不修改正文)"))
+        root.addWidget(W.muted(tr("勾选表示你已处理该项(仅本地标记,不修改正文)")))
         close = W.primary_btn(tr("close"))
         close.clicked.connect(self.accept)
         row = QHBoxLayout()
@@ -232,7 +232,7 @@ class ReviewSummaryDialog(QDialog):
 
     def __init__(self, parent, data: dict, on_goto=None):
         super().__init__(parent)
-        self.setWindowTitle("全书审校清单")
+        self.setWindowTitle(tr("全书审校清单"))
         self.resize(680, 560)
         self._on_goto = on_goto
         root = QVBoxLayout(self)
@@ -243,7 +243,7 @@ class ReviewSummaryDialog(QDialog):
         lay = QVBoxLayout(inner)
         items = data.get("items") or []
         if not items:
-            lay.addWidget(W.muted("全书没有审校问题"))
+            lay.addWidget(W.muted(tr("全书没有审校问题")))
         for it in items:
             box = W.make_card()
             bl = QVBoxLayout(box)
@@ -252,7 +252,7 @@ class ReviewSummaryDialog(QDialog):
             head.addWidget(QLabel(it.get("title") or ""))
             head.addWidget(W.tag(f"{it.get('count', 0)} 项"))
             head.addStretch(1)
-            go = QPushButton("去这章")
+            go = QPushButton(tr("去这章"))
             go.clicked.connect(lambda _=False, e=it.get("episode_id"): self._goto(e))
             head.addWidget(go)
             bl.addLayout(head)

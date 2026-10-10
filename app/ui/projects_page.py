@@ -29,8 +29,16 @@ STATUS_KEY = {"pending": "u_pending", "active": "u_running", "completed": "u_don
 
 def status_label(status: str) -> str:
     return tr(STATUS_KEY.get(status, "u_pending"))
-FILTERS = [("all", "全部"), ("draft", "待开始"), ("active", "进行中"), ("completed", "已完成")]
+
+
+FILTER_KEYS = ["all", "draft", "active", "completed"]
+FILTER_LABEL_KEY = {"all": "全部", "draft": "待开始", "active": "进行中", "completed": "已完成"}
 FILTER_DB = {"all": None, "draft": "pending", "active": "active", "completed": "completed"}
+
+
+def filter_label(key: str) -> str:
+    """筛选项标签现取 —— 模块级写 tr() 会把语言定死在 import 那一刻,之后切不动。"""
+    return tr(FILTER_LABEL_KEY.get(key, key))
 
 
 def _fmt_ago(ts: str) -> str:
@@ -43,7 +51,7 @@ def _fmt_ago(ts: str) -> str:
     except Exception:  # noqa: BLE001
         return ts[:16]
     if secs < 60:
-        return "刚刚"
+        return tr("刚刚")
     if secs < 3600:
         return f"{int(secs // 60)} 分钟前"
     if secs < 86400:
@@ -268,8 +276,8 @@ class ProjectsPage(QWidget):
         self._filter_btns: dict[str, QPushButton] = {}
         group = QButtonGroup(self)
         group.setExclusive(True)
-        for key, label in FILTERS:
-            b = QPushButton(label)
+        for key in FILTER_KEYS:
+            b = QPushButton(filter_label(key))
             b.setObjectName("filterChip")
             b.setCheckable(True)
             b.setChecked(key == "all")

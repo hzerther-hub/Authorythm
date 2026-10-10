@@ -94,6 +94,7 @@ def _sb_costume_context(sb_id: int, drama_id: int) -> str:
         ch = chars.get(link["character_id"])
         if not ch:
             continue
+        # 状态台账是落库的中文 JSON,键名不能翻 —— 翻了英文界面下就永远取不到
         look = ((ledger.get("characters") or {}).get(ch.get("name") or "") or {}).get("外貌")
         if look:
             lines.append(f"{ch['name']} → 剧情当前着装(状态台账):{str(look)[:80]}")
@@ -112,6 +113,7 @@ def _sb_costume_context(sb_id: int, drama_id: int) -> str:
                                      "1=应已变化,0=应仍是基础形象"),
                 } for i in range(len(need_jev))
             }
+            # 这段 state 是发给 Jev 的提问内容,保持中文
             state = ("【角色基础形象】" + "；".join(f"{n}:{a or '未描述'}" for n, a in need_jev)
                      + "\n【本镜画面描述】\n" + str((sb["content"] if sb else "") or "")[:800])
             result = gate.client.decide(state, questions)
@@ -149,13 +151,13 @@ def _sb_prompt_request(r: dict) -> str:
     return f"""为下面这个镜头生成视频提示词(英文,一段,不要解释)。
 {costume}
 画面描述:
-{r.get('content') or '(无)'}
+{r.get('content') or tr('(无)')}
 
 氛围:
-{r.get('atmosphere') or '(无)'}
+{r.get('atmosphere') or tr('(无)')}
 
 运镜与时长:
-镜别 {r.get('shot_type') or '(无)'} / 角度 {r.get('angle') or '(无)'} / 运动 {r.get('movement') or '(无)'} / {int(r.get('duration') or 10)}s
+镜别 {r.get('shot_type') or tr('(无)')} / 角度 {r.get('angle') or tr('(无)')} / 运动 {r.get('movement') or tr('(无)')} / {int(r.get('duration') or 10)}s
 
 已绑定的 @角色名 / @场景名 会自动映射为参考图,请原样保留这些 @ 标记。
 只输出提示词正文。"""
@@ -899,7 +901,7 @@ class EpisodePage(QWidget):
                 err(error)
                 return
             name, src = result
-            ok(("已提取章节名:" if src == "content" else "章节名已写入:") + str(name))
+            ok((tr("已提取章节名:") if src == "content" else tr("章节名已写入:")) + str(name))
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
             self.title.setText(f"{self._drama['title']} · {tr('episode_n').format(self._ep['episode_number'])}")
             self.chapter_name_btn.setVisible(False)
@@ -984,10 +986,10 @@ class EpisodePage(QWidget):
         hint = self._novel_redline_hint()
         if hasattr(self, "novel_btn"):
             self.novel_btn.setEnabled(not hint)
-            self.novel_btn.setToolTip(hint or "AI 生成本章")
+            self.novel_btn.setToolTip(hint or tr("AI 生成本章"))
         if hasattr(self, "batch_btn"):
             self.batch_btn.setEnabled(not hint)
-            self.batch_btn.setToolTip(hint or "批量写本章及后续")
+            self.batch_btn.setToolTip(hint or tr("批量写本章及后续"))
         if hasattr(self, "gate_lab"):
             self.gate_lab.setText(hint)
             self.gate_lab.setVisible(bool(hint))
@@ -1009,7 +1011,7 @@ class EpisodePage(QWidget):
             else:
                 self._reload_raw()
                 r = (result or {})
-                msg = "本章已生成" + (";审校发现问题并已自动修复一轮 ✅" if r.get("fixed") else "")
+                msg = tr("本章已生成") + (tr(";审校发现问题并已自动修复一轮 ✅") if r.get("fixed") else "")
                 QMessageBox.information(self, tr("ai_novel"), msg)
         self._save_raw_silent()
         TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
@@ -1037,7 +1039,7 @@ class EpisodePage(QWidget):
                     self, tr("batch_write"),
                     f"第 {cur['episode_number']} 章"
                     + (f"现有 {body_len} 字,未达目标 {target} 字" if body_len else f"尚未写作(目标 {target} 字)")
-                    + ",将重新生成。已有内容会被覆盖且无法撤销。确定继续?",
+                    + tr(",将重新生成。已有内容会被覆盖且无法撤销。确定继续?"),
                     QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
                 self._run_batch([cur["id"]], force=True)
             return
@@ -1045,7 +1047,7 @@ class EpisodePage(QWidget):
         pending = [e for e in all_eps if e["episode_number"] > cur["episode_number"]
                    and len((e["content"] or "").strip()) < 200]
         if not pending:
-            warn("后续章节都已有正文,没有待写内容")
+            warn(tr("后续章节都已有正文,没有待写内容"))
             return
         self._run_batch([e["id"] for e in pending[:10]], force=False)
 
@@ -1130,7 +1132,7 @@ class EpisodePage(QWidget):
         from .batch_dialogs import ReviewPanelDialog
         issues = self._review_issues()
         if not issues:
-            info("本章没有未处理的审校问题")
+            info(tr("本章没有未处理的审校问题"))
             return
         ReviewPanelDialog(self, issues, self._ep["episode_number"], self._ep["title"] or "").exec()
 
@@ -1737,7 +1739,7 @@ class EpisodePage(QWidget):
         if not c:
             return
         if not c["image_url"]:
-            QMessageBox.information(self, tr("face_swap"), "该角色还没有形象图,请先「重绘」生成或「上传」")
+            QMessageBox.information(self, tr("face_swap"), tr("该角色还没有形象图,请先「重绘」生成或「上传」"))
             return
         from .character_face_swap_dialog import CharacterFaceSwapDialog
         dlg = CharacterFaceSwapDialog(self, dict(c), self.face_model.currentData(),
@@ -2511,7 +2513,7 @@ class EpisodePage(QWidget):
         if not ids:
             return
         self.repair_btn.setEnabled(False)
-        self.repair_btn.setText("⟳ 补全中 0/0")
+        self.repair_btn.setText(tr("⟳ 补全中 0/0"))
         def job(tid):
             from ..pipeline import storyboard_repair as R
             return R.repair_storyboards(self.episode_id, ids,
@@ -2546,7 +2548,7 @@ class EpisodePage(QWidget):
             err(str(e)[:200]); return
         self._sb_split_running = True
         self._sb_split_task = tid
-        info("分镜拆解已开始(后台运行,约 5-10 分钟)")
+        info(tr("分镜拆解已开始(后台运行,约 5-10 分钟)"))
         self._poll_sb_split(tid, 0)
 
     def _poll_sb_split(self, tid: int, attempt: int):
@@ -2554,7 +2556,7 @@ class EpisodePage(QWidget):
         from PySide6.QtCore import QTimer
         if attempt > 200:            # 约 20 分钟兜底
             self._sb_split_running = False
-            warn("分镜拆分超时,请到任务面板查看"); return
+            warn(tr("分镜拆分超时,请到任务面板查看")); return
         def tick():
             row = db.q1("SELECT status, local_path, error_msg FROM sys_task WHERE id=?", (tid,))
             st = row["status"] if row else "failed"
@@ -2564,9 +2566,9 @@ class EpisodePage(QWidget):
             self._sb_split_running = False
             if st == "completed":
                 self._reload_storyboard()
-                ok(row["local_path"] or "分镜拆分完成")
+                ok(row["local_path"] or tr("分镜拆分完成"))
             else:
-                err(row["error_msg"] or "分镜拆分失败")
+                err(row["error_msg"] or tr("分镜拆分失败"))
         QTimer.singleShot(6000, tick)
 
     def _batch_vp(self):
@@ -2586,7 +2588,7 @@ class EpisodePage(QWidget):
         rows = db.q("SELECT id FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
                     (self.episode_id,))
         if not rows:
-            QMessageBox.information(self, tr("batch_video"), "全部镜头已有视频")
+            QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
             return
         # 批量生成前确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
         total = db.q1("SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
@@ -2632,7 +2634,7 @@ class EpisodePage(QWidget):
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             text = (sb["narration"] or "").strip() or (sb["content"] or "")[:120]
             if not text:
-                raise RuntimeError("无旁白文本")
+                raise RuntimeError(tr("无旁白文本"))
             p = tts_client.synthesize(text, target_duration=sb["duration"], config_id=None)
             db.ex("UPDATE storyboards SET narration_audio_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(p), db.now(), sb_id))

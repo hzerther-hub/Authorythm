@@ -23,10 +23,19 @@ ASPECTS = [("16:9", "u_ratio_16_9"), ("9:16", "u_ratio_9_16"), ("1:1", "u_ratio_
 ETHNICITIES = [("auto", "ethnicity_auto"), ("east_asian", "u_eth_east_asian"), ("middle_eastern", "u_eth_middle_eastern"),
                        ("western", "u_eth_western"), ("south_asian", "u_eth_south_asian"),
                        ("latin", "u_eth_latin"), ("african", "u_eth_african"), ("mixed", "u_eth_mixed")]
-PLATFORMS = [("douyin", "抖音"), ("xiaohongshu", "小红书"), ("wechat_channels", "视频号"),
-             ("wechat_mp", "公众号"), ("bilibili", "B站"), ("zhihu", "知乎")]
-FORMATS = [("video", "短视频"), ("image_set", "图文集"), ("card_burst", "卡点"),
-           ("mixed_clip", "混剪"), ("voiceover", "口播"), ("article", "长图文")]
+PLATFORM_KEYS = [("douyin", "抖音"), ("xiaohongshu", "小红书"), ("wechat_channels", "视频号"),
+                 ("wechat_mp", "公众号"), ("bilibili", "B站"), ("zhihu", "知乎")]
+FORMAT_KEYS = [("video", "短视频"), ("image_set", "图文集"), ("card_burst", "卡点"),
+               ("mixed_clip", "混剪"), ("voiceover", "口播"), ("article", "长图文")]
+
+
+def platforms() -> list[tuple[str, str]]:
+    """平台/形式选项现取标签 —— 模块级写 tr() 会把语言定死在 import 那一刻。"""
+    return [(v, tr(name)) for v, name in PLATFORM_KEYS]
+
+
+def formats() -> list[tuple[str, str]]:
+    return [(v, tr(name)) for v, name in FORMAT_KEYS]
 
 
 def style_choices(work_type: str) -> list[tuple[str, str]]:
@@ -36,7 +45,7 @@ def style_choices(work_type: str) -> list[tuple[str, str]]:
         wt = r["work_type"]
         if work_type in wt.split(",") or "all" in wt.split(","):
             out.append((r["value"], r["name"]))
-    return out or [("3d", "3D 漫剧")]
+    return out or [("3d", tr("3D 漫剧"))]
 
 
 class NewProjectDialog(QDialog):
@@ -50,7 +59,7 @@ class NewProjectDialog(QDialog):
         root = QVBoxLayout(self)
 
         root.addWidget(W.h2(tr("new_project")))
-        root.addWidget(W.muted("创建后进入项目页选择集"))
+        root.addWidget(W.muted(tr("创建后进入项目页选择集")))
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(tr("name_placeholder"))
@@ -132,10 +141,10 @@ class NewProjectDialog(QDialog):
 
         if wt == "promotion":
             self.platform_combo = QComboBox()
-            for v, name in PLATFORMS:
+            for v, name in platforms():
                 self.platform_combo.addItem(name, v)
             self.fmt_combo = QComboBox()
-            for v, name in FORMATS:
+            for v, name in formats():
                 self.fmt_combo.addItem(name, v)
             lay = QFormLayout()
             lay.addRow(tr("target_platform") + " *", self.platform_combo)
@@ -145,35 +154,35 @@ class NewProjectDialog(QDialog):
             self.dynamic.addWidget(box)
         elif wt == "video_clone":
             lay = QFormLayout()
-            self.ref_btn = QPushButton("📹 选择参考视频…")
+            self.ref_btn = QPushButton(tr("📹 选择参考视频…"))
             self.ref_btn.clicked.connect(self._pick_video)
-            self.product_btn = QPushButton("▣ 选择产品照片…")
+            self.product_btn = QPushButton(tr("▣ 选择产品照片…"))
             self.product_btn.clicked.connect(self._pick_product)
-            self.presenter_btn = QPushButton("👤 选择出镜照片(可选)…")
+            self.presenter_btn = QPushButton(tr("👤 选择出镜照片(可选)…"))
             self.presenter_btn.clicked.connect(self._pick_presenter)
-            lay.addRow("参考视频 *", self.ref_btn)
-            lay.addRow("产品照片 *", self.product_btn)
-            lay.addRow("出镜人照片", self.presenter_btn)
+            lay.addRow(tr("参考视频 *"), self.ref_btn)
+            lay.addRow(tr("产品照片 *"), self.product_btn)
+            lay.addRow(tr("出镜人照片"), self.presenter_btn)
             box = QWidget()
             box.setLayout(lay)
             self.dynamic.addWidget(box)
-            note = W.muted("复刻流程:AI 看懂原片出分镜表 → 备好产品/主角素材 → 逐镜重拍 → 按原片节奏无损拼接成片。")
+            note = W.muted(tr("复刻流程:AI 看懂原片出分镜表 → 备好产品/主角素材 → 逐镜重拍 → 按原片节奏无损拼接成片。"))
             self.dynamic.addWidget(note)
 
     def _pick_video(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择参考视频", "", "Videos (*.mp4 *.mov *.mkv *.webm)")
+        p, _ = QFileDialog.getOpenFileName(self, tr("选择参考视频"), "", "Videos (*.mp4 *.mov *.mkv *.webm)")
         if p:
             self._ref_video = p
             self.ref_btn.setText("📹 " + p.split("/")[-1].split("\\")[-1])
 
     def _pick_product(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择产品照片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        p, _ = QFileDialog.getOpenFileName(self, tr("选择产品照片"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if p:
             self._product_img = p
             self.product_btn.setText("▣ " + p.split("/")[-1].split("\\")[-1])
 
     def _pick_presenter(self):
-        p, _ = QFileDialog.getOpenFileName(self, "选择出镜照片", "", "Images (*.png *.jpg *.jpeg *.webp)")
+        p, _ = QFileDialog.getOpenFileName(self, tr("选择出镜照片"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if p:
             self._presenter_img = p
             self.presenter_btn.setText("👤 " + p.split("/")[-1].split("\\")[-1])

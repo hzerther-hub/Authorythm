@@ -72,11 +72,11 @@ class ProjectSettingsDialog(QDialog):
         meta_row = QWidget()
         mr = QHBoxLayout(meta_row)
         mr.setContentsMargins(0, 0, 0, 0)
-        self.meta_btn = WaitingButton("✨ AI 起草简介 / 题材")
-        self.meta_btn.setToolTip("按「首章正文 → 创意描述 → 项目名称」的优先级取材,自动填简介与题材")
+        self.meta_btn = WaitingButton(tr("✨ AI 起草简介 / 题材"))
+        self.meta_btn.setToolTip(tr("按「首章正文 → 创意描述 → 项目名称」的优先级取材,自动填简介与题材"))
         self.meta_btn.clicked.connect(self._draft_meta)
         mr.addWidget(self.meta_btn)
-        mr.addWidget(_muted("简介与题材会作为小说策划 / 分镜 / 画面生成的上下文"))
+        mr.addWidget(_muted(tr("简介与题材会作为小说策划 / 分镜 / 画面生成的上下文")))
         mr.addStretch(1)
         f.addRow("", meta_row)
         # 写法文风:6 个预设 + 自定义(对齐原版 episode.vue 的 NOVEL_STYLES)
@@ -87,10 +87,10 @@ class ProjectSettingsDialog(QDialog):
         sr.setSpacing(4)
         sr1 = QHBoxLayout()
         self.novel_style = QComboBox()
-        self.novel_style.addItem("未选(跟随默认)", "")
+        self.novel_style.addItem(tr("未选(跟随默认)"), "")
         for name, prompt in NOVEL_STYLES:
             self.novel_style.addItem(name, prompt)
-        self.novel_style.addItem("自定义…", NOVEL_STYLE_CUSTOM)
+        self.novel_style.addItem(tr("自定义…"), NOVEL_STYLE_CUSTOM)
         _cur = (d["novel_style"] or "").strip()
         _si = self.novel_style.findData(_cur) if _cur else 0
         if _si < 0:
@@ -100,14 +100,14 @@ class ProjectSettingsDialog(QDialog):
         sr1.addWidget(self.novel_style, 1)
         sr.addLayout(sr1)
         self.novel_style_edit = QPlainTextEdit(_cur)
-        self.novel_style_edit.setPlaceholderText("自定义文风:写清句式、节奏、视角与爽点节奏")
+        self.novel_style_edit.setPlaceholderText(tr("自定义文风:写清句式、节奏、视角与爽点节奏"))
         self.novel_style_edit.setMaximumHeight(64)
         self.novel_style_edit.setVisible(
             self.novel_style.currentData() == NOVEL_STYLE_CUSTOM)
         self.novel_style_edit.textChanged.connect(self._on_style_text)
         sr.addWidget(self.novel_style_edit)
-        f.addRow("写法文风", style_row)
-        f.addRow("", _muted("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述"))
+        f.addRow(tr("写法文风"), style_row)
+        f.addRow("", _muted(tr("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述")))
         self.aspect = QComboBox()
         for v, label in ASPECTS:
             self.aspect.addItem(label if label == "auto" else tr(label), v)
@@ -122,13 +122,13 @@ class ProjectSettingsDialog(QDialog):
         f.addRow(tr("visual_style"), self.style)
         # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
         self.language = QComboBox()
-        self.language.addItem("跟随全局设置", "auto")
+        self.language.addItem(tr("跟随全局设置"), "auto")
         for code, name in LANGS:
             self.language.addItem(f"{name} ({code})", code)
         _li = self.language.findData(d["language"] or "auto")
         self.language.setCurrentIndex(_li if _li >= 0 else 0)
-        f.addRow("内容语言", self.language)
-        f.addRow("", W.muted("本项目的剧本/资产/分镜等 AI 产出固定使用该语言,不影响其他项目"))
+        f.addRow(tr("内容语言"), self.language)
+        f.addRow("", W.muted(tr("本项目的剧本/资产/分镜等 AI 产出固定使用该语言,不影响其他项目")))
         self.ethnicity = QComboBox()
         for v, label in ETHNICITIES:
             self.ethnicity.addItem(label if label == "auto" else tr(label), v)
@@ -140,12 +140,12 @@ class ProjectSettingsDialog(QDialog):
         # 锁定条件是「**已经按这份创意生成出真实文字**」,不是「项目里存在第 1 集」——
         # 新建项目必定会建一个空的第 1 集,按前者判会导致创意描述从创建那一刻就永远改不了。
         self._generated = _has_generated_content(drama_id)
-        self.skip_creative = QCheckBox("不需要创意描述 — 我会自己粘贴文章")
+        self.skip_creative = QCheckBox(tr("不需要创意描述 — 我会自己粘贴文章"))
         self.skip_creative.setChecked(bool(d["skip_creative"]))
         self.skip_creative.setDisabled(self._generated)
         f.addRow("", self.skip_creative)
         self.creative = QPlainTextEdit(d["creative_description"] or "")
-        self.creative.setPlaceholderText("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣男、拿回母亲遗产……")
+        self.creative.setPlaceholderText(tr("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣男、拿回母亲遗产……"))
         self.creative.setMaximumHeight(96)
         self.creative.setDisabled(self._generated or bool(d["skip_creative"]))
         f.addRow(tr("u_creative_desc"), self.creative)
@@ -155,8 +155,8 @@ class ProjectSettingsDialog(QDialog):
         self.total_eps = QSpinBox()
         self.total_eps.setRange(1, 999)
         self.total_eps.setValue(int(d["total_episodes"] or 1))
-        f.addRow("集数", self.total_eps)
-        f.addRow("", W.muted("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
+        f.addRow(tr("集数"), self.total_eps)
+        f.addRow("", W.muted(tr("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。")))
         self.skip_creative.toggled.connect(
             lambda on: self.creative.setDisabled(on or self._generated))
         root.addLayout(f)
@@ -202,7 +202,7 @@ class ProjectSettingsDialog(QDialog):
         if not ensure_ready("text", None):
             return
         btn = self.meta_btn
-        btn.busy("起草中")
+        btn.busy(tr("起草中"))
 
         def job(tid):
             from ..pipeline import book_import
@@ -217,13 +217,13 @@ class ProjectSettingsDialog(QDialog):
                 err(error)
                 return
             if not result:
-                err("AI 未返回内容,请重试")
+                err(tr("AI 未返回内容,请重试"))
                 return
             if result.get("description"):
                 self.intro.setText(str(result["description"]).strip())
             if result.get("genre"):
                 self.genre.setText(str(result["genre"]).strip())
-            ok("已填入简介与题材,确认无误后点保存")
+            ok(tr("已填入简介与题材,确认无误后点保存"))
 
         from ..core.taskmgr import TASKMGR
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
@@ -240,7 +240,7 @@ class ProjectSettingsDialog(QDialog):
         db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
                creative_description=?, skip_creative=?, total_episodes=?, language=?,
                novel_style=?, updated_at=? WHERE id=?""",
-              (self.title.text().strip() or "未命名", self.aspect.currentData(),
+              (self.title.text().strip() or tr("未命名"), self.aspect.currentData(),
                self.style.currentData(), self.ethnicity.currentData(),
                json.dumps(meta, ensure_ascii=False),
                None if self.skip_creative.isChecked() else self.creative.toPlainText().strip(),
@@ -254,7 +254,7 @@ class ImageViewerDialog(QDialog):
     """大图查看器(点击图片放大)。"""
     def __init__(self, parent, url: str | None, title: str = ""):
         super().__init__(parent)
-        self.setWindowTitle(title or "预览")
+        self.setWindowTitle(title or tr("预览"))
         self.resize(760, 620)
         root = QVBoxLayout(self)
         img = QLabel()
@@ -298,10 +298,10 @@ class AssetDetailDialog(QDialog):
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;")
         self.img.setPixmap(W.pixmap_from_media(row.get("image_url"), 276, 276))
         self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, row.get("image_url"), row["name"]).exec()
-        self.img.setToolTip("点击查看大图")
+        self.img.setToolTip(tr("点击查看大图"))
         left.addWidget(self.img)
-        dl = QPushButton("↓ 下载原图")
-        dl.setToolTip("下载原图到本地,文件名自动使用资产名")
+        dl = QPushButton(tr("↓ 下载原图"))
+        dl.setToolTip(tr("下载原图到本地,文件名自动使用资产名"))
         dl.clicked.connect(self._download)
         left.addWidget(dl)
         body.addLayout(left)
@@ -310,43 +310,43 @@ class AssetDetailDialog(QDialog):
         f = QFormLayout()
         if kind == "character":
             self.name = QLineEdit(row["name"])
-            f.addRow(tr("project_name").replace(tr("project_name"), "名称"), self.name)
+            f.addRow(tr("名称"), self.name)
             self.role = QComboBox()
             for v, label in (("lead", tr("lead")), ("supporting", tr("supporting")), ("extra", tr("extra"))):
                 self.role.addItem(label, v)
             i = self.role.findData(row.get("role_type") or "supporting")
             self.role.setCurrentIndex(i if i >= 0 else 1)
-            f.addRow("角色定位", self.role)
+            f.addRow(tr("角色定位"), self.role)
             self.appearance = QPlainTextEdit(row.get("appearance") or "")
             f.addRow(tr("appearance"), self.appearance)
             self.styling = QPlainTextEdit(row.get("styling") or "")
             f.addRow(tr("styling"), self.styling)
         elif kind == "scene":
             self.name = QLineEdit(row["name"])
-            f.addRow("名称", self.name)
+            f.addRow(tr("名称"), self.name)
             self.location = QLineEdit(row.get("location") or "")
-            f.addRow("地点", self.location)
+            f.addRow(tr("地点"), self.location)
             self.time = QLineEdit(row.get("time") or "")
-            f.addRow("时间", self.time)
+            f.addRow(tr("时间"), self.time)
             self.desc = QPlainTextEdit(row.get("prompt") or "")
-            f.addRow("描述", self.desc)
+            f.addRow(tr("描述"), self.desc)
             self.lighting = QPlainTextEdit(row.get("lighting") or "")
             f.addRow(tr("lighting"), self.lighting)
             tags = db.jload(row.get("setting_tags"), []) or []
             self.tags = QLineEdit(", ".join(tags))
-            self.tags.setPlaceholderText("标签,逗号分隔(如 室内,夜)")
-            f.addRow("标签", self.tags)
+            self.tags.setPlaceholderText(tr("标签,逗号分隔(如 室内,夜)"))
+            f.addRow(tr("标签"), self.tags)
         else:
             self.name = QLineEdit(row["name"])
-            f.addRow("名称", self.name)
+            f.addRow(tr("名称"), self.name)
             self.ptype = QComboBox()
-            for v in ("prop", "信物", "文件", "关键道具"):
+            for v in ("prop", tr("信物"), tr("文件"), tr("关键道具")):
                 self.ptype.addItem(v, v)
             i = self.ptype.findData(row.get("type") or "prop")
             self.ptype.setCurrentIndex(i if i >= 0 else 0)
-            f.addRow("类型", self.ptype)
+            f.addRow(tr("类型"), self.ptype)
             self.desc = QPlainTextEdit(row.get("description") or "")
-            f.addRow("外貌", self.desc)
+            f.addRow(tr("外貌"), self.desc)
         right.addLayout(f)
         right.addStretch(1)
         body.addLayout(right, 1)
@@ -359,14 +359,14 @@ class AssetDetailDialog(QDialog):
         fp_lay.addWidget(W.h2(tr("final_prompt")))
         self.fp = QPlainTextEdit(row.get("final_prompt") or "")
         self.fp.setMaximumHeight(90)
-        self.fp.setPlaceholderText("可手动编辑;或点「AI 生成」自动产出")
+        self.fp.setPlaceholderText(tr("可手动编辑;或点「AI 生成」自动产出"))
         fp_lay.addWidget(self.fp)
         fp_btns = QHBoxLayout()
-        gen_fp = QPushButton("✨ AI 生成")
+        gen_fp = QPushButton(tr("✨ AI 生成"))
         gen_fp.clicked.connect(self._gen_prompt)
-        regen_fp = QPushButton("↻ 重新生成")
+        regen_fp = QPushButton(tr("↻ 重新生成"))
         regen_fp.clicked.connect(self._gen_prompt)
-        copy_fp = QPushButton("▤ 复制")
+        copy_fp = QPushButton(tr("▤ 复制"))
         copy_fp.clicked.connect(self._copy_prompt)
         for b in (gen_fp, regen_fp, copy_fp):
             fp_btns.addWidget(b)
@@ -376,7 +376,7 @@ class AssetDetailDialog(QDialog):
 
         # 角色变体
         if kind == "character":
-            var_btn = QPushButton("◑ 造型变体")
+            var_btn = QPushButton(tr("◑ 造型变体"))
             var_btn.clicked.connect(self._open_variants)
             root.addWidget(var_btn)
 
@@ -388,7 +388,7 @@ class AssetDetailDialog(QDialog):
         footer.addStretch(1)
         upload = QPushButton(tr("upload"))
         upload.clicked.connect(self._upload)
-        gen_img = W.primary_btn("◑ 生成形象")
+        gen_img = W.primary_btn(tr("◑ 生成形象"))
         gen_img.clicked.connect(self._gen_image)
         save = W.primary_btn(tr("save"))
         save.clicked.connect(self._save)
@@ -438,7 +438,7 @@ class AssetDetailDialog(QDialog):
             if error:
                 err(e_)
             else:
-                ok("提示词已生成")
+                ok(tr("提示词已生成"))
                 d2 = db.q1(f"SELECT final_prompt FROM {self.table} WHERE id=?", (self.row["id"],))
                 self.fp.setPlainText(d2["final_prompt"] or "")
         TASKMGR.submit("prompt", job, done)
@@ -450,7 +450,7 @@ class AssetDetailDialog(QDialog):
         def job(tid):
             fp = self.fp.toPlainText() or self.row.get("final_prompt") or ""
             if not fp:
-                raise RuntimeError("请先生成最终提示词")
+                raise RuntimeError(tr("请先生成最终提示词"))
             out, _p = image_client.generate_image(fp)
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), self.row["id"]))

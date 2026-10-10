@@ -33,6 +33,15 @@ PROMPT_HINTS = (
 # 只统计长度在这个区间内的短串:超过的是长提示词/说明段落,单独人工判断
 MAX_LEN = 60
 
+# 正则:翻了就匹配不上(剧集标题模式 \d \s ^ $),一概不动
+REGEX_CHARS = ("\\d", "\\s", "\\w", "\\b", "^", "$", "(?", "[", "|")
+
+
+def _is_regex(text: str, prefix: str = "") -> bool:
+    if prefix.lower() == "r":
+        return True
+    return any(c in text for c in REGEX_CHARS)
+
 
 def _is_prompt(text: str) -> bool:
     if any(h in text for h in PROMPT_HINTS):
@@ -68,6 +77,13 @@ def collect() -> dict[pathlib.Path, list[tuple[int, str]]]:
                 continue
             if id(node) in in_tr or "\n" in v:
                 continue
+            ln = getattr(node, "lineno", 0)
+            # raw 前缀(r"^第\d+集$")ast 里拿不到,从源码行里找 —— col_offset 是字节偏移,
+            # 得先换成字符数,否则前面的中文会把位置带偏
+            src_line = lines[ln - 1] if 0 < ln <= len(lines) else ""
+            col = len(src_line.encode("utf-8")[:node.col_offset].decode("utf-8", "ignore"))
+            if _is_regex(v, "r" if re.search(r"\br[\"']$", src_line[:col]) else ""):
+                continue
             par = parent.get(id(node))
             # setObjectName / setProperty 是选择器不是文案;dict 键参与比较,包 tr() 会改语义
             if isinstance(par, ast.Call) and isinstance(par.func, ast.Attribute) \
@@ -75,9 +91,7 @@ def collect() -> dict[pathlib.Path, list[tuple[int, str]]]:
                 continue
             if isinstance(par, ast.Dict):
                 continue
-            ln = getattr(node, "lineno", 0)
-            line = lines[ln - 1] if 0 < ln <= len(lines) else ""
-            st = line.strip()
+            st = src_line.strip()
             if st.startswith("#") or st.startswith('"""') or st.startswith("'''"):
                 continue
             hits.append((ln, v))
@@ -89,43 +103,96 @@ def collect() -> dict[pathlib.Path, list[tuple[int, str]]]:
 def _rewrite(path: pathlib.Path, targets: set[str]) -> int:
     """把文件里等于 targets 的字符串字面量包上 tr()。
 
-    按 (行, 列) 从后往前替换,前面的偏移量才不会被后面的改动带偏。
-    f-string 内部的片段替换成 tr('...') 用单引号:3.11 以下也不会被引号嵌套噎住。
+    两个坑:
+    1. ast 的 col_offset 是 UTF-8 **字节**偏移,直接当字符下标用,一行里只要有中文就整行错位。
+    2. 隐式拼接("a"\\n"b")在 AST 里是**一个**跨行 Constant,值是拼好的;按行改会把它拆散。
+       所以这里统一切整段源码,替换从后往前做,前面的偏移量才不会被带偏。
     """
     src = path.read_text(encoding="utf-8")
-    lines = src.split("\n")
     tree = ast.parse(src)
+    parent: dict[int, ast.AST] = {}
+    for node in ast.walk(tree):
+        for ch in ast.iter_child_nodes(node):
+            parent[id(ch)] = node
     in_tr: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "tr":
             for a in node.args:
                 if isinstance(a, ast.Constant):
                     in_tr.add(id(a))
-    spans = []
+
+    # 全程在**字节**空间里做偏移:ast 的 col_offset 是 UTF-8 字节偏移,
+    # 而 starts 若按字符数累加,遇到中文行就会整行错位(踩过一次)。
+    blob = src.encode("utf-8")
+    starts, acc = [], 0
+    for ln in blob.splitlines(keepends=True):
+        starts.append(acc)
+        acc += len(ln)
+
+    def off(lineno: int, col: int) -> int:
+        return starts[lineno - 1] + col
+
+    edits: list[tuple[int, int, bytes]] = []
+    seen: set[tuple[int, int]] = set()
+
+    def add_span(node) -> None:
+        # 原样保留字面量自带的引号:跨行的隐式拼接("a"\n"b")塞进一对新引号会直接语法错,
+        # 而 tr(原样) 对单行、多行、raw 串、f 串都成立。
+        s, e = off(node.lineno, node.col_offset), off(node.end_lineno, node.end_col_offset)
+        if (s, e) in seen:
+            return
+        seen.add((s, e))
+        edits.append((s, e, b"tr(" + blob[s:e] + b")"))
+
+    # f-string:f"生成封面 {n}" 里那一段是**字面文本**,不能塞 tr(),否则 f 串会把 tr(...) 原样打印出来。
+    # 只有整个 f 串没有插值时才能整体包起来。
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr) or id(node) in in_tr:
+            continue
+        if any(isinstance(c, ast.FormattedValue) for c in node.values):
+            continue
+        v = "".join(c.value for c in node.values if isinstance(c, ast.Constant))
+        if v in targets and "\n" not in v:
+            add_span(node)
+
     for node in ast.walk(tree):
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
             continue
         v = node.value
         if v not in targets or id(node) in in_tr or "\n" in v:
             continue
-        spans.append((node.lineno - 1, node.col_offset, node.end_lineno - 1,
-                      node.end_col_offset, v))
-    spans.sort(key=lambda t: (t[0], t[1]), reverse=True)
-    done = 0
-    for l0, c0, l1, c1, val in spans:
-        if l0 != l1:                     # 跨行字面量挪不动,留给 --list 人工处理
+        if isinstance(parent.get(id(node)), ast.JoinedStr):   # 上面已按整段处理
             continue
-        quote = "'" if "'" not in val else '"'
-        ln = lines[l0]
-        lines[l0] = ln[:c0] + f"tr({quote}{val}{quote})" + ln[c1:]
-        done += 1
-    out = "\n".join(lines)
-    if done and re.search(r"import[^\n]*\btr\b", out) is None:
-        anchor = re.search(r"^from\s+\.\.", out, re.M)
-        if anchor:
-            out = out[:anchor.start()] + "from ..core.i18n import tr\n" + out[anchor.start():]
-    path.write_text(out, encoding="utf-8")
-    return done
+        add_span(node)
+
+    for s, e, repl in sorted(edits, key=lambda t: -t[0]):
+        blob = blob[:s] + repl + blob[e:]
+    if not edits:
+        return 0
+    src = blob.decode("utf-8")
+    src = _ensure_tr_import(src, path)
+    path.write_text(src, encoding="utf-8")
+    return len(edits)
+
+
+_TR_IMPORT = re.compile(r"^from\s+\.{1,2}[\w.]*i18n\s+import\s+[^\n]*\btr\b", re.M)
+
+
+def _ensure_tr_import(src: str, path: pathlib.Path) -> str:
+    """文件里用到 tr() 就必须能 import 到它。
+
+    锚点不能只找 `from ..`:braille.py 一个相对导入都没有,全都走 PySide6 绝对导入,
+    照原样插不进去,模块一 import 就 NameError。
+    """
+    if _TR_IMPORT.search(src):
+        return src
+    line = "from ..core.i18n import tr"
+    last = None
+    for m in re.finditer(r"^(?:import|from)\s+.*$", src, re.M):
+        last = m
+    if last:                      # 插到最后一条 import 之后
+        return src[:last.end()] + "\n" + line + src[last.end():]
+    return line + "\n\n" + src
 
 
 def apply(data) -> tuple[int, dict[str, str]]:

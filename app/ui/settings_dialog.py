@@ -69,7 +69,7 @@ class SettingsDialog(QDialog):
         quick = W.make_card()
         q_lay = QVBoxLayout(quick)
         q_lay.setContentsMargins(14, 12, 14, 12)
-        q_lay.addWidget(W.h2(tr("quick_config") + " · 推荐"))
+        q_lay.addWidget(W.h2(tr("quick_config") + tr(" · 推荐")))
         q_lay.addWidget(W.muted(tr("quick_hint")))
         row = QHBoxLayout()
         self.yihao_key = QLineEdit()
@@ -86,7 +86,7 @@ class SettingsDialog(QDialog):
         m_lay = QVBoxLayout(manual)
         m_lay.setContentsMargins(14, 12, 14, 12)
         m_lay.addWidget(W.h2(tr("manual_templates")))
-        m_lay.addWidget(W.muted("选择服务类型后,直接用模板填充推荐的 `provider / base URL / model`。"))
+        m_lay.addWidget(W.muted(tr("选择服务类型后,直接用模板填充推荐的 `provider / base URL / model`。")))
         chips = QHBoxLayout()
         for st in registry.SERVICE_TYPES:
             b = QPushButton(tr(SVC_LABEL[st]))
@@ -335,7 +335,7 @@ class SettingsDialog(QDialog):
             item.setData(Qt.UserRole, dict(r))
             self.style_list.addItem(item)
         self.style_list.itemDoubleClicked.connect(self._edit_style)
-        lay.addWidget(W.muted("双击编辑风格 · 电影质感提示词前缀"))
+        lay.addWidget(W.muted(tr("双击编辑风格 · 电影质感提示词前缀")))
         lay.addWidget(self.style_list)
         return w
 
@@ -520,11 +520,11 @@ class SettingsDialog(QDialog):
         f.setContentsMargins(14, 14, 14, 14)
         self._storage_labels: dict[str, QLabel] = {}
         self._refresh_storage(f)
-        open_btn = QPushButton("打开数据目录")
+        open_btn = QPushButton(tr("打开数据目录"))
         open_btn.clicked.connect(lambda: __import__("os").startfile(str(config.DATA_DIR)))  # noqa
         f.addRow("", open_btn)
         lay.addWidget(box)
-        hint = W.muted("用量每 60 秒刷新一次;数据库文件(含 WAL)单独计数,不在目录遍历里")
+        hint = W.muted(tr("用量每 60 秒刷新一次;数据库文件(含 WAL)单独计数,不在目录遍历里"))
         lay.addWidget(hint)
         lay.addStretch(1)
         return w
@@ -547,7 +547,7 @@ class SettingsDialog(QDialog):
         if form is not None:
             form.addRow("◆", total)
             self._storage_labels["used"] = total
-            form.addRow("剩余可用", free)
+            form.addRow(tr("剩余可用"), free)
             self._storage_labels["free"] = free
         else:
             self._storage_labels.get("used", total).setText(storage.human_size(data.get("used", 0)))
@@ -560,7 +560,7 @@ class SettingsDialog(QDialog):
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
         lay.addWidget(W.h2(f"易好短剧 · {tr('version')} {config.APP_VERSION}"))
-        lay.addWidget(W.muted("「易好短剧」(Yihao Drama) 的 PySide6 桌面实现,功能对齐原版。"))
+        lay.addWidget(W.muted(tr("「易好短剧」(Yihao Drama) 的 PySide6 桌面实现,功能对齐原版。")))
         lay.addWidget(W.muted(f"语言 / Languages: {len(LANGS)}(中文/EN/日本語/한국어/Français/Deutsch/Italiano/Português/Español/Tiếng Việt/Türkçe/العربية/हिन्दी/Bahasa Indonesia/ภาษาไทย)"))
         lay.addWidget(W.muted("核心:10 Agents · 11 Skills · 20 风格预设 · 无损合并(easymerger) · 同款复刻(video-clone-lite) · 封面体系"))
 
@@ -571,7 +571,7 @@ class SettingsDialog(QDialog):
         self.ver_lab = W.muted(f"{tr('version')} {updater.current_version()}")
         row.addWidget(self.ver_lab)
         row.addStretch(1)
-        self.auto_update_cb = QCheckBox("启动时自动检查更新")
+        self.auto_update_cb = QCheckBox(tr("启动时自动检查更新"))
         self.auto_update_cb.setChecked(updater.read_state().get("auto_check", True))
         self.auto_update_cb.toggled.connect(
             lambda on: updater.write_state(auto_check=on))
@@ -588,7 +588,7 @@ class SettingsDialog(QDialog):
         self.notes_lab.setMaximumHeight(110)
         self.notes_lab.setVisible(False)
         b_lay.addWidget(self.notes_lab)
-        self.upd_btn = W.primary_btn("⬇ 立即下载并更新")
+        self.upd_btn = W.primary_btn(tr("⬇ 立即下载并更新"))
         self.upd_btn.setVisible(False)
         self.upd_btn.clicked.connect(self._do_update)
         b_lay.addWidget(self.upd_btn)
@@ -605,7 +605,7 @@ class SettingsDialog(QDialog):
         """检查更新(后台线程,避免阻塞界面)。"""
         from PySide6.QtCore import QThread
         from ..core import updater
-        self.update_lab.setText("正在检查更新…")
+        self.update_lab.setText(tr("正在检查更新…"))
         res_holder = {}
 
         class _T(QThread):
@@ -742,21 +742,21 @@ class ModelChipsEditor(QWidget):
         lay.addWidget(self.flow)
         row = QHBoxLayout()
         self.input = QLineEdit()
-        self.input.setPlaceholderText("输入模型名,回车添加(支持逗号/换行批量粘贴)")
+        self.input.setPlaceholderText(tr("输入模型名,回车添加(支持逗号/换行批量粘贴)"))
         self.input.returnPressed.connect(self._add_from_input)
-        add_btn = QPushButton("新增")
+        add_btn = QPushButton(tr("新增"))
         add_btn.clicked.connect(self._add_from_input)
         row.addWidget(self.input, 1)
         row.addWidget(add_btn)
         lay.addLayout(row)
-        lay.addWidget(_muted("首位为默认模型;点击标签可置顶,输入框支持逗号/换行批量粘贴"))
+        lay.addWidget(_muted(tr("首位为默认模型;点击标签可置顶,输入框支持逗号/换行批量粘贴")))
         self._render()
 
     def _render(self):
         self.flow.clear()
         for i, m in enumerate(list(self.models)):
-            chip = QPushButton(m + ("  默认" if i == 0 else ""))
-            chip.setToolTip("点击置顶设为默认")
+            chip = QPushButton(m + (tr("  默认") if i == 0 else ""))
+            chip.setToolTip(tr("点击置顶设为默认"))
             chip.setStyleSheet(
                 "QPushButton{border-radius:12px; padding:3px 10px; font-size:12px;}"
                 + ("QPushButton{background:#f97316;color:white;font-weight:700;border:none;}"
@@ -940,22 +940,22 @@ class ServiceDialog(QDialog):
         self._st = st
         self._existing = existing
         cn = SVC_CN[st]
-        self.setWindowTitle(("编辑" if existing else "添加") + cn + "服务")
+        self.setWindowTitle((tr("编辑") if existing else tr("添加")) + cn + tr("服务"))
         self.resize(560, 760)
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
         head = QHBoxLayout()
-        head.addWidget(W.h2(("编辑" if existing else "添加") + cn + "服务"))
+        head.addWidget(W.h2((tr("编辑") if existing else tr("添加")) + cn + tr("服务")))
         head.addStretch(1)
         head.addWidget(W.tag(cn))
         root.addLayout(head)
-        root.addWidget(_muted("选择「服务商」后会自动填入更合理的 `Base URL` 与默认模型;需要其他厂商时选「自定义」直接填写。"))
+        root.addWidget(_muted(tr("选择「服务商」后会自动填入更合理的 `Base URL` 与默认模型;需要其他厂商时选「自定义」直接填写。")))
 
         form = QFormLayout()
         form.setSpacing(8)
         self.name_edit = QLineEdit()
-        form.addRow("配置名称", self.name_edit)
+        form.addRow(tr("配置名称"), self.name_edit)
         # 服务商:模板 label 与自定义合并为一个下拉(对齐原版 26c7d00,消除两处选供应商的困惑)
         self.provider_combo = QComboBox()
         self._tpl_by_index: dict[int, dict] = {}
@@ -964,18 +964,18 @@ class ServiceDialog(QDialog):
             idx = self.provider_combo.count()
             self.provider_combo.addItem(p["name"])       # 显示模板 label,如「MiniMax 官方」
             self._tpl_by_index[idx] = p
-        self._custom_idx = self.provider_combo.addItem("自定义…")
+        self._custom_idx = self.provider_combo.addItem(tr("自定义…"))
         self.provider_combo.currentIndexChanged.connect(self._on_provider_pick)
-        form.addRow("服务商", self.provider_combo)
+        form.addRow(tr("服务商"), self.provider_combo)
         self.provider_edit = QLineEdit()
-        self.provider_edit.setPlaceholderText("服务商标识,如 openai / 自定义厂商名")
+        self.provider_edit.setPlaceholderText(tr("服务商标识,如 openai / 自定义厂商名"))
         self.provider_edit.setVisible(False)
         form.addRow("", self.provider_edit)
         self.priority_spin = QSpinBox()
         self.priority_spin.setRange(-99, 99)
         self.priority_spin.setValue(0)
-        form.addRow("优先级", self.priority_spin)
-        form.addRow("", _muted("数值越高越优先。工作台默认使用同类型里优先级最高的启用配置。"))
+        form.addRow(tr("优先级"), self.priority_spin)
+        form.addRow("", _muted(tr("数值越高越优先。工作台默认使用同类型里优先级最高的启用配置。")))
         self.api_key = QLineEdit()
         self.api_key.setPlaceholderText("sk-...")
         self.api_key.setEchoMode(QLineEdit.Password)
@@ -983,21 +983,21 @@ class ServiceDialog(QDialog):
         self.base_url = QLineEdit()
         form.addRow("Base URL", self.base_url)
         self.models_editor = ModelChipsEditor()
-        form.addRow("模型", self.models_editor)
+        form.addRow(tr("模型"), self.models_editor)
         self.temperature = QLineEdit()
-        self.temperature.setPlaceholderText("如 0.6")
-        form.addRow("Temperature (留空跟随服务默认)", self.temperature)
+        self.temperature.setPlaceholderText(tr("如 0.6"))
+        form.addRow(tr("Temperature (留空跟随服务默认)"), self.temperature)
         form.addRow("", _muted("部分模型强制固定温度(如 kimi-k2 只允许 0.6),遇 invalid temperature 错误时在此填入对应值"))
         root.addLayout(form)
         root.addStretch(1)
 
         bottom = QHBoxLayout()
-        test_btn = QPushButton("测试配置")
+        test_btn = QPushButton(tr("测试配置"))
         test_btn.setStyleSheet("QPushButton{color:#e0794b;border:none;font-weight:700;}")
         test_btn.clicked.connect(self._test)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
-        save = W.primary_btn("保存")
+        save = W.primary_btn(tr("保存"))
         save.clicked.connect(self._save)
         bottom.addWidget(test_btn)
         bottom.addStretch(1)
@@ -1093,7 +1093,7 @@ class ServiceDialog(QDialog):
     def _save(self):
         data = self._collect()
         if not data["model"] or not data["base_url"]:
-            self.test_lab.setText("❌ Base URL 与至少一个模型必填")
+            self.test_lab.setText(tr("❌ Base URL 与至少一个模型必填"))
             return
         self.accept()
 
@@ -1113,7 +1113,7 @@ class _StyleDialog(QDialog):
         self.active = QCheckBox(tr("enabled"))
         self.active.setChecked(bool(row["is_active"]))
         f.addRow(tr("visual_style"), self.name)
-        f.addRow("描述", self.desc)
+        f.addRow(tr("描述"), self.desc)
         f.addRow("", self.active)
         lay.addLayout(f)
         self.prompt = QPlainTextEdit(row["prompt"])

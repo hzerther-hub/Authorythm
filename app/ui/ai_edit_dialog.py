@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
                                QLineEdit, QPlainTextEdit, QPushButton,
                                QVBoxLayout)
 
+from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
 from .toast import err, ok
@@ -35,16 +36,16 @@ class AiEditDialog(QDialog):
         self.mode = mode
         self.start, self.end = start, end
         self._on_result = on_result
-        self.setWindowTitle("✨ AI 修改")
+        self.setWindowTitle(tr("✨ AI 修改"))
         self.resize(620, 420)
         root = QVBoxLayout(self)
         root.setSpacing(10)
 
         head = QHBoxLayout()
-        head.addWidget(W.h2("✨ AI 修改"))
+        head.addWidget(W.h2(tr("✨ AI 修改")))
         head.addStretch(1)
         mode_label = {"selection": f"改写选中片段({end - start} 字)",
-                      "insert": "在光标位置插入", "chapter": "整章处理"}[mode]
+                      "insert": "在光标位置插入", "chapter": tr("整章处理")}[mode]
         head.addWidget(W.tag(mode_label))
         root.addLayout(head)
 
@@ -55,27 +56,27 @@ class AiEditDialog(QDialog):
             preview.setReadOnly(True)
             preview.setMaximumHeight(110)
             preview.setStyleSheet("background:rgba(128,128,128,25);")
-            root.addWidget(QLabel("选中片段预览"))
+            root.addWidget(QLabel(tr("选中片段预览")))
             root.addWidget(preview)
 
         self.instruction = QLineEdit()
-        self.instruction.setPlaceholderText("修改要求,如:把开头改得更抓人 / 加强母亲戏份 / 精简重复描写")
+        self.instruction.setPlaceholderText(tr("修改要求,如:把开头改得更抓人 / 加强母亲戏份 / 精简重复描写"))
         self.instruction.returnPressed.connect(self._run)
         root.addWidget(self.instruction)
 
         row = QHBoxLayout()
-        self.whole = QCheckBox("整章处理")
+        self.whole = QCheckBox(tr("整章处理"))
         self.whole.setEnabled(mode != "chapter")
         row.addWidget(self.whole)
         row.addStretch(1)
-        self.run_btn = W.primary_btn("应用")
+        self.run_btn = W.primary_btn(tr("应用"))
         self.run_btn.clicked.connect(self._run)
-        cancel = QPushButton("取消")
+        cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
         row.addWidget(cancel)
         row.addWidget(self.run_btn)
         root.addLayout(row)
-        root.addWidget(W.muted("注意:只输出结果文本,不会输出解释或前后缀。"))
+        root.addWidget(W.muted(tr("注意:只输出结果文本,不会输出解释或前后缀。")))
         self.instruction.setFocus()
 
 
@@ -99,6 +100,7 @@ class AiEditDialog(QDialog):
         if d["novel_contract"]:
             settings.append(f"故事合约: {d['novel_contract'][:400]}")
         if settings:
+            # 这段是喂给模型的提示词,和上面几行一样保持中文,不要跟界面语言联动
             ctx += ["【作品设定(必须严格遵守,不得冲突)】", *settings]
         style = db.get_setting("novel_style", "")
         if style:
@@ -141,7 +143,7 @@ class AiEditDialog(QDialog):
                      "注意:只输出结果文本,绝对不要输出解释或前后缀。")
         prompt = "\n".join(parts)
         self.run_btn.setEnabled(False)
-        self.run_btn.setText("处理中…")
+        self.run_btn.setText(tr("处理中…"))
 
         def job(tid):
             from ..agents import runner
@@ -149,13 +151,13 @@ class AiEditDialog(QDialog):
 
         def done(tid, result, e):
             self.run_btn.setEnabled(True)
-            self.run_btn.setText("应用")
+            self.run_btn.setText(tr("应用"))
             if e:
                 err(e)
                 return
             text = (result or "").strip()
             if not text:
-                err("AI 未返回内容")
+                err(tr("AI 未返回内容"))
                 return
             if mode == "chapter":
                 new_text = text
@@ -170,7 +172,7 @@ class AiEditDialog(QDialog):
                             f"{'\n\n' if pos < len(chapter) and not after.startswith(chr(10)) else ''}"
                             f"{after}")
             self._on_result(new_text, self.start, self.end)
-            ok("AI 修改已应用")
+            ok(tr("AI 修改已应用"))
             self.accept()
 
         TASKMGR.submit("novel_edit", job, done)
