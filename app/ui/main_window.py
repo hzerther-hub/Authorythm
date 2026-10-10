@@ -152,6 +152,7 @@ class MainWindow(QMainWindow):
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
         # 语言切换即时重建界面(机制同 comPySide),不再要求重启
+        self._stale_pages: set[str] = set()
         on_change(self._on_lang_changed)
 
     def set_busy(self, on: bool, message: str = ""):
@@ -174,55 +175,87 @@ class MainWindow(QMainWindow):
         """
         QTimer.singleShot(0, self._rebuild_ui)
 
-    def _rebuild_ui(self):
-        """按当前语言重建当前页面。所有文案都是构造时 tr() 求值的,只能重建。"""
+    _PAGE_KINDS = ["projects", "project", "episode", "clone", "face_swap", "merger"]
+
+    def _make_page(self, kind: str):
+        """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。"""
         from .project_page import ProjectPage
         from .projects_page import ProjectsPage
         from .episode_page import EpisodePage
+        drama_id = getattr(self, "_cur_drama_id", 0)
+        episode_id = getattr(self, "_cur_episode_id", 0)
+        if kind == "projects":
+            p = ProjectsPage()
+            p.open_drama.connect(self._open_drama)
+            p.set_new_callback(self._new_project)
+            return p
+        if kind == "project" and drama_id:
+            p = ProjectPage()
+            p.enter_episode.connect(self._enter_episode)
+            p.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
+            p.load(drama_id)
+            return p
+        if kind == "episode" and drama_id:
+            p = EpisodePage()
+            p.back_requested.connect(self._back_to_project)
+            p.load(drama_id, episode_id)
+            return p
+        return None
+
+    _PAGE_ATTR = {"projects": "projects_page", "project": "project_page", "episode": "episode_page"}
+
+    def _swap_page(self, kind: str, new) -> None:
+        """把栈内某一页换成 new。
+
+        旧页必须先 setParent(None) 再 deleteLater():deleteLater 是延迟删除,而 removeWidget
+        只把它从栈的布局里摘下来、父子关系还在,删除事件被处理前它仍然按栈的几何参与绘制,
+        结果新旧两页叠在一起,整个界面看起来是塌的(ep_grid 那次踩的是同一个坑)。
+        """
+        old = getattr(self, self._PAGE_ATTR[kind])
+        idx = self.stack.indexOf(old)
+        if idx < 0:
+            idx = self.stack.currentIndex()
+        self.stack.removeWidget(old)
+        old.setParent(None)
+        old.deleteLater()
+        self.stack.insertWidget(idx, new)
+        setattr(self, self._PAGE_ATTR[kind], new)
+        self.stack.setCurrentIndex(idx)
+
+    def _rebuild_ui(self):
+        """按当前语言重建当前页面,并把其余数据页标记为待重建(下次进入时重建)。"""
         idx = self.stack.currentIndex()
-        state = {"drama_id": getattr(self, "_cur_drama_id", 0),
-                 "episode_id": getattr(self, "_cur_episode_id", 0)}
-        kinds = ["projects", "project", "episode", "clone", "face_swap", "merger"]
-        kind = kinds[idx] if 0 <= idx < len(kinds) else "projects"
-        old = self.stack.currentWidget()
+        kind = self._PAGE_KINDS[idx] if 0 <= idx < len(self._PAGE_KINDS) else "projects"
         try:
-            if kind == "projects":
-                new = ProjectsPage()
-                new.open_drama.connect(self._open_drama)
-                new.set_new_callback(self._new_project)
-            elif kind == "project" and state["drama_id"]:
-                new = ProjectPage()
-                new.enter_episode.connect(self._enter_episode)
-                new.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
-                new.load(state["drama_id"])
-            elif kind == "episode" and state["drama_id"]:
-                new = EpisodePage()
-                new.back_requested.connect(self._back_to_project)
-                new.load(state["drama_id"], state["episode_id"])
-            else:
-                new = old            # 工具页文案少,原地刷新即可
+            new = self._make_page(kind)
         except Exception as exc:  # noqa: BLE001 —— 重建失败保留旧页,不把窗口搞没
             import traceback
             traceback.print_exc()
             err(f"界面重建失败:{str(exc)[:120]}")
             return
-        if new is old:
+        self._stale_pages = {k for k in ("projects", "project", "episode") if k != kind}
+        if new is None:                     # 工具页/未加载的数据页,原地刷顶栏即可
             self.retranslate()
             return
-        if kind in ("projects",):
-            self.projects_page = new
-        elif kind == "project":
-            self.project_page = new
-        elif kind == "episode":
-            self.episode_page = new
-        # QStackedWidget 没有 replaceWidget:先摘旧的再插到同一位
-        self.stack.removeWidget(old)
-        self.stack.insertWidget(idx, new)
-        old.deleteLater()
-        new.show()
-        self.stack.setCurrentWidget(new)
+        self._swap_page(kind, new)
         self.retranslate()
-        ok(tr("language_switched"))
+        self.status.showMessage(tr("language_switched"))
+
+    def _ensure_fresh(self, kind: str) -> None:
+        """进入某页前:若它上次重建后语言又变过,先按当前语言重建。"""
+        if kind not in self._PAGE_ATTR or kind not in getattr(self, "_stale_pages", ()):
+            return
+        try:
+            new = self._make_page(kind)
+        except Exception:  # noqa: BLE001
+            self._stale_pages.discard(kind)
+            return
+        if new is None:
+            self._stale_pages.discard(kind)
+            return
+        self._swap_page(kind, new)
+        self._stale_pages.discard(kind)
+        self.retranslate()
 
     def retranslate(self):
         """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""
@@ -252,6 +285,7 @@ class MainWindow(QMainWindow):
 
     def _goto(self, key: str):
         """分段导航切换:项目列表 / 换脸工具 / 合并工具,并同步胶囊选中态。"""
+        self._ensure_fresh(key)
         page = {"projects": self.projects_page,
                 "face_swap": getattr(self, "face_swap_page", None),
                 "merger": getattr(self, "merger_page", None)}.get(key)
@@ -311,19 +345,23 @@ class MainWindow(QMainWindow):
             self.clone_page.load(drama_id)
             self.stack.setCurrentWidget(self.clone_page)
         else:
+            self._ensure_fresh("project")
             self.project_page.load(drama_id)
             self.stack.setCurrentWidget(self.project_page)
 
     def _back_to_projects(self):
+        self._ensure_fresh("projects")
         self.projects_page.reload()
         self.stack.setCurrentWidget(self.projects_page)
 
     def _back_to_project(self):
+        self._ensure_fresh("project")
         self.project_page.load(self.episode_page.drama_id)
         self.stack.setCurrentWidget(self.project_page)
 
     def _enter_episode(self, drama_id: int, episode_id: int):
         self._cur_drama_id, self._cur_episode_id = drama_id, episode_id
+        self._ensure_fresh("episode")
         self.episode_page.load(drama_id, episode_id)
         self.stack.setCurrentWidget(self.episode_page)
 
