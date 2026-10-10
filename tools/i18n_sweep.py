@@ -177,6 +177,94 @@ def _rewrite(path: pathlib.Path, targets: set[str]) -> int:
 
 _TR_IMPORT = re.compile(r"^from\s+\.{1,2}[\w.]*i18n\s+import\s+[^\n]*\btr\b", re.M)
 
+# f-string 整体模板化的行排除(文件名, 行号):这些行的 f-string 是发给模型的提示词/
+# Jev 提问/状态台账内容,翻了会破坏语义。行号以排除表建立时的源码为准,只跑一次。
+FSTRING_EXCLUDE = {
+    ("ai_edit_dialog.py", 97), ("ai_edit_dialog.py", 99), ("ai_edit_dialog.py", 101),
+    ("ai_edit_dialog.py", 112), ("ai_edit_dialog.py", 113), ("ai_edit_dialog.py", 121),
+    ("episode_page.py", 101),
+}
+
+
+def _rewrite_fstrings(path: pathlib.Path) -> tuple[int, list[str]]:
+    """把「字面部分含中文且带插值」的 f-string 整体转成 tr(模板).format(参数)。
+
+    为什么必须整体模板化:f"第 {n} 章" 逐片包会拼出 "Chapter 1 chapters" —— 前缀+
+    后缀在不同语言里的语序不同,只有带 {} 占位符的整句模板才能被正确翻译。
+    带格式规格({x:.0%})或转换符({x!r})的拼不回原语义,跳过;跨行三引号(提示词块)
+    的模板含换行,跳过;嵌套 f-string(f"{f'…'}")跳过。
+    返回 (改写数, 新模板键列表)。
+    """
+    import ast as _ast
+    src = path.read_text(encoding="utf-8")
+    try:
+        tree = _ast.parse(src)
+    except SyntaxError:
+        return 0, []
+    cjk = re.compile(r"[一-鿿]")
+    parent: dict[int, _ast.AST] = {}
+    for node in _ast.walk(tree):
+        for ch in _ast.iter_child_nodes(node):
+            parent[id(ch)] = node
+    in_tr: set[int] = set()
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name) and node.func.id == "tr":
+            for a in _ast.walk(node):
+                in_tr.add(id(a))
+
+    blob = src.encode("utf-8")
+    starts, acc = [], 0
+    for ln in blob.splitlines(keepends=True):
+        starts.append(acc)
+        acc += len(ln)
+
+    def off(lineno: int, col: int) -> int:
+        return starts[lineno - 1] + col
+
+    edits: list[tuple[int, int, bytes]] = []
+    templates: list[str] = []
+    for node in _ast.walk(tree):
+        if not isinstance(node, _ast.JoinedStr) or id(node) in in_tr:
+            continue
+        if isinstance(parent.get(id(node)), _ast.JoinedStr):
+            continue
+        lits = [v for v in node.values if isinstance(v, _ast.Constant)]
+        fvs = [v for v in node.values if isinstance(v, _ast.FormattedValue)]
+        if not fvs or not any(cjk.search(v.value or "") for v in lits):
+            continue
+        if any(v.format_spec is not None or v.conversion not in (-1, None) for v in fvs):
+            continue
+        if (path.name, node.lineno) in FSTRING_EXCLUDE:
+            continue
+        parts: list[str] = []
+        args: list[str] = []
+        for v in node.values:
+            if isinstance(v, _ast.Constant):
+                parts.append(v.value)
+            else:
+                parts.append("{}")
+                args.append(blob[off(v.lineno, v.col_offset):
+                                 off(v.end_lineno, v.end_col_offset)].decode("utf-8"))
+        template = "".join(parts)
+        if "\n" in template:
+            continue
+        s = off(node.lineno, node.col_offset)
+        e = off(node.end_lineno, node.end_col_offset)
+        q = "'" if "'" not in template and '"' not in template else ("'" if "'" not in template else '"')
+        if q in template:
+            continue
+        repl = f"tr({q}{template}{q}).format({', '.join(args)})".encode("utf-8")
+        edits.append((s, e, repl))
+        templates.append(template)
+
+    for s, e, repl in sorted(edits, key=lambda t: -t[0]):
+        blob = blob[:s] + repl + blob[e:]
+    if not edits:
+        return 0, []
+    src = _ensure_tr_import(blob.decode("utf-8"), path)
+    path.write_text(src, encoding="utf-8")
+    return len(edits), templates
+
 
 def _ensure_tr_import(src: str, path: pathlib.Path) -> str:
     """文件里用到 tr() 就必须能 import 到它。
@@ -250,8 +338,41 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true")
     ap.add_argument("--apply", action="store_true")
+    ap.add_argument("--fstrings", action="store_true",
+                    help="把带插值且字面含中文的 f-string 整体转 tr(模板).format(...)")
     ap.add_argument("--out", default=str(ROOT / "tools" / "sweep_keys.json"))
     a = ap.parse_args()
+
+    if a.fstrings:
+        total, all_tpl = 0, []
+        for f in sorted(UI.glob("*.py")):
+            n, tpl = _rewrite_fstrings(f)
+            if n:
+                print(f"{f.name}: {n} 处")
+                all_tpl += tpl
+                total += n
+        # 模板键落库:Z(中文基准) + S(先只填中文,其余留给机翻)
+        if all_tpl:
+            from app.core import ui_strings as U
+            from app.core import i18n as I
+            new = [t for t in dict.fromkeys(all_tpl) if t not in U.S]
+            for t in new:
+                U.S[t] = [t] + [""] * (len(U.LANGS) - 1)
+            if new:
+                ipath = ROOT / "app" / "core" / "i18n.py"
+                isrc = ipath.read_text(encoding="utf-8")
+                idx = isrc.index("\n}\n\ndef _t(")
+                block = "".join(f" {t!r}: {t!r},\n" for t in new if t not in I.Z)
+                ipath.write_text(isrc[:idx] + block + isrc[idx:], encoding="utf-8")
+                upath = ROOT / "app" / "core" / "ui_strings.py"
+                usrc = upath.read_text(encoding="utf-8")
+                tail = usrc.rindex("}\n\n\ndef ui_lookup")
+                ublock = "".join(
+                    "    " + repr(t) + ": [" + ", ".join(repr(x) for x in U.S[t]) + "],\n"
+                    for t in new)
+                upath.write_text(usrc[:tail] + ublock + usrc[tail:], encoding="utf-8")
+            print(f"合计 {total} 处,新模板键 {len(new)}/{len(all_tpl)} 条")
+        return 0
 
     data = collect()
     if a.list:
@@ -260,9 +381,10 @@ def main() -> int:
         for f, hits in data.items():
             rows = [(l, v, _is_prompt(v)) for l, v in hits]
             ui = [r for r in rows if not r[2]]
+            pm = len([r for r in rows if r[2]])
             total += len(ui)
-            prompts += len(r for r in rows if r[2])
-            print(f"\n=== {f.name}  界面 {len(ui)} / 提示词跳过 {prompts if False else len([r for r in rows if r[2]])}")
+            prompts += pm
+            print(f"\n=== {f.name}  界面 {len(ui)} / 提示词跳过 {pm}")
             for l, v, _ in ui:
                 print(f"  {l:5} {v}")
         print(f"\n合计界面文案 {total} 条,跳过提示词 {prompts} 条")

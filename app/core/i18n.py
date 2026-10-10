@@ -945,6 +945,17 @@ def detect_system_language() -> str:
     return "en"
 
 
+# ── 第二波键补译:新增键未走首轮清扫(主词典=中文拷贝、补充词典=英文占位),非英语界面会显示英文。
+#    机翻补齐见 i18n_wave2.py(可人工校订),主词典 merge 后优先级高于补充词典。
+try:
+    from .i18n_wave2 import WAVE2 as _WAVE2
+    for _lang, _patch in _WAVE2.items():
+        if _lang in T and isinstance(_patch, dict):
+            T[_lang].update(_patch)
+except ImportError:
+    pass
+
+
 def tr(key: str, *args) -> str:
     """取界面文案。
 
