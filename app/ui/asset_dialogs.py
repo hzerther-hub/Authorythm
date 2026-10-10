@@ -485,12 +485,12 @@ class AssetDetailDialog(QDialog):
         from .toast import err, ok
         try:
             p = dl_mod.download_asset_image(self.row, self.kind)
-            ok(f"已下载:{p.name}")
+            ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e))
 
     def _delete(self):
-        if not ask(self, tr("delete"), f"确定删除「{self.row['name']}」?", danger=True):
+        if not ask(self, tr("delete"), tr('确定删除「{}」?').format(self.row['name']), danger=True):
             return
         for t in ("episode_characters", "episode_scenes", "episode_props"):
             db.ex(f"DELETE FROM {t} WHERE {self.table[:-1]}_id=?", (self.row["id"],))

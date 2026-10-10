@@ -231,7 +231,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # noqa: BLE001 —— 重建失败保留旧页,不把窗口搞没
             import traceback
             traceback.print_exc()
-            err(f"界面重建失败:{str(exc)[:120]}")
+            err(tr('界面重建失败:{}').format(str(exc)[:120]))
             return
         self._stale_pages = {k for k in ("projects", "project", "episode") if k != kind}
         if new is None:                     # 工具页/未加载的数据页,原地刷顶栏即可
@@ -278,7 +278,7 @@ class MainWindow(QMainWindow):
             return
         if miss:
             names = "、".join(registry.SVC_CN_LABEL.get(m, m) for m in miss)
-            self.banner.setText(f"⚠ AI 服务未配置完整(缺:{names}) — 依赖模型的操作会无法执行,点击此处去「设置 → AI 服务」补全")
+            self.banner.setText(tr('⚠ AI 服务未配置完整(缺:{}) — 依赖模型的操作会无法执行,点击此处去「设置 → AI 服务」补全').format(names))
             self.banner.setVisible(True)
         else:
             self.banner.setVisible(False)

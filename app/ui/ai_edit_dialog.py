@@ -44,7 +44,7 @@ class AiEditDialog(QDialog):
         head = QHBoxLayout()
         head.addWidget(W.h2(tr("✨ AI 修改")))
         head.addStretch(1)
-        mode_label = {"selection": f"改写选中片段({end - start} 字)",
+        mode_label = {"selection": tr('改写选中片段({} 字)').format(end - start),
                       "insert": "在光标位置插入", "chapter": tr("整章处理")}[mode]
         head.addWidget(W.tag(mode_label))
         root.addLayout(head)
@@ -104,7 +104,7 @@ class AiEditDialog(QDialog):
             ctx += ["【作品设定(必须严格遵守,不得冲突)】", *settings]
         style = db.get_setting("novel_style", "")
         if style:
-            ctx.append(f"【文风要求】{style}")
+            ctx.append(tr('【文风要求】{}').format(style))
         # 2) 章节计划(当前章目标/钩子)
         chapters = db.jload(d["novel_chapters"], [])
         plan = next((c for c in chapters if int(c.get("number", 0)) == ep["episode_number"]), {})
@@ -139,7 +139,7 @@ class AiEditDialog(QDialog):
             parts.append(f"【选中片段】\n{sel}")
         elif mode == "insert":
             parts.append(f"【光标位置前文】\n{chapter[max(0, self.start - 120):self.start]}")
-        parts.append(f"【修改要求】{instruction}", RULES[mode],
+        parts.append(tr('【修改要求】{}').format(instruction), RULES[mode],
                      "注意:只输出结果文本,绝对不要输出解释或前后缀。")
         prompt = "\n".join(parts)
         self.run_btn.setEnabled(False)

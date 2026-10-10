@@ -117,13 +117,13 @@ class _BatchProgressDialog(QDialog):
         running = 1 if done < total else 0
         fail = getattr(self, "_fail", 0)
         self.bar.set_counts(done - fail, fail, running, self.total)
-        self.legend.setText(f"{int((done / self.total) * 100)}%  ·  进行中 {running}  ·  成功 {done - fail}  ·  失败 {fail}")
+        self.legend.setText(tr('{}%  ·  进行中 {}  ·  成功 {}  ·  失败 {}').format(int((done / self.total) * 100), running, done - fail, fail))
         self._refresh_stage()
 
     def finish(self, ok: int, fail: int):
         self._fail = fail
         self.bar.set_counts(ok, fail, 0, self.total)
-        self.legend.setText(f"100%  ·  成功 {ok}  ·  失败 {fail}")
+        self.legend.setText(tr('100%  ·  成功 {}  ·  失败 {}').format(ok, fail))
         self.stage_lab.setText(tr("完成"))
         self._render_ledger()
 
@@ -132,7 +132,7 @@ class _BatchProgressDialog(QDialog):
             return
         ids = getattr(self.page, "_batch_ids", [])
         cur = next((i for i in ids if self.page._chapter_running_stage(i)), None)
-        self.stage_lab.setText(f"当前阶段:{STAGE_CN.get(cur, cur)}" if cur else "")
+        self.stage_lab.setText(tr('当前阶段:{}').format(STAGE_CN.get(cur, cur)) if cur else "")
 
     # 伏笔台账
     def _toggle_ledger(self, on: bool):
@@ -162,7 +162,7 @@ class _BatchProgressDialog(QDialog):
             cb.toggled.connect(lambda _v, it=item: self._toggle_ledger_item(it))
             rl.addWidget(cb)
             ch = item.get("open_chapter")
-            rl.addWidget(W.tag(f"第{ch}章" if ch else "—"))
+            rl.addWidget(W.tag(tr('第{}章').format(ch) if ch else "—"))
             txt = QLabel(item.get("text", "")[:60])
             txt.setObjectName("muted")
             txt.setWordWrap(True)
@@ -196,7 +196,7 @@ class ReviewPanelDialog(QDialog):
         self.setWindowTitle(tr("审校问题明细"))
         self.resize(560, 460)
         root = QVBoxLayout(self)
-        root.addWidget(W.h2(f"第 {chapter} 章 · {title}" if title else f"第 {chapter} 章"))
+        root.addWidget(W.h2(tr('第 {} 章 · {}').format(chapter, title) if title else tr('第 {} 章').format(chapter)))
         self.resolved: set[int] = set()
         self.boxes: dict[int, QCheckBox] = {}
         for i, iss in enumerate(issues or []):
@@ -236,7 +236,7 @@ class ReviewSummaryDialog(QDialog):
         self.resize(680, 560)
         self._on_goto = on_goto
         root = QVBoxLayout(self)
-        root.addWidget(W.h2(f"{data.get('total', 0)} 章有问题 · 共 {data.get('issues', 0)} 项"))
+        root.addWidget(W.h2(tr('{} 章有问题 · 共 {} 项').format(data.get('total', 0), data.get('issues', 0))))
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         inner = QWidget()
@@ -248,9 +248,9 @@ class ReviewSummaryDialog(QDialog):
             box = W.make_card()
             bl = QVBoxLayout(box)
             head = QHBoxLayout()
-            head.addWidget(W.tag(f"第{it.get('episode_number')}章"))
+            head.addWidget(W.tag(tr('第{}章').format(it.get('episode_number'))))
             head.addWidget(QLabel(it.get("title") or ""))
-            head.addWidget(W.tag(f"{it.get('count', 0)} 项"))
+            head.addWidget(W.tag(tr('{} 项').format(it.get('count', 0))))
             head.addStretch(1)
             go = QPushButton(tr("去这章"))
             go.clicked.connect(lambda _=False, e=it.get("episode_id"): self._goto(e))

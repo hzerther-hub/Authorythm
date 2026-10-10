@@ -131,8 +131,7 @@ def _sb_costume_context(sb_id: int, drama_id: int) -> str:
                         continue
                     if n >= th:
                         lines.append(
-                            f"{name} → 剧情推进,本镜着装应已不同于基础形象"
-                            f"(置信度 {int(round(n * 100))}%):按剧本语境描写当前服装,不要直接套用参考图妆造")
+                            tr('{} → 剧情推进,本镜着装应已不同于基础形象(置信度 {}%):按剧本语境描写当前服装,不要直接套用参考图妆造').format(name, int(round(n * 100))))
             else:
                 _costume_breaker.note_fail()
     if not lines:
@@ -979,7 +978,7 @@ class EpisodePage(QWidget):
                 return ""
             from .novel_dialogs import gate_message
             missing = gate_message(self.drama_id)
-            return f"请先完成步骤 {missing} 的设定" if missing else ""
+            return tr('请先完成步骤 {} 的设定').format(missing) if missing else ""
         except Exception:  # noqa: BLE001
             return ""
 
@@ -1038,8 +1037,8 @@ class EpisodePage(QWidget):
         target = cur["target_words"] or 3000
         if body_len < int(target * 0.8):
             if ask(self, tr("batch_write"),
-                   f"第 {cur['episode_number']} 章"
-                   + (f"现有 {body_len} 字,未达目标 {target} 字" if body_len else f"尚未写作(目标 {target} 字)")
+                   tr('第 {} 章').format(cur['episode_number'])
+                   + (tr('现有 {} 字,未达目标 {} 字').format(body_len, target) if body_len else tr('尚未写作(目标 {} 字)').format(target))
                    + tr(",将重新生成。已有内容会被覆盖且无法撤销。确定继续?")):
                 self._run_batch([cur["id"]], force=True)
             return
@@ -1093,8 +1092,8 @@ class EpisodePage(QWidget):
             if self._batch_dialog:
                 self._batch_dialog.finish(self._batch_ok, self._batch_failed)
             if r.get("ok"):
-                ok(f"批量完成:{r['ok']} 章成功"
-                   + (f",{r['failed']} 章失败" if r.get("failed") else ""))
+                ok(tr('批量完成:{} 章成功').format(r['ok'])
+                   + (tr(',{} 章失败').format(r['failed']) if r.get("failed") else ""))
             self._reload_raw()
         TASKMGR.submit("novel_batch", job, done, drama_id=self.drama_id, episode_id=self.episode_id)
 
@@ -1106,7 +1105,7 @@ class EpisodePage(QWidget):
         if not eps:
             return
         if not ask(self, tr("batch_write"),
-                   f"将重新生成这 {len(eps)} 章,已有正文会被覆盖且无法撤销。确定继续?"):
+                   tr('将重新生成这 {} 章,已有正文会被覆盖且无法撤销。确定继续?').format(len(eps))):
             return
         self._run_batch([e["id"] for e in eps], force=True)
 
@@ -1161,7 +1160,7 @@ class EpisodePage(QWidget):
             p = config.media_url_to_path(result["audio_url"])
             if p.exists():
                 os.startfile(str(p))
-            ok(f"已合成朗读音频({result['chunks']} 段)")
+            ok(tr('已合成朗读音频({} 段)').format(result['chunks']))
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id)
 
     def _open_plan(self):
@@ -2452,7 +2451,7 @@ class EpisodePage(QWidget):
         from ..core import download as dl_mod
         try:
             p = dl_mod.download_storyboard_video(sb)
-            ok(f"已下载:{p.name}")
+            ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e))
 
@@ -2503,7 +2502,7 @@ class EpisodePage(QWidget):
         n = len(self._incomplete or [])
         self.repair_btn.setVisible(n > 0)
         if n:
-            self.repair_btn.setText(f"⟳ 自动补全 {n}")
+            self.repair_btn.setText(tr('⟳ 自动补全 {}').format(n))
 
     def _repair_storyboards(self):
         from ..core.taskmgr import TASKMGR
@@ -2524,9 +2523,9 @@ class EpisodePage(QWidget):
                 return
             r = result or {}
             if r.get("failed"):
-                warn(f"补全完成,{r['failed']} 个失败可重试")
+                warn(tr('补全完成,{} 个失败可重试').format(r['failed']))
             else:
-                ok(f"补全完成,共修复 {r.get('completed', 0)} 个分镜")
+                ok(tr('补全完成,共修复 {} 个分镜').format(r.get('completed', 0)))
             self._reload_storyboard()
         TASKMGR.submit("sb_repair", job, done, episode_id=self.episode_id)
 
@@ -2594,8 +2593,9 @@ class EpisodePage(QWidget):
         model_txt = self.video_model.currentText()
         stats = TASKMGR.ep_video_stats(self.episode_id)
         if not ask(self, tr("batch_video"),
-                   f"即将生成 {len(rows)} 个镜头(约 {int(total)}s)\n模型:{model_txt}\n分辨率:{self.res_combo.currentText()}\n"
-                   f"当前任务:{tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}\n\n确认开始?"):
+                   tr("即将生成 {} 个镜头(约 {}s)\n模型:{}\n分辨率:{}\n当前任务:{} {} · {} {}\n\n确认开始?")
+                   .format(len(rows), int(total), model_txt, self.res_combo.currentText(),
+                           tr("done"), stats["completed"], tr("failed"), stats["failed"])):
             return
         for r in rows:
             self._gen_video_job(r["id"])

@@ -25,10 +25,10 @@ class VariantsDialog(QDialog):
     def __init__(self, parent, character: dict):
         super().__init__(parent)
         self.character = character
-        self.setWindowTitle(f"◑ 造型变体 · {character['name']}")
+        self.setWindowTitle(tr('◑ 造型变体 · {}').format(character['name']))
         self.resize(680, 560)
         root = QVBoxLayout(self)
-        root.addWidget(W.h2(f"◑ {character['name']} · 造型变体"))
+        root.addWidget(W.h2(tr('◑ {} · 造型变体').format(character['name'])))
         root.addWidget(W.muted(tr("为角色添加多套造型(如 便装/战斗/回忆青年);生成形象后可「用作角色形象」。")))
 
         add_box = W.make_card()
@@ -162,5 +162,5 @@ class VariantsDialog(QDialog):
               (r["id"], self.character["id"]))
         db.ex("UPDATE characters SET image_url=?, updated_at=? WHERE id=?",
               (r["image_url"], db.now(), self.character["id"]))
-        QMessageBox.information(self, tr("visual_style"), f"已将「{r['label']}」设为 {self.character['name']} 的当前形象")
+        QMessageBox.information(self, tr("visual_style"), tr('已将「{}」设为 {} 的当前形象').format(r['label'], self.character['name']))
         self.reload()

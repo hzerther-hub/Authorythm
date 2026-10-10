@@ -140,14 +140,13 @@ class BookImportDialog(QDialog):
     def _refresh_state(self):
         n = self._chapter_count()
         analysis = self._analysis()
-        self.import_stat.setText(f"当前 {n} 章" if n else tr("尚未导入任何章节"))
+        self.import_stat.setText(tr('当前 {} 章').format(n) if n else tr("尚未导入任何章节"))
         prof = analysis.get("profile")
         if prof:
             self.profile_view.setPlainText(json.dumps(prof, ensure_ascii=False, indent=1))
         elif analysis.get("status") == "paused":
             self.profile_view.setPlainText(
-                f"(已暂停:失败 {analysis.get('failed')}/{analysis.get('total')} 组,"
-                f"成功 {analysis.get('done')} 组。请检查文本模型配置后重跑)")
+                tr('(已暂停:失败 {}/{} 组,成功 {} 组。请检查文本模型配置后重跑)').format(analysis.get('failed'), analysis.get('total'), analysis.get('done')))
         # 依赖:导入 → 分析 → 仿写
         self.analyze_btn.setEnabled(bool(n))
         self.analyze_btn.setToolTip("" if n else tr("先导入整本书"))
@@ -170,7 +169,7 @@ class BookImportDialog(QDialog):
             with open(path, "rb") as f:
                 data = f.read()
         except OSError as exc:
-            err(f"读取失败:{exc}")
+            err(tr('读取失败:{}').format(exc))
             return
         enc = self.enc_combo.text().strip()
         if enc.lower() in ("", "auto"):
@@ -189,7 +188,7 @@ class BookImportDialog(QDialog):
             if error:
                 err(error)
                 return
-            ok(f"已导入 {result['chapters']} 章,共 {result['total_chars']} 字")
+            ok(tr('已导入 {} 章,共 {} 字').format(result['chapters'], result['total_chars']))
             self._refresh_state()
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
@@ -210,7 +209,7 @@ class BookImportDialog(QDialog):
             return book_import.run_analysis(
                 self.drama_id,
                 on_progress=lambda done_n, total, label: taskmgr.set_stage(
-                    tid, f"{label} · {done_n}/{total} 组"))
+                    tid, tr('{} · {}/{} 组').format(label, done_n, total)))
 
         def done(tid, result, error):
             btn.idle()
@@ -221,10 +220,9 @@ class BookImportDialog(QDialog):
                 self._refresh_state()
                 return
             if result.get("status") == "paused":
-                err(f"分析已暂停:成功 {result['done']}/{result['total']} 组,"
-                    f"失败 {result['failed']} 组(失败率过高)")
+                err(tr('分析已暂停:成功 {}/{} 组,失败 {} 组(失败率过高)').format(result['done'], result['total'], result['failed']))
             else:
-                ok(f"分析完成:{result['chapters']} 章已归为仿写档案")
+                ok(tr('分析完成:{} 章已归为仿写档案').format(result['chapters']))
             self._refresh_state()
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
@@ -261,7 +259,6 @@ class BookImportDialog(QDialog):
             if error:
                 err(error)
                 return
-            ok(f"新书已创建:《{result['title']}》· {result['characters']} 个角色"
-               f" · 计划 {result['planned_chapters']} 章")
+            ok(tr('新书已创建:《{}》· {} 个角色 · 计划 {} 章').format(result['title'], result['characters'], result['planned_chapters']))
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)

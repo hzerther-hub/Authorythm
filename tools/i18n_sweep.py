@@ -243,8 +243,13 @@ def _rewrite_fstrings(path: pathlib.Path) -> tuple[int, list[str]]:
                 parts.append(v.value)
             else:
                 parts.append("{}")
-                args.append(blob[off(v.lineno, v.col_offset):
-                                 off(v.end_lineno, v.end_col_offset)].decode("utf-8"))
+                # FormattedValue 的源码跨度**包含大括号本身**(3.12+ PEP 701),不剥会
+                # 生成 .format({nc}) —— 单元素集合字面量,format 收到 {14} 的 str(set)
+                a_src = blob[off(v.lineno, v.col_offset):
+                             off(v.end_lineno, v.end_col_offset)].decode("utf-8")
+                if a_src.startswith("{") and a_src.endswith("}"):
+                    a_src = a_src[1:-1]
+                args.append(a_src)
         template = "".join(parts)
         if "\n" in template:
             continue

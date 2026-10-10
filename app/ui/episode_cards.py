@@ -282,7 +282,7 @@ class AssetCard(QFrame):
         dl.setWordWrap(True)
         blay.addWidget(dl)
         if kind == "scene" and (row.get("lighting") or "").strip():
-            ll = QLabel(f"光照 · {row['lighting'].strip()}")
+            ll = QLabel(tr('光照 · {}').format(row['lighting'].strip()))
             ll.setObjectName("muted")
             ll.setWordWrap(True)
             blay.addWidget(ll)
@@ -618,7 +618,7 @@ class ComicPanelCard(QFrame):
             dq.setWordWrap(True)
             bl.addWidget(dq)
         if (row.get("composition") or "").strip():
-            cp = QLabel(f"构图:{row['composition'].strip()}")
+            cp = QLabel(tr('构图:{}').format(row['composition'].strip()))
             cp.setObjectName("muted")
             cp.setWordWrap(True)
             bl.addWidget(cp)

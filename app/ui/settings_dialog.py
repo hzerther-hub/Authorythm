@@ -563,9 +563,9 @@ class SettingsDialog(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
-        lay.addWidget(W.h2(f"易好短剧 · {tr('version')} {config.APP_VERSION}"))
+        lay.addWidget(W.h2(tr('易好短剧 · {} {}').format(tr('version'), config.APP_VERSION)))
         lay.addWidget(W.muted(tr("「易好短剧」(Yihao Drama) 的 PySide6 桌面实现,功能对齐原版。")))
-        lay.addWidget(W.muted(f"语言 / Languages: {len(LANGS)}(中文/EN/日本語/한국어/Français/Deutsch/Italiano/Português/Español/Tiếng Việt/Türkçe/العربية/हिन्दी/Bahasa Indonesia/ภาษาไทย)"))
+        lay.addWidget(W.muted(tr('语言 / Languages: {}(中文/EN/日本語/한국어/Français/Deutsch/Italiano/Português/Español/Tiếng Việt/Türkçe/العربية/हिन्दी/Bahasa Indonesia/ภาษาไทย)').format(len(LANGS))))
         lay.addWidget(W.muted("核心:10 Agents · 11 Skills · 20 风格预设 · 无损合并(easymerger) · 同款复刻(video-clone-lite) · 封面体系"))
 
         box = W.make_card()
@@ -600,7 +600,7 @@ class SettingsDialog(QDialog):
         self.prog.setVisible(False)
         b_lay.addWidget(self.prog)
         lay.addWidget(box)
-        lay.addWidget(W.muted(f"更新源:{updater.FEED_URL}"))
+        lay.addWidget(W.muted(tr('更新源:{}').format(updater.FEED_URL)))
         lay.addStretch(1)
         self._upd_result = {}
         return w
@@ -628,14 +628,14 @@ class SettingsDialog(QDialog):
             self.notes_lab.setVisible(False)
             return
         if r.get("has_update"):
-            self.update_lab.setText(f"发现新版本 v{r['latest']}(当前 v{r['current']})")
+            self.update_lab.setText(tr('发现新版本 v{}(当前 v{})').format(r['latest'], r['current']))
             if r.get("notes"):
                 self.notes_lab.setPlainText(r["notes"])
                 self.notes_lab.setVisible(True)
             self.upd_btn.setVisible(bool(r.get("url")))
             self._upd_result = r
         else:
-            self.update_lab.setText(f"✅ 已是最新版本(v{r['latest']})")
+            self.update_lab.setText(tr('✅ 已是最新版本(v{})').format(r['latest']))
             self.upd_btn.setVisible(False)
             self.notes_lab.setVisible(False)
 

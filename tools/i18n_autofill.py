@@ -124,7 +124,8 @@ def main() -> int:
 
 
 def _write(mod, path: Path) -> None:
-    lines = [f'    "{k}": [' + ", ".join(repr(x) for x in row) + "]," for k, row in mod.S.items()]
+    # 键也必须走 repr:含 \n 的模板键直接 f'"{k}"' 插值会把字符串字面量劈成多行(踩过)
+    lines = [f"    {k!r}: [" + ", ".join(repr(x) for x in row) + "]," for k, row in mod.S.items()]
     body = (
         '# -*- coding: utf-8 -*-\n'
         '"""UI 文案补充词典(第二层)。i18n.tr() 先查主词典,再查本表。\n\n'

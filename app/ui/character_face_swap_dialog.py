@@ -38,7 +38,7 @@ class CharacterFaceSwapDialog(QDialog):
 
         root.addWidget(W.h2(f"🎭 {tr('face_swap')} · {character['name']}"))
         root.addWidget(W.muted(tr("为角色形象换脸:选择源脸照片(可上传或取自其他角色),换脸预览满意后替换角色形象。")
-                              + (f"  换脸模型:{face_cfg_label}" if face_cfg_label else "")))
+                              + (tr('  换脸模型:{}').format(face_cfg_label) if face_cfg_label else "")))
 
         cols = QHBoxLayout()
         # 当前形象
@@ -296,7 +296,7 @@ class CharacterFaceSwapDialog(QDialog):
                 self.result_path = first
                 self.res_img.setPixmap(W.pixmap_from_media(first, 236, 236))
             self.download_btn.setEnabled(okn > 0)
-            self.status.setText(f"✅ 完成 {okn}/{len(self.results)} 张")
+            self.status.setText(tr('✅ 完成 {}/{} 张').format(okn, len(self.results)))
 
         from ..core.taskmgr import TASKMGR
         TASKMGR.submit("face_swap_batch", job, done)
@@ -313,7 +313,7 @@ class CharacterFaceSwapDialog(QDialog):
                 n += 1
             except Exception:  # noqa: BLE001
                 continue
-        ok(f"已下载 {n} 张结果")
+        ok(tr('已下载 {} 张结果').format(n))
 
     def _apply(self):
         if not self.result_path:

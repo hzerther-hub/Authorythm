@@ -311,9 +311,9 @@ def _rel_time(ts: str) -> str:
     if secs < 60:
         return tr("刚刚")
     if secs < 3600:
-        return f"{int(secs // 60)} 分钟前"
+        return tr('{} 分钟前').format(int(secs // 60))
     if secs < 86400:
-        return f"{int(secs // 3600)} 小时前"
+        return tr('{} 小时前').format(int(secs // 3600))
     return f"{dt.month}/{dt.day}"
 
 
@@ -387,7 +387,7 @@ class AddAssetDialog(QDialog):
         super().__init__(parent)
         self.drama_id, self.kind = drama_id, kind
         label = {"character": "角色", "scene": "场景", "prop": "道具"}[kind]
-        self.setWindowTitle(f"＋ 添加{label}")
+        self.setWindowTitle(tr('＋ 添加{}').format(label))
         self.resize(440, 340)
         f = QFormLayout()
         outer = QVBoxLayout(self)

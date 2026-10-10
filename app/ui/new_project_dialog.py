@@ -128,7 +128,7 @@ class NewProjectDialog(QDialog):
         self.style_combo.blockSignals(True)
         self.style_combo.clear()
         for v, name in style_choices(wt):
-            self.style_combo.addItem(name, v)
+            self.style_combo.addItem(tr(name), v)   # 预设名随语言,自建预设原样回退
         if wt == "promotion":
             i = self.style_combo.findData("healing")
             if i >= 0:

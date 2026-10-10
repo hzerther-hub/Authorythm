@@ -54,11 +54,11 @@ def _fmt_ago(ts: str) -> str:
     if secs < 60:
         return tr("刚刚")
     if secs < 3600:
-        return f"{int(secs // 60)} 分钟前"
+        return tr('{} 分钟前').format(int(secs // 60))
     if secs < 86400:
-        return f"{int(secs // 3600)} 小时前"
+        return tr('{} 小时前').format(int(secs // 3600))
     if secs < 86400 * 7:
-        return f"{int(secs // 86400)} 天前"
+        return tr('{} 天前').format(int(secs // 86400))
     return f"{dt.month}/{dt.day}"
 
 
@@ -178,7 +178,8 @@ class ProjectCard(QFrame):
             chips.addWidget(imi)
         style = db.q1("SELECT name FROM style_presets WHERE value=?", (drama["style"],))
         if style and drama["work_type"] != "novel":
-            st = W.tag(style["name"])
+            # 预设名是固定种子集,走 tr() 可随语言;用户自建预设不在词典里,tr 原样回退
+            st = W.tag(tr(style["name"]))
             st.setStyleSheet("background:#fdf0e6; color:#f97316; border-radius:4px;"
                              "padding:2px 8px; font-size:12px;")
             chips.addWidget(st)
@@ -187,7 +188,7 @@ class ProjectCard(QFrame):
         nc = db.q1("SELECT COUNT(*) c FROM characters WHERE drama_id=?", (drama["id"],))["c"]
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama["id"],))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama["id"],))["c"]
-        meta = QLabel(f"{nc} 角色 · {ns} 场景 · {ne} 集")
+        meta = QLabel(tr('{} 角色 · {} 场景 · {} 集').format(nc, ns, ne))
         meta.setObjectName("muted")
         bl.addWidget(meta)
         bl.addStretch(1)

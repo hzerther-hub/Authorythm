@@ -114,7 +114,7 @@ class NovelPlanDialog(QDialog):
             edit = QPlainTextEdit(d[f"novel_{key}"] or "")
             edit.setMinimumHeight(260)
             self.edits[key] = edit
-            btn = WaitingButton(tr("✨ AI 起草") + (f"第 {i + 1} 步" if i else ""))
+            btn = WaitingButton(tr("✨ AI 起草") + (tr('第 {} 步').format(i + 1) if i else ""))
             btn.clicked.connect(lambda _=False, k=key, n=name: self._draft_section(k, n))
             self._draft_btns[key] = btn
             save_btn = QPushButton(tr("保存"))
@@ -199,7 +199,7 @@ class NovelPlanDialog(QDialog):
             chars = len(data) if isinstance(data, list) else 0
         except Exception:  # noqa: BLE001
             chars = -1
-        self.plan_stat.setText(f"共 {len(chapters)} 章 · {chars if chars >= 0 else tr('角色 JSON 有误')} 个角色")
+        self.plan_stat.setText(tr('共 {} 章 · {} 个角色').format(len(chapters), chars if chars >= 0 else tr('角色 JSON 有误')))
 
     def _on_size_changed(self):
         """规模改动即时落库,保证 AI 任务在后台读到的是用户当前设定。"""
@@ -221,7 +221,7 @@ class NovelPlanDialog(QDialog):
         self._save_project_meta()
         self._on_size_changed()
         btn = self.chapters_btn
-        btn.busy(f"生成 {n} 章计划中")
+        btn.busy(tr('生成 {} 章计划中').format(n))
         self.tabs.setCurrentIndex(self.tabs.count() - 1)     # 章节计划页
         editor = self.chapters_edit
         editor.clear()
@@ -233,16 +233,16 @@ class NovelPlanDialog(QDialog):
                                                     chapter_count=n, word_count=words)
             except Exception as exc:  # noqa: BLE001
                 editor.setPlainText("")
-                err(f"章节计划保存失败:{str(exc)[:160]}")
+                err(tr('章节计划保存失败:{}').format(str(exc)[:160]))
                 return
             self._reload_tabs()
             self._update_plan_stat()
-            ok(f"章节计划已生成:{result['count']} 章 / 每章约 {result['word_count']} 字")
+            ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(result['count'], result['word_count']))
 
         def failed(msg: str) -> None:
             btn.idle()
             editor.setPlainText("")
-            err(f"章节计划生成失败:{msg[:160]}")
+            err(tr('章节计划生成失败:{}').format(msg[:160]))
 
         worker = stream_into(editor, novel_pipe.chapters_prompt(self.drama_id, n, words),
                              # 板块名是提示词路由键(SECTION_SPEC 按中文名匹配),翻了模型就认不出要写哪一块
@@ -273,7 +273,7 @@ class NovelPlanDialog(QDialog):
                 err(error)
                 return
             self._reload_tabs()
-            ok(f"主要角色已生成:{result['count']} 个(章节计划缺失时已自动补齐)")
+            ok(tr('主要角色已生成:{} 个(章节计划缺失时已自动补齐)').format(result['count']))
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
 
@@ -284,7 +284,7 @@ class NovelPlanDialog(QDialog):
             if not isinstance(raw, list):
                 raise ValueError(tr("主要角色需要是 JSON 数组"))
         except Exception as exc:  # noqa: BLE001
-            err(f"主要角色 JSON 有误:{exc}")
+            err(tr('主要角色 JSON 有误:{}').format(exc))
             return
         chapters = novel_pipe.chapters_from_text(self.chapters_edit.toPlainText())
         if not chapters and self.chapters_edit.toPlainText().strip():
@@ -293,7 +293,7 @@ class NovelPlanDialog(QDialog):
         novel_pipe.save_chapters(self.drama_id, chapters)
         n_char = novel_pipe.save_characters(self.drama_id, raw)
         self._update_plan_stat()
-        ok(f"已保存:{len(chapters)} 章计划 · {n_char} 个角色(角色已同步到资产库)")
+        ok(tr('已保存:{} 章计划 · {} 个角色(角色已同步到资产库)').format(len(chapters), n_char))
 
     def closeEvent(self, ev):
         """关闭时停掉还在跑的流式线程(QThread 仍在运行时析构会崩)。"""
@@ -322,11 +322,11 @@ class NovelPlanDialog(QDialog):
             return
         miss = missing_prereq(self.drama_id, key)
         if miss:
-            warn(f"请先生成「{'、'.join(miss)}」再起草{name}")
+            warn(tr('请先生成「{}」再起草{}').format('、'.join(miss), name))
             return
         self._save_project_meta()          # 先落库,上下文里才有题材/简介
         btn = self._draft_btns[key]
-        btn.busy(f"起草{name}中")
+        btn.busy(tr('起草{}中').format(name))
         save_btn = self._save_btns.get(key)
         if save_btn:
             save_btn.setEnabled(False)      # 流式期间禁止保存:框里是思考的半截内容
@@ -344,18 +344,18 @@ class NovelPlanDialog(QDialog):
             try:
                 result = novel_pipe.persist_draft(self.drama_id, key, text)
             except Exception as exc:  # noqa: BLE001
-                err(f"{name}保存失败:{str(exc)[:160]}")
+                err(tr('{}保存失败:{}').format(name, str(exc)[:160]))
                 return
             self._reload_tabs()
             self._update_plan_stat()
-            ok(f"{name}已生成并保存{result.get('extra', '')}")
+            ok(tr('{}已生成并保存{}').format(name, result.get('extra', '')))
 
         def failed(msg: str) -> None:
             btn.idle()
             if save_btn:
                 save_btn.setEnabled(True)
             editor.setPlainText("")     # 别把思考过程留在框里冒充结果
-            err(f"{name}起草失败:{msg[:160]}")
+            err(tr('{}起草失败:{}').format(name, msg[:160]))
 
         worker = stream_into(editor, prompt, system=novel_pipe._draft_system(spec["name"]),
                              config_id=config_id, temperature=0.6,
@@ -367,7 +367,7 @@ class NovelPlanDialog(QDialog):
         field, _ = self.SECTION_MAP[key]
         db.ex(f"UPDATE dramas SET {field}=?, updated_at=? WHERE id=?",
               (self.edits[key].toPlainText(), db.now(), self.drama_id))
-        ok(f"{self.SECTION_CN[key]}已保存")
+        ok(tr('{}已保存').format(self.SECTION_CN[key]))
 
     def _save_project_meta(self):
         """保存简介/题材(供 Agent read_novel_context 读取)。"""
@@ -440,7 +440,7 @@ class ReviewDialog(QDialog):
         root = QVBoxLayout(self)
         overall = review.get("overall", "")
         head = QHBoxLayout()
-        head.addWidget(W.h2(f"◇ 第 {episode_number} 章审校 · " + (tr("✅ 通过") if overall == "pass" else tr("⚠️ 需修复"))))
+        head.addWidget(W.h2(tr('◇ 第 {} 章审校 · ').format(episode_number) + (tr("✅ 通过") if overall == "pass" else tr("⚠️ 需修复"))))
         head.addStretch(1)
         root.addLayout(head)
         if review.get("summary"):
