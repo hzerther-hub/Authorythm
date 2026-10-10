@@ -94,15 +94,17 @@ def _is_identity(text: str, out: str, target: str, source: str = "zh") -> bool:
 
     百度转发遇到拿不准的短词会直接透传,不报错也不换语言 —— 日文那档最明显,
     「生成封面」原样返回。拿这种结果去填语言包,等于把中文写进日文槽,比空着还糟。
+
+    判据:目标语≠源语、结果与原文完全相同、且原文**含汉字**。
+    含汉字才可疑;纯拉丁串(Jev/Base URL)本来就同形,不算透传。
+    注意不能拿「含 U+2000 以上字符」当外文证据 —— 中文标点(。…、「」◇)全在那个区间,
+    之前就是这么误判的。
     """
     if target == source or out != text:
         return False
-    low = text.strip().lower()
-    if low in _OK_IDENTITY:
+    if text.strip().lower() in _OK_IDENTITY:
         return False
-    if any(ord(c) > 0x2000 and not (0x4E00 <= ord(c) <= 0x9FFF) for c in text):
-        return False      # 已经是外文,不是中文原文
-    return True
+    return any(0x4E00 <= ord(c) <= 0x9FFF for c in text)
 
 
 def translate(text: str, target: str, source: str = "zh") -> str:

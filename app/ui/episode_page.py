@@ -449,11 +449,11 @@ class EpisodePage(QWidget):
         ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
         self._drama, self._ep = d, ep
         self.title.setText(f"{d['title']} · {tr('episode_n').format(ep['episode_number'])}")
-        # 应用项目级内容语言(对齐原版 a6a47dc):进入不同项目时切换产出语言
+        # 项目级内容语言:只影响 AI 产出(runner 全部显式传 lang=self._drama_lang)。
+        # 绝不能拿它调 set_language() —— 那是界面语言的全局,被内容语言覆盖后,
+        # 英文界面一进中文项目就被劫持回中文(还会误触发一次"语言已切换"重建)。
         from ..core.config import resolve_content_language
-        from ..core.i18n import set_language
         self._drama_lang = resolve_content_language(drama_id)
-        set_language(self._drama_lang)
         nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (episode_id,))["c"]
         nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
         self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
