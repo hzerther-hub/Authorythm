@@ -302,11 +302,16 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
     out = config.STATIC_DIR / "merged" / f"{episode_id}_{uuid.uuid4().hex[:8]}.mp4"
     ts = db.now()
     ep_row = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    narrations = _episode_narrations(episode_id, only_ids, shots)
+    # 片头字号/时长按真实画幅算:先探多数派分辨率再构造 spec(写死 1280x720 会让竖屏漫剧
+    # 的字号错一档、黑底卡变横条)
     intro = None
     if ep_row:
         try:
+            ref_w, ref_h = _majority_size(shots)
             intro = _intro.build_intro_spec(ep_row["drama_id"], title_override=intro_title,
-                                            card=intro_card, overlay=intro_overlay)
+                                            card=intro_card, overlay=intro_overlay,
+                                            ref_w=ref_w, ref_h=ref_h)
         except Exception:  # noqa: BLE001
             intro = None      # 片头配置异常不阻断拼接
     model_name = "lossless-auto" + ("-intro" if intro else "")
@@ -315,28 +320,11 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
         (episode_id, "ffmpeg", model_name, json.dumps([str(p) for p in shots], ensure_ascii=False),
          "processing", ts, ts))
     try:
-        # 旁白音轨:逐镜头对应
-        narrations = []
-        rows = db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (episode_id,))
-        id_set = set(only_ids) if only_ids else {r["id"] for r in rows}
-        shot_urls = [str(p) for p in shots]
-        for r in rows:
-            if r["id"] not in id_set:
-                continue
-            url = r["video_url"] or r["composed_video_url"]
-            if url and str(config.media_url_to_path(url)) in shot_urls and r["narration_audio_url"]:
-                np_ = config.media_url_to_path(r["narration_audio_url"])
-                narrations.append(np_ if np_.exists() else None)
-            elif url and str(config.media_url_to_path(url)) in shot_urls:
-                narrations.append(None)
-
         has_narr = any(narrations)
-        if has_narr and len(narrations) == len(shots):
-            merged = _merge_with_narration(shots, narrations, out, stop_check, intro=intro)
-            channel = "无损合并 + 旁白混音" + (" + 片头" if intro else "")
-        elif intro:
-            merged = _merge_with_intro(shots, out, stop_check, intro)
-            channel = "无损合并 + 片头"
+        if intro or has_narr:
+            merged = _merge_filtered(shots, narrations, out, intro, stop_check)
+            channel = ("统一参数拼接" if not has_narr else "统一参数拼接 + 旁白混音") \
+                      + (" + 片头" if intro else "")
         else:
             path, channel = auto_merge([str(p) for p in shots], out, progress, stop_check)
             merged = path
@@ -354,89 +342,119 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
         raise
 
 
-def _merge_with_narration(shots: list[Path], narrations: list[Path | None],
-                          out: Path, stop_check=None, intro: dict | None = None) -> Path:
-    """视频统一参数 + 每镜头旁白 MP3 叠加 amix。可选前置片头(黑底卡/文字叠加)。"""
-    inputs: list[str] = []
-    for s, n in zip(shots, narrations):
-        inputs += ["-i", str(s)]
-        inputs += ["-i", str(n)] if n else []
-    iv, ia, i_overlay, temps = (_intro.build_intro_filters(intro) if intro else ([], [], None, []))
-
-    # 逐镜头的视频/音频 filter(片段间用 ';' 分隔)
-    vparts: list[str] = []
-    aparts: list[str] = []
-    for i in range(len(shots)):
-        vparts.append(
-            f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-            f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}]")
-        aparts.append(f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
-
-    # 片头片段(自带末尾 ';' 已去掉,这里用 ',' 连接输入标签)
-    # 组装: filter1;filter2;...;  [in0][in1]concat=...[vcat]
-    chain = [x for x in ([ "".join(iv) ] if iv else []) if x.strip()]
-    a_chain = [x for x in ([ "".join(ia) ] if ia else []) if x.strip()]
-    chain += vparts
-    v_join = "".join((["[vIntro]"] if iv else []) + [f"[v{i}]" for i in range(len(shots))])
-    a_join = "".join((["[aIntro]"] if ia else []) + [f"[a{i}]" for i in range(len(shots))])
-    chain.append(f"{v_join}concat=n={n_v}:v=1:a=0[vcat]")
-
-    a_chain = []
-    if ia:
-        a_chain.append("".join(ia))
-    a_chain += aparts
-    a_chain.append(f"{a_join}concat=n={n_a}:v=0:a=1[acat]")
-
-    if i_overlay:                     # ★ 叠加只在尾部实现一次
-        a_chain.append(f"[acat]apad=pad_dur=0[aout]")
-        chain.append(f"[vcat]{i_overlay}[vTxt]")
-        vmap = "[vTxt]"
-    else:
-        chain.append(f"[vcat]null[vTxt]")
-        vmap = "[vTxt]"
-
-    fc = ";".join([x.strip().rstrip(";") for x in (chain + a_chain) if x.strip()])
-    try:
-        _run([_ffmpeg(), "-y", *inputs, "-filter_complex", fc,
-              "-map", vmap, "-map", "[aout]",
-              "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
-              "-c:a", "aac", "-b:a", "192k", str(out)])
-    finally:
-        for f in temps:
-            f.unlink(missing_ok=True)
+def _episode_narrations(episode_id: int, only_ids: list[int] | None,
+                        shots: list[Path]) -> list[Path | None]:
+    """逐镜头对齐的旁白文件(按镜号顺序,与 shots 一一对应;缺失/文件丢失去 None)。"""
+    rows = db.q("SELECT id, video_url, composed_video_url, narration_audio_url "
+                "FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (episode_id,))
+    keep = set(only_ids) if only_ids else {r["id"] for r in rows}
+    shot_set = {str(p) for p in shots}
+    out: list[Path | None] = []
+    for r in rows:
+        if r["id"] not in keep:
+            continue
+        url = r["video_url"] or r["composed_video_url"]
+        if not url or str(config.media_url_to_path(url)) not in shot_set:
+            continue
+        n = r["narration_audio_url"]
+        if n:
+            np_ = config.media_url_to_path(n)
+            out.append(np_ if np_.exists() else None)
+        else:
+            out.append(None)
     return out
 
 
-def _merge_with_intro(shots: list[Path], out: Path, stop_check=None,
-                      intro: dict | None = None) -> Path:
-    """仅片头(无旁白):前置黑底卡 + 尾部文字叠加,与镜头 concat。"""
+def _majority_size(shots: list[Path]) -> tuple[int, int]:
+    """多数派分辨率(对齐原版):个别异常片段(如横竖混杂)不绑架全集画幅。"""
+    count: dict[tuple[int, int], int] = {}
+    for p in shots:
+        try:
+            info = probe(p)
+        except Exception:  # noqa: BLE001 —— 单个探测失败不拦拼接
+            continue
+        key = (info["width"] or 1280, info["height"] or 720)
+        count[key] = count.get(key, 0) + 1
+    best, n = (1280, 720), 0
+    for key, c in count.items():
+        if c > n:
+            best, n = key, c
+    return best
+
+
+def _merge_filtered(shots: list[Path], narrations: list[Path | None] | None,
+                    out: Path, intro: dict | None = None, stop_check=None) -> Path:
+    """统一 filter_complex 拼接(对齐原版 doMergeInner 的单路径):
+
+      视频:逐镜头 scale+pad 居中补边 + setsar + fps 归一到多数派画幅,片头黑底卡在前 concat
+      音频:每镜头建「原声基准」(aformat 48k 立体声 + atrim + apad;无音轨的用 anullsrc 静音),
+            有旁白再 amix(normalize=0 防音量减半),片头静音轨在前 concat
+      叠加:片头文字在 concat 后的视频上 alpha 淡入淡出(只在尾部做一次)
+
+    取代旧 _merge_with_narration/_merge_with_intro:旧版旁白输入加了却没在滤镜里引用、
+    镜头输入下标被旁白挤错位、无叠加时 [aout] 未定义却要 map、画幅写死 1280x720。
+    """
+    narr = list(narrations or [])[:len(shots)]
+    narr += [None] * (len(shots) - len(narr))
+    infos = [probe(p) for p in shots]
+    ref_w, ref_h = _majority_size(shots)
+
+    # 输入顺序:镜头在前(按镜号),旁白文件在后(仅存在的)
     inputs: list[str] = []
     for s in shots:
         inputs += ["-i", str(s)]
+    narr_input_of: dict[int, int] = {}
+    j = len(shots)
+    for i, n in enumerate(narr):
+        if n and Path(n).exists():
+            inputs += ["-i", str(n)]
+            narr_input_of[i] = j
+            j += 1
+
     iv, ia, i_overlay, temps = (_intro.build_intro_filters(intro) if intro else ([], [], None, []))
 
-    chain, a_chain = [], []
-    if iv:
-        chain.append("".join(iv))
-    if ia:
-        a_chain.append("".join(ia))
+    chain: list[str] = []
+    vlabels, alabels = [], []
     for i in range(len(shots)):
-        chain.append(f"[{i}:v]scale=1280:720:force_original_aspect_ratio=decrease,"
-                     f"pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}]")
-        a_chain.append(f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
-    n = len(shots) + (1 if iv else 0)
-    v_join = "".join((["[vIntro]"] if iv else []) + [f"[v{i}]" for i in range(len(shots))])
-    a_join = "".join((["[aIntro]"] if ia else []) + [f"[a{i}]" for i in range(len(shots))])
-    chain.append(f"{v_join}concat=n={n}:v=1:a=0[vcat]")
-    a_chain.append(f"{a_join}concat=n={n}:v=0:a=1[acat]")
-    if i_overlay:
-        chain.append(f"[vcat]{i_overlay}[vTxt]")
+        chain.append(f"[{i}:v]scale={ref_w}:{ref_h}:force_original_aspect_ratio=decrease,"
+                     f"pad={ref_w}:{ref_h}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}]")
+        vlabels.append(f"[v{i}]")
+        dur = infos[i].get("duration") or 5.0
+        d = f"{dur:.3f}"
+        if infos[i].get("has_audio"):
+            chain.append(f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+                         f"atrim=0:{d},apad=whole_dur={d}[ab{i}]")
+        else:
+            chain.append(f"anullsrc=channel_layout=stereo:sample_rate=48000,atrim=0:{d}[ab{i}]")
+        if i in narr_input_of:
+            k = narr_input_of[i]
+            # 旁白 MP3 常为 24kHz 单声道,同样先归一;duration=first 以原声长度为准
+            chain.append(f"[{k}:a]aformat=sample_rates=48000:channel_layouts=stereo,"
+                         f"atrim=0:{d},apad=whole_dur={d}[na{i}]")
+            chain.append(f"[ab{i}][na{i}]amix=inputs=2:duration=first:dropout_transition=0:"
+                         f"normalize=0[n{i}]")
+            alabels.append(f"[n{i}]")
+        else:
+            alabels.append(f"[ab{i}]")
+
+    # 片头片段插到最前(黑底卡 + 静音轨),再统一 concat
+    n_seg = len(shots) + (1 if iv else 0)
+    if iv:
+        chain.insert(0, "".join(iv))
+        chain.append("".join(ia))
+    v_join = "".join((["[vIntro]"] if iv else []) + vlabels)
+    a_join = "".join((["[aIntro]"] if iv else []) + alabels)
+    chain.append(f"{v_join}concat=n={n_seg}:v=1:a=0[vcat]")
+    chain.append(f"{a_join}concat=n={n_seg}:v=0:a=1[aout]")
+    if i_overlay:                     # ★ 叠加只在尾部实现一次(原版 56cd571 的双重叠加坑)
+        chain.append(f"[vcat]{i_overlay}[vout]")
     else:
-        chain.append("[vcat]null[vTxt]")
-    fc = ";".join([x.strip().rstrip(";") for x in (chain + a_chain) if x.strip()])
+        chain.append("[vcat]null[vout]")
+
+    fc = ";".join(x.strip().rstrip(";") for x in chain if x.strip())
     try:
         _run([_ffmpeg(), "-y", *inputs, "-filter_complex", fc,
-              "-map", "[vTxt]", "-map", "[acat]",
+              "-map", "[vout]", "-map", "[aout]",
               "-c:v", "libx264", "-preset", "veryfast", "-crf", "18",
               "-c:a", "aac", "-b:a", "192k", str(out)])
     finally:

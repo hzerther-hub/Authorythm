@@ -3180,24 +3180,32 @@ class EpisodePage(QWidget):
                   (self.drama_id,))
         if not d:
             return
+        # 两个勾选各自回填(此前把 intro_overlay 并进卡片勾选,重启后叠加开关永远显示未勾)
         self.intro_check.blockSignals(True)
-        self.intro_check.setChecked(bool(d["intro_card"] or d["intro_overlay"]))
+        self.intro_check.setChecked(bool(d["intro_card"]))
         self.intro_check.blockSignals(False)
+        self.intro_overlay_check.blockSignals(True)
+        self.intro_overlay_check.setChecked(bool(d["intro_overlay"]))
+        self.intro_overlay_check.blockSignals(False)
         self.intro_title.blockSignals(True)
         self.intro_title.setText(d["intro_title"] or "")
         self.intro_title.blockSignals(False)
-        self.intro_title.setVisible(self.intro_check.isChecked())
-        self.intro_title.editingFinished.connect(self._save_intro_state)
+        self.intro_title.setVisible(self.intro_check.isChecked() or self.intro_overlay_check.isChecked())
+        if not getattr(self, "_intro_title_wired", False):
+            self.intro_title.editingFinished.connect(self._save_intro_state)
+            self._intro_title_wired = True
 
     def _on_intro_toggle(self, on: bool):
-        self.intro_title.setVisible(on)
+        self.intro_title.setVisible(self.intro_check.isChecked() or self.intro_overlay_check.isChecked())
         self._save_intro_state()
 
     def _save_intro_state(self):
         if not hasattr(self, "intro_check"):
             return
-        db.ex("UPDATE dramas SET intro_title=?, intro_card=?, updated_at=? WHERE id=?",
+        # intro_overlay 此前漏存:勾了叠加、关掉应用,下次打开就回到未勾
+        db.ex("UPDATE dramas SET intro_title=?, intro_card=?, intro_overlay=?, updated_at=? WHERE id=?",
               (self.intro_title.text().strip(), 1 if self.intro_check.isChecked() else 0,
+               1 if self.intro_overlay_check.isChecked() else 0,
                db.now(), self.drama_id))
 
     def _merge_elapsed_sec(self, m: dict) -> str:
