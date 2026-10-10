@@ -1053,3 +1053,16 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
   项目→返回列表全链路通过(`8329566`)。
 - 翻译服务已同步参考项目:`backend/src/services/translate.ts` + `POST /api/v1/translate`
   (单条/批量,zod 校验),CRLF 保持,tsc 通过 —— 上一轮"待办"清账。
+
+## 第 42 轮(2026-10-10): 视频合并加入片头名(对齐参考版) + 启动语言跟随系统
+
+- **合并片头重写(`67fb3b9`)**:对照 `xiaoshuo/backend/src/services/ffmpeg-merge.ts` 的 doMergeInner
+  单路径,把 `_merge_with_narration`/`_merge_with_intro` 合并为 `_merge_filtered`。旧版四缺陷:
+  旁白 amix 整个缺失(输入加了没引用)+ 输入下标错位、无叠加时 [aout] 未定义必炸、画幅写死
+  1280x720(竖屏拉变形)、无音轨镜头引用 [i:a] 报 no streams。现:多数派分辨率、has_audio 探测
+  + anullsrc 补静音、旁白 aformat+atrim+apad+amix(normalize=0)、片头字号按真实画幅算。
+  UI:`_save_intro_state` 漏存 intro_overlay、`_load_intro_state` 勾选态错乱、editingFinished
+  重复连接,三处修。实测竖屏无音轨+旁白+卡片+叠加全开:1080x1920 保持、6.6s、白字居中。
+- **启动语言跟随系统(`e11b6b9`)**:`detect_system_language()`(QLocale 语种码比对 15 语种,
+  未知回退 en);`ui_language_explicit` 闸 —— 手选过的尊重所存值,没选过的跟随系统且不落库
+  (改系统语言应用跟着变),两个选择器选定时打标。
