@@ -118,7 +118,7 @@ class ProjectSettingsDialog(QDialog):
         f.addRow(tr("aspect_ratio"), self.aspect)
         self.style = QComboBox()
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
-            self.style.addItem(r["name"], r["value"])
+            self.style.addItem(tr(r["name"]), r["value"])   # 预设名随语言
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("visual_style"), self.style)

@@ -1085,3 +1085,19 @@ prompt_generator / script_rewriter / storyboard_breaker)照搬自 Mastra 版本,
   翻成 {{} 的);ja「第 {} 章」语序手工修正
 - 实测:en/ja 项目卡全英文/全日文(统计行/相对时间/风格名/类型标签),唯一中文是项目
   标题(用户内容);主窗口导航+双语重建回归通过
+
+## 第 44 轮(2026-10-10): dict 值残留 —— 语言切换收尾的收尾
+
+用户再报「还没有改完全」(制作台资产卡按钮/阶段标签/风格名)。根因:第 40 轮扫描为保护
+dict 键跳过了**所有字典值**,ASSET_LABELS(图绘/文绘/上传/换脸/生成/重绘/主角/道具…)、
+STAGE_CN(写正文/审校中…)、REF_PLACEHOLDER(角/景/具)整批漏网。
+
+- ASSET_LABELS:卡片构造点传 `{k: tr(v) for k,v in ...}` 现场翻译视图(字典值即 tr 键)
+- STAGE_CN/添加角色弹窗标题/插入模式标签/AI 改写 insert:消费点包 tr
+- REF_PLACEHOLDER 单字占位改「当前语言种类名首字」(zh→角/景/具,en→C/S/P,ja→役/景/小)
+- 漫画风格下拉(episode 2675/asset_dialogs 121)与项目页风格标签(project_page 695)补包 tr
+- 30 新键入库:图绘/文绘用**参考项目官方译法**(Image Redraw/画像再描画/이미지 재묘화,
+  对齐 xiaoshuo locales 的 imgRedraw/textRedraw),22 词 en/ja/ko 手工定稿,其余机翻 383 槽
+- 审计方法论:无头遍历全页 QLabel/QPushButton/QComboBox/QTab/placeholder 收 CJK 文本,
+  比截图+视觉模型可靠(视觉模型两读不一致,还把日文汉字誤报成中文残留);剩余 CJK 全为
+  用户数据(人物外貌/场景光照/分镜内容/项目标题/服务配置名),属内容不翻

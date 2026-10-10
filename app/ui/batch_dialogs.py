@@ -132,7 +132,7 @@ class _BatchProgressDialog(QDialog):
             return
         ids = getattr(self.page, "_batch_ids", [])
         cur = next((i for i in ids if self.page._chapter_running_stage(i)), None)
-        self.stage_lab.setText(tr('当前阶段:{}').format(STAGE_CN.get(cur, cur)) if cur else "")
+        self.stage_lab.setText(tr('当前阶段:{}').format(tr(STAGE_CN.get(cur, cur))) if cur else "")
 
     # 伏笔台账
     def _toggle_ledger(self, on: bool):

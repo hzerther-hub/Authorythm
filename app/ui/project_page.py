@@ -386,7 +386,7 @@ class AddAssetDialog(QDialog):
     def __init__(self, parent, drama_id: int, kind: str):
         super().__init__(parent)
         self.drama_id, self.kind = drama_id, kind
-        label = {"character": "角色", "scene": "场景", "prop": "道具"}[kind]
+        label = tr({"character": "角色", "scene": "场景", "prop": "道具"}[kind])
         self.setWindowTitle(tr('＋ 添加{}').format(label))
         self.resize(440, 340)
         f = QFormLayout()
@@ -692,7 +692,8 @@ class ProjectPage(QWidget):
         ns = db.q1("SELECT COUNT(*) c FROM scenes WHERE drama_id=?", (drama_id,))["c"]
         ne = db.q1("SELECT COUNT(*) c FROM episodes WHERE drama_id=?", (drama_id,))["c"]
         style = db.q1("SELECT name FROM style_presets WHERE value=?", (d["style"],))
-        self.style_tag.setText(style["name"] if style else "")
+        # 预设名随语言;自建预设不在词典里,tr 原样回退
+        self.style_tag.setText(tr(style["name"]) if style else "")
         self.style_tag.setVisible(bool(style))
         nm = db.jload(d["novel_meta"], {}) or {}
         src = nm.get("imitated_from") or {}

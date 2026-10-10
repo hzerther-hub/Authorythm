@@ -1553,6 +1553,8 @@ class EpisodePage(QWidget):
         }
         total = ready = 0
         comic_total = comic_ready = 0
+        # 标签现场翻译:字典值是中文基准,当 tr 键用
+        _labels = {k: tr(v) for k, v in ASSET_LABELS.items()}
         for kind, rows in groups.items():
             sec = self.asset_sections[kind]
             grid = sec["grid"]
@@ -1569,7 +1571,7 @@ class EpisodePage(QWidget):
                 if r.get("comic_image_url"):
                     comic_ready += 1
                 comic_total += 1
-                card = (C.CharacterAssetCard(r, ASSET_LABELS, on_gen_image=self._cb_gen_image(r, kind),
+                card = (C.CharacterAssetCard(r, _labels, on_gen_image=self._cb_gen_image(r, kind),
                                               on_gen_text=self._cb_gen_image(r, kind),
                                               on_upload=self._cb_upload(r, kind),
                                               on_face_swap=(lambda rid=r["id"]: self._face_swap(rid))
@@ -1579,7 +1581,7 @@ class EpisodePage(QWidget):
                                               on_prompt=self._cb_prompt(r, kind),
                                               on_open=self._cb_open(r, kind))
                        if kind == "characters"
-                       else C.AssetCard(r, ASSET_LABELS, kind[:-1],
+                       else C.AssetCard(r, _labels, kind[:-1],
                                         on_gen=self._cb_gen_image(r, kind),
                                         on_upload=self._cb_upload(r, kind),
                                         on_prompt=self._cb_prompt(r, kind),
@@ -2304,7 +2306,11 @@ class EpisodePage(QWidget):
         self._render_refs(r)
         self._render_bound_refs(r)
 
-    REF_PLACEHOLDER = {"character": "角", "scene": "景", "prop": "具"}
+    # 占位大字取当前语言种类名首字(zh→角/景/具,en→C/S/P,ja→役/景/道)
+    REF_KIND_KEY = {"character": "角色", "scene": "场景", "prop": "道具"}
+
+    def _ref_placeholder(self, kind: str) -> str:
+        return tr(self.REF_KIND_KEY.get(kind, kind))[:1]
 
     def _ref_rows(self, kind: str) -> list:
         """本集可参考的资产(与分镜绑定的优先)。"""
@@ -2348,7 +2354,7 @@ class EpisodePage(QWidget):
             is_bound = row["id"] in bound
             state = tr("ref_ok") if (is_bound and has_img) else (
                 tr("ref_no_image") if not has_img else tr("ref_unbound"))
-            card = C.RefCard(row.get("image_url"), self.REF_PLACEHOLDER[kind], name,
+            card = C.RefCard(row.get("image_url"), self._ref_placeholder(kind), name,
                              tr(REF_TAB_KEYS[kind]), state,
                              on_generate=(lambda _id=row["id"]: self._goto_assets(_id))
                              if (is_bound and not has_img) else None)
@@ -2667,7 +2673,7 @@ class EpisodePage(QWidget):
         self.comic_style.setFixedWidth(150)
         self.comic_style.addItem(tr("follow_project"), "")
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
-            self.comic_style.addItem(r["name"], r["value"])
+            self.comic_style.addItem(tr(r["name"]), r["value"])   # 预设名随语言,自建预设原样回退
         self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
         self.comic_style.currentIndexChanged.connect(self._on_comic_style)
         bar.addWidget(self.comic_style)

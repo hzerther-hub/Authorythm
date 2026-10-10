@@ -45,7 +45,7 @@ class AiEditDialog(QDialog):
         head.addWidget(W.h2(tr("✨ AI 修改")))
         head.addStretch(1)
         mode_label = {"selection": tr('改写选中片段({} 字)').format(end - start),
-                      "insert": "在光标位置插入", "chapter": tr("整章处理")}[mode]
+                      "insert": tr("在光标位置插入"), "chapter": tr("整章处理")}[mode]
         head.addWidget(W.tag(mode_label))
         root.addLayout(head)
 

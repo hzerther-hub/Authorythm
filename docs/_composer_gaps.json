@@ -1,0 +1,93 @@
+{
+ "de": [
+  "&Photoshop",
+  "Format",
+  "Host",
+  "Name",
+  "Port",
+  "Radius",
+  "X",
+  "Y",
+  "name",
+  "tool.lasso"
+ ],
+ "es": [
+  "&Photoshop",
+  "Error: {err}",
+  "Host",
+  "Visible",
+  "X",
+  "Y",
+  "visible"
+ ],
+ "fr": [
+  "&Image",
+  "&Photoshop",
+  "+ Image",
+  "Angle",
+  "Distance",
+  "Format",
+  "Pixels",
+  "Port",
+  "Rotation",
+  "Visible",
+  "X",
+  "Y",
+  "tool.lasso",
+  "visible"
+ ],
+ "hi": [
+  "X",
+  "Y"
+ ],
+ "id": [
+  "&Photoshop",
+  "Format",
+  "Host",
+  "Port",
+  "Radius",
+  "X",
+  "Y"
+ ],
+ "it": [
+  "&File",
+  "&Photoshop",
+  "Host",
+  "Password",
+  "X",
+  "Y"
+ ],
+ "ja": [
+  "X",
+  "Y"
+ ],
+ "ko": [
+  "X",
+  "Y"
+ ],
+ "pt": [
+  "&Photoshop",
+  "Host",
+  "Pixels",
+  "X",
+  "Y"
+ ],
+ "th": [
+  "X",
+  "Y"
+ ],
+ "tr": [
+  "&Photoshop",
+  "X",
+  "Y"
+ ],
+ "vi": [
+  "&Photoshop",
+  "X",
+  "Y"
+ ],
+ "zh_CN": [
+  "X",
+  "Y"
+ ]
+}
