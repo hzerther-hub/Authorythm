@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, 
                                QPushButton, QScrollArea, QSpinBox, QSplitter,
                                QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
+from .confirm import ask
 from ..ai import face_swap, image_client, registry, tts_client, video_client
 from ..agents import runner
 from ..ai.jev_gate import JevBreaker
@@ -722,7 +723,8 @@ class EpisodePage(QWidget):
         self.style_combo.setMinimumWidth(116)
         self.style_combo.addItem("", "")
         for name, prompt in NOVEL_STYLES:
-            self.style_combo.addItem(name, prompt)
+            # 名字走 tr(),提示词保持中文 —— 后者是发给模型的指令,不是界面文案
+            self.style_combo.addItem(tr(name), prompt)
         self.style_combo.addItem(tr("style_custom"), NOVEL_STYLE_CUSTOM)
         self.style_combo.currentIndexChanged.connect(self._on_style_pick)
         row.addWidget(self.style_combo)
@@ -1035,12 +1037,10 @@ class EpisodePage(QWidget):
         body_len = len((cur["content"] or "").strip())
         target = cur["target_words"] or 3000
         if body_len < int(target * 0.8):
-            if QMessageBox.question(
-                    self, tr("batch_write"),
-                    f"第 {cur['episode_number']} 章"
-                    + (f"现有 {body_len} 字,未达目标 {target} 字" if body_len else f"尚未写作(目标 {target} 字)")
-                    + tr(",将重新生成。已有内容会被覆盖且无法撤销。确定继续?"),
-                    QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+            if ask(self, tr("batch_write"),
+                   f"第 {cur['episode_number']} 章"
+                   + (f"现有 {body_len} 字,未达目标 {target} 字" if body_len else f"尚未写作(目标 {target} 字)")
+                   + tr(",将重新生成。已有内容会被覆盖且无法撤销。确定继续?")):
                 self._run_batch([cur["id"]], force=True)
             return
         # 情形二:本章已完成 → 取后续中「无正文」的前 10 章
@@ -1105,10 +1105,8 @@ class EpisodePage(QWidget):
             if len((r["content"] or "").strip()) >= 200]
         if not eps:
             return
-        if QMessageBox.question(
-                self, tr("batch_write"),
-                f"将重新生成这 {len(eps)} 章,已有正文会被覆盖且无法撤销。确定继续?",
-                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+        if not ask(self, tr("batch_write"),
+                   f"将重新生成这 {len(eps)} 章,已有正文会被覆盖且无法撤销。确定继续?"):
             return
         self._run_batch([e["id"] for e in eps], force=True)
 
@@ -1231,7 +1229,7 @@ class EpisodePage(QWidget):
         self.style_combo2.setMinimumWidth(116)
         self.style_combo2.addItem("", "")
         for name, prompt in self.style_combo_items():
-            self.style_combo2.addItem(name, prompt)
+            self.style_combo2.addItem(tr(name), prompt)
         self.style_combo2.addItem(tr("style_custom"), "__custom__")
         self.style_combo2.currentIndexChanged.connect(self._on_style_pick2)
         row.addWidget(self.style_combo2)
@@ -2595,12 +2593,9 @@ class EpisodePage(QWidget):
                       (self.episode_id,))["s"]
         model_txt = self.video_model.currentText()
         stats = TASKMGR.ep_video_stats(self.episode_id)
-        ret = QMessageBox.question(
-            self, tr("batch_video"),
-            f"即将生成 {len(rows)} 个镜头(约 {int(total)}s)\n模型:{model_txt}\n分辨率:{self.res_combo.currentText()}\n"
-            f"当前任务:{tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}\n\n确认开始?",
-            QMessageBox.Yes | QMessageBox.No)
-        if ret != QMessageBox.Yes:
+        if not ask(self, tr("batch_video"),
+                   f"即将生成 {len(rows)} 个镜头(约 {int(total)}s)\n模型:{model_txt}\n分辨率:{self.res_combo.currentText()}\n"
+                   f"当前任务:{tr('done')} {stats['completed']} · {tr('failed')} {stats['failed']}\n\n确认开始?"):
             return
         for r in rows:
             self._gen_video_job(r["id"])

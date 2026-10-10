@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame,
                                QMenu, QMessageBox, QPushButton, QScrollArea,
                                QTabWidget, QVBoxLayout, QWidget)
 
+from .confirm import ask
 from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
@@ -279,9 +280,8 @@ class EpisodeCard(QFrame):
         self.res_btn.setText(res)
 
     def _del(self):
-        if QMessageBox.question(
-                self, tr("delete_episode"),
-                f"{tr('episode_n').format(self.episode_number)} → {tr('delete')}?") != QMessageBox.Yes:
+        if not ask(self, tr("delete_episode"),
+                   f"{tr('episode_n').format(self.episode_number)} → {tr('delete')}?", danger=True):
             return
         for t in ("storyboard_characters", "storyboard_props"):
             db.ex(f"DELETE FROM {t} WHERE storyboard_id IN "

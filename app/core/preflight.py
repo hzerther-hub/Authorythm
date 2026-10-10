@@ -24,11 +24,13 @@ def ensure_ready(service_type: str, config_id: int | None = None) -> bool:
         registry.check_ready(service_type, config_id)
         return True
     except NotConfigured as e:
+        # core 不该依赖 ui,而 ui 又依赖 core —— 局部导入,避免循环
+        from ..ui.confirm import warn
         label = registry.SVC_CN_LABEL.get(service_type, service_type)
         msg = (f"{label}服务未就绪 — {e.reason}\n\n"
                f"影响:{SVC_HINT.get(service_type, service_type)}\n\n"
                "请到「设置 → AI 服务」补全配置后重试。")
-        QMessageBox.warning(None, "无法执行", msg)
+        warn(None, "无法执行", msg)
         return False
 
 

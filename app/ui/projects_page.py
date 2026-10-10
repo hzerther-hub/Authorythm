@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, Q
                                QLineEdit, QMenu, QPushButton, QScrollArea, QVBoxLayout,
                                QWidget)
 
+from .confirm import ask
 from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
@@ -389,8 +390,8 @@ class ProjectsPage(QWidget):
         d = db.q1("SELECT title FROM dramas WHERE id=?", (drama_id,))
         if not d:
             return
-        if QMessageBox.question(self, tr("delete_project"),
-                                tr("confirm_delete_project", d["title"])) != QMessageBox.Yes:
+        if not ask(self, tr("delete_project"), tr("confirm_delete_project", d["title"]),
+                   danger=True):
             return
         for t in ("episode_characters", "episode_scenes", "episode_props"):
             db.ex(f"DELETE FROM {t} WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)", (drama_id,))

@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QHBox
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
 
+from .confirm import ask
 from ..core import config, db
 from ..core.i18n import LANGS, tr
 from . import widgets as W
@@ -89,7 +90,8 @@ class ProjectSettingsDialog(QDialog):
         self.novel_style = QComboBox()
         self.novel_style.addItem(tr("未选(跟随默认)"), "")
         for name, prompt in NOVEL_STYLES:
-            self.novel_style.addItem(name, prompt)
+            # 名字走 tr(),提示词保持中文 —— 后者是发给模型的指令,不是界面文案
+            self.novel_style.addItem(tr(name), prompt)
         self.novel_style.addItem(tr("自定义…"), NOVEL_STYLE_CUSTOM)
         _cur = (d["novel_style"] or "").strip()
         _si = self.novel_style.findData(_cur) if _cur else 0
@@ -488,7 +490,7 @@ class AssetDetailDialog(QDialog):
             err(str(e))
 
     def _delete(self):
-        if QMessageBox.question(self, tr("delete"), f"确定删除「{self.row['name']}」?") != QMessageBox.Yes:
+        if not ask(self, tr("delete"), f"确定删除「{self.row['name']}」?", danger=True):
             return
         for t in ("episode_characters", "episode_scenes", "episode_props"):
             db.ex(f"DELETE FROM {t} WHERE {self.table[:-1]}_id=?", (self.row["id"],))

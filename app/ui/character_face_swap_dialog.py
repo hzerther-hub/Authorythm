@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
                                QHBoxLayout, QLabel, QMessageBox,
                                QPushButton, QVBoxLayout)
 
+from .confirm import warn
 from ..ai import face_swap
 from ..core import config, db
 from ..core.i18n import tr
@@ -225,7 +226,7 @@ class CharacterFaceSwapDialog(QDialog):
             return
         healthy, msg = face_swap.health(config_id=self.cfg_id)
         if not healthy:
-            QMessageBox.warning(self, tr("face_swap"), msg)
+            warn(self, tr("face_swap"), msg)
             return
         self.go_btn.setEnabled(False)
         self.status.setText(tr("in_progress") + "…")
@@ -257,7 +258,7 @@ class CharacterFaceSwapDialog(QDialog):
             return
         ok_, msg = face_swap.health(config_id=self.cfg_id)
         if not ok_:
-            QMessageBox.warning(self, tr("face_swap"), msg)
+            warn(self, tr("face_swap"), msg)
             return
         items = self._load_char_images()
         if not items:
@@ -286,7 +287,7 @@ class CharacterFaceSwapDialog(QDialog):
             self._batch_running = False
             self.batch_btn.setEnabled(True)
             if error:
-                QMessageBox.warning(self, tr("face_swap"), str(error)[:400])
+                warn(self, tr("face_swap"), str(error)[:400])
                 return
             self.results = result or {}
             okn = sum(1 for v in self.results.values() if v)

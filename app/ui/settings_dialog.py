@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, 
                                QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
                                QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
+from .confirm import ask, warn
 from ..agents import prompts
 from ..ai import face_swap as fs_mod
 from ..ai import registry
@@ -38,6 +39,8 @@ SVC_DESC = {"text": "svc_text_desc", "image": "svc_image_desc",
 
 
 class SettingsDialog(QDialog):
+    # 更新下载进度:updater 在工作线程里回调,靠这个信号回主线程驱动进度条
+    download_progress = Signal(int, int)
     def __init__(self, parent=None, on_language_changed=None, on_theme_changed=None):
         super().__init__(parent)
         self.setWindowTitle(tr("settings"))
@@ -223,7 +226,7 @@ class SettingsDialog(QDialog):
 
     def _delete_service(self, cfg: dict):
         name = cfg.get("remark") or cfg.get("provider")
-        if QMessageBox.question(self, tr("delete"), tr("confirm_delete_service", name)) != QMessageBox.Yes:
+        if not ask(self, tr("delete"), tr("confirm_delete_service", name), danger=True):
             return
         registry.delete_config(cfg["id"])
         self._fill_services(cfg["service_type"])
@@ -604,6 +607,7 @@ class SettingsDialog(QDialog):
     def _check_update(self):
         """检查更新(后台线程,避免阻塞界面)。"""
         from PySide6.QtCore import QThread
+        self.download_progress.connect(self._on_download_progress)
         from ..core import updater
         self.update_lab.setText(tr("正在检查更新…"))
         res_holder = {}
@@ -634,22 +638,33 @@ class SettingsDialog(QDialog):
             self.upd_btn.setVisible(False)
             self.notes_lab.setVisible(False)
 
+    def _on_download_progress(self, done: int, total: int) -> None:
+        """下载进度回主线程:总长未知就保持转圈,已知就显示百分比。"""
+        if total > 0:
+            self.prog.setRange(0, total)
+            self.prog.setValue(done)
+        else:
+            self.prog.setRange(0, 0)
+
     def _do_update(self):
         """下载并应用更新,完成后询问重启。"""
         from PySide6.QtCore import QThread
         from ..core import updater
         url = self._upd_result.get("url", "")
         if not url:
-            QMessageBox.warning(self, tr("update"), tr("update_failed_no_url"))
+            warn(self, tr("update"), tr("update_failed_no_url"))
             return
         self.prog.setVisible(True)
+        self.prog.setRange(0, 0)          # 拿不到总长时先转圈,拿到就转确定进度
         self.upd_btn.setEnabled(False)
         out = {}
 
         class _T(QThread):
             def run(self):
                 try:
-                    out["files"] = updater.do_update(url)
+                    # 信号是线程安全的:工作线程发,主线程收到再动进度条
+                    out["files"] = updater.do_update(
+                        url, lambda d, t: self.download_progress.emit(d, t))
                 except Exception as e:  # noqa: BLE001
                     out["err"] = str(e)
         th = _T()
@@ -658,10 +673,10 @@ class SettingsDialog(QDialog):
             self.prog.setVisible(False)
             self.upd_btn.setEnabled(True)
             if out.get("err"):
-                QMessageBox.warning(self, tr("update"), tr("update_failed") + str(out["err"])[:300])
+                warn(self, tr("update"), tr("update_failed") + str(out["err"])[:300])
                 return
             n = len(out.get("files", []))
-            if QMessageBox.question(self, tr("update"), tr("update_restart_q", n)):
+            if ask(self, tr("update"), tr("update_restart_q", n)):
                 updater.restart_app()
         th.finished.connect(finished)
         th.start()
