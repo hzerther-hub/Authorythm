@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
+from PySide6.QtGui import QCursor
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit,
@@ -260,7 +261,7 @@ class EpisodeCard(QFrame):
         for key in STATUS_META:
             act = m.addAction(("● " if cur and cur["status"] == key else "○ ") + status_label(key))
             act.triggered.connect(lambda _=False, k=key: self._set_status(k))
-        m.exec()
+        m.exec(QCursor.pos())
 
     def _set_status(self, status: str):
         db.ex("UPDATE episodes SET status=?, updated_at=? WHERE id=?",
@@ -272,7 +273,7 @@ class EpisodeCard(QFrame):
         m = QMenu(self)
         for res, label in (("720p", tr("720p · 高清")), ("480p", tr("480p · 流畅"))):
             m.addAction(label).triggered.connect(lambda _=False, r=res: self._set_res(r))
-        m.exec()
+        m.exec(QCursor.pos())
 
     def _set_res(self, res: str):
         db.ex("UPDATE episodes SET resolution=?, updated_at=? WHERE id=?",

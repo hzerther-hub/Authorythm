@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from PySide6.QtGui import QCursor
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QPushButton, QScrollArea, QVBoxLayout,
@@ -213,13 +214,13 @@ class ProjectCard(QFrame):
             act = m.addAction(f"●  {status_label(key)}")
             act.setIcon(_dot_icon(STATUS_META[key]))
             act.triggered.connect(lambda _=False, k=key: self.status_changed.emit(self.drama_id, k))
-        m.exec()
+        m.exec(QCursor.pos())
 
     def _menu(self):
         m = QMenu(self)
         a1 = m.addAction(tr("open_project"))
         a2 = m.addAction(tr("delete_project"))
-        act = m.exec()
+        act = m.exec(QCursor.pos())
         if act == a1:
             self.open_requested.emit(self.drama_id)
         elif act == a2:
