@@ -733,6 +733,13 @@ Z = {  # 中文(基准)
  '涂抹要擦掉的区域,程序化填充(线条/地面等结构会自然延续)': '涂抹要擦掉的区域,程序化填充(线条/地面等结构会自然延续)',
  'rembg 抠出主体,输出带透明通道的 PNG(不覆盖原图)': 'rembg 抠出主体,输出带透明通道的 PNG(不覆盖原图)',
  '还原到最早擦除前的原图': '还原到最早擦除前的原图',
+ 'replace_all_faces': 'replace_all_faces',
+ 'face_enhance': 'face_enhance',
+ 'generate': 'generate',
+ 'gen_title': 'gen_title',
+ 'retry': 'retry',
+ 'style': 'style',
+ 'default': 'default',
 
 }
 

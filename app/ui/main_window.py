@@ -71,9 +71,8 @@ class MainWindow(QMainWindow):
         tlay.addWidget(nav_wrap)
         tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
-        self._nav_defs = [("projects", "▦", "nav_projects"),
-                          ("face_swap", "☺", "nav_face_swap"),
-                          ("merger", "⧉", "nav_merger")]
+        # 换脸/合并不再放顶部导航:换脸收进角色资产卡(图片处),合并收进制作台导出面板
+        self._nav_defs = [("projects", "▦", "nav_projects")]
         for key, icon, label_key in self._nav_defs:
             b = QPushButton(f"{icon}  {tr(label_key)}")
             b.setObjectName("navSeg")
@@ -284,7 +283,7 @@ class MainWindow(QMainWindow):
             self.banner.setVisible(False)
 
     def _goto(self, key: str):
-        """分段导航切换:项目列表 / 换脸工具 / 合并工具,并同步胶囊选中态。"""
+        """切换:项目列表(导航胶囊)/ 换脸·合并工具(资产卡与导出面板的入口)。"""
         self._ensure_fresh(key)
         page = {"projects": self.projects_page,
                 "face_swap": getattr(self, "face_swap_page", None),

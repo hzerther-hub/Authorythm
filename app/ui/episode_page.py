@@ -11,7 +11,7 @@ import time
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFileDialog, QFrame,
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSpinBox, QSplitter,
@@ -732,10 +732,11 @@ class EpisodePage(QWidget):
         self.chapter_name_btn.setToolTip(tr("gen_title_tip"))
         self.chapter_name_btn.clicked.connect(lambda: self._gen_chapter_title())
         row.addWidget(self.chapter_name_btn)
-        self.novel_btn = W.primary_btn("📕 " + tr("ai_novel"))
+        # WaitingButton:busy() 时内嵌盲文 spinner + 禁用,生成期间按钮自身可见等待
+        self.novel_btn = WaitingButton("📕 " + tr("ai_novel"), primary=True)
         self.novel_btn.clicked.connect(self._ai_novel)
         row.addWidget(self.novel_btn)
-        self.batch_btn = QPushButton("📋 " + tr("batch_write"))
+        self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
         self.review_badge = QPushButton("")
@@ -743,9 +744,9 @@ class EpisodePage(QWidget):
         self.review_badge.clicked.connect(self._show_review_detail)
         self.review_badge.setVisible(False)
         row.addWidget(self.review_badge)
-        save_btn = W.primary_btn("💾 " + tr("save"))
-        save_btn.clicked.connect(self._save_raw)
-        row.addWidget(save_btn)
+        self.save_btn = W.primary_btn("💾 " + tr("save"))
+        self.save_btn.clicked.connect(self._save_raw)
+        row.addWidget(self.save_btn)
         bl.addLayout(row)
 
         self.gate_lab = W.muted("")
@@ -769,12 +770,12 @@ class EpisodePage(QWidget):
         self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit)
         self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
-        ai_btn = QPushButton("✨ " + tr("ai_edit"))
-        ai_btn.setToolTip(tr("ai_edit_tip"))
-        ai_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
+        self.ai_edit_btn = QPushButton("✨ " + tr("ai_edit"))
+        self.ai_edit_btn.setToolTip(tr("ai_edit_tip"))
+        self.ai_edit_btn.clicked.connect(lambda: self._open_ai_edit(self.raw_edit))
         raw_row = QHBoxLayout()
         raw_row.setContentsMargins(12, 4, 12, 0)
-        raw_row.addWidget(ai_btn)
+        raw_row.addWidget(self.ai_edit_btn)
         raw_row.addStretch(1)
         lay.addLayout(raw_row)
         lay.addWidget(self.raw_edit, 1)
@@ -996,19 +997,35 @@ class EpisodePage(QWidget):
             self.gate_lab.setVisible(bool(hint))
 
     def _ai_novel(self):
+        """单章生成:按钮 busy(盲文 spinner)+ 整条工具行禁用防误点;完成后恢复。
+
+        stage(writing/reviewing/repairing)写进 sys_task,任务面板与顶栏可见当前在做什么。
+        """
         from ..pipeline import novel as novel_pipe
         hint = self._novel_redline_hint()
         if hint:
             warn(hint)
             return
+        if getattr(self, "_novel_in_flight", False):
+            return
+        self._novel_in_flight = True
+        self.novel_btn.busy(tr("生成中"))
+        self._set_raw_row_enabled(False)
+
         def job(tid):
             if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
                 idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
                 novel_pipe.plan_novel(self.drama_id, idea, config_id=self.text_model.currentData())
-            return novel_pipe.write_chapter_with_review(self.episode_id, config_id=self.text_model.currentData())
+            return novel_pipe.write_chapter_with_review(
+                self.episode_id, config_id=self.text_model.currentData(), task_id=tid)
+
         def done(tid, result, error):
+            self._novel_in_flight = False
+            if self.novel_btn:
+                self.novel_btn.idle()
+            self._set_raw_row_enabled(True)
             if error:
-                err("AI")
+                err(str(error)[:200])
             else:
                 self._reload_raw()
                 r = (result or {})
@@ -1016,6 +1033,15 @@ class EpisodePage(QWidget):
                 QMessageBox.information(self, tr("ai_novel"), msg)
         self._save_raw_silent()
         TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+
+    def _set_raw_row_enabled(self, on: bool):
+        """原文页工具行整体禁用/恢复(生成期间防误点其它按钮)。"""
+        for b in (getattr(self, "batch_btn", None), getattr(self, "chapter_name_btn", None),
+                  getattr(self, "save_btn", None), getattr(self, "ai_edit_btn", None),
+                  getattr(self, "style_combo", None), getattr(self, "style_combo2", None),
+                  getattr(self, "rewrite_btn", None)):
+            if b is not None:
+                b.setEnabled(on)
 
     def _batch_novel(self):
         """批量写本章及后续(对齐原版未提交批次的语义重定义 + 进度条 + 阶段)。"""
@@ -1060,6 +1086,13 @@ class EpisodePage(QWidget):
         if hint:
             warn(hint)
             return
+        if getattr(self, "_novel_in_flight", False):
+            return
+        self._novel_in_flight = True
+        # 批量进度浮窗已是可见等待;按钮也进入 busy,防再点
+        if getattr(self, "batch_btn", None):
+            self.batch_btn.busy(tr("生成中"))
+        self._set_raw_row_enabled(False)
         self._batch_ids = list(episode_ids)
         self._batch_done = 0
         self._batch_ok = 0
@@ -1084,6 +1117,10 @@ class EpisodePage(QWidget):
                 lang=getattr(self, "_drama_lang", None),
                 on_progress=on_progress)
         def done(tid, result, error):
+            self._novel_in_flight = False
+            if getattr(self, "batch_btn", None):
+                self.batch_btn.idle()
+            self._set_raw_row_enabled(True)
             r = result or {}
             if error:
                 r.setdefault("failed", len(episode_ids))
@@ -2802,6 +2839,17 @@ class EpisodePage(QWidget):
         from .asset_dialogs import ImageViewerDialog
         ImageViewerDialog(self, url).exec()
 
+    def _open_merger_tool(self):
+        """本地无损合并工具(从成片面板进入)。"""
+        from .merger_tool_page import MergerToolPage
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("merger_title"))
+        dlg.resize(1080, 720)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(MergerToolPage())
+        dlg.exec()
+
     def _erase_panel(self, panel_id: int, url: str):
         """漫画格擦除:画笔涂抹 → 程序化填充 → 刷新漫画板。"""
         from .mask_erase_dialog import open_erase_dialog
@@ -2902,6 +2950,11 @@ class EpisodePage(QWidget):
         refresh = QPushButton("⟳ " + tr("refresh"))
         refresh.clicked.connect(self._reload_export)
         head1.addWidget(refresh)
+        # 本地无损合并工具(独立文件合并,归到成片处;对齐 easymerger)
+        self.merger_btn = QPushButton("⧉ " + tr("merger_title"))
+        self.merger_btn.setToolTip(tr("merger_intro"))
+        self.merger_btn.clicked.connect(self._open_merger_tool)
+        head1.addWidget(self.merger_btn)
         body.addLayout(head1)
         self.merge_scroll = QScrollArea()
         self.merge_scroll.setWidgetResizable(True)
