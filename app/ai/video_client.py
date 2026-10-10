@@ -159,29 +159,14 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
         return _download(url, headers), provider
 
     if provider == "agnes":
-        body: dict = {"model": cfg["model"], "prompt": prompt, "resolution": resolution}
-        if duration:
-            body["duration"] = duration
-        if refs:
-            body["reference_images"] = refs  # 多模态参考(@角色 一致性)
-        if first_frame:
-            body["image"] = _local_to_data_url(first_frame)
-        resp = requests.post(f"{base}/v1/videos/generations", json=body, headers=headers, timeout=120)
-        if resp.status_code not in (200, 201):
-            raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
-        data = resp.json()
-        if isinstance(data.get("data"), dict) and data["data"].get("url"):
-            return _download(data["data"]["url"], headers), provider
-        task_id = data.get("id") or data.get("task_id")
-
-        def check4():
-            st = requests.get(f"{base}/v1/videos/generations/{task_id}", headers=headers, timeout=30).json()
-            status = str(st.get("status") or (st.get("data") or {}).get("status", "")).lower()
-            url_v = (st.get("data") or {}).get("url") or (st.get("data") or {}).get("video_url")
-            return ("failed" if status in ("failed", "error") else "running"), url_v, str(st)[:200]
-
-        url = _poll(check4, 10, 300)
-        return _download(url, headers), provider
+        # 对齐参考项目 agnes-video.ts(当前版):POST /v1/videos、mode 按 model 版本映射
+        # (v2.0→ti2vid,素材进 first_frame/image_url/images)、素材上限、flash 仅 720P、
+        # 轮询走 {origin}/agnesapi?video_id=&model_name=(不在 /v1 下)、成片地址取顶层 url
+        from .agnes_video import generate_agnes
+        url_v = generate_agnes(cfg, base, headers, prompt=prompt, resolution=resolution,
+                               duration=duration, first_frame=first_frame,
+                               reference_images=reference_images)
+        return _download(url_v, headers), provider
 
     if provider == "runninghub":
         return _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
