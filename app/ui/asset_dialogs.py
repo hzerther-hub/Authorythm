@@ -388,6 +388,10 @@ class AssetDetailDialog(QDialog):
         delete.clicked.connect(self._delete)
         footer.addWidget(delete)
         if self.row.get("image_url"):
+            edit_btn = QPushButton("🎨 " + tr("改图"))
+            edit_btn.setToolTip(tr("裁剪/旋转/精调/滤镜/水印/尺寸/AI 去背景,保存后写回资产"))
+            edit_btn.clicked.connect(self._open_image_edit)
+            footer.addWidget(edit_btn)
             erase_btn = QPushButton("🩹 " + tr("擦除"))
             erase_btn.setToolTip(tr("涂抹要擦掉的区域,程序化填充(线条/地面等结构会自然延续)"))
             erase_btn.clicked.connect(self._erase_region)
@@ -414,6 +418,13 @@ class AssetDetailDialog(QDialog):
         for b in (upload, gen_img, save, close):
             footer.addWidget(b)
         root.addLayout(footer)
+
+    def _open_image_edit(self):
+        from .image_edit_dialog import open_image_edit
+        open_image_edit(self, self.row["image_url"],
+                        target={"type": self.kind, "id": self.row["id"], "kind": "main"},
+                        title=f"{tr('改图')} · {self.row['name']}",
+                        on_saved=self._reload_after_edit)
 
     def _bg_available(self) -> bool:
         from ..pipeline import erase as ER

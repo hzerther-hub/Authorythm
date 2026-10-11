@@ -328,18 +328,11 @@ def save_characters(drama_id: int, chars: list) -> int:
     return len(chars)
 
 
-def write_chapter(episode_id: int, config_id: int | None = None,
-                  lang: str | None = None) -> str:
-    """按章节计划写当前章正文(自动带前情+设定),写回 episodes.content。
-
-    lang: AI 产出语言(透传 run_agent;None=跟随文本提示词文件默认)。
-    """
-    
+def chapter_prompt(episode_id: int) -> str:
+    """组装写章提示词(设定/本章计划/文风/台账/前情全部内联;流式路径与 write_chapter 共用)。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集(章)不存在")
-    # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
-    _enforce_novel_gate(ep["drama_id"])
     d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     chapters = db.jload(d["novel_chapters"], [])
     plan = next((c for c in chapters if int(c.get("number", 0)) == ep["episode_number"]), {})
@@ -364,15 +357,68 @@ def write_chapter(episode_id: int, config_id: int | None = None,
 章节名优先沿用上面【本章计划】里的标题(原样使用,不要改写);
 无计划标题时再自行起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀)。
 把章节名作为独立一行写在正文最前面,格式为 `# 章节名`。"""
-    content = runner.run_agent("novel_writer", prompt, config_id=config_id, lang=lang)
-    _save_with_title(episode_id, content)
-    return content
+    return prompt
+
+
+def _write_chapter_text(prompt: str, config_id: int | None, lang: str | None,
+                        max_tokens: int) -> tuple[str, str]:
+    """流式写正文,返回 (正文, 思考全文)。
+
+    为什么走流式:实测 MiniMax-M3 在非流式请求下把成稿放进 reasoning_content,
+    content 通道只剩标题一行;流式通道 reasoning/content 分离稳定,空正文时
+    还能从思考流里按 </think> 抢救。
+    """
+    from ..ai import text_stream
+    from .agents.prompts import load_prompt
+    system = load_prompt("novel_writer", lang or db.get_setting("content_language", "zh"))
+    parts: list[str] = []
+    rparts: list[str] = []
+    for kind, chunk in text_stream.chat_stream(prompt, system=system, config_id=config_id,
+                                               temperature=0.6, max_tokens=max_tokens):
+        (rparts if kind == "reasoning" else parts).append(chunk)
+    content = "".join(parts).strip()
+    if len(content) < 200:
+        reason = "".join(rparts)
+        cand = reason.split("</think>", 1)[1].strip() if "</think>" in reason else ""
+        if len(cand) >= 200:
+            content = cand
+    return content, "".join(rparts)
+
+
+def write_chapter(episode_id: int, config_id: int | None = None,
+                  lang: str | None = None) -> str:
+    """按章节计划写当前章正文(自动带前情+设定),写回 episodes.content。
+
+    lang: AI 产出语言(透传 run_agent;None=跟随文本提示词文件默认)。
+    """
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集(章)不存在")
+    # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
+    _enforce_novel_gate(ep["drama_id"])
+    content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, 8192)
+    if len(content) < 200:
+        # 思考型模型(M3 等)可能把小预算全花在 reasoning 上 → 用大预算再来一次
+        content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, 32768)
+    return _save_with_title(episode_id, content)
+
+
+def _strip_think(content: str) -> str:
+    """剥掉模型把思考过程混进正文通道的片段:成对 <think> 块、未闭合的 <think> 尾巴,
+    以及开头整段的英文元思考(Wait/Let me... —— 见 nov 综合征,实测出现过)。"""
+    import re as _re
+    text = (content or "")
+    text = _re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", text, flags=_re.S)
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.S)
+    text = _re.sub(r"(?s)^.*?<think>", "", text) if "<think>" in text else text
+    text = _re.sub(r"(?s)^(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.(\s|(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.)+", "", text)
+    return text.strip()
 
 
 def _save_with_title(episode_id: int, content: str) -> str:
     """保存正文;若首行是 `# 章节名`,顺带写回 episodes.title(对齐原版 save_episode_content.chapter_title)。"""
     import re as _re
-    text = (content or "").strip()
+    text = _strip_think(content)
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         return content
@@ -388,7 +434,8 @@ def _save_with_title(episode_id: int, content: str) -> str:
 
 def write_chapter_with_review(episode_id: int, config_id: int | None = None,
                               task_id: int | None = None,
-                              lang: str | None = None) -> dict:
+                              lang: str | None = None,
+                              content: str | None = None) -> dict:
     """写章 → 写后校验 → 六维审校 → 有问题带清单重写一轮。
 
     对齐原版(101759d + 未提交批次):
@@ -404,8 +451,11 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
         if task_id:
             TM.set_stage(task_id, s)
 
-    _stage("writing")
-    write_chapter(episode_id, config_id=config_id, lang=lang)
+    _stage("writing" if not content else "reviewing")
+    if content is not None:            # 流式路径:正文已生成,只落库后直接审校
+        _save_with_title(episode_id, content)
+    else:
+        write_chapter(episode_id, config_id=config_id, lang=lang)
     row = db.q1("SELECT content, episode_number FROM episodes WHERE id=?", (episode_id,))
     content = (row["content"] if row else "") or ""
     if len(content.strip()) < MIN_CHARS:
@@ -426,7 +476,7 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
             _stage("repairing")
             fix_prompt = ("审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8])
                           + f"\n\n原正文:\n{content[:14000]}")
-            fixed = runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id)
+            fixed = _strip_think(runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id))
             db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
             return {"content": fixed, "review": review, "fixed": True}
     return {"content": content, "review": review, "fixed": False}

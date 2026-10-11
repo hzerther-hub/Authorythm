@@ -385,23 +385,25 @@ class EpisodePage(QWidget):
 
         # 顶栏
         top = QHBoxLayout()
-        back = QPushButton("← " + tr("back"))
+        back = QPushButton("←")
+        back.setFixedSize(30, 28)
+        back.setToolTip(tr("back"))
         back.clicked.connect(self.back_requested.emit)
         top.addWidget(back)
         self.title = W.h2("")
         top.addWidget(self.title)
         top.addStretch(1)
         top.addWidget(QLabel(tr("text_svc") + ":"))
-        self.text_model = QComboBox()
+        self.text_model = self._mk_model_combo()
         top.addWidget(self.text_model)
         top.addWidget(QLabel(tr("image_svc") + ":"))
-        self.image_model = QComboBox()
+        self.image_model = self._mk_model_combo()
         top.addWidget(self.image_model)
         top.addWidget(QLabel(tr("video_svc") + ":"))
-        self.video_model = QComboBox()
+        self.video_model = self._mk_model_combo()
         top.addWidget(self.video_model)
         top.addWidget(QLabel(tr("faceswap_svc") + ":"))
-        self.face_model = QComboBox()
+        self.face_model = self._mk_model_combo()
         top.addWidget(self.face_model)
         top.addWidget(QLabel(tr("resolution") + ":"))
         self.res_combo = QComboBox()
@@ -473,6 +475,18 @@ class EpisodePage(QWidget):
         self._reload_export()
         self._goto_step("raw")
 
+    def _mk_model_combo(self) -> QComboBox:
+        """顶栏模型下拉:可压缩——最小宽度不随内容涨,空间不足时文本省略显示。
+
+        默认 QComboBox 的 sizeHint 取最长条目宽,四种服务 × 长配置名在窄窗口/其它
+        语言下会把顶栏撑到溢出(右侧分辨率/生成按钮被裁掉)。
+        """
+        c = QComboBox()
+        c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(8)
+        c.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        return c
+
     def _reload_models(self):
         for combo, stype in ((self.text_model, "text"), (self.image_model, "image"),
                              (self.video_model, "video"), (self.face_model, "faceswap")):
@@ -480,7 +494,7 @@ class EpisodePage(QWidget):
             combo.clear()
             combo.addItem(tr("configured"), None)
             for r in registry.list_configs(stype):
-                combo.addItem(f"{r['remark'] or r['provider']}/{r['model']}", r["id"])
+                combo.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
             # 恢复上次选择(全局记忆)
             saved = db.get_setting(f"yihao.model.{stype}")
             if saved:
@@ -777,6 +791,10 @@ class EpisodePage(QWidget):
         self.ai_edit_hint = QLabel("✨ " + tr("ai_edit_shortcut_hint"))
         self.ai_edit_hint.setObjectName("muted")
         raw_row.addWidget(self.ai_edit_hint)
+        # 生成过程状态条:流式思考/输出进度实时显示在这(不进正文编辑器)
+        self.raw_status = QLabel("")
+        self.raw_status.setObjectName("muted")
+        raw_row.addWidget(self.raw_status)
         raw_row.addStretch(1)
         lay.addLayout(raw_row)
         lay.addWidget(self.raw_edit, 1)
@@ -997,43 +1015,115 @@ class EpisodePage(QWidget):
             self.gate_lab.setText(hint)
             self.gate_lab.setVisible(bool(hint))
 
-    def _ai_novel(self):
-        """单章生成:按钮 busy(盲文 spinner)+ 整条工具行禁用防误点;完成后恢复。
+    def _set_raw_status(self, text: str):
+        """更新生成状态条(提示行右侧);页面若已被语言切换重建,静默丢弃。"""
+        try:
+            if getattr(self, "raw_status", None) is not None:
+                self.raw_status.setText(text)
+        except RuntimeError:
+            pass
 
-        stage(writing/reviewing/repairing)写进 sys_task,任务面板与顶栏可见当前在做什么。
+    def _ai_novel(self):
+        """单章生成:**流式**——思考过程实时显示在提示行右侧状态条,编辑器只放最终正文。
+
+        写完进入审校/修复(写进 sys_task.stage,任务面板可见);按钮 busy + 工具行禁用防误点。
         """
         from ..pipeline import novel as novel_pipe
+        from ..agents.prompts import load_prompt
+        from ..core.db import get_setting
+        from .streaming import StreamWorker
         hint = self._novel_redline_hint()
         if hint:
             warn(hint)
             return
         if getattr(self, "_novel_in_flight", False):
             return
+        self._save_raw_silent()
+        # 设定未齐:先同步开书规划再写(罕见分支,无流式;规划本身也是一次长调用)
+        if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
+            self._novel_in_flight = True
+            self.novel_btn.busy(tr("生成中"))
+            self._set_raw_row_enabled(False)
+            idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
+
+            def job0(tid):
+                novel_pipe.plan_novel(self.drama_id, idea, config_id=self.text_model.currentData())
+                return novel_pipe.write_chapter_with_review(
+                    self.episode_id, config_id=self.text_model.currentData(), task_id=tid)
+
+            def done0(tid, result, error):
+                self._novel_done(result, error)
+            TASKMGR.submit("novel", job0, done0, episode_id=self.episode_id, drama_id=self.drama_id)
+            return
+
         self._novel_in_flight = True
         self.novel_btn.busy(tr("生成中"))
         self._set_raw_row_enabled(False)
+        lang = get_setting("content_language", "zh")
+        worker = StreamWorker(novel_pipe.chapter_prompt(self.episode_id),
+                              system=load_prompt("novel_writer", lang),
+                              config_id=self.text_model.currentData(),
+                              temperature=0.6, max_tokens=32768, parent=self)
+        self._novel_stream = worker
+        stat = {"r": 0, "c": 0}
 
-        def job(tid):
-            if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
-                idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
-                novel_pipe.plan_novel(self.drama_id, idea, config_id=self.text_model.currentData())
-            return novel_pipe.write_chapter_with_review(
-                self.episode_id, config_id=self.text_model.currentData(), task_id=tid)
-
-        def done(tid, result, error):
-            self._novel_in_flight = False
-            if self.novel_btn:
-                self.novel_btn.idle()
-            self._set_raw_row_enabled(True)
-            if error:
-                err(str(error)[:200])
+        def on_delta(kind, chunk):
+            if kind == "reasoning":
+                stat["r"] += len(chunk)
+                tail = chunk.strip().replace("\n", " ")[-48:]
+                self._set_raw_status(f"💭 {tail}  ·  思考 {stat['r']} 字")
             else:
-                self._reload_raw()
-                r = (result or {})
-                msg = tr("本章已生成") + (tr(";审校发现问题并已自动修复一轮 ✅") if r.get("fixed") else "")
-                QMessageBox.information(self, tr("ai_novel"), msg)
-        self._save_raw_silent()
-        TASKMGR.submit("novel", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+                stat["c"] += len(chunk)
+                self._set_raw_status(f"✍️ {tr('正在写正文')}… {stat['c']} 字")
+
+        def on_finish(text):
+            self._novel_stream = None
+            # 思考型模型可能把预算全花在 reasoning 上 → 正文 0 字;从思考流抢回正文
+            if len(text.strip()) < 200:
+                reason = worker.reasoning
+                cand = reason.split("</think>", 1)[1].strip() if "</think>" in reason else ""
+                if len(cand) >= 200:
+                    text = cand
+                    self._set_raw_status(f"⚠️ 思考超预算,已回收正文 {len(text)} 字")
+                else:
+                    self._novel_in_flight = False
+                    if self.novel_btn:
+                        self.novel_btn.idle()
+                    self._set_raw_row_enabled(True)
+                    self._set_raw_status("❌ " + tr("未产出正文"))
+                    err(tr("模型把输出预算花在思考上,未产出正文;已提升预算,请重试"))
+                    return
+            self._set_raw_status("🔍 " + tr("写完,审校中…"))
+
+            def job(tid):
+                return novel_pipe.write_chapter_with_review(
+                    self.episode_id, config_id=self.text_model.currentData(), task_id=tid,
+                    content=text)
+            TASKMGR.submit("novel", job, lambda t, r, e: self._novel_done(r, e),
+                           episode_id=self.episode_id, drama_id=self.drama_id)
+
+        def on_failed(msg):
+            self._novel_stream = None
+            self._novel_done(None, msg)
+
+        worker.delta.connect(on_delta)
+        worker.finished.connect(on_finish)
+        worker.failed.connect(on_failed)
+        worker.start()
+
+    def _novel_done(self, result, error):
+        self._novel_in_flight = False
+        if self.novel_btn:
+            self.novel_btn.idle()
+        self._set_raw_row_enabled(True)
+        self._set_raw_status("")
+        if error:
+            err(str(error)[:200])
+        else:
+            self._reload_raw()
+            r = (result or {})
+            msg = tr("本章已生成") + (tr(";审校发现问题并已自动修复一轮 ✅") if r.get("fixed") else "")
+            QMessageBox.information(self, tr("ai_novel"), msg)
 
     def _set_raw_row_enabled(self, on: bool):
         """原文页工具行整体禁用/恢复(生成期间防误点其它按钮)。"""
@@ -1700,7 +1790,7 @@ class EpisodePage(QWidget):
         self.asset_model.clear()
         self.asset_model.addItem(tr("follow_top"), None)
         for r in registry.list_configs("image"):
-            self.asset_model.addItem(f"{r['remark'] or r['provider']}/{r['model']}", r["id"])
+            self.asset_model.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
         i = self.asset_model.findData(cur)
         self.asset_model.setCurrentIndex(i if i >= 0 else 0)
         self.asset_model.blockSignals(False)

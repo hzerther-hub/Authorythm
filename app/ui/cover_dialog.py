@@ -53,7 +53,12 @@ class CoverPanel(QWidget):
         root.setSpacing(6)
 
         head = QHBoxLayout()
-        head.addWidget(W.muted(tr("项目封面:AI 生成竖版封面;有角色/场景资产时自动以资产图为参考,保证与正片一致")))
+        intro = W.muted(tr("项目封面:AI 生成竖版封面;有角色/场景资产时自动以资产图为参考,保证与正片一致"))
+        intro.setWordWrap(False)             # 单行不折行(放不下时按省略截断)
+        intro.setMinimumWidth(0)
+        from PySide6.QtWidgets import QSizePolicy
+        intro.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        head.addWidget(intro, 1)
         head.addStretch(1)
         root.addLayout(head)
 

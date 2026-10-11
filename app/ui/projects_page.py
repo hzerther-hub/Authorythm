@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 
 from PySide6.QtGui import QCursor
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QPushButton, QScrollArea, QVBoxLayout,
                                QWidget)
 
@@ -23,6 +23,18 @@ WT_KEYS = {"novel": "wt_novel", "drama": "wt_drama", "comic": "wt_comic",
 
 def wt_label(work_type: str) -> str:
     return tr(WT_KEYS.get(work_type, work_type))
+
+
+class _CoverLabel(QLabel):
+    """可点击的封面图:点左键弹大图预览,并拦下卡片"整卡点击进项目"的默认行为。"""
+    clicked = Signal()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.clicked.emit()
+            ev.accept()
+            return
+        super().mousePressEvent(ev)
 
 # 状态色固定;标签走 i18n 词典(不能在导入时求值,否则切语言不生效)
 STATUS_META = {"pending": "#86909c", "active": "#16a34a", "completed": "#f97316"}
@@ -98,7 +110,7 @@ class ProjectCard(QFrame):
         self.setObjectName("card")
         self.drama_id = drama["id"]
         self._title = drama["title"]
-        self.setFixedSize(260, 244)
+        self.setFixedSize(180, 372)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip(tr("click_open_project"))
         lay = QVBoxLayout(self)
@@ -107,7 +119,7 @@ class ProjectCard(QFrame):
 
         # 封面块 2.1:1(对齐 .project-cover)
         cover = QFrame()
-        cover.setFixedHeight(112)
+        cover.setFixedHeight(236)
         cover.setStyleSheet(
             "QFrame#cover{background:linear-gradient(135deg,#fdf0e6 0%,#f7f8fa 70%);"
             "border:none; border-bottom:1px solid #e4e7ec; border-top-left-radius:10px;"
@@ -115,10 +127,13 @@ class ProjectCard(QFrame):
         cover.setObjectName("cover")
         cl = QVBoxLayout(cover)
         cl.setContentsMargins(10, 10, 10, 10)
-        if drama.get("thumbnail"):
-            img = QLabel()
+        self._thumb = drama.get("thumbnail") or ""
+        if self._thumb:
+            img = _CoverLabel()
             img.setAlignment(Qt.AlignCenter)
-            img.setPixmap(W.pixmap_from_media(drama["thumbnail"], 240, 92))
+            img.setPixmap(W.pixmap_from_media(self._thumb, 172, 228))
+            img.setCursor(Qt.PointingHandCursor)
+            img.clicked.connect(self._preview_cover)
             cl.addWidget(img)
         else:
             init = QLabel((drama["title"] or "?")[:1].upper())
@@ -162,7 +177,8 @@ class ProjectCard(QFrame):
         bl.setContentsMargins(14, 12, 14, 12)
         bl.setSpacing(0)
         title = W.h2(drama["title"])
-        title.setStyleSheet("font-size:14px; font-weight:600;")
+        title.setStyleSheet("font-size:13px; font-weight:600;")
+        title.setWordWrap(True)
         title.setToolTip(drama["title"])
         bl.addWidget(title)
         chips = QHBoxLayout()
@@ -200,6 +216,18 @@ class ProjectCard(QFrame):
         foot.addStretch(1)
         bl.addLayout(foot)
         lay.addWidget(body, 1)
+
+    def _preview_cover(self):
+        """点击封面:弹出大图预览(完整比例,不随卡片裁切)。"""
+        d = QDialog(self)
+        d.setWindowTitle(self._title)
+        lay = QVBoxLayout(d)
+        lay.setContentsMargins(12, 12, 12, 12)
+        img = QLabel()
+        img.setAlignment(Qt.AlignCenter)
+        img.setPixmap(W.pixmap_from_media(self._thumb, 420, 640))
+        lay.addWidget(img)
+        d.exec()
 
     def _apply_status_style(self, status: str):
         label, color = status_label(status), STATUS_META.get(status, STATUS_META["pending"])

@@ -62,14 +62,14 @@ class MainWindow(QMainWindow):
         wl.addWidget(sub)
         tlay.addWidget(word)
         tlay.addSpacing(10)
+        tlay.addStretch(1)
         # 分段胶囊导航(对齐原版 layouts/default.vue 的 nav-segmented)
+        # 与主题/设置/语言同组放右侧,统一 32px 高 —— 不再孤立在左侧
         nav_wrap = QFrame()
         nav_wrap.setObjectName("navSegWrap")
         nav_lay = QHBoxLayout(nav_wrap)
         nav_lay.setContentsMargins(3, 3, 3, 3)
         nav_lay.setSpacing(2)
-        tlay.addWidget(nav_wrap)
-        tlay.addStretch(1)
         self.nav_btns: dict[str, QPushButton] = {}
         # 换脸/合并不再放顶部导航:换脸收进角色资产卡(图片处),合并收进制作台导出面板
         self._nav_defs = [("projects", "▦", "nav_projects")]
@@ -78,23 +78,33 @@ class MainWindow(QMainWindow):
             b.setObjectName("navSeg")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
+            b.setFixedHeight(32)
             b.clicked.connect(lambda _=False, k=key: self._goto(k))
             self.nav_btns[key] = b
             nav_lay.addWidget(b)
-        tlay.addWidget(nav_wrap)
-        tlay.addStretch(1)
+        # 主题/设置/语言与导航同装一个胶囊:等高 32、同字体同字号,风格一体
+        icon_font = "font-family:'Segoe UI Symbol','Microsoft YaHei UI'; font-size:15px; padding:0;"
         theme_btn = QPushButton("◐")
         theme_btn.setObjectName("headerIconBtn")
+        theme_btn.setFixedSize(32, 32)
+        theme_btn.setStyleSheet(icon_font)
         theme_btn.setToolTip(tr("theme"))
         theme_btn.clicked.connect(self._toggle_theme)
         settings_btn = QPushButton("⚙")
         settings_btn.setObjectName("headerIconBtn")
+        settings_btn.setFixedSize(32, 32)
+        settings_btn.setStyleSheet(icon_font)
         settings_btn.setToolTip(tr("nav_settings"))
         settings_btn.clicked.connect(self._open_settings)
-        lang_btn = QPushButton("◎")
+        lang_btn = QPushButton("🌐")          # 地球图标:各语言用户都认识
         lang_btn.setObjectName("headerIconBtn")
+        lang_btn.setFixedSize(32, 32)
+        lang_btn.setStyleSheet(icon_font)
         lang_btn.setToolTip(tr("lang_short"))
         lang_btn.clicked.connect(self._switch_language)
+        for b in (theme_btn, settings_btn, lang_btn):
+            nav_lay.addWidget(b)
+        tlay.addWidget(nav_wrap)
         from .braille import BrailleSpinner, BrailleBar
         self.busy_spin = BrailleSpinner(color="#8b909a", size=16)
         tlay.addWidget(self.busy_spin)
@@ -221,8 +231,22 @@ class MainWindow(QMainWindow):
         setattr(self, self._PAGE_ATTR[kind], new)
         self.stack.setCurrentIndex(idx)
 
+    def _restore_geo(self, geo):
+        """语言切换重建后恢复窗口原尺寸。
+
+        新页面的最小尺寸提示可能比旧页大,布局会把窗口撑大且没人缩回去
+        (实测切语言后窗口溢出屏幕、右侧按钮看不见)。延迟一拍等布局消化完再恢复。
+        """
+        if self.isMaximized() or geo is None:
+            return
+        from PySide6.QtWidgets import QApplication
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(geo.width(), int(scr.width() * 0.96)),
+                    min(geo.height(), int(scr.height() * 0.96)))
+
     def _rebuild_ui(self):
         """按当前语言重建当前页面,并把其余数据页标记为待重建(下次进入时重建)。"""
+        geo = self.geometry()          # 重建可能把窗口撑大,事后恢复
         idx = self.stack.currentIndex()
         kind = self._PAGE_KINDS[idx] if 0 <= idx < len(self._PAGE_KINDS) else "projects"
         try:
@@ -238,12 +262,14 @@ class MainWindow(QMainWindow):
             return
         self._swap_page(kind, new)
         self.retranslate()
+        QTimer.singleShot(0, lambda: self._restore_geo(geo))
         self.status.showMessage(tr("language_switched"))
 
     def _ensure_fresh(self, kind: str) -> None:
         """进入某页前:若它上次重建后语言又变过,先按当前语言重建。"""
         if kind not in self._PAGE_ATTR or kind not in getattr(self, "_stale_pages", ()):
             return
+        geo = self.geometry()
         try:
             new = self._make_page(kind)
         except Exception:  # noqa: BLE001
@@ -255,6 +281,7 @@ class MainWindow(QMainWindow):
         self._swap_page(kind, new)
         self._stale_pages.discard(kind)
         self.retranslate()
+        QTimer.singleShot(0, lambda: self._restore_geo(geo))
 
     def retranslate(self):
         """语言切换后即时刷新顶栏与标题(页面内容重启后完全生效)。"""

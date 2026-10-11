@@ -181,7 +181,10 @@ class TaskManager(QObject):
         on_main(lambda: self._apply_busy(False, ""))
 
     def _apply_busy(self, on: bool, msg: str):
-        w = TaskManager._host_window()
+        # 必须发给登记的主窗口(转轮的宿主)。曾用 activeWindow():任务完成时激活的
+        # 窗口往往是"本章已生成"那类弹窗,没有 set_busy,调用被 except 吞掉,
+        # 关灯指令丢失 → 顶栏转轮永远转下去。
+        w = TaskManager._host or TaskManager._host_window()
         if w is None:
             return
         try:

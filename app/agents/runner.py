@@ -43,7 +43,8 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
               json_output: bool = False, temperature: float = 0.7,
               config_id: int | None = None,
               image_urls: list[str] | None = None,
-              system: str | None = None) -> str:
+              system: str | None = None,
+              max_tokens: int = 8192) -> str:
     """system=None 时用 workspace/prompts/<type>.<lang>.md。
 
     传入 system 可整体覆盖:workspace 里的提示词是给**带工具的 Mastra Agent** 写的
@@ -55,7 +56,8 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
     system = system if system is not None else prompts.load_prompt(agent_type, lang)
     return text_client.chat(
         user_prompt, system=system, temperature=temperature,
-        json_mode=json_output, config_id=config_id, image_urls=image_urls)
+        json_mode=json_output, config_id=config_id, image_urls=image_urls,
+        max_tokens=max_tokens)
 
 
 JSON_HINT = "请只输出 JSON,不要任何解释文字、不要 Markdown 代码块标记。"
