@@ -10,6 +10,21 @@ from pathlib import Path
 
 from . import config
 
+class Row(sqlite3.Row):
+    """带 .get() 的 Row —— sqlite3.Row 原生没有 .get(),业务代码里
+
+    反复出现 row.get("字段") 直接 AttributeError 崩溃(实测 episode_page
+    _page_title / _gen_image 兜底两处)。在数据层统一兜住:所有查询行
+    都自带 .get(),索引/keys()/len 等原有行为不变。
+    """
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except (IndexError, KeyError):
+            return default
+
+
 _local = threading.local()
 
 
@@ -21,7 +36,7 @@ def get_db() -> sqlite3.Connection:
     conn = getattr(_local, "conn", None)
     if conn is None:
         conn = sqlite3.connect(str(config.DB_PATH), timeout=30)
-        conn.row_factory = sqlite3.Row
+        conn.row_factory = Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = conn
@@ -340,6 +355,8 @@ def init_db() -> None:
     for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
                 "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL",
     "ALTER TABLE episodes ADD COLUMN duration REAL",
+                # 每条文本服务配置的最大输出 token(思考型模型需要给足,否则正文被截断)
+                "ALTER TABLE ai_service_configs ADD COLUMN max_tokens INTEGER",
                 # 造型变体:补排序位与漫画风格图(对齐原版 variant-resolution 的 is_default/sort_order
                 # tie-break,以及 comic.ts 的「variant.comicImageUrl 优先」取图优先级)
                 "ALTER TABLE character_variants ADD COLUMN sort_order INTEGER DEFAULT 0",
@@ -523,4 +540,27 @@ def settle_interrupted_tasks(conn, ts: str) -> tuple[int, int, int]:
             failed += 1
     if rows:
         print(f"[init] 已收尾 {len(rows)} 个中断任务(已完成 {done} / 失败 {failed})")
+    _settle_storyboard_status(conn, ts)
     return len(rows), done, failed
+
+
+def _settle_storyboard_status(conn, ts: str) -> int:
+    """收尾卡在 processing 的分镜。
+
+    界面上的「生成中」读的是 storyboards.status(见 EpisodePage._sb_state),而
+    settle_interrupted_tasks 只处理 sys_task —— 进程在生成中被杀时,分镜的 status
+    会永远停在 'processing',界面上就一直显示"生成中",但其实没有任何任务在跑,
+    点重试也没用(按钮被禁用了)。
+
+    已出片的按 completed 归位(可能只是收尾没跑完),其余退回 failed 让用户能重试。
+    """
+    rows = conn.execute(
+        "SELECT id, video_url, composed_video_url FROM storyboards WHERE status='processing'"
+    ).fetchall()
+    for r in rows:
+        has_output = bool(r["video_url"] or r["composed_video_url"])
+        conn.execute("UPDATE storyboards SET status=?, updated_at=? WHERE id=?",
+                     ("completed" if has_output else "failed", ts, r["id"]))
+    if rows:
+        print(f"[init] 已收尾 {len(rows)} 个中断分镜(状态从 processing 归位)")
+    return len(rows)

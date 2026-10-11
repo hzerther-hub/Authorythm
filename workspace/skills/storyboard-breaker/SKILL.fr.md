@@ -16,10 +16,8 @@ Un storyboard = un **segment de storyboard** (segment) = une tâche de générat
 
 ## Processus de découpage (quatre étapes)
 
-1. Appelez `read_storyboard_context` pour lire le scénario, les personnages, les scènes, les accessoires et le résumé des storyboards existants
 2. **Identification des battements** : identifiez d'abord les battements narratifs du scénario — marqueurs tels que 【开场】【触发】【高潮】【收尾】 dans le scénario, ou points de bascule narratifs (changement de lieu, révélation d'une règle, explosion émotionnelle, retournement). **Les frontières de battements forcent une coupure de segment** ; les sous-plans d'un même battement sont en priorité regroupés dans le même segment, sans disperser une chaîne causale (préparation-événement-réaction) entre plusieurs segments
 3. **Ancrage du volume total** : durée totale cible = nombre de caractères du scénario ÷ 500 caractères/minute ; nombre de segments ≈ durée totale cible ÷ 12 secondes, avec une tolérance de ±20 %. Ne dépassez ni ne manquez sensiblement le volume
-4. **Découpage des sous-plans à l'intérieur de chaque segment** : scindez les sous-plans aux points de changement d'action, de changement de point de vue et de changement de sujet ; après avoir complété tous les champs de chaque segment, appelez `save_storyboards` pour tout enregistrer en une fois
 
 ## Durées par palier de rythme
 
@@ -55,21 +53,18 @@ Les répliques qui ne tiennent pas doivent être déplacées au segment suivant 
 
 ## Règles de liaison de scène
 
-- Privilégiez les `scenes` renvoyés par `read_storyboard_context`
 - Lorsque `location + time` permet une correspondance explicite, le bon `scene_id` doit être re-renseigné
 - Ne fabriquez pas d'ID de scène qui n'existent pas
 - Si le contenu du scénario se situe manifestement dans une scène existante, ne recréez pas une description de scène en doublon
 
 ## Règles de liaison de personnages
 
-- `character_ids` doit être choisi dans la liste des personnages renvoyée par `read_storyboard_context`
 - Un segment peut n'avoir aucun personnage comme en lier plusieurs
 - Tout personnage clairement présent dans le segment — vu, agissant ou parlant — doit être lié
 - Les segments purement environnementaux, les plans vides et les gros plans d'objets peuvent passer un tableau vide
 
 ## Règles de liaison d'accessoires
 
-- `prop_ids` doit être choisi dans la liste des accessoires (`props`) renvoyée par `read_storyboard_context`
 - Lorsqu'un accessoire est utilisé par un personnage, remis, montré en gros plan, ou nettement visible à l'image et porteur de sens pour le récit, il doit être lié au segment
 - Les segments de gros plan d'accessoire (sans personnage) lient eux aussi l'accessoire ; `character_ids` peut être vide
 - Ne liez pas les objets d'arrière-plan ni les aménagements de scène sans rapport avec l'intrigue ; les segments sans accessoires passent un tableau vide

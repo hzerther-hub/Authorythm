@@ -40,4 +40,3 @@ lumière de studio douce et uniforme, ombres légères, haut niveau de détail
 
 ## Enregistrement
 
-Appelez `save_prop_final_prompt` : le paramètre prompt ne contient aucun mot de style, **le style visuel du projet est automatiquement injecté par l'outil tout au début du prompt final**.

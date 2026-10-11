@@ -178,16 +178,182 @@ class AiEditDialog(QDialog):
         TASKMGR.submit("novel_edit", job, done)
 
 
-def install_ai_edit_shortcut(editor: QPlainTextEdit, get_cb):
-    """给 QPlainTextEdit 装 Ctrl/Cmd+L 快捷键,回调查打开对话框的回调。"""
-    from PySide6.QtCore import QEvent
-    from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
+class ReplaceDialog(QDialog):
+    """Ctrl+R 查找替换:确定性字面替换,不走 AI(对齐原版 openReplaceBar/doReplaceAll)。"""
+
+    def __init__(self, parent, editor: QPlainTextEdit, find_only: bool = False):
+        super().__init__(parent)
+        self.editor = editor
+        self.find_only = find_only
+        self.setWindowTitle(tr("查找") if find_only else tr("查找替换"))
+        self.resize(460, 170 if not find_only else 140)
+        lay = QVBoxLayout(self)
+        lay.setSpacing(8)
+        row1 = QHBoxLayout()
+        row1.addWidget(QLabel(tr("查找")))
+        self.find_edit = QLineEdit()
+        row1.addWidget(self.find_edit, 1)
+        lay.addLayout(row1)
+        self.with_edit = QLineEdit()
+        if not find_only:
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel(tr("替换为")))
+            row2.addWidget(self.with_edit, 1)
+            lay.addLayout(row2)
+        self.count_lab = W.muted("")
+        lay.addWidget(self.count_lab)
+        self.find_edit.textChanged.connect(self._update_count)
+        self.find_edit.returnPressed.connect(self._find_next if find_only else self._replace_all)
+        if not find_only:
+            self.with_edit.returnPressed.connect(self._replace_all)
+        # 选区 ≤120 字符才预填(过长多半是误选整段,与原版一致)
+        cur = editor.textCursor()
+        sel = cur.selectedText() if cur.hasSelection() else ""
+        if sel and len(sel) <= 120:
+            self.find_edit.setText(sel)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(tr("cancel"))
+        cancel.clicked.connect(self.reject)
+        self.ok_btn = W.primary_btn(tr("查找下一个") if find_only else tr("全部替换"))
+        self.ok_btn.clicked.connect(self._find_next if find_only else self._replace_all)
+        btns.addWidget(cancel)
+        btns.addWidget(self.ok_btn)
+        lay.addLayout(btns)
+        self.find_edit.setFocus()
+
+    def _matches(self) -> int:
+        f = self.find_edit.text()
+        if not f:
+            return 0
+        n, i, s = 0, 0, self.editor.toPlainText()
+        while (i := s.find(f, i)) != -1:
+            n += 1
+            i += len(f)
+        return n
+
+    def _update_count(self):
+        n = self._matches()
+        self.count_lab.setText(tr("共 {} 处匹配").format(n) if n else "")
+        self.ok_btn.setEnabled(n > 0)
+
+    def _find_next(self):
+        """跳到下一处匹配并选中(仅查找模式)。"""
+        f = self.find_edit.text()
+        if not f:
+            return
+        cur = self.editor.textCursor()
+        start = max(cur.selectionEnd(), cur.position())
+        text = self.editor.toPlainText()
+        i = text.find(f, start)
+        if i < 0:
+            i = text.find(f)          # 循环回开头
+            if i < 0:
+                return
+        self.editor.setTextCursor(self.editor.textCursor())
+        nc = self.editor.textCursor()
+        nc.setPosition(i)
+        nc.setPosition(i + len(f), nc.MoveMode.KeepAnchor)
+        self.editor.setTextCursor(nc)
+        self.editor.setFocus()
+
+    def _replace_all(self):
+        f = self.find_edit.text()
+        if not f:
+            return
+        n = self._matches()
+        if not n:
+            return
+        self.editor.setPlainText(self.editor.toPlainText().replace(f, self.with_edit.text()))
+        self.accept()
+        ok(tr("已替换 {} 处").format(n))
+
+
+class QaDialog(QDialog):
+    """Ctrl+P / Ctrl+Q 提问:基于项目设定 + 当前正文回答问题,不改正文(对齐原版 openQaDialog)。"""
+
+    def __init__(self, parent, editor: QPlainTextEdit, drama_id: int):
+        super().__init__(parent)
+        self.editor = editor
+        self.drama_id = drama_id
+        self.setWindowTitle(tr("AI 提问"))
+        self.resize(720, 640)
+        lay = QVBoxLayout(self)
+        self.q_edit = QLineEdit()
+        self.q_edit.setPlaceholderText(tr("就本章或项目设定提问,例如:这一章埋了什么伏笔?"))
+        lay.addWidget(self.q_edit)
+        self.answer = QPlainTextEdit()
+        self.answer.setReadOnly(True)
+        lay.addWidget(self.answer, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        close = QPushButton(tr("close"))
+        close.clicked.connect(self.accept)
+        self.send_btn = W.primary_btn(tr("提问"))
+        self.send_btn.clicked.connect(self._ask)
+        row.addWidget(close)
+        row.addWidget(self.send_btn)
+        lay.addLayout(row)
+
+    def _ask(self):
+        q = self.q_edit.text().strip()
+        if not q:
+            return
+        from ..pipeline import novel as novel_pipe
+        from ..agents import runner
+        self.send_btn.setEnabled(False)
+        self.answer.setPlainText(tr("思考中…"))
+
+        def job(tid):
+            ctx = novel_pipe._novel_settings_ctx(self.drama_id)
+            body = self.editor.toPlainText()[:6000]
+            prompt = (f"{ctx}\n\n【本章正文节选】\n{body}\n\n"
+                      f"【问题】{q}\n\n"
+                      "只回答问题本身,不要改写正文、不要输出改写建议。")
+            return runner.run_agent("novel_planner", prompt, temperature=0.4)
+
+        def done(tid, result, error):
+            self.send_btn.setEnabled(True)
+            if error:
+                self.answer.setPlainText(str(error)[:200])
+                return
+            self.answer.setPlainText(result or "")
+
+        TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+
+def install_ai_edit_shortcut(editor: QPlainTextEdit, get_cb,
+                              get_replace_cb=None, get_qa_cb=None, get_find_cb=None):
+    """给 QPlainTextEdit 装快捷键(对齐原版 episode.vue):
+
+    - Ctrl/Cmd+L → AI 改写(选中改写 / 光标插入 / 整章处理)
+    - Ctrl/Cmd+F → 查找(仅定位,不替换)
+    - Ctrl/Cmd+R → 查找替换(确定性字面替换,不走 AI)
+    - Ctrl/Cmd+Q → AI 提问(基于设定+正文作答,不改正文)
+    """
+    from PySide6.QtGui import QKeySequence, QShortcut
 
     def _on_activated():
         get_cb(editor)
 
-    sc = QShortcut(QKeySequence("Ctrl+L"), editor)
-    sc.activated.connect(_on_activated)
-    sc2 = QShortcut(QKeySequence("Meta+L"), editor)
-    sc2.activated.connect(_on_activated)
-    editor._ai_edit_shortcuts = (sc, sc2)  # 保持引用
+    shorts = []
+    for seq in ("Ctrl+L", "Meta+L"):
+        sc = QShortcut(QKeySequence(seq), editor)
+        sc.activated.connect(_on_activated)
+        shorts.append(sc)
+    if get_replace_cb:
+        for seq in ("Ctrl+R", "Meta+R"):
+            sc = QShortcut(QKeySequence(seq), editor)
+            sc.activated.connect(lambda: get_replace_cb(editor))
+            shorts.append(sc)
+    if get_find_cb:
+        for seq in ("Ctrl+F", "Meta+F"):
+            sc = QShortcut(QKeySequence(seq), editor)
+            sc.activated.connect(lambda: get_find_cb(editor))
+            shorts.append(sc)
+    if get_qa_cb:
+        for seq in ("Ctrl+Q", "Meta+Q"):
+            sc = QShortcut(QKeySequence(seq), editor)
+            sc.activated.connect(lambda: get_qa_cb(editor))
+            shorts.append(sc)
+    editor._ai_edit_shortcuts = tuple(shorts)  # 保持引用,防被 GC

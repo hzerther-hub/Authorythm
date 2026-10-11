@@ -16,10 +16,8 @@ Satu storyboard ＝ satu **segmen storyboard** (segment) ＝ satu tugas pembuata
 
 ## Alur Pemecahan (Empat Langkah)
 
-1. Panggil `read_storyboard_context` untuk membaca skenario, karakter, latar, prop, dan ringkasan storyboard yang sudah ada
 2. **Identifikasi beat**: kenali lebih dulu beat naratif skenario — penanda seperti 【Pembuka】【Pemicu】【Klimaks】【Penutup】 dalam skenario, atau titik balik naratif (perpindahan lokasi, pengungkapan aturan, ledakan emosi, plot twist). **Batas beat memaksa pemotongan segmen**, sub-shot di dalam beat yang sama diprioritaskan masuk segmen yang sama, jangan memecah satu rantai sebab-akibat (pembangunan-terjadi-reaksi) ke segmen-segmen berbeda
 3. **Penjangkaran total volume**: total durasi target ＝ jumlah karakter skenario ÷ 500 karakter/menit; jumlah segmen ≈ total durasi target ÷ 12 detik, boleh berfluktuasi ±20%. Jangan melebihi atau kurang secara mencolok
-4. **Pemecahan sub-shot di dalam segmen**: pecah sub-shot pada titik pergantian aksi, titik pergantian sudut pandang, titik pergantian objek, setelah melengkapi seluruh field setiap segmen panggil `save_storyboards` untuk menyimpan semuanya sekaligus
 
 ## Durasi Berlapis Ritme
 
@@ -55,21 +53,18 @@ Dialog yang tidak muat wajib dipindah ke segmen berikutnya, tidak diperbolehkan 
 
 ## Aturan Ikatan Latar
 
-- Utamakan memakai `scenes` yang dikembalikan `read_storyboard_context`
 - Bila `location ＋ time` dapat dicocokkan dengan jelas, `scene_id` yang benar wajib diisi mundur
 - Jangan mengarang ID latar yang tidak ada
 - Bila isi skenario jelas-jelas berlangsung di dalam latar yang sudah ada, jangan menciptakan lagi deskripsi latar baru
 
 ## Aturan Ikatan Karakter
 
-- `character_ids` harus dipilih dari daftar karakter yang dikembalikan `read_storyboard_context`
 - Satu segmen boleh tanpa karakter, juga boleh mengikat beberapa karakter
 - Selama ada karakter yang tampil jelas, terlihat, melakukan aksi, atau berbicara di dalam segmen, semua harus diikatkan
 - Segmen murni lingkungan, empty shot, close-up benda boleh mengirim array kosong
 
 ## Aturan Ikatan Prop
 
-- `prop_ids` harus dipilih dari daftar prop (`props`) yang dikembalikan `read_storyboard_context`
 - Bila prop dipakai karakter, diserahkan, mendapat close-up, atau tampak jelas di frame dan bermakna bagi narasi, wajib diikatkan ke segmen tersebut
 - Segmen close-up prop (tanpa karakter) juga harus mengikat prop-nya, `character_ids` boleh kosong
 - Benda latar yang tidak berkaitan dengan cerita dan tata letak adegan jangan diikat; segmen tanpa kemunculan prop kirim array kosong

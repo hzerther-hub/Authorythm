@@ -58,4 +58,3 @@ La ambientación, la textura de época y los elementos visuales clave del `promp
 
 ## Guardado
 
-Llama a `save_scene_final_prompt`: el parámetro prompt no contiene palabras de estilo; **el estilo visual del proyecto lo inyecta automáticamente la herramienta al principio mismo del prompt final**.

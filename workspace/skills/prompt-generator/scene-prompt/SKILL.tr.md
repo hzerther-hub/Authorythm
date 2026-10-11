@@ -58,4 +58,3 @@ Mekân **okunabilir, eşleşebilir ve yeniden kullanılabilir** olmalıdır:
 
 ## Kaydetme
 
-`save_scene_final_prompt` çağır: prompt parametresi stil sözcüğü içermez, **projenin görsel stili araç tarafından nihai promptun en başına otomatik enjekte edilir**.

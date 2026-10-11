@@ -58,4 +58,3 @@ Gli arredi, la texture d'epoca e gli elementi visivi chiave del `prompt` (descri
 
 ## Salvataggio
 
-Chiama `save_scene_final_prompt`: il parametro prompt non contiene parole di stile, **lo stile visivo del progetto viene iniettato automaticamente dallo strumento all'inizio del prompt finale**.

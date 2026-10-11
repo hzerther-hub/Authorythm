@@ -60,4 +60,3 @@ character turnaround sheet, character reference sheet, multi-view concept art la
 
 ## 保存
 
-调用 `save_character_final_prompt`：prompt 参数不含风格词，**项目视觉风格由工具自动注入到最终提示词的最前方**。

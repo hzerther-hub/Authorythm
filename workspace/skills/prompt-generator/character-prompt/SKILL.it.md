@@ -60,4 +60,3 @@ I tratti caratteriali del personaggio vanno trasformati in descrizioni di portam
 
 ## Salvataggio
 
-Chiama `save_character_final_prompt`: il parametro prompt non contiene parole di stile, **lo stile visivo del progetto viene iniettato automaticamente dallo strumento all'inizio del prompt finale**.

@@ -59,6 +59,15 @@ def _chapter_name_missing(ep: dict) -> bool:
     return (not t) or bool(re.match(r"^第\d+集\s*$", t))
 
 
+TITLE_IDLE_QSS = ("QLineEdit{border:none;background:transparent;padding:0;"
+                  "font-weight:700;font-size:13px;color:#1f2329;}")
+# 编辑态:行高给足(此前 24px 高 + 2px 边框 + 上下内边距把文字上下切掉),
+# 边框降到 1.5px、内边距只留左右,保证 13px 粗体文字完整显示
+TITLE_EDIT_QSS = ("QLineEdit{border:2px solid #4b6ef5;border-radius:6px;"
+                  "background:#f5f8ff;padding:0px 8px;font-weight:700;font-size:13px;"
+                  "color:#1f2329;min-height:26px;}")
+
+
 class EpisodeCard(QFrame):
     """集卡(对齐原版 .ep-card):EP 序号 + 可改名标题 + 五段进度 + 元信息 + 状态 + 底部动作。"""
 
@@ -100,11 +109,30 @@ class EpisodeCard(QFrame):
         f2.setBold(True)
         f2.setPointSize(11)
         self.title_edit.setFont(f2)
-        self.title_edit.setStyleSheet("border:none;background:transparent;padding:0;")
-        self.title_edit.setToolTip(tr("click_rename"))
+        # 默认只读:外观就是标题文字(透明无边框),旁边有铅笔按钮提示可改
+        self.title_edit.setReadOnly(True)
+        self.title_edit.installEventFilter(self)
         self.title_edit.editingFinished.connect(self._rename)
         self.title_edit.returnPressed.connect(self._rename)
-        main.addWidget(self.title_edit)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(2)
+        # 输入框吃掉整行剩余宽度:此前固定在文字宽度,长标题被截断看不全
+        from PySide6.QtWidgets import QSizePolicy
+        self.title_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.title_edit.setMinimumHeight(28)   # 容得下 2px 边框 + 13px 粗体文字
+        title_row.addWidget(self.title_edit, 1)
+        # 铅笔按钮:点一下进入改名,编辑态标题变明显文本框
+        pen = QPushButton("✎")
+        pen.setFixedSize(20, 20)
+        pen.setCursor(Qt.PointingHandCursor)
+        pen.setToolTip(tr("点击改名"))
+        pen.setStyleSheet(
+            "QPushButton{border:none;background:transparent;color:#b9bfc9;font-size:13px;padding:0;}"
+            "QPushButton:hover{color:#f97316;background:#fdf0e6;border-radius:10px;}")
+        pen.clicked.connect(self._start_rename)
+        self.pen_btn = pen
+        title_row.addWidget(pen)
+        main.addLayout(title_row)
 
         # 缺章节名且已有正文 → AI 生成章节名
         if _chapter_name_missing(dict(ep)) and (ep.get("content") or "").strip():
@@ -203,8 +231,12 @@ class EpisodeCard(QFrame):
         st.setObjectName("muted")
         foot.addWidget(st)
         foot.addStretch(1)
-        del_btn = W.danger_btn("🗑 " + tr("delete"))   # 图标+文字,常显危险色(此前纯图标几乎不可见)
-        del_btn.setFixedHeight(28)
+        from PySide6.QtWidgets import QStyle
+        # 纯图标(文字挪到 tooltip):🗑 字符在部分 Windows 字体下渲染成方块,
+        # 改用 Qt 标准垃圾桶图标,任何机器都正常,常显危险色保证可辨
+        del_btn = W.danger_btn("")
+        del_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        del_btn.setFixedSize(30, 28)
         del_btn.setToolTip(tr("delete_episode"))
         del_btn.clicked.connect(self._del)
         foot.addWidget(del_btn)
@@ -214,11 +246,31 @@ class EpisodeCard(QFrame):
         foot.addWidget(enter)
         lay.addLayout(foot)
 
+    def _start_rename(self):
+        """进入改名态:标题变成明显的输入框(蓝色边框+浅蓝底),全选待改。"""
+        self.title_edit.setReadOnly(False)
+        self.title_edit.setStyleSheet(TITLE_EDIT_QSS)
+        self.title_edit.selectAll()
+        self.title_edit.setFocus()
+
+    def eventFilter(self, obj, ev):
+        """标题双击进入改名态。"""
+        from PySide6.QtCore import QEvent
+        if obj is self.title_edit and ev.type() == QEvent.Type.MouseButtonDblClick:
+            self._start_rename()
+            return True
+        return super().eventFilter(obj, ev)
+
     def mousePressEvent(self, ev):
-        if getattr(self, "_btn_clicked", False):
-            self._btn_clicked = False
-        else:
-            self._enter(self.episode_id)
+        # 按钮自己会触发跳转;卡片兜底再跳一次会造成重复导航(旧守卫 _btn_clicked
+        # 只读不写、形同虚设),这里按命中位置跳过交互控件
+        from PySide6.QtWidgets import QAbstractButton, QLineEdit
+        pt = ev.position().toPoint() if hasattr(ev, "position") else ev.pos()
+        child = self.childAt(pt)
+        if isinstance(child, (QAbstractButton, QLineEdit)):
+            super().mousePressEvent(ev)
+            return
+        self._enter(self.episode_id)
         super().mousePressEvent(ev)
 
     def _gen_chapter_title(self, episode_id: int):
@@ -240,12 +292,16 @@ class EpisodeCard(QFrame):
         TASKMGR.submit("novel_title", job, done, episode_id=episode_id)
 
     def _rename(self):
+        """双击改名保存:落库 + 回到只读态 + 提示(保持"看起来像标题"的观感)。"""
         title = self.title_edit.text().strip()
         if title:
             db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?",
                   (title, db.now(), self.episode_id))
+            ok(tr("章节名已改为:") + title)
         else:
             self.title_edit.setText(tr("episode_n").format(self.episode_number))
+        self.title_edit.setReadOnly(True)   # 存完自动锁定,需再次点铅笔/双击才能改
+        self.title_edit.setStyleSheet(TITLE_IDLE_QSS)
         self.title_edit.clearFocus()
 
     def _apply_status(self, status: str):
@@ -614,6 +670,9 @@ class ProjectPage(QWidget):
         # 集卡网格常驻:reload 只清这个 grid 的条目。
         # (若每次 reload 新建嵌套 QGridLayout 再塞进 ep_lay,ep_lay.takeAt() 取不到嵌套布局里的
         #  卡片——它们已被重新挂到父控件上,旧卡片会留在界面上,表现为重复的「添加第 N 集」)
+        # 操作提示:让"章节名可改"一眼可见
+        self.ep_tip = W.muted("✎ " + tr("点铅笔图标可改章节名"))
+        self.ep_lay.addWidget(self.ep_tip)
         self.ep_grid = QGridLayout()
         self.ep_grid.setContentsMargins(0, 0, 0, 0)
         self.ep_grid.setSpacing(10)
@@ -711,7 +770,41 @@ class ProjectPage(QWidget):
             if w:
                 w.deleteLater()
         ch.addWidget(CoverPanel(drama_id, on_changed=self.reload))
+        ch.addWidget(self._build_novel_scale_bar(drama_id))
         self.reload()
+
+    def _build_novel_scale_bar(self, drama_id: int) -> QWidget:
+        """项目页封面下的规模摘要:每章字数 / 总章数 / 写作文风(小说项目)。"""
+        from ..pipeline.novel import (NOVEL_STYLES, get_novel_pov, get_novel_style,
+                                      pov_rule)
+        box = QWidget()
+        lay = QHBoxLayout(box)
+        lay.setContentsMargins(2, 6, 2, 0)
+        lay.setSpacing(8)
+        d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
+        if not d:
+            return box
+        meta = db.jload(d["novel_meta"], {}) or {}
+        chapters = db.jload(d["novel_chapters"], []) or []
+        # 小说项目一律显示;非小说类型但已有小说设定/章节计划的也显示
+        # (实测有 work_type=drama 的项目实际按小说在跑)
+        if (d["work_type"] or "") != "novel" and not (meta or chapters
+                                                      or (d["novel_style"] or "").strip()):
+            return box
+        total = int(meta.get("chapter_count") or d["total_episodes"] or len(chapters) or 0)
+        words = int(meta.get("word_count") or 0)
+        style = get_novel_style(drama_id)
+        style_name = next((n for n, p in NOVEL_STYLES if p == style),
+                          style or "-")
+        for label, value in (("每章字数", f"{words} 字" if words else "未设置"),
+                             ("总章数", f"{total} 章" if total else "未设置"),
+                             ("写作文风", style_name),
+                             ("叙事人称", pov_rule(get_novel_pov(drama_id)).split("(")[0])):
+            chip = W.tag(f"{label}:{value}")
+            chip.setToolTip(value)
+            lay.addWidget(chip)
+        lay.addStretch(1)
+        return box
 
     def _open_settings(self):
         from .asset_dialogs import ProjectSettingsDialog

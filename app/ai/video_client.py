@@ -39,12 +39,115 @@ def _download(url: str, headers: dict | None = None) -> Path:
     return out
 
 
+_IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+               ".webp": "image/webp", ".bmp": "image/bmp", ".gif": "image/gif"}
+
+# 上传前参考图的长边上限。参考图原图是 1920×1080 的 PNG(实测中位 3.3MB),
+# 8 张满配 base64 后请求体可达 36MB —— 上游极易撞体积上限,提交阶段也会慢到超时。
+# 生图链路早按参考项目口径压到 768px(image_client._ref_data_url),视频链路此前漏了这一步。
+_UPLOAD_MAX_SIDE = 768
+_data_url_cache: dict = {}
+
+
+def _upload_bytes(path: Path, mime: str) -> bytes:
+    """上传用字节:图片等比缩进 _UPLOAD_MAX_SIDE 的框内、**统一转 JPEG**。
+
+    对齐参考项目 backend/src/utils/storage.ts 的 compressImageAsDataUrl:
+      sharp(...).resize({width:768,height:768,fit:'inside',withoutEnlargement:true})
+      有 alpha → flatten 白底 → .jpeg({quality:68})
+    即参考项目没有 PNG 这个选项,一律 image/jpeg。我们此前直接塞 1920×1080
+    原图(中位 3.3MB),8 张满配 base64 可达 36MB。
+
+    缩不动 / 非图片 / 解码失败时回退原文件字节,绝不因压缩失败而丢图。
+    """
+    if not mime.startswith("image/"):
+        return path.read_bytes()
+    try:
+        import io
+        from PIL import Image, ImageOps
+        with Image.open(path) as im:
+            im.load()
+            im = ImageOps.exif_transpose(im)      # 对齐 .rotate():按 EXIF 自动摆正
+            if im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info):
+                im = im.convert("RGBA")
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.split()[-1])
+                im = bg
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            im.thumbnail((_UPLOAD_MAX_SIDE, _UPLOAD_MAX_SIDE), Image.LANCZOS)  # inside + 不放大
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=68, optimize=True)
+            return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return path.read_bytes()
+
+
+def _has_alpha(im) -> bool:
+    try:
+        return im.mode in ("RGBA", "LA", "PA") or (im.mode == "P" and "transparency" in im.info)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _fetch_remote_as_data_url(url: str) -> str | None:
+    """远程参考图 → 下载后压缩成 data URL(对齐参考项目 fetchImageAsCompressedDataUrl)。
+
+    只在下载确实失败时返回 None,由调用方决定丢弃或原样透传 —— 对 Agnes 来说
+    公网 URL 本身就是合法媒体,所以宁可透传也不要悄悄把用户绑定的参考图弄丢。
+    """
+    import tempfile
+    try:
+        import requests
+        from PIL import Image
+        resp = requests.get(url, timeout=60)
+        if resp.status_code != 200 or not resp.content:
+            return None
+        with tempfile.NamedTemporaryFile(suffix=".img", delete=False) as tf:
+            tf.write(resp.content)
+            tmp = Path(tf.name)
+        try:
+            with Image.open(tmp) as probe:
+                probe.load()
+                fmt = (probe.format or "PNG").upper()
+            mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp",
+                    "GIF": "image/gif", "BMP": "image/bmp"}.get(fmt, "image/png")
+            return (f"data:{mime};base64," + base64.b64encode(_upload_bytes(tmp, mime)).decode())
+        finally:
+            tmp.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _local_to_data_url(path: str | Path) -> str:
+    """本地图片 → 压缩 data URL(缩进 768 框内,统一 JPEG q68,见 _upload_bytes)。
+
+    已是 data: / http(s): 的原样透传 —— 前者不重复编码,后者交给调用方决定
+    (Agnes 接受公网 URL 作为合法媒体)。非图片文件(音视频)退回 octet-stream。
+    """
     import base64
-    p = Path(path)
-    if p.exists():
-        return "data:application/octet-stream;base64," + base64.b64encode(p.read_bytes()).decode()
-    return str(path)
+    text = str(path or "")
+    if not text:
+        return text
+    if text.startswith(("data:", "http://", "https://")):
+        return text
+    p = Path(text)
+    if not p.exists():
+        return text
+    st = p.stat()
+    key = (str(p), st.st_mtime_ns, st.st_size)
+    hit = _data_url_cache.get(key)
+    if hit is not None:
+        return hit
+    mime = _IMAGE_MIME.get(p.suffix.lower(), "application/octet-stream")
+    if mime.startswith("image/"):
+        url = "data:image/jpeg;base64," + base64.b64encode(_upload_bytes(p, mime)).decode()
+    else:
+        url = f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
+    if len(_data_url_cache) >= 32:      # 批量逐镜会反复用同一批图,小缓存即可命中
+        _data_url_cache.clear()
+    _data_url_cache[key] = url
+    return url
 
 
 def _poll(fetch_status, interval: int, rounds: int) -> str:
@@ -464,50 +567,6 @@ def _is_rate_limited(exc) -> bool:
             or "too many requests" in s or "rate limit" in s)
 
 
-def _generate_with_retry(fn, *, max_attempts: int = 6,
-                         rate_limit_budget_s: float = 900.0,
-                         create_budget_s: float = 180.0) -> tuple[Path, str]:
-    """提交 + 轮询的重试包装。
-
-    - **永久错误立即失败**:4xx(缺 Key / 参数错 / 模型下线)退避再试也没用,只是烧配额;
-    - **限流 / 队列满**:长预算(默认 15 分钟,实测 Agnes 拥塞会持续 20 分钟+)按 30s→45s→… 退避,封顶 2 分钟;
-    - **retry_at 时间戳**:上游明确给了「X 之后再试」就直接睡到那一刻,最多跟 2 次、单次 ≤24h;
-    - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游。
-    """
-    import time as _t
-    from .video_contract import is_permanent_error, retry_at_wait_seconds
-    gate = threading.Lock()
-    last_err = None
-    started = _t.time()
-    retry_at_follows = 0
-    for attempt in range(max_attempts):
-        with gate:
-            acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
-            try:
-                return fn()
-            except Exception as exc:  # noqa: BLE001
-                last_err = exc
-        if is_permanent_error(last_err):
-            raise last_err                       # 4xx 快速失败,不进退避
-        elapsed = _t.time() - started
-        budget = rate_limit_budget_s if _is_rate_limited(last_err) else create_budget_s
-        wait = retry_at_wait_seconds(str(last_err), retry_at_follows)
-        if wait is not None:
-            retry_at_follows += 1
-        else:
-            wait = backoff_seconds(attempt)
-        if elapsed + wait > budget or attempt == max_attempts - 1:
-            raise last_err                       # 预算耗尽或次数用尽,按最后一次错误上报
-        _t.sleep(wait)
-    raise last_err  # pragma: no cover
-
-
-def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:
-    """退避计算:优先 Retry-After,否则 30s × 1.5^n,封顶 120s。"""
-    if retry_after:
-        return min(float(retry_after), RATE_LIMIT_BACKOFF_CAP_S)
-    return min(RATE_LIMIT_BACKOFF_BASE_S * (1.5 ** min(attempt, 6)), RATE_LIMIT_BACKOFF_CAP_S)
-
 
 def acquire_video_create_gate() -> None:
     """视频提交全局串行门:阻塞到距上次提交满 15 秒后放行,并更新时刻。
@@ -522,6 +581,23 @@ def acquire_video_create_gate() -> None:
         _last_video_create_at[0] = time.time()
 
 
+class VideoRetryExhausted(RuntimeError):
+    """重试预算耗尽(或撞上永久错误)——携带**每一次**尝试的原因。
+
+    此前实现只有一个 `last_err = exc` 反复覆盖:中间失败的信息全丢,落库的
+    error_msg 只剩最后一个异常,排查时看不到「先发生了什么、中间变没变」。
+    这里把整条尝试链拼进消息,并把原始异常挂到 __cause__,traceback 里两条都在。
+    """
+
+    def __init__(self, attempts: list, last: BaseException | None):
+        self.attempts = list(attempts)
+        self.last = last
+        head = last if isinstance(last, BaseException) else RuntimeError(str(last))
+        chain = " | ".join(f"#{i} @{t:.0f}s {k}: {m}" for i, t, k, m in self.attempts)
+        super().__init__(f"{head}  [共 {len(self.attempts)} 次尝试] {chain}")
+        self.__cause__ = head
+
+
 def _generate_with_retry(fn, *, max_attempts: int = 6,
                          rate_limit_budget_s: float = 900.0,
                          create_budget_s: float = 180.0) -> tuple[Path, str]:
@@ -530,12 +606,14 @@ def _generate_with_retry(fn, *, max_attempts: int = 6,
     - **永久错误立即失败**:4xx(缺 Key / 参数错 / 模型下线)退避再试也没用,只是烧配额;
     - **限流 / 队列满**:长预算(默认 15 分钟,实测 Agnes 拥塞会持续 20 分钟+)按 30s→45s→… 退避,封顶 2 分钟;
     - **retry_at 时间戳**:上游明确给了「X 之后再试」就直接睡到那一刻,最多跟 2 次、单次 ≤24h;
-    - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游。
+    - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游;
+    - **失败上报整条尝试链**:抛 VideoRetryExhausted,不再只报最后一次。
     """
     import time as _t
     from .video_contract import is_permanent_error, retry_at_wait_seconds
     gate = threading.Lock()
     last_err = None
+    attempts: list = []          # (轮次, 距开始秒数, 异常类名, 摘要)
     started = _t.time()
     retry_at_follows = 0
     for attempt in range(max_attempts):
@@ -545,8 +623,10 @@ def _generate_with_retry(fn, *, max_attempts: int = 6,
                 return fn()
             except Exception as exc:  # noqa: BLE001
                 last_err = exc
+                attempts.append((attempt + 1, _t.time() - started,
+                                 type(exc).__name__, str(exc)[:160]))
         if is_permanent_error(last_err):
-            raise last_err                       # 4xx 快速失败,不进退避
+            raise VideoRetryExhausted(attempts, last_err)   # 4xx 快速失败,不进退避
         elapsed = _t.time() - started
         budget = rate_limit_budget_s if _is_rate_limited(last_err) else create_budget_s
         wait = retry_at_wait_seconds(str(last_err), retry_at_follows)
@@ -555,9 +635,9 @@ def _generate_with_retry(fn, *, max_attempts: int = 6,
         else:
             wait = backoff_seconds(attempt)
         if elapsed + wait > budget or attempt == max_attempts - 1:
-            raise last_err                       # 预算耗尽或次数用尽,按最后一次错误上报
+            raise VideoRetryExhausted(attempts, last_err)   # 预算耗尽或次数用尽
         _t.sleep(wait)
-    raise last_err  # pragma: no cover
+    raise VideoRetryExhausted(attempts, last_err)  # pragma: no cover
 
 
 def backoff_seconds(attempt: int, retry_after: float | None = None) -> float:

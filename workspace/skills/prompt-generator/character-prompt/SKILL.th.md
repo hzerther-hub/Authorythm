@@ -60,4 +60,3 @@ character turnaround sheet, character reference sheet, multi-view concept art la
 
 ## การบันทึก
 
-เรียก `save_character_final_prompt`: พารามิเตอร์ prompt ไม่มีคำบอกสไตล์ **สไตล์ภาพของโปรเจกต์จะถูกเครื่องมือฉีดเข้าไปโดยอัตโนมัติที่ต้นสุดของพรอมต์สุดท้าย**

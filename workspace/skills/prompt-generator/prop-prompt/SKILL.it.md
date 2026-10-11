@@ -40,4 +40,3 @@ luce da studio morbida e uniforme, ombre leggere, alto livello di dettaglio
 
 ## Salvataggio
 
-Chiama `save_prop_final_prompt`: il parametro prompt non contiene parole di stile, **lo stile visivo del progetto viene iniettato automaticamente dallo strumento all'inizio del prompt finale**.

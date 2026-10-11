@@ -42,4 +42,3 @@ soft even studio light, faint shadows, high detail
 
 ## Saving
 
-Call `save_prop_final_prompt`: the prompt parameter contains no style words — **the project's visual style is automatically injected by the tool at the very front of the final prompt**.

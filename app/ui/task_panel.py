@@ -33,6 +33,11 @@ class TaskDrawer(QWidget):
     def __init__(self, episode_id: int | None = None, parent=None):
         super().__init__(parent)
         self.episode_id = episode_id
+        # 抽屉本体是「不绘制背景」的普通子控件 —— 主题里没有裸的 QWidget 背景规则,
+        # 所以遮罩之外自然透出下层页面(与参考项目一致:当前界面被压暗但仍可见)。
+        # 刻意**不要**用 WA_TranslucentBackground:该属性只适用于顶层窗口,用在子控件上
+        # 会让 Windows 把整个窗口切到分层合成,抽屉销毁后主区域留下不重绘的暗块。
+        self.setAutoFillBackground(False)
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         scrim = QFrame()
@@ -42,7 +47,7 @@ class TaskDrawer(QWidget):
 
         aside = QFrame()
         aside.setObjectName("inspector")
-        aside.setFixedWidth(560)
+        self.aside = aside
         al = QVBoxLayout(aside)
         al.setContentsMargins(0, 0, 0, 0)
         al.setSpacing(0)
@@ -95,6 +100,11 @@ class TaskDrawer(QWidget):
 
         TASKMGR.updated.connect(self.reload)
         self.reload()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # 侧栏宽度随窗口走(对齐参考项目:约占界面 1/3 宽),小窗口不至于挤成一条缝
+        self.aside.setFixedWidth(max(360, min(660, int(self.width() * 0.34))))
 
     def reload(self):
         rows = TASKMGR.list_tasks(self.episode_id, limit=100)

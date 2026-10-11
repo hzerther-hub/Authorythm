@@ -15,7 +15,7 @@ from .text_client import AIError, _build_body
 
 
 def chat_stream(prompt: str, system: str | None = None, config_id: int | None = None,
-                temperature: float = 0.7, max_tokens: int = 8192,
+                temperature: float = 0.7, max_tokens: int | None = None,
                 json_mode: bool = False, timeout: int = 300,
                 image_urls: list[str] | None = None):
     """逐块 yield `(kind, text)`,kind ∈ {"reasoning", "content"}。

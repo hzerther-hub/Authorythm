@@ -98,11 +98,6 @@ def build_generate_body(cfg: dict, *, prompt: str, resolution: str, duration,
 
     if is_flash and ref_videos:
         raise AIError("Agnes Video Flash 不支持参考视频,请改用 agnes-video-2.5")
-    limits = FLASH_LIMITS if is_flash else FULL_LIMITS
-    if len(ref_images) > limits["images"] or len(ref_audios) > limits["audios"]:
-        raise AIError(f"参考素材超限:图片≤{limits['images']}、音频≤{limits['audios']}")
-    if not is_flash and len(ref_images) + len(ref_audios) + len(ref_videos) > FULL_LIMITS["total"]:
-        raise AIError(f"参考素材总数超限:≤{FULL_LIMITS['total']}")
 
     # 模式互斥(官方规则:keyframe 禁带 images/audios/videos):帧 > 参考 > 纯文生
     if first_frame or last_frame:
@@ -111,6 +106,26 @@ def build_generate_body(cfg: dict, *, prompt: str, resolution: str, duration,
         project_mode = "reference"
     else:
         project_mode = "text"
+
+    # 限额只对**真正会进请求体**的素材生效:keyframe 模式下 build_generate_body
+    # 根本不读 images/audios/videos,若在这里一并计数,带首帧的镜头会凭空报
+    # 「超限」而整镜失败 —— 那些图压根没被用过。
+    if project_mode == "keyframe":
+        ref_images, ref_audios, ref_videos = [], [], []
+
+    # 超限**截断而非报错**,对齐参考项目 normalizeReferenceImages 的 `.slice(0, 6)`:
+    # 参考图多绑几个应该少带几张,不该让整条视频任务直接失败。
+    limits = FLASH_LIMITS if is_flash else FULL_LIMITS
+    if len(ref_images) > limits["images"]:
+        ref_images = ref_images[:limits["images"]]
+    if len(ref_audios) > limits["audios"]:
+        ref_audios = ref_audios[:limits["audios"]]
+    if not is_flash:
+        total = len(ref_images) + len(ref_audios) + len(ref_videos)
+        if total > FULL_LIMITS["total"]:
+            room = FULL_LIMITS["total"] - len(ref_audios) - len(ref_videos)
+            ref_images = ref_images[:max(0, room)]
+
     final_mode = map_mode(model, project_mode)
 
     body: dict = {
@@ -222,11 +237,28 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
 
     本地路径转 data URL 在这里统一做(与参考版 normalizeVideoReferenceUrl 同位)。
     """
-    from .video_client import _local_to_data_url
+    from .video_client import _fetch_remote_as_data_url, _local_to_data_url
+    from ..core import config
 
     def _inline(u: str) -> str:
-        # 参考/帧图走同一归一:本地路径内联成 data URL,http(s)/static 保持原样
-        if u and not u.startswith(("http://", "https://", "data:")) and Path(u).exists():
+        """本地图片 → data URL;公网 http(s) 先下载再压缩(对齐参考项目
+        fetchImageAsCompressedDataUrl);已是 data URL 的原样透传。
+
+        /static/xxx 这类库里存的相对地址要先换算回磁盘绝对路径,否则
+        Path(u).exists() 恒为 False,相对地址会被原样发给上游,同样吃 400。
+        """
+        if not u:
+            return u
+        if u.startswith("data:"):
+            return u
+        if u.startswith(("http://", "https://")):
+            # 下载压缩失败时原样透传:对 Agnes 来说公网 URL 本身就是合法媒体,
+            # 宁可发大一点也不要悄悄丢掉用户绑定的参考图
+            return _fetch_remote_as_data_url(u) or u
+        if u.startswith(("/static/", "static/")):
+            p = config.media_url_to_path(u)
+            return _local_to_data_url(p) if p.exists() else u
+        if Path(u).exists():
             return _local_to_data_url(u)
         return u
 

@@ -40,4 +40,3 @@ weiches gleichmäßiges Studiolicht, dezente Schatten, hoher Detailgrad
 
 ## Speichern
 
-`save_prop_final_prompt` aufrufen: Der Parameter prompt enthält keine Stilwörter — **den Bildstil des Projekts injiziert das Werkzeug automatisch an den allerersten Anfang des finalen Prompts**.

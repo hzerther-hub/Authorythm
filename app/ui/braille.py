@@ -82,6 +82,8 @@ class WaitingButton(QPushButton):
         self.setCursor(Qt.PointingHandCursor)
 
     def busy(self, text: str = ""):
+        """等待态:只显示盲文 spinner,不显示文字(文字容易让人生成中途误读;
+        进度细节由页面状态条与任务面板承担)。text 参数保留兼容旧调用。"""
         self.setEnabled(False)
         if self._lay is None:
             self._lay = QHBoxLayout(self)
@@ -90,11 +92,7 @@ class WaitingButton(QPushButton):
         if self._spin is None:
             self._spin = BrailleSpinner(color="#ffffff" if self.objectName() == "primary" else "#f97316", parent=self)
             self._lay.addWidget(self._spin)
-        self._spin.start(text)
-        if text:
-            lab = QLabel(f" {text}")
-            lab.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-            self._lay.addWidget(lab)
+        self._spin.start("")
         self.setText("")
 
     def idle(self):

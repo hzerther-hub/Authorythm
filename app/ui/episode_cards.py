@@ -6,7 +6,8 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QSize
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
                                QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
 
@@ -39,6 +40,22 @@ def mono_tag(text: str) -> QLabel:
     return lab
 
 
+# 三类资产卡统一尺寸(对齐参考项目 character-asset-grid 的 230-260px 卡片)
+ASSET_CARD_W = 250
+
+
+def _snug_card(card: QFrame):
+    """卡片贴内容高:宽固定对齐网格,高按 sizeHint 收口。
+
+    之前三类卡统一 setFixedSize(250, 360),内容不足 360 时底部留一大块空白
+    (用户红框标的就是它)。高度改由内容决定,网格行高自动取本行最高的卡。
+    """
+    card.setFixedWidth(ASSET_CARD_W)
+    card.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+    card.adjustSize()
+    card.setFixedHeight(max(card.height(), 120))
+
+
 def status_pill(state: str, text: str) -> QLabel:
     lab = QLabel(text)
     lab.setObjectName("statusDot")
@@ -66,8 +83,31 @@ def scroll_host(inner: QWidget) -> QScrollArea:
     sc = QScrollArea()
     sc.setWidgetResizable(True)
     sc.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+    # 参考项目(web)只有纵向滚动;横向滚动条多为长文本撑宽内层所致,直接关掉
+    sc.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     sc.setWidget(inner)
     return sc
+
+
+def video_camera_icon(color, size: int = 15) -> QIcon:
+    """单色「摄像机」图标:🎬 emoji 在 Windows 部分字体下渲染为空框,改用 QPainter 画。
+
+    颜色传调色板 ButtonText,亮暗主题各自成立;禁用态 Qt 自动生成灰化图标。
+    """
+    pm = QPixmap(size * 2, size * 2)
+    pm.setDevicePixelRatio(2)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QColor(color))
+    w = float(size)
+    # 机身圆角矩形 + 右侧探出的镜头梯形(标准 videocam 轮廓)
+    p.drawRoundedRect(QRectF(0.0, w * 0.24, w * 0.62, w * 0.52), 2.0, 2.0)
+    p.drawPolygon(QPolygonF([QPointF(w * 0.68, w * 0.40), QPointF(w * 0.98, w * 0.20),
+                             QPointF(w * 0.98, w * 0.80), QPointF(w * 0.68, w * 0.60)]))
+    p.end()
+    return QIcon(pm)
 
 
 class SaveOnBlurEdit(QPlainTextEdit):
@@ -111,10 +151,9 @@ class CoverBox(QFrame):
 
     def __init__(self, url: str | None, w: int, h: int, placeholder: str,
                  badge: str = "", badge_state: str = "todo", tag_text: str = "",
-                 on_click=None):
+                 on_click=None, pending: bool = False, on_download=None):
         super().__init__()
         self.setFixedHeight(h)
-        self.setMinimumWidth(min(w, 180))     # 不再撑破卡宽:小屏按 180,宽屏随布局铺满
         self._w = w
         self.setStyleSheet(
             "QFrame#coverBox{border:1px solid rgba(128,128,128,0.22); border-radius:8px;}"
@@ -126,7 +165,7 @@ class CoverBox(QFrame):
             img = QLabel()
             img.setObjectName("coverInner")
             img.setAlignment(Qt.AlignCenter)
-            img.setPixmap(W.pixmap_from_media(url, w, h))
+            img.setPixmap(W.pixmap_cover_media(url, w, h))   # 铺满裁切,与参考一致
             if on_click:
                 img.setCursor(Qt.PointingHandCursor)
                 img.mousePressEvent = lambda _e: on_click()
@@ -137,6 +176,32 @@ class CoverBox(QFrame):
             ph.setObjectName("placeholderIcon")
             ph.setAlignment(Qt.AlignCenter)
             g.addWidget(ph, 0, 0)
+        # 预览图右上角下载钮(对齐参考项目 asset-cover 的 ⬇)
+        self._dl_btn = QPushButton("⬇", self)
+        self._dl_btn.setFixedSize(24, 24)
+        self._dl_btn.setCursor(Qt.PointingHandCursor)
+        self._dl_btn.setStyleSheet(
+            "QPushButton{background:rgba(255,255,255,0.86);border:none;border-radius:12px;"
+            "font-size:13px;color:#4e5969;}"
+            "QPushButton:hover{background:#ffffff;color:#f97316;}")
+        if on_download:
+            self._dl_btn.clicked.connect(on_download)
+        g.addWidget(self._dl_btn, 0, 0, Qt.AlignRight | Qt.AlignTop)
+        self._dl_btn.setVisible(bool(url))
+        # 生成中遮罩:半透明黑底 + 盲文转圈(对齐参考项目 Loader2 animate-spin)
+        from .braille import BrailleSpinner
+        self._overlay = QFrame(self)
+        self._overlay.setObjectName("coverOverlay")
+        self._overlay.setStyleSheet(
+            "QFrame#coverOverlay{background:rgba(0,0,0,0.45);border-radius:8px;}")
+        ol = QVBoxLayout(self._overlay)
+        ol.setContentsMargins(0, 0, 0, 0)
+        ol.setAlignment(Qt.AlignCenter)
+        spin = BrailleSpinner(color="#ffffff", size=22, parent=self._overlay)
+        ol.addWidget(spin, 0, Qt.AlignCenter)
+        spin.start(tr("生成中"))
+        g.addWidget(self._overlay, 0, 0)
+        self._overlay.setVisible(pending)
         if badge:
             b = QLabel(badge)
             b.setObjectName("coverBadge")
@@ -146,6 +211,10 @@ class CoverBox(QFrame):
             t = QLabel(tag_text)
             t.setObjectName("coverTag")
             g.addWidget(t, 1, 0, Qt.AlignLeft | Qt.AlignBottom)
+
+    def set_pending(self, on: bool):
+        """显示/隐藏生成中遮罩(生成期间封面盖转圈,按钮禁用)。"""
+        self._overlay.setVisible(on)
 
 
 def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
@@ -157,12 +226,20 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
     lay.setSpacing(2)
     lab = QLabel(tr("最终提示词"))
     lab.setObjectName("finalLabel")
-    lay.addWidget(lab)
-    body = QLabel(text or placeholder)
-    body.setObjectName("finalText")
-    body.setWordWrap(True)
+    body_lab = QLabel((text or "")[:300] or placeholder)   # 正文节选(对齐参考,不再是「有/无」)
+    body_lab.setToolTip(text or "")
     if not text:
-        body.setStyleSheet("color:#a8b0bb; font-size:11px;")
+        body_lab.setStyleSheet("color:#a8b0bb; font-size:11px;")
+    lab_row = QHBoxLayout()
+    lab_row.setContentsMargins(0, 0, 0, 0)
+    lab_row.setSpacing(4)
+    lab_row.addWidget(lab)
+    lab_row.addWidget(body_lab)
+    lab_row.addStretch(1)
+    lay.addLayout(lab_row)
+    body = body_lab
+    body.setObjectName("finalText")
+    body.setWordWrap(False)
     if on_edit:
         box.setCursor(Qt.PointingHandCursor)
         box.mousePressEvent = lambda _e: on_edit()
@@ -174,37 +251,39 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
 class CharacterAssetCard(QFrame):
     """角色卡:16:9 立绘 + 角色角标 + 样貌/妆造 + 图绘/文绘/上传/换脸/变体 + 最终提示词。"""
 
-    def __init__(self, row: dict, labels: dict, *, on_gen_image=None, on_gen_text=None,
+    def __init__(self, row: dict, labels: dict, *, on_delete=None, on_gen_image=None, on_gen_text=None,
                  on_upload=None, on_face_swap=None, on_variants=None, on_prompt=None,
                  on_open=None):
         super().__init__()
         self.setObjectName("assetCard")
-        self.setFixedWidth(250)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(7)
-        lay.addWidget(CoverBox(row.get("image_url"), 232, 132, "☺",
-                               badge=labels["cover_todo"],
+        lay.addWidget(CoverBox(row.get("image_url"), 248, 140, "☺",   # 16:9(对齐参考 .character-portrait)
+                               badge=(labels["cover_done"] if row.get("image_url")
+                                      else labels["cover_todo"]),
                                badge_state="ready" if row.get("image_url") else "todo",
                                tag_text=labels["cover_tag"],
                                on_click=on_open))
         # 名字块独占整行(此前与按钮同排,长名被挤到 ~30px 宽后省略;超长自动折行)
         name_wrap = QWidget()
         name_wrap.setStyleSheet("border:none; background:transparent;")
-        name_row = QVBoxLayout(name_wrap)
+        name_row = QHBoxLayout(name_wrap)      # 角色名与定位标签同一行
         name_row.setContentsMargins(0, 0, 0, 0)
-        name_row.setSpacing(3)
+        name_row.setSpacing(6)
         name = QLabel(row.get("name") or "")
         f = name.font()
         f.setBold(True)
         name.setFont(f)
         name.setWordWrap(True)          # 折行而非截断
+        # 角色名与「主角/配角」标签同一行(此前是上下两行,卡片显得松散)
         name_row.addWidget(name)
-        name_row.addWidget(role_tag(
+        r_tag = role_tag(
             row.get("role_type") or "",
             {"lead": labels["lead"], "supporting": labels["supporting"]}.get(
-                row.get("role_type") or "", labels["extra"])))
+                row.get("role_type") or "", labels["extra"]))
+        name_row.addWidget(r_tag, 0, Qt.AlignTop)
+        name_row.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         lay.addWidget(name_wrap)
         summary = QHBoxLayout()
         for key, lab in (("appearance", tr("样貌")), ("styling", tr("妆造"))):
@@ -214,10 +293,13 @@ class CharacterAssetCard(QFrame):
             l.setToolTip(v)
             summary.addWidget(l)
         lay.addLayout(summary)
+        # 按钮排成一行(用户要求):图绘/文绘/上传/换脸 + 删除 横向排布,
+        # 用 QHBoxLayout 而不是 QGridLayout —— 网格在窄卡片里会被压成竖排单字。
         btns = QHBoxLayout()
-        btns.setSpacing(4)
+        btns.setSpacing(3)
+        btns.setContentsMargins(0, 0, 0, 0)
         for text, tip, cb, enabled in (
-            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, bool(row.get("image_url"))),
+            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True),
             (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
             (labels["upload"], labels["upload_tip"], on_upload, True),
             (labels["face_swap"], labels["face_swap_tip"], on_face_swap, True),
@@ -226,9 +308,30 @@ class CharacterAssetCard(QFrame):
             b.setToolTip(tip)
             b.setEnabled(enabled)
             b.setCursor(Qt.PointingHandCursor)
+            # 卡片只有 250px 宽,四个双字按钮 + 删除挤在一行,必须压缩内边距与字号,
+            # 并允许按钮在空间不足时收缩(否则布局会把它挤成竖排)。
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
+            b.setStyleSheet(
+                "QPushButton{font-size:11px;padding:2px 2px;"
+                "border:1px solid #dfe3e8;border-radius:6px;background:#fff;color:#4e5969;}"
+                "QPushButton:hover{background:#f2f3f5;}"
+                "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
-            btns.addWidget(b)
+            btns.addWidget(b, 1)
+        if on_delete:                      # 单个删除:删掉不对的资产后重新提取
+            db = QPushButton("🗑")
+            db.setToolTip(tr("删除该资产"))
+            db.setCursor(Qt.PointingHandCursor)
+            db.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            db.setFixedWidth(22)
+            db.setStyleSheet(
+                "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
+                "background:#fff5f5;font-size:11px;padding:2px 0px;}"
+                "QPushButton:hover{background:#ffe9e9;}")
+            db.clicked.connect(lambda _=False: on_delete())
+            btns.addWidget(db, 0)
         lay.addLayout(btns)
         if on_variants:
             var = QPushButton(labels["variants"])
@@ -238,24 +341,23 @@ class CharacterAssetCard(QFrame):
             lay.addWidget(var)
         lay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                         labels["prompt_ph"], on_prompt))
-        lay.addStretch(1)
+        _snug_card(self)
 
 
 class AssetCard(QFrame):
     """场景 / 道具卡:16:9 封面 + 名称 + 描述 + 光照 + 最终提示词 + 状态点/重绘/上传。"""
 
     def __init__(self, row: dict, labels: dict, kind: str, *,
-                 on_gen=None, on_upload=None, on_prompt=None, on_open=None):
+                 on_gen=None, on_upload=None, on_prompt=None, on_open=None,
+                 on_delete=None, on_gen_text=None, on_gen_vary=None):
         super().__init__()
         self.setObjectName("assetCard")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.setMinimumWidth(198)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         has = bool(row.get("image_url"))
         # 封面占满卡宽:此前固定两列(主图+漫画图),单封面只占左半
-        lay.addWidget(CoverBox(row.get("image_url"), 260, 112,
+        lay.addWidget(CoverBox(row.get("image_url"), 248, (140 if kind == "scene" else 200),
                                "⌖" if kind == "scene" else "▣",
                                badge=labels["cover_done"] if has else labels["cover_todo"],
                                badge_state="ready" if has else "todo",
@@ -289,7 +391,6 @@ class AssetCard(QFrame):
         blay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                          labels["prompt_ph"], on_prompt))
         lay.addWidget(body)
-        lay.addStretch(1)
         foot = QWidget()
         foot.setStyleSheet("border:none; border-top:1px solid rgba(128,128,128,0.18);")
         flay = QHBoxLayout(foot)
@@ -297,11 +398,23 @@ class AssetCard(QFrame):
         flay.setSpacing(4)
         flay.addWidget(status_pill("ready" if has else "todo",
                                    labels["gen_done"] if has else labels["gen_todo"]))
-        gen = QPushButton(labels["redraw"] if has else labels["generate"])
-        gen.setCursor(Qt.PointingHandCursor)
-        if on_gen:
-            gen.clicked.connect(lambda _=False: on_gen())
-        flay.addWidget(gen)
+        BTN_QSS = ("QPushButton{font-size:12px;padding:2px 5px;"
+                   "border:1px solid #dfe3e8;border-radius:6px;background:#fff;color:#4e5969;}"
+                   "QPushButton:hover{background:#f2f3f5;}"
+                   "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
+        # 文绘:纯文字出图,始终可用;图绘:基于已有形象图重绘(与角色卡一致的两条路径)
+        for text, tip, cb, enabled in (
+            (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
+            (labels["gen_image"], labels["gen_image_tip"], on_gen_vary, True),
+        ):
+            b = QPushButton(text)
+            b.setToolTip(tip)
+            b.setCursor(Qt.PointingHandCursor)
+            b.setStyleSheet(BTN_QSS)
+            b.setEnabled(enabled)
+            if cb:
+                b.clicked.connect(lambda _=False, c=cb: c())
+            flay.addWidget(b)
         flay.addStretch(1)
         up = QPushButton(labels["upload"])
         up.setToolTip(labels["upload_tip"])
@@ -309,7 +422,18 @@ class AssetCard(QFrame):
         if on_upload:
             up.clicked.connect(lambda _=False: on_upload())
         flay.addWidget(up)
+        if on_delete:
+            dp = QPushButton("🗑")
+            dp.setToolTip(tr("删除该资产"))
+            dp.setCursor(Qt.PointingHandCursor)
+            dp.setStyleSheet(
+                "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
+                "background:#fff5f5;font-size:12px;padding:2px 8px;}"
+                "QPushButton:hover{background:#ffe9e9;}")
+            dp.clicked.connect(lambda _=False: on_delete())
+            flay.addWidget(dp)
         lay.addWidget(foot)
+        _snug_card(self)
 
 
 class ComicAssetRow(QFrame):
@@ -403,16 +527,22 @@ class VideoTaskRow(QFrame):
         lay.addWidget(prev)
         main = QVBoxLayout()
         main.setSpacing(1)
+        # 名称/元信息超宽时截断(对齐参考 .video-task-name/.truncate),
+        # 不把横向 minimum 撑给 236px 任务列,否则列表底部会顶出横向滚动条
         nm = QLabel(name)
         nm.setObjectName("taskName")
         nm.setToolTip(name)
+        nm.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main.addWidget(nm)
         mt = QLabel(meta)
         mt.setObjectName("taskMeta")
         mt.setToolTip(meta)
+        mt.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main.addWidget(mt)
         lay.addLayout(main, 1)
-        act = QPushButton("🎬")
+        act = QPushButton()
+        act.setIcon(video_camera_icon(self.palette().color(QPalette.ButtonText)))
+        act.setIconSize(QSize(15, 15))
         act.setToolTip(action_tip)
         act.setFixedSize(24, 24)
         act.setEnabled(state != "pending")
@@ -448,6 +578,9 @@ class RefCard(QFrame):
             im.setMinimumHeight(120)
             im.setAlignment(Qt.AlignCenter)
             im.setPixmap(W.pixmap_from_media(url, 170, 130))
+            # 参考素材列收窄成两列卡片流后,图要跟着卡宽缩放而非撑宽卡片
+            im.setScaledContents(True)
+            im.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             if on_click:
                 im.setCursor(Qt.PointingHandCursor)
                 im.mousePressEvent = lambda _e: on_click()

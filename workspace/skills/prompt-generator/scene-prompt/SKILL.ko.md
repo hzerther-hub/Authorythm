@@ -58,4 +58,3 @@ description: 장면 최종 프롬프트 규범 — 선명한 광각 establishing
 
 ## 저장
 
-`save_scene_final_prompt` 를 호출합니다: prompt 파라미터에는 스타일 단어를 넣지 않습니다. **프로젝트 비주얼 스타일은 도구가 최종 프롬프트 맨 앞에 자동으로 주입합니다**.

@@ -60,4 +60,3 @@ All set dressing, period texture, and key visual elements in `prompt` (scene des
 
 ## Saving
 
-Call `save_scene_final_prompt`: the prompt parameter contains no style words — **the project's visual style is automatically injected by the tool at the very front of the final prompt**.

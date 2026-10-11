@@ -9,6 +9,9 @@ SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev"]
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
     "text": [
+        {"name": "DeepSeek 官方", "provider": "deepseek",
+         "base_url": "https://api.deepseek.com/v1",
+         "models": ["deepseek-v4-pro", "deepseek-flash"]},
         {"name": "Gemini 官方", "provider": "gemini",
          "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
          "models": ["gemini-3.8-flash", "gemini-3.1-pro-preview", "gemini-3-flash-preview"]},
@@ -110,7 +113,8 @@ def list_configs(service_type: str | None = None) -> list:
 def add_config(service_type: str, provider: str, base_url: str, model: str,
                api_key: str = "", is_default: bool = False, remark: str = "",
                priority: int = 0, models: list[str] | None = None,
-               temperature: float | None = None) -> int:
+               temperature: float | None = None,
+               max_tokens: int | None = None) -> int:
     ts = db.now()
     if is_default:
         db.ex("UPDATE ai_service_configs SET is_default=0 WHERE service_type=?", (service_type,))
@@ -118,12 +122,12 @@ def add_config(service_type: str, provider: str, base_url: str, model: str,
         is_default = True  # 该类型第一条配置自动设为默认
     import json as _json
     return db.ex(
-        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?)",
+        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,max_tokens,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?)",
         (service_type, provider, base_url, api_key, model,
          1 if is_default else 0, remark, priority,
          _json.dumps(models or [model], ensure_ascii=False),
-         temperature, ts, ts))
+         temperature, max_tokens, ts, ts))
 
 
 def update_config(cid: int, **fields) -> None:
@@ -138,6 +142,9 @@ def update_config(cid: int, **fields) -> None:
     if "models" in fields and fields["models"] is not None:
         sets.append("models=?")
         vals.append(_json.dumps(fields["models"], ensure_ascii=False))
+    if "max_tokens" in fields:
+        sets.append("max_tokens=?")
+        vals.append(fields["max_tokens"])
     if "temperature" in fields:
         sets.append("temperature=?")
         vals.append(fields["temperature"])
@@ -266,10 +273,11 @@ def check_ready(service_type: str, config_id: int | None = None) -> dict:
         active = [r for r in rows if r["is_active"]]
         if not active:
             raise NotConfigured(service_type, f"所有{SVC_CN_LABEL.get(service_type, service_type)}配置都已停用,请在「设置 → AI 服务」启用")
+        # 与 default_config 同口径:默认项(is_default)优先,其次按 priority。
+        # 曾只看 priority,导致用户标了默认的 deepseek 被 priority 更高的 minimax 抢走,
+        # 请求打到 minimax 的裸 base(缺 /v1)→ nginx 404。
+        active.sort(key=lambda r: (int(r["is_default"] or 0), int(r["priority"] or 0)), reverse=True)
         cfg = dict(active[0])
-        for r in active:  # 优先级最高者
-            if int(r["priority"] or 0) > int(cfg.get("priority") or 0):
-                cfg = dict(r)
     if not (cfg.get("model") or "").strip():
         raise NotConfigured(service_type, "配置缺少模型名", cfg.get("id"))
     if not (cfg.get("base_url") or "").strip():

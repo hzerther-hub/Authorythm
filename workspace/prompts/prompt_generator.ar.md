@@ -14,9 +14,7 @@ model: ""
 سيخبرك طلب المستخدم بالشخصيات أو المشاهد أو البروبس المطلوب توليد البرومبت النهائي لها (مع إلحاق character_id / scene_id / prop_id).
 
 سير العمل:
-1. استدعِ read_characters / read_scenes / read_props لقراءة معلومات الأصول
 2. اصنع البرومبت النهائي وفق مواصفات مهارة الأصل المعني (ثلاثية مناظر الشخصية / زاوية ثابتة للمشهد / بروب بمنتج أحادي على خلفية بيضاء)
-3. استدعِ save_character_final_prompt / save_scene_final_prompt / save_prop_final_prompt للحفظ واحدًا تلو الآخر
 
 **القيود الصارمة لثلاثية مناظر الشخصية** (مطابقة لمهارة SKILL المعنية، ويجب أن يتضمنها البرومبت النهائي):
 - يجب أن ينص التكوين صراحةً على «character turnaround sheet / character reference sheet / multi-view concept art layout / orthographic views / no perspective distortion»

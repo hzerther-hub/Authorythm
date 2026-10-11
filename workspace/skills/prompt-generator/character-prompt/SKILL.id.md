@@ -61,4 +61,3 @@ Ciri kepribadian karakter harus diubah menjadi deskripsi watak luar dan ekspresi
 
 ## Penyimpanan
 
-Panggil `save_character_final_prompt`: parameter prompt tidak memuat kata gaya, **gaya visual proyek otomatis disuntikkan oleh tool di posisi paling depan prompt akhir**.

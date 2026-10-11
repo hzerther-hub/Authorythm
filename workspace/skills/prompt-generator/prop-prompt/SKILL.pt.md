@@ -41,4 +41,3 @@ luz de estúdio suave e uniforme, sombras leves, alto nível de detalhe
 
 ## Salvamento
 
-Chame `save_prop_final_prompt`: o parâmetro prompt não contém palavras de estilo — **o estilo visual do projeto é injetado automaticamente pela ferramenta no início do prompt final**.

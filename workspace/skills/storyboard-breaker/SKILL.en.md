@@ -16,10 +16,8 @@ One storyboard = one **storyboard segment** = one video-generation task.
 
 ## Breakdown Process (Four Steps)
 
-1. Call `read_storyboard_context` to read the script, characters, scenes, props, and existing storyboard summaries
 2. **Beat identification**: first identify the script's narrative beats — markers such as [Opening] [Trigger] [Climax] [Resolution], or narrative turning points (location changes, rule reveals, emotional eruptions, reversals). **Beat boundaries force a segment cut**; group sub-shots within the same beat into the same segment where possible, and do not scatter a causal chain (setup-event-reaction) across different segments
 3. **Total-volume anchoring**: target total duration = script character count ÷ 500 characters/minute; segment count ≈ target total duration ÷ 12 seconds, with ±20% tolerance. Do not significantly overshoot or undershoot
-4. **Split sub-shots within each segment**: cut sub-shots at action-change points, viewpoint-change points, and subject-change points; after filling in all fields for each segment, call `save_storyboards` to save them in one go
 
 ## Pacing-Tier Durations
 
@@ -55,21 +53,18 @@ Dialogue that does not fit must be moved to the next segment; cramming unperform
 
 ## Scene Binding Rules
 
-- Prefer the `scenes` returned by `read_storyboard_context`
 - When `location + time` can be clearly matched, the correct `scene_id` must be filled in
 - Do not fabricate scene IDs that do not exist
 - If the script content clearly falls within an existing scene, do not create a duplicate new scene description
 
 ## Character Binding Rules
 
-- `character_ids` must be chosen from the character list returned by `read_storyboard_context`
 - A segment may have no characters, or may bind multiple characters
 - Any character with a clear appearance in the segment — seen, acting, or speaking — should be bound
 - Pure-environment segments, empty shots, and object close-ups may pass an empty array
 
 ## Prop Binding Rules
 
-- `prop_ids` must be chosen from the prop list (`props`) returned by `read_storyboard_context`
 - When a prop is used by a character, handed over, shown in close-up, or clearly visible in frame and meaningful to the narrative, it must be bound to that segment
 - Prop close-up segments (without characters) should also bind the prop; `character_ids` may be empty
 - Do not bind background items or set dressing irrelevant to the plot; segments with no props pass an empty array

@@ -6,6 +6,24 @@ from ..agents import runner
 from ..core import db
 
 
+def rewrite_prompt(episode_id: int, style_hint: str = "") -> str:
+    """构造改写剧本的提示词(供流式路径复用,避免与 rewrite_script 的拼法漂移)。"""
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集不存在")
+    raw = ep["content"] or ""
+    if not raw.strip():
+        raise RuntimeError("请先在「原始内容」粘贴或生成小说文本")
+    return f"""请把以下原始内容改写为短剧格式化剧本(第 {ep['episode_number']} 集)。
+{('文风要求:' + style_hint) if style_hint else ''}
+
+要求:保留原故事主线与人物,补齐场景标题、动作描写与台词;
+**你没有工具,不要输出任何工具调用或思考过程,直接输出剧本正文**。
+
+原始内容:
+{raw}"""
+
+
 def rewrite_script(episode_id: int, style_hint: str = "", config_id: int | None = None,
                   lang: str | None = None) -> str:
     """AI 改写当前集原文为格式化剧本,写回 episodes.script_content。"""

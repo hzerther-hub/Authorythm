@@ -40,4 +40,3 @@ nền thuần khiết không gánh bất kỳ nội dung tự sự nào, không 
 
 ## Lưu trữ
 
-Gọi `save_prop_final_prompt`: tham số prompt không chứa từ phong cách, **phong cách hình ảnh của dự án do công cụ tự động chèn vào phần đầu tiên của prompt cuối cùng**.

@@ -72,6 +72,25 @@ def avatar(initial: str, size: int = 44) -> QLabel:
     return lab
 
 
+def pixmap_cover_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
+    """从媒体地址加载图片并**铺满裁切**成 w×h(对齐参考项目 object-fit:cover)。
+
+    与 pixmap_from_media(KeepAspectRatio 留白)不同:这里按 KeepAspectRatioByExpanding
+    放大到完全覆盖 w×h 再居中裁掉溢出部分 —— 封面不出现空白边。
+    """
+    pm = QPixmap()
+    if url_or_path:
+        p = config.media_url_to_path(url_or_path) if str(url_or_path).startswith(("/static/", "static/")) else Path(url_or_path)
+        if p.exists():
+            pm = QPixmap(str(p))
+    if pm.isNull():
+        pm = QPixmap(w, h or w)
+        pm.fill(QColor("#e8eaf0"))
+    if h:
+        return pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    return pm.scaledToWidth(w, Qt.SmoothTransformation)
+
+
 def pixmap_from_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
     """从 /static/... 或本地路径加载图片;失败给纯色占位。"""
     pm = QPixmap()

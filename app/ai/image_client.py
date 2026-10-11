@@ -96,6 +96,92 @@ def _post_with_negative(url: str, body: dict, headers: dict, *, timeout: int,
     return resp
 
 
+def _qwen_image_url(data: dict) -> str:
+    """百炼生图响应里取图片 URL(output.choices[0].message.content[0].image,含 data: 直链)。"""
+    choices = (data.get("output") or {}).get("choices") or []
+    if choices:
+        content = ((choices[0] or {}).get("message") or {}).get("content") or []
+        if content:
+            v = content[0].get("image") or content[0].get("url")
+            if isinstance(v, str) and v:
+                return v
+    results = (data.get("output") or {}).get("results") or []
+    if results and results[0].get("url"):
+        return str(results[0]["url"])
+    return data.get("image_url") or ""
+
+
+
+# ── 平台级提示词守卫 + 尺寸映射(对齐参考项目 prompt-guards.ts / agnes-image.ts)──
+IMAGE_NEGATIVE_GUARD = (
+    'multiple people, second person, extra person, bystander, onlooker, crowd, audience, '
+    'duplicate character, copy of subject, second copy, doppelganger, ghostly double, '
+    'transparent figure in background, blurred person watching, mannequin, silhouette in mist, '
+    'extra heads, crowd in background, friends standing behind, coworkers watching')
+
+
+def build_image_negative_guard(people: int = 1) -> str:
+    """负面提示:people=0 禁止出现任何人物(场景空镜/道具);>=1 只禁额外人物。"""
+    if people > 1:
+        return (f'person beyond the {people} characters, extra figure, onlooker, bystander, '
+                'crowd, audience, duplicate character, copy of subject, doppelganger, '
+                'ghostly double, transparent figure in background, blurred person watching, '
+                'mannequin, silhouette in mist, extra heads, crowd in background, '
+                'friends standing behind, coworkers watching')
+    return IMAGE_NEGATIVE_GUARD
+
+
+def build_image_quality_guard(people: int = 1) -> str:
+    """图片质量守卫(positive):肢体完整 + 表情克制 + 画面纯净 + 人物数量约束。"""
+    if people > 1:
+        figure_cn = (f'画面人物恰好 {people} 人，不得多于或少于 {people} 人，'
+                     '没有围观群众或复制人，没有重影、分身')
+        figure_en = (f'Exactly {people} people in frame, no onlookers, no extras, '
+                     f'no additional figures beyond the {people} characters')
+    elif people == 1:
+        figure_cn = ('画面中自始至终只有 1 个人（主角本人），背景、远景、雾气和倒影里'
+                     '都没有任何其他人')
+        figure_en = ('Single-figure composition: exactly one person in frame, no onlookers, '
+                     'no ghostly doppelganger in mist, no duplicate character')
+    else:
+        figure_cn = '画面中不出现任何人物，也没有人物的手、影子或倒影'
+        figure_en = 'No people at all in frame, no hands, no shadows or reflections of people'
+    return ('画面质量要求：手部五指、脚部五趾，没有六指、并指、缺指或融合畸形；'
+            '两臂两腿，没有三只手三条腿、多余肢体、复制或扭曲；'
+            f'{figure_cn}，五官稳定不畸变、不融化；表情自然克制；'
+            '画面纯净，没有字幕、文字、标题、水印、字母，没有真实品牌标志与真人明星脸。'
+            f'{figure_en}, no wide-open screaming mouth, '
+            'no exaggerated distorted facial expression')
+
+
+_RATIO_CANDIDATES: list[tuple[int, int]] = [
+    (1, 1), (3, 4), (4, 3), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)]
+_TIER_THRESHOLDS: list[tuple[int, str]] = [
+    (1280, '1K'), (2560, '2K'), (3840, '3K'), (5248, '4K')]
+
+
+def map_size_to_tier_ratio(size: str | None) -> tuple[str, str]:
+    """项目内尺寸(1920x1080)→ Agnes 档位+比例('2K','16:9');非法/缺省→2K 16:9。"""
+    import re as _re
+    m = _re.match(r'^\s*(\d+)x(\d+)\s*$', (size or '').strip())
+    if m:
+        w, h = int(m.group(1)), int(m.group(2))
+        if w > 0 and h > 0:
+            target = w / h
+            best = _RATIO_CANDIDATES[0]
+            diff_best = 1e9
+            for cand in _RATIO_CANDIDATES:
+                d = abs(target - cand[0] / cand[1])
+                if d < diff_best:
+                    diff_best, best = d, cand
+            tier = next((t for th, t in _TIER_THRESHOLDS if max(w, h) <= th), '4K')
+            return tier, f'{best[0]}:{best[1]}'
+    raw = (size or '').strip().upper()
+    if raw in ('1K', '2K', '3K', '4K'):
+        return raw, '1:1'
+    return '2K', '16:9'
+
+
 def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None,
@@ -125,7 +211,63 @@ def generate_image(prompt: str, out_name: str | None = None,
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
 
-    if provider in ("openai", "gemini", "qwen-image"):
+    if provider == "qwen-image":
+        # 阿里云百炼专用端点(不在 OpenAI 兼容 /images/generations 下,走那个会 404):
+        #   POST {base}/api/v1/services/aigc/multimodal-generation/generation(同步)
+        #   GET  {base}/api/v1/tasks/{taskId}(部分模型异步)
+        # size 用「宽*高」星号分隔;响应图在 output.choices[0].message.content[0].image
+        base = cfg["base_url"].rstrip("/")
+
+        def _bail_size(sz: str | None) -> str:
+            if not sz:
+                return "1024*1024"
+            w, _, h = sz.replace("x", "*").partition("*")
+            return f"{w or 1024}*{h or w or 1024}"
+
+        url = f"{base}/api/v1/services/aigc/multimodal-generation/generation"
+        body: dict = {"model": cfg["model"],
+                      "input": {"messages": [{"role": "user",
+                                              "content": [{"text": prompt}]}]},
+                      "parameters": {"size": _bail_size(size), "n": 1,
+                                     "prompt_extend": True, "watermark": False}}
+        if negative:
+            body["parameters"]["negative_prompt"] = negative[:500]
+        resp = _post_with_negative(url, body, headers, timeout=300, prefix="百炼生图失败")
+        if resp.status_code != 200:
+            raise AIError(f"百炼生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        data = resp.json()
+        img = _qwen_image_url(data)
+        if not img:
+            task_id = ((data.get("output") or {}).get("task_id")) or data.get("task_id")
+            if not task_id:
+                raise AIError(f"百炼生图响应无图片: {str(data)[:300]}")
+            img = None
+            for _ in range(120):          # 5s × 120,异步模式
+                time.sleep(5)
+                st = requests.get(f"{base}/api/v1/tasks/{task_id}", headers=headers, timeout=30)
+                if st.status_code != 200:
+                    continue
+                payload = st.json()
+                s_ = str((payload.get("output") or {}).get("task_status")
+                         or payload.get("task_status") or payload.get("status") or "").lower()
+                if s_ in ("succeeded", "success", "completed"):
+                    img = _qwen_image_url(payload)
+                    if not img:
+                        raise AIError(f"百炼任务完成但无图片: {str(payload)[:200]}")
+                    break
+                if s_ in ("failed", "error"):
+                    raise AIError(f"百炼生图任务失败: {str(payload)[:200]}")
+            if not img:
+                raise AIError("百炼生图任务轮询超时(10 分钟)")
+        if img.startswith("data:"):
+            import base64 as _b64
+            head, _, b = img.partition(",")
+            _b64_save(b, out)
+        else:
+            _download(img, out)
+        return out, provider
+
+    if provider in ("openai", "gemini"):
         # OpenAI 兼容 images/generations
         url = cfg["base_url"].rstrip("/") + "/images/generations"
         body: dict = {"model": cfg["model"], "prompt": prompt, "n": 1}
@@ -163,15 +305,16 @@ def generate_image(prompt: str, out_name: str | None = None,
     if provider == "agnes":
         # Agnes:提交任务 → 轮询 → 下载
         submit = cfg["base_url"].rstrip("/") + "/v1/images/generations"
-        body = {"model": cfg["model"], "prompt": prompt, "n": 1}
-        if size:
-            body["size"] = size
-        if negative:
-            body["negative_prompt"] = negative
-        # 图生图参考(对齐原版 agnes-image adapter:extra_body.image[] data URI,≤6 张)
+        tier, ratio = map_size_to_tier_ratio(size)
+        # 对齐参考 agnes-image adapter:response_format=url + 平台级负面守卫
+        # (禁围观者/复制人/畸形);negative 未传时用默认守卫
+        extra: dict = {"response_format": "url",
+                       "negative_prompt": negative or IMAGE_NEGATIVE_GUARD}
         refs = [r for r in (_ref_data_url(x) for x in (reference_images or [])[:6]) if r]
         if refs:
-            body["extra_body"] = {"image": refs}
+            extra["image"] = refs
+        body = {"model": cfg["model"], "prompt": prompt, "n": 1,
+                "size": tier, "ratio": ratio, "extra_body": extra}
         resp = _post_with_negative(submit, body, headers, timeout=120, prefix="Agnes 提交失败")
         if resp.status_code not in (200, 201):
             raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")

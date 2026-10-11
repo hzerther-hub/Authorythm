@@ -60,4 +60,3 @@ character turnaround sheet, character reference sheet, multi-view concept art la
 
 ## सहेजना
 
-`save_character_final_prompt` बुलाएँ: prompt पैरामीटर में स्टाइल शब्द नहीं होते — **प्रोजेक्ट का विज़ुअल स्टाइल टूल अंतिम प्रॉम्प्ट की सबसे शुरुआत में अपने-आप इंजेक्ट करता है**।

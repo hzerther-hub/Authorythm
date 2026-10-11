@@ -160,9 +160,32 @@ class MainWindow(QMainWindow):
         self.clone_page.back_requested.connect(self._back_to_projects)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
+        # 任务抽屉是浮在 central 上的,切页时必须收掉,否则会跟着飘到别的页面
+        self.stack.currentChanged.connect(self._on_page_changed)
         # 语言切换即时重建界面(机制同 comPySide),不再要求重启
         self._stale_pages: set[str] = set()
         on_change(self._on_lang_changed)
+
+    def sync_task_drawer_geometry(self):
+        """把任务抽屉铺满页面区(它是浮层,不是页面栈里的一页)。
+
+        抽屉挂在 central 上按绝对坐标定位,窗口缩放后必须重新对齐,
+        否则会漂移或遮住状态栏。
+        """
+        d = getattr(self, "_task_drawer", None)
+        if d is None:
+            return
+        d.setGeometry(self.stack.geometry())
+
+    def _on_page_changed(self, _idx: int):
+        """切页即收起任务抽屉(抽屉只属于剧集页的当前界面)。"""
+        d = getattr(self, "_task_drawer", None)
+        if d is not None:
+            d.closed.emit(d)
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        self.sync_task_drawer_geometry()
 
     def set_busy(self, on: bool, message: str = ""):
         """全局盲文等待态(D 类):任何 AI 任务在跑时顶栏显示点字变化,避免"点了没反应"。"""

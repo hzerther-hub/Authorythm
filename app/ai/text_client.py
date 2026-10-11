@@ -40,8 +40,15 @@ def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
         msgs.append({"role": "user", "content": parts})
     else:
         msgs.append({"role": "user", "content": prompt})
-    body: dict = {"model": cfg["model"], "messages": msgs,
-                  "temperature": temperature, "max_tokens": max_tokens}
+    body: dict = {"model": cfg["model"], "messages": msgs, "temperature": temperature}
+    # 输出预算:调用方显式传值优先,否则用该服务配置里手填的 max_tokens,再兜底默认
+    mt = max_tokens
+    if mt is None:
+        try:
+            mt = int(cfg.get("max_tokens") or 0) or None
+        except (TypeError, ValueError):
+            mt = None
+    body["max_tokens"] = mt or 8192
     # 配置级 Temperature(对齐原版:留空跟随服务默认;填写则强制覆盖,应对强制温度模型)
     cfg_temp = cfg.get("temperature")
     if cfg_temp is not None and cfg_temp != "":
@@ -55,7 +62,7 @@ def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
 
 
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
-         temperature: float = 0.7, max_tokens: int = 8192,
+         temperature: float = 0.7, max_tokens: int | None = None,
          json_mode: bool = False, timeout: int = 300,
          image_urls: list[str] | None = None) -> str:
     cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求

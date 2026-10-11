@@ -62,6 +62,7 @@ QPushButton#metricPill { background: #f2f3f5; border: none; border-radius: 999px
 QPushButton#metricPill[state="pending"] { background: #fdf0e6; color: #f97316; }
 QPushButton#metricPill[state="done"] { background: #e6f6ee; color: #16a34a; }
 QPushButton#metricPill[state="failed"] { background: #fdecec; color: #dc2626; }
+QPushButton#metricPill[state="all"] { background: #e9eaee; color: #1f2329; }
 QPushButton#metricPill:checked { border: 2px solid #f97316; }
 QFrame#taskRow { background: transparent; border: none; border-top: 1px solid #f2f3f5; }
 QFrame#taskRow:hover { background: #f7f8fa; }
@@ -161,6 +162,7 @@ QPushButton#metricPill { background: #2a2c33; border: none; border-radius: 999px
 QPushButton#metricPill[state="pending"] { background: #2e2119; color: #fdba74; }
 QPushButton#metricPill[state="done"] { background: #16321f; color: #4ade80; }
 QPushButton#metricPill[state="failed"] { background: #3d1f22; color: #ff8b8f; }
+QPushButton#metricPill[state="all"] { background: #33363e; color: #e8eaed; }
 QPushButton#metricPill:checked { border: 2px solid #fb923c; }
 QFrame#taskRow { background: transparent; border: none; border-top: 1px solid #26282e; }
 QFrame#taskRow:hover { background: #26282e; }
@@ -322,6 +324,9 @@ QPushButton:disabled { color: #c0c6cf; border-color: #e4e7ec; }
 QPushButton#primary { background: #f97316; border: none; color: white; font-weight: 600; }
 QPushButton#primary:hover { background: #ea580c; }
 QPushButton#primary:disabled { background: #f6c9a3; color: #f0f1f5; }
+QPushButton#blackAction { background: #17181c; border: none; color: #ffffff; font-weight: 600; }
+QPushButton#blackAction:hover { background: #2e2f36; }
+QPushButton#blackAction:disabled { background: #c9cdd4; color: #f5f6f8; }
 QPushButton#danger { color: #dc2626; border-color: #f0b4b4;
   background: rgba(220,38,38,0.10); font-weight: 600; }
 QPushButton#danger:hover { color: #b91c1c; background: rgba(220,38,38,0.16); }
@@ -386,6 +391,9 @@ QPushButton:disabled { color: #5a5d66; border-color: #2c2e35; }
 QPushButton#primary { background: #f97316; border: none; color: white; font-weight: 600; }
 QPushButton#primary:hover { background: #ea580c; }
 QPushButton#primary:disabled { background: #31343d; color: #6a6d76; }
+QPushButton#blackAction { background: #0d0e11; border: 1px solid #3a3d46; color: #ffffff; font-weight: 600; }
+QPushButton#blackAction:hover { background: #1f2126; }
+QPushButton#blackAction:disabled { background: #17181c; color: #6a6d76; }
 QPushButton#danger { color: #dc2626; border-color: #4a2426; }
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {
   background: #1d1f24; border: 1px solid #3a3d46; border-radius: 6px; padding: 5px 8px; color: #e8eaed; selection-background-color: #f97316;

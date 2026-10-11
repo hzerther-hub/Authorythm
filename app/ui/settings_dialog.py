@@ -177,7 +177,8 @@ class SettingsDialog(QDialog):
             registry.add_config(st, d["provider"], d["base_url"], d["model"],
                                 api_key=d["api_key"], remark=d["name"],
                                 priority=d["priority"], models=d["models"],
-                                temperature=d["temperature"])
+                                temperature=d["temperature"],
+                                max_tokens=d.get("max_tokens"))
             self._fill_services(st)
 
     def _edit_service_by_id(self, cfg: dict):
@@ -190,7 +191,8 @@ class SettingsDialog(QDialog):
                                     model=d["model"], api_key=d["api_key"],
                                     remark=d["name"], priority=d["priority"],
                                     models=d["models"], temperature=d["temperature"],
-                                    settings=d.get("settings"))
+                                    settings=d.get("settings"),
+                                    max_tokens=d.get("max_tokens"))
             self._fill_services(st)
 
     def _toggle_service(self, cfg: dict, on: bool):
@@ -271,6 +273,17 @@ class SettingsDialog(QDialog):
         trow.addWidget(self.theme_combo)
         trow.addStretch(1)
         f.addRow(tr("theme"), theme_box)
+
+        # 绕过系统代理:requests 在 Windows 上会读注册表的系统代理(Clash 等),
+        # 代理间歇性拒连时视频/图片请求会成片失败。开这个开关可强制直连。
+        from PySide6.QtWidgets import QCheckBox
+        self.bypass_proxy_chk = QCheckBox(tr("bypass_proxy"))
+        self.bypass_proxy_chk.setChecked(db.get_setting("network_bypass_proxy", "0") == "1")
+        self.bypass_proxy_chk.setToolTip(tr("bypass_proxy_tip"))
+        self.bypass_proxy_chk.toggled.connect(
+            lambda on: db.set_setting("network_bypass_proxy", "1" if on else "0"))
+        f.addRow(tr("network"), self.bypass_proxy_chk)
+        f.addRow("", W.muted(tr("bypass_proxy_tip")))
 
         # 界面字体:系统字体 + 项目打包字体(片头那批也可选作正文)
         from PySide6.QtGui import QFontDatabase
@@ -715,7 +728,10 @@ class _FlowLayout(QWidget):
         x = y = line_h = 0
         maxw = max(1, self.width() - 2)
         for w in self._items:
-            w.adjustSize()
+            # 标签宽度已用字体度量 setFixedWidth 算准;此处再 adjustSize() 会被
+            # 重置回 sizeHint 导致文字竖排,故只对未固定宽度的控件调整
+            if not w.testAttribute(Qt.WidgetAttribute.WA_Resized) or w.minimumWidth() <= 0:
+                w.adjustSize()
             ww, hh = w.width(), w.height()
             if x > 0 and x + ww > maxw:
                 x = 0
@@ -751,7 +767,7 @@ class ModelChipsEditor(QWidget):
 
     def __init__(self, models=None):
         super().__init__()
-        self.models = [m for m in (models or []) if m]
+        self.models = [c for c in (self._clean_name(m) for m in (models or [])) if c]
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -779,6 +795,15 @@ class ModelChipsEditor(QWidget):
                 + ("QPushButton{background:#f97316;color:white;font-weight:700;border:none;}"
                    if i == 0 else "QPushButton{background:rgba(128,128,128,35);}"))
             chip.clicked.connect(lambda _=False, idx=i: self._promote(idx))
+            # 用字体度量硬算宽度并 setFixedWidth:_FlowLayout._relayout 会对每个标签
+            # 调 adjustSize() 把宽度重置回 sizeHint,setMinimumWidth 挡不住,
+            # 结果「deepseek-v4-pro  默认」被逐字竖排(每行一个字)
+            from PySide6.QtGui import QFontMetrics
+            from PySide6.QtWidgets import QSizePolicy
+            fm = QFontMetrics(chip.font())
+            chip.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            chip.setFixedWidth(fm.horizontalAdvance(chip.text()) + 26)   # 26 = 左右内边距
+            chip.setFixedHeight(26)
             self.flow.add(chip)
             x = QPushButton("×")
             x.setFixedSize(22, 22)
@@ -799,17 +824,50 @@ class ModelChipsEditor(QWidget):
         self.changed.emit()
 
     def _add_from_input(self):
+        """批量粘贴解析:兼容 JSON 数组、引号、方括号/书名号、中英文逗号分号与换行。
+
+        直接从剪贴板粘来的 ["a","b"] / "a", "b" / 【a】、'a' 这类都能正确拆成
+        纯模型名 —— 曾把这些符号原样当成模型名存进配置,请求直接失败。
+        """
         import re as _re
-        for part in _re.split(r"[,\n;，；]", self.input.text()):
+        raw = self.input.text().strip()
+        if not raw:
+            return
+        body = raw
+        if body[:1] in "[【（「" and body[-1:] in "]】）」":
+            body = body[1:-1]                      # 整体数组括号:["a","b"] → "a","b"
+        parts = _re.split(r"[,\n;，；、]+", body)
+        added = 0
+        for part in parts:
             p = part.strip()
+            p = _re.sub(r"""^["'“‘\[（【「]+""", "", p)   # 剥开头的引号/括号
+            p = _re.sub(r"""["'”’\]）】」]+$""", "", p)    # 剥结尾的引号/括号
+            p = p.strip().strip(",").strip()
             if p and p not in self.models:
                 self.models.append(p)
+                added += 1
         self.input.clear()
         self._render()
         self.changed.emit()
+        if added:
+            ok_toast(tr("已添加 {} 个模型").format(added))
+
+    @staticmethod
+    def _clean_name(name: str) -> str:
+        """去掉模型名里混入的引号/方括号(历史脏数据,如 ["gpt-4"] 存成 ['gpt-4'])。"""
+        import re as _re
+        p = str(name or "").strip()
+        p = _re.sub(r"""^["'“‘\[（【「]+""", "", p)
+        p = _re.sub(r"""["'”’\]）】」]+$""", "", p)
+        return p.strip().strip(",").strip()
 
     def set_models(self, models):
-        self.models = [m for m in (models or []) if m]
+        out: list[str] = []
+        for m in (models or []):
+            c = self._clean_name(m)
+            if c and c not in out:
+                out.append(c)
+        self.models = out
         self._render()
         self.changed.emit()
 
@@ -1004,6 +1062,13 @@ class ServiceDialog(QDialog):
         self.temperature = QLineEdit()
         self.temperature.setPlaceholderText(tr("如 0.6"))
         form.addRow(tr("Temperature (留空跟随服务默认)"), self.temperature)
+        # token 预算:上下文长度(仅作提示/校验)与最大输出(实际发给模型的 max_tokens)
+        self.ctx_tokens = QLineEdit()
+        self.ctx_tokens.setPlaceholderText(tr("如 128000,留空跟随服务默认"))
+        form.addRow(tr("上下文长度"), self.ctx_tokens)
+        self.max_tokens = QLineEdit()
+        self.max_tokens.setPlaceholderText(tr("如 32768,留空则用默认 8192"))
+        form.addRow(tr("最大输出 token"), self.max_tokens)
         # 本地生图扩展设置(JSON):comfyui_workflow / comfyui_negative_prompt / image_base_size /
         # image_steps / image_cfg_scale / image_sampler / image_negative_prompt /
         # fooocus_performance / fooocus_styles —— 留空走内置默认
@@ -1011,7 +1076,8 @@ class ServiceDialog(QDialog):
         self.settings_edit.setPlaceholderText(tr("本地服务扩展设置 JSON,如") + ' {"image_base_size": 1024, "comfyui_workflow": "..."}')
         self.settings_edit.setMaximumHeight(64)
         form.addRow(tr("扩展设置 (JSON)"), self.settings_edit)
-        form.addRow("", _muted("部分模型强制固定温度(如 kimi-k2 只允许 0.6),遇 invalid temperature 错误时在此填入对应值"))
+        form.addRow("", _muted("思考型模型(deepseek-v4-pro / MiniMax-M3 等)思考与正文共用输出预算,"
+                              "最大输出填太小会把正文截断,建议 32768 以上"))
         root.addLayout(form)
         root.addStretch(1)
 
@@ -1080,6 +1146,10 @@ class ServiceDialog(QDialog):
         self.models_editor.set_models(models)
         if e.get("temperature") is not None:
             self.temperature.setText(str(e["temperature"]))
+        if e.get("ctx_tokens"):
+            self.ctx_tokens.setText(str(e["ctx_tokens"]))
+        if e.get("max_tokens"):
+            self.max_tokens.setText(str(e["max_tokens"]))
         import json as _sj
         raw_settings = e.get("settings")
         if raw_settings:
@@ -1104,7 +1174,18 @@ class ServiceDialog(QDialog):
             except ValueError:
                 pass
         models = self.models_editor.models or [""]
+
+        def _int_or_none(raw: str):
+            raw = (raw or "").strip()
+            try:
+                v = int(raw)
+                return v if v > 0 else None
+            except ValueError:
+                return None
+
         return {"service_type": self._st,
+                "ctx_tokens": _int_or_none(self.ctx_tokens.text()),
+                "max_tokens": _int_or_none(self.max_tokens.text()),
                 "name": self.name_edit.text().strip(),
                 "provider": self._current_provider(),
                 "base_url": self.base_url.text().strip(),

@@ -16,10 +16,8 @@ Bir storyboard ＝ bir **storyboard parçası** (segment) ＝ bir video üretim 
 
 ## Çözümleme Süreci (dört adım)
 
-1. Senaryoyu, karakterleri, sahneleri, öğeleri ve mevcut storyboard özetlerini okumak için `read_storyboard_context` çağır
 2. **Ritim (beat) tanıma**: önce senaryonun anlatı ritimlerini tanı — senaryodaki 【Açılış】【Tetik】【Doruk】【Kapanış】 gibi işaretler ya da anlatı dönüm noktaları (mekân değişimi, kuralın ifşası, duygu patlaması, ters dönüş). **Ritim sınırları parça kesmesini zorunlu kılar**; aynı ritim içindeki alt planlar öncelikle aynı parçaya alınır, bir neden-sonuç zinciri (zemin hazırlama-olma-tepki) farklı parçalara dağıtılmaz
 3. **Toplam hacim çapası**: hedef toplam süre ＝ senaryo karakter sayısı ÷ 500 karakter/dakika; parça sayısı ≈ hedef toplam süre ÷ 12 saniye, ±20% dalgalanma serbesttir. Belirgin biçimde aşmak ya da eksik kalmak yoktur
-4. **Parça içinde alt planlara bölme**: eylem değişim noktaları, bakış açısı değişim noktaları, özne değişim noktalarına göre alt planlar ayrılır; her parçanın alanları eksiksiz doldurulduktan sonra `save_storyboards` çağrısıyla tek seferde kaydedilir
 
 ## Tempo Katmanlarına Göre Süre
 
@@ -55,21 +53,18 @@ Sığmayan replikler bir sonraki parçaya bölünmek zorundadır; oynanamayacak 
 
 ## Sahne Bağlama Kuralları
 
-- Öncelikle `read_storyboard_context` tarafından döndürülen `scenes` kullanılır
 - `location + time` net biçimde eşleşiyorsa doğru `scene_id` mutlaka geri doldurulur
 - Var olmayan sahne ID'leri uydurulmaz
 - Senaryo içeriği açıkça mevcut bir sahnenin içinde geçiyorsa, yinelenen yeni bir sahne betimi oluşturulmaz
 
 ## Karakter Bağlama Kuralları
 
-- `character_ids`, `read_storyboard_context` tarafından döndürülen karakter listesinden seçilmelidir
 - Bir parça karaktersiz olabilir ya da birden çok karakter bağlayabilir
 - Parçada net biçimde görünen, görülen, eylem yapan ya da konuşan her karakter bağlanmalıdır
 - Salt çevre parçaları, boş çekimler ve eşya yakın çekimleri boş dizi geçebilir
 
 ## Öğe Bağlama Kuralları
 
-- `prop_ids`, `read_storyboard_context` tarafından döndürülen öğe listesinden (`props`) seçilmelidir
 - Öğe bir karakter tarafından kullanılıyor, el değiştiriyor, yakın çekimde veriliyorsa ya da karede belirgin görünürken anlatıya anlam katıyorsa mutlaka bu parçaya bağlanır
 - Öğe yakın çekim parçaları (karaktersiz) de öğeyi bağlamalıdır; `character_ids` boş olabilir
 - Olay örgüsüyle ilgisi olmayan arka plan eşyaları ve sahne dekoru bağlanmaz; öğe görünmeyen parçalar boş dizi geçer

@@ -16,10 +16,8 @@ Một phân cảnh = một **đoạn phân cảnh (segment)** = một nhiệm v�
 
 ## Quy trình phân rã (bốn bước)
 
-1. Gọi `read_storyboard_context` đọc kịch bản, nhân vật, bối cảnh, đạo cụ và tóm tắt phân cảnh đã có
 2. **Nhận diện nhịp truyện**: trước tiên nhận diện nhịp tự sự của kịch bản — các nhãn 【Mở đầu】【Điểm kích】【Cao trào】【Kết cảnh】 trong kịch bản, hoặc các điểm ngoặt tự sự (chuyển địa điểm, hé lộ quy tắc, bùng nổ cảm xúc, lật ngược). **Ranh giới nhịp ép buộc cắt đoạn**, tiểu cảnh trong cùng một nhịp ưu tiên xếp vào cùng một đoạn, không cắt rải một chuỗi nhân quả (đệm dẫn – xảy ra – phản ứng) sang các đoạn khác nhau
 3. **Neo tổng lượng**: tổng thời lượng mục tiêu = số chữ kịch bản ÷ 500 chữ/phút; số đoạn ≈ tổng thời lượng mục tiêu ÷ 12 giây, cho phép dao động ±20%. Không vượt hẳn lên hay thiếu hẳn đi
-4. **Tách tiểu cảnh trong đoạn**: cắt tiểu cảnh theo điểm chuyển hành động, điểm chuyển góc nhìn, điểm chuyển đối tượng; sau khi bổ sung đầy đủ trường dữ liệu cho từng đoạn thì gọi `save_storyboards` lưu một lần
 
 ## Thời lượng phân tầng theo nhịp điệu
 
@@ -55,21 +53,18 @@ Thoại không nhét vừa bắt buộc phải tách sang đoạn kế tiếp, k
 
 ## Quy tắc gắn kết bối cảnh
 
-- Ưu tiên dùng `scenes` do `read_storyboard_context` trả về
 - Khi `location + time` khớp rõ ràng, bắt buộc điền ngược đúng `scene_id`
 - Không tự bịa ra ID bối cảnh không tồn tại
 - Nếu nội dung kịch bản rõ ràng rơi vào bối cảnh đã có, đừng tạo lại mô tả bối cảnh mới trùng lặp
 
 ## Quy tắc gắn kết nhân vật
 
-- `character_ids` bắt buộc chọn từ danh sách nhân vật do `read_storyboard_context` trả về
 - Một đoạn có thể không có nhân vật, cũng có thể gắn kết nhiều nhân vật
 - Chỉ cần trong đoạn có nhân vật xuất hiện rõ ràng, được nhìn thấy, có hành động hoặc nói chuyện, đều nên gắn kết vào
 - Đoạn thuần môi trường, cảnh trống, đặc tả vật thể có thể truyền mảng rỗng
 
 ## Quy tắc gắn kết đạo cụ
 
-- `prop_ids` bắt buộc chọn từ danh sách đạo cụ (`props`) do `read_storyboard_context` trả về
 - Khi đạo cụ được nhân vật sử dụng, bàn giao, được đặc tả, hoặc hiển thị rõ trong khung và có ý nghĩa với tự sự, bắt buộc gắn kết vào đoạn đó
 - Đoạn đặc tả đạo cụ (không có nhân vật) cũng nên gắn kết đạo cụ, `character_ids` có thể rỗng
 - Vật phẩm nền không liên quan cốt truyện, bài trí bối cảnh thì không gắn kết; đoạn không có đạo cụ xuất hiện truyền mảng rỗng

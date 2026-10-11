@@ -40,4 +40,3 @@ luz de estudio suave y uniforme, sombras tenues, alto detalle
 
 ## Guardado
 
-Llama a `save_prop_final_prompt`: el parámetro prompt no contiene palabras de estilo; **el estilo visual del proyecto lo inyecta automáticamente la herramienta al principio mismo del prompt final**.

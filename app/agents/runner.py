@@ -44,7 +44,7 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
               config_id: int | None = None,
               image_urls: list[str] | None = None,
               system: str | None = None,
-              max_tokens: int = 8192) -> str:
+              max_tokens: int | None = None) -> str:
     """system=None 时用 workspace/prompts/<type>.<lang>.md。
 
     传入 system 可整体覆盖:workspace 里的提示词是给**带工具的 Mastra Agent** 写的

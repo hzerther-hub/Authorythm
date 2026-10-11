@@ -58,4 +58,3 @@ Tata letak, tekstur era, dan elemen visual kunci dalam `prompt` (deskripsi latar
 
 ## Penyimpanan
 
-Panggil `save_scene_final_prompt`: parameter prompt tidak memuat kata gaya, **gaya visual proyek otomatis disuntikkan oleh tool di posisi paling depan prompt akhir**.

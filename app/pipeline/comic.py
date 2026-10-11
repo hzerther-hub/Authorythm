@@ -85,7 +85,22 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     else:
         spec = f"道具单品图(纯白背景), 道具: {row['name']}, 描述: {row['description'] or ''}"
     prompt = f"{style}, {spec}, 电影质感"
-    out, _p = image_client.generate_image(prompt, config_id=config_id)
+    # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720),
+    # 主形象图作为参考图传入(否则 AI 看 appearance 文字自己想象,镜像不像主形象),
+    # 负面守卫:场景/道具禁止出现人物
+    size = "1024x1024" if kind == "character" else "1280x720"
+    refs = []
+    cur = (row["image_url"] or "").strip()
+    if cur:
+        lp = (config.media_url_to_path(cur) if cur.startswith(("/static/", "static/"))
+              else Path(cur))
+        if lp.exists():
+            refs = [str(lp)]
+    negative = (image_client.build_image_negative_guard(1) if kind == "character"
+                else image_client.build_image_negative_guard(0))
+    out, _p = image_client.generate_image(prompt, config_id=config_id, size=size,
+                                         reference_images=refs or None,
+                                         people=(1 if kind == "character" else 0))
     url = config.path_to_media_url(out)
     db.ex(f"UPDATE {table} SET comic_image_url=?, updated_at=? WHERE id=?", (url, db.now(), row_id))
     return url

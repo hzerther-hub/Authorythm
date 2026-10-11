@@ -58,4 +58,3 @@ Các món bài trí, chất liệu thời đại, yếu tố hình ảnh then ch
 
 ## Lưu trữ
 
-Gọi `save_scene_final_prompt`: tham số prompt không chứa từ phong cách, **phong cách hình ảnh của dự án do công cụ tự động chèn vào phần đầu tiên của prompt cuối cùng**.

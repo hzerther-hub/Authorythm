@@ -154,6 +154,13 @@ class ProjectSettingsDialog(QDialog):
         f.addRow("", W.muted(
             tr("creative_locked_hint") if self._generated
             else tr("creative_free_hint")))
+        from ..pipeline.novel import POV_LABELS, get_novel_pov
+        self.pov_combo = QComboBox()
+        for code, desc in POV_LABELS.items():
+            self.pov_combo.addItem(tr(desc), code)
+        self.pov_combo.setCurrentIndex(self.pov_combo.findData(get_novel_pov(d["id"])))
+        self.pov_combo.setToolTip(tr("写章与审校都会按此人称强制校验"))
+        f.addRow(tr("叙事人称"), self.pov_combo)
         self.total_eps = QSpinBox()
         self.total_eps.setRange(1, 999)
         self.total_eps.setValue(int(d["total_episodes"] or 1))
@@ -249,6 +256,9 @@ class ProjectSettingsDialog(QDialog):
                1 if self.skip_creative.isChecked() else 0,
                self.total_eps.value(), self.language.currentData(),
                novel_style, db.now(), self.drama_id))
+        # 叙事人称独立字段(存 novel_meta.contract.pov,与小说设定页共用同一数据源)
+        from ..pipeline.novel import set_novel_pov
+        set_novel_pov(self.drama_id, self.pov_combo.currentData())
         self.accept()
 
 
@@ -513,7 +523,7 @@ class AssetDetailDialog(QDialog):
             return fn(self.row["id"])
         def done(tid, result, error):
             if error:
-                err(e_)
+                err(error)
             else:
                 ok(tr("提示词已生成"))
                 d2 = db.q1(f"SELECT final_prompt FROM {self.table} WHERE id=?", (self.row["id"],))

@@ -16,10 +16,8 @@ Un storyboard = un **segmento de storyboard** = una tarea de generación de víd
 
 ## Proceso de desglose (cuatro pasos)
 
-1. Llama a `read_storyboard_context` para leer el guion, los personajes, las escenas, el atrezzo y los resúmenes de los storyboards existentes
 2. **Identificación de beats**: identifica primero los beats narrativos del guion — las marcas 【开场】【触发】【高潮】【收尾】 presentes en el guion, o los puntos de giro narrativos (cambio de lugar, revelación de una regla, explosión emocional, giro). **El límite de un beat obliga a cortar el segmento**; los sub-planos de un mismo beat entran preferentemente en el mismo segmento, y no disperses una cadena causal (preparación-ocurrencia-reacción) por segmentos distintos
 3. **Anclaje del volumen total**: duración total objetivo = número de caracteres del guion ÷ 500 caracteres/minuto; número de segmentos ≈ duración total objetivo ÷ 12 segundos, con una tolerancia de ±20 %. No te pases ni te quedes claramente corto
-4. **División de sub-planos dentro del segmento**: corta los sub-planos en los puntos de cambio de acción, de punto de vista y de objeto; después de completar todos los campos de cada segmento, llama a `save_storyboards` para guardarlos de una sola vez
 
 ## Duraciones por capa de ritmo
 
@@ -55,21 +53,18 @@ El diálogo que no quepa debe pasarse al segmento siguiente; no se permite amont
 
 ## Reglas de vínculo con escenas
 
-- Usa preferentemente las `scenes` que devuelve `read_storyboard_context`
 - Cuando `location + time` permita una coincidencia clara, hay que rellenar el `scene_id` correcto
 - No generes ID de escena inexistentes
 - Si el contenido del guion cae claramente dentro de una escena existente, no crees una descripción de escena nueva duplicada
 
 ## Reglas de vinculación de personajes
 
-- `character_ids` debe elegirse de la lista de personajes que devuelve `read_storyboard_context`
 - Un segmento puede quedarse sin personajes o vincular varios
 - Cualquier personaje con aparición clara en el segmento —visible, actuando o hablando— debe vincularse
 - Los segmentos de puro entorno, los planos vacíos y los primerísimos primeros planos de objetos pueden pasar un array vacío
 
 ## Reglas de vinculación de atrezzo
 
-- `prop_ids` debe elegirse de la lista de atrezzo (`props`) que devuelve `read_storyboard_context`
 - Cuando el atrezzo lo usa un personaje, se entrega, sale en primerísimo primer plano o es claramente visible en el cuadro y con sentido narrativo, debe vincularse a ese segmento
 - Los segmentos de primerísimo primer plano de atrezzo (sin personajes) también deben vincular el atrezzo; `character_ids` puede quedar vacío
 - No vincules objetos de fondo ni ambientación de escena ajenos a la trama; los segmentos sin atrezzo pasan un array vacío

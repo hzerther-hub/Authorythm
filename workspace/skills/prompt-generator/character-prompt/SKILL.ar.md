@@ -60,4 +60,3 @@ character turnaround sheet, character reference sheet, multi-view concept art la
 
 ## الحفظ
 
-استدعِ `save_character_final_prompt`: لا يتضمن معامل prompt كلمات النمط الفني، إذ **يحقن النظام نمط المشروع البصري تلقائيًا في أول البرومبت النهائي تمامًا**.

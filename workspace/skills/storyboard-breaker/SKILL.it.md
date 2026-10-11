@@ -16,10 +16,8 @@ Uno storyboard = un **segmento storyboard** = un compito di generazione video.
 
 ## Flusso di suddivisione (quattro passi)
 
-1. Chiama `read_storyboard_context` per leggere sceneggiatura, personaggi, scene, props e il riepilogo degli storyboard esistenti
 2. **Identificazione dei beat**: individua prima i beat narrativi della sceneggiatura — marcatori come 【Apertura】【Innesco】【Climax】【Conclusione】, oppure punti di svolta narrativi (cambi di luogo, rivelazioni di regole, esplosioni emotive, colpi di scena). **I confini dei beat impongono il taglio del segmento**; le sotto-inquadrature dello stesso beat vanno riunite preferibilmente nello stesso segmento, senza disperdere una catena causale (preparazione-evento-reazione) su segmenti diversi
 3. **Ancoraggio del totale**: durata totale obiettivo = numero di caratteri della sceneggiatura ÷ 500 caratteri/minuto; numero di segmenti ≈ durata totale obiettivo ÷ 12 secondi, con oscillazione ammessa del ±20%. Non superare né restare sensibilmente sotto
-4. **Suddivisione delle sotto-inquadrature nel segmento**: taglia le sotto-inquadrature sui punti di cambio d'azione, di cambio di punto di vista e di cambio di soggetto; completati tutti i campi di ogni segmento, chiama `save_storyboards` per salvare tutto in una volta
 
 ## Durata a livelli di ritmo
 
@@ -55,21 +53,18 @@ Le battute che non stanno dentro vanno spostate al segmento successivo; non è a
 
 ## Regole di collegamento alla scena
 
-- Privilegia le `scenes` restituite da `read_storyboard_context`
 - Quando `location + time` consente un abbinamento chiaro, `scene_id` corretto va inserito obbligatoriamente
 - Non generare di sana pianta ID di scene inesistenti
 - Se il contenuto della sceneggiatura ricade evidentemente in una scena esistente, non creare una descrizione di nuova scena duplicata
 
 ## Regole di collegamento dei personaggi
 
-- `character_ids` deve essere scelto dall'elenco dei personaggi restituito da `read_storyboard_context`
 - Un segmento può non avere personaggi, oppure collegarne più di uno
 - Ogni personaggio con presenza chiara nel segmento — visto, in azione o che parla — va collegato
 - I segmenti di puro ambiente, le inquadrature vuote e i primissimi piani di oggetti possono passare un array vuoto
 
 ## Regole di collegamento dei props
 
-- `prop_ids` deve essere scelto dall'elenco dei props (`props`) restituito da `read_storyboard_context`
 - Quando un prop è usato da un personaggio, consegnato, mostrato in primissimo piano, o chiaramente visibile in campo e rilevante per la narrazione, va collegato al segmento
 - Anche i segmenti di primissimo piano sul prop (senza personaggi) devono collegare il prop; `character_ids` può restare vuoto
 - Non collegare oggetti di sfondo o arredi di scena irrilevanti per la trama; i segmenti senza props passano un array vuoto

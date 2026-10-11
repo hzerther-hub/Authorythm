@@ -58,4 +58,3 @@ Sämtliche Ausstattung, zeittypische Anmutung und zentrale visuelle Elemente aus
 
 ## Speichern
 
-`save_scene_final_prompt` aufrufen: Der Parameter prompt enthält keine Stilwörter — **den Bildstil des Projekts injiziert das Werkzeug automatisch an den allerersten Anfang des finalen Prompts**.

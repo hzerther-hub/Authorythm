@@ -56,4 +56,3 @@ character turnaround sheet, character reference sheet, multi-view concept art la
 
 ## 保存
 
-`save_character_final_prompt` を呼び出す：prompt パラメータにスタイル語を含めない。**プロジェクトのビジュアルスタイルはツールが最終プロンプトの先頭へ自動注入する**。

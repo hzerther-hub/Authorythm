@@ -11,6 +11,36 @@ ROLE_MAP = {"lead": "lead", "supporting": "supporting", "extra": "extra",
             "主角": "lead", "配角": "supporting", "龙套": "extra"}
 
 
+def _save_variants(character_id: int, raw, ts: str) -> int:
+    """落库角色造型变体草稿(extractor 只给 label/tags/costume_desc,不含图)。
+
+    此前模型按模板产出的 variants 被整包丢弃 —— character_variants 永远为空,
+    分镜侧的「造型变体」下拉也就永远没有选项。同名 label 已存在时跳过,保证
+    重跑提取不会灌出重复变体(角色去重本身已在主循环里跳过了已存在的角色,
+    这里只需防同一次返回内的重名)。
+    """
+    if not isinstance(raw, list):
+        return 0
+    have = {r["label"] for r in db.q(
+        "SELECT label FROM character_variants WHERE character_id=?", (character_id,))}
+    n = 0
+    for i, v in enumerate(raw):
+        if not isinstance(v, dict):
+            continue
+        label = (v.get("label") or "").strip()
+        if not label or label in have:
+            continue
+        have.add(label)
+        tags = v.get("tags")
+        db.ex("INSERT INTO character_variants(character_id,label,tags,costume_desc,"
+              "is_default,sort_order,created_at) VALUES(?,?,?,?,0,?,?)",
+              (character_id, label,
+               json.dumps(tags if isinstance(tags, list) else [], ensure_ascii=False),
+               (v.get("costume_desc") or "").strip(), i, ts))
+        n += 1
+    return n
+
+
 def extract_assets(episode_id: int, config_id: int | None = None, lang: str | None = None) -> dict:
     """提取并入库;返回统计。与项目已有资产按名字去重(同名更新描述,否则新增)。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
@@ -43,23 +73,34 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
 道具: {', '.join(existing['props']) or '无'}"""
     data = runner.run_agent_json("extractor", prompt, lang=lang, config_id=config_id)
     ts = db.now()
-    stat = {"characters": 0, "scenes": 0, "props": 0}
+    stat = {"characters": 0, "scenes": 0, "props": 0, "variants": 0}
 
     for c in data.get("characters", []) or []:
         name = (c.get("name") or "").strip()
-        if not name or name in existing["characters"]:
+        if not name:
             continue
+        if name in existing["characters"]:
+            continue
+        # 关键:新插入的名字要回写 existing,否则同一次返回里出现两次同名
+        # 会被当成两个不同角色各插一条(实测 张雯/赵刚/王经理 各重复 3-4 条)
+        existing["characters"].append(name)
         cid = db.ex(
             "INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
             (drama_id, name, ROLE_MAP.get(c.get("role_type", "supporting"), "supporting"),
              c.get("appearance", ""), c.get("styling", ""), ts, ts))
         db.ex("INSERT OR IGNORE INTO episode_characters(episode_id,character_id) VALUES(?,?)", (episode_id, cid))
         stat["characters"] += 1
+        # 造型变体草稿:与角色同批落库,否则模型算完就丢
+        stat["variants"] += _save_variants(cid, c.get("variants"), ts)
 
     for s in data.get("scenes", []) or []:
-        name = (s.get("name") or "").strip()
+        # 场景主字段是 location(对齐参考项目 save_dedup_scenes 的 schema:
+        # {location, time, prompt, lighting}),模型不会给场景起 "name";
+        # 曾只读 name 导致场景条目全部判空被跳过 —— "重提场景"永远 0 个
+        name = (s.get("location") or s.get("name") or "").strip()
         if not name or name in existing["scenes"]:
             continue
+        existing["scenes"].append(name)          # 同上:回写,防同批重复插入
         sid = db.ex(
             "INSERT INTO scenes(drama_id,episode_id,name,location,time,prompt,lighting,setting_tags,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?,?)",
@@ -73,6 +114,7 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
         name = (p.get("name") or "").strip()
         if not name or name in existing["props"]:
             continue
+        existing["props"].append(name)           # 同上
         pid = db.ex(
             "INSERT INTO props(drama_id,name,type,description,created_at,updated_at) VALUES(?,?,?,?,?,?)",
             (drama_id, name, p.get("type", "prop"), p.get("description", ""), ts, ts))

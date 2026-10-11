@@ -57,4 +57,3 @@ Convert the character's personality traits into outward bearing and expression d
 
 ## Saving
 
-Call `save_character_final_prompt`: the prompt parameter contains no style words — **the project's visual style is automatically injected by the tool at the very front of the final prompt**.

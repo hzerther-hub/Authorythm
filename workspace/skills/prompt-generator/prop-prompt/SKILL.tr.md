@@ -40,4 +40,3 @@ yumuşak ve eşit dağılımlı stüdyo ışığı, hafif gölgeler, yüksek ayr
 
 ## Kaydetme
 
-`save_prop_final_prompt` çağır: prompt parametresi stil sözcüğü içermez, **projenin görsel stili araç tarafından nihai promptun en başına otomatik enjekte edilir**.

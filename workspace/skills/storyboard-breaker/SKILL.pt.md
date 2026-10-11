@@ -16,10 +16,8 @@ Um storyboard = um **segmento de storyboard** (segment) = uma tarefa de geraçã
 
 ## Fluxo de Decomposição (quatro passos)
 
-1. Chame `read_storyboard_context` para ler roteiro, personagens, cenas, props e o resumo dos storyboards existentes
 2. **Identificação de beats**: primeiro identifique os beats narrativos do roteiro — marcações como 【Abertura】【Gatilho】【Clímax】【Desfecho】, ou pontos de virada narrativos (mudança de lugar, revelação de regra, explosão emocional, reviravolta). **A fronteira de um beat força o corte do segmento**; os subplanos de um mesmo beat devem preferencialmente ir para o mesmo segmento — não espalhe uma cadeia de causa e efeito (preparação-acontecimento-reação) por segmentos diferentes
 3. **Ancoragem de volume**: duração total alvo = número de caracteres do roteiro ÷ 500 caracteres/minuto; número de segmentos ≈ duração total alvo ÷ 12 segundos, com flutuação tolerada de ±20%. Não ultrapasse nem fique aquém de forma evidente
-4. **Divisão dos subplanos dentro do segmento**: corte os subplanos pelos pontos de mudança de ação, de ponto de vista e de sujeito; completos todos os campos de cada segmento, chame `save_storyboards` para salvar tudo de uma vez
 
 ## Durações por Camada de Ritmo
 
@@ -55,21 +53,18 @@ Fala que não cabe deve ser dividida para o segmento seguinte; não é permitido
 
 ## Regras de Vínculo de Cena
 
-- Prefira as `scenes` retornadas por `read_storyboard_context`
 - Quando `location + time` casar sem ambiguidade, o `scene_id` correto deve ser preenchido de volta
 - Não invente IDs de cena que não existem
 - Se o conteúdo do roteiro claramente se passa numa cena existente, não crie descrição de cena nova duplicada
 
 ## Regras de Vínculo de Personagens
 
-- `character_ids` deve ser escolhido da lista de personagens retornada por `read_storyboard_context`
 - Um segmento pode não ter personagens ou pode vincular vários
 - Qualquer personagem com presença clara no segmento — visto, agindo ou falando — deve ser vinculado
 - Segmentos puramente ambientais, planos vazios e closes de objeto podem passar array vazio
 
 ## Regras de Vínculo de Props
 
-- `prop_ids` deve ser escolhido da lista de props (`props`) retornada por `read_storyboard_context`
 - Quando o prop é usado por personagem, entregue, em close, ou claramente visível no quadro e relevante para a narrativa, deve ser vinculado ao segmento
 - Segmentos de close de prop (sem personagens) também devem vincular o prop; `character_ids` pode ficar vazio
 - Não vincule objetos de fundo ou ambientação de cena irrelevantes à trama; segmentos sem props passam array vazio

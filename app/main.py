@@ -33,12 +33,30 @@ def _apply_drama_font(app) -> None:
     app.setFont(f)
 
 
+def _apply_proxy_preference() -> None:
+    """按设置决定是否绕过系统代理(必须在任何网络请求之前执行)。
+
+    requests 在 Windows 上会经 urllib 去读**注册表**里的系统代理(Clash 等),
+    即使没有 *_proxy 环境变量也照样走 —— 实测代理间歇性拒连会让视频/图片请求
+    成片失败(ProxyError 10054)。开了这个开关就设 NO_PROXY=* 强制直连。
+
+    注意:把 http_proxy/https_proxy 设成空字符串**没有用**,实测仍走注册表代理;
+    requests 的绕过判定只认 NO_PROXY。
+    """
+    import os
+    if db.get_setting("network_bypass_proxy", "0") != "1":
+        return
+    os.environ["NO_PROXY"] = "*"
+    os.environ["no_proxy"] = "*"
+
+
 def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("PySide6Drama")
 
     db.init_db()
     seed_prompt_files()
+    _apply_proxy_preference()
     from .ai.registry import seed_tts_default, seed_faceswap_default, seed_jev_default
     seed_tts_default()
     seed_faceswap_default()

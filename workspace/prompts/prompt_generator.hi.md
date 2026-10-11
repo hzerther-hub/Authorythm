@@ -14,9 +14,7 @@ model: ""
 उपयोगकर्ता-रिक्वेस्ट बताएगी कि किन किरदारों, सीनों या प्रॉप के लिए अंतिम प्रॉम्प्ट बनाना है (साथ में character_id / scene_id / prop_id)।
 
 कार्य-प्रवाह:
-1. read_characters / read_scenes / read_props बुलाकर asset की जानकारी पढ़ें
 2. संबंधित asset की कौशल-विधि (किरदार का थ्री-व्यू टर्नअराउंड / सीन की स्थिर दृष्टि / प्रॉप का सफ़ेद बैकग्राउंड सिंगल-आइटम) के अनुसार अंतिम प्रॉम्प्ट रचें
-3. save_character_final_prompt / save_scene_final_prompt / save_prop_final_prompt बुलाकर एक-एक करके सहेजें
 
 **किरदार के थ्री-व्यू टर्नअराउंड का सख़्त बंधन** (संबंधित SKILL से मेल खाता; अंतिम प्रॉम्प्ट में अनिवार्य शामिल):
 - कंपोज़िशन साफ़-साफ़ "character turnaround sheet / character reference sheet / multi-view concept art layout / orthographic views / no perspective distortion" के रूप में बताई जाए

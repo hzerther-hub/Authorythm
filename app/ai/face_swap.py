@@ -51,7 +51,10 @@ def health(base: str | None = None, config_id: int | None = None) -> tuple[bool,
             # 新版返回 {local:{ok}, remote:{ok}};旧版扁平 {ok}(对齐原版 09e76b8 修复)
             ok_flag = data.get("local", {}).get("ok") if isinstance(data.get("local"), dict) else None
             if ok_flag is None:
-                ok_flag = data.get("ok", False)
+                ok_flag = data.get("ok")
+            if ok_flag is None:
+                # 新版边车只回 {"status":"ok","model":...},没有 ok 字段(旧两种格式已不适用)
+                ok_flag = str(data.get("status", "")).lower() == "ok"
             model = (data.get("model") or (data.get("local") or {}).get("model") or "")
             return bool(ok_flag), f"{data.get('status', 'ok')} · {model}"
         return False, resp.text[:200]

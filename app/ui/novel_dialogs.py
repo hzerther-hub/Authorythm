@@ -82,7 +82,9 @@ class NovelPlanDialog(QDialog):
         self.word_spin.setValue(int(nm0.get("word_count") or 2500))
         self.chapter_spin = QSpinBox()
         self.chapter_spin.setRange(1, 999)
-        self.chapter_spin.setValue(int(nm0.get("chapter_count") or d["total_episodes"] or 60))
+        # 章数单一来源 = dramas.total_episodes(与「项目设置 → 集数」同一个字段);
+        # 历史上还在 novel_meta.chapter_count 存过一份,两处各改各的会分叉
+        self.chapter_spin.setValue(int(d["total_episodes"] or 60))
         self.word_spin.valueChanged.connect(self._on_size_changed)
         self.chapter_spin.valueChanged.connect(self._on_size_changed)
         size_row.addWidget(QLabel("每章字数"))
@@ -103,6 +105,8 @@ class NovelPlanDialog(QDialog):
         # 每个设定板块:AI 起草 + 保存(对齐原版 draftNovelSection/saveWizardSection)
         self.edits: dict[str, QPlainTextEdit] = {}
         self.tabs = QTabWidget()
+        # 生成互斥:同一时刻只允许一个 AI 生成任务(并发会互相覆盖设定/正文)
+        self._busy = False
         self._draft_btns: dict[str, WaitingButton] = {}
         self._save_btns: dict[str, QPushButton] = {}
         for i, (key, name) in enumerate((("outline", tr("总纲")), ("world", tr("世界观")),
@@ -129,6 +133,24 @@ class NovelPlanDialog(QDialog):
             row.addWidget(self._order_lab[key])
             row.addWidget(W.muted(tr("AI 起草会覆盖当前内容")))
             lay.addLayout(row)
+            if key == "contract":
+                # 叙事人称(对齐参考项目故事合约向导的 pov 四选项)
+                from PySide6.QtWidgets import QComboBox
+                from ..pipeline.novel import POV_LABELS
+                pov_row = QHBoxLayout()
+                pov_row.addWidget(W.muted(tr("叙事人称")))
+                self.pov_combo = QComboBox()
+                for code, desc in POV_LABELS.items():
+                    self.pov_combo.addItem(tr(desc), code)
+                from ..pipeline.novel import get_novel_pov
+                cur_pov = get_novel_pov(drama_id)      # novel_meta / novel_contract 两处都认
+                if cur_pov in POV_LABELS:
+                    self.pov_combo.setCurrentIndex(self.pov_combo.findData(cur_pov))
+                self.pov_combo.setToolTip(tr("写章与审校都会按此人称强制校验"))
+                self.pov_combo.currentIndexChanged.connect(self._apply_pov)
+                pov_row.addWidget(self.pov_combo)
+                pov_row.addStretch(1)
+                lay.addLayout(pov_row)
             lay.addWidget(edit, 1)
             self.tabs.addTab(page, name)
         self.tabs.addTab(self._build_plan_tab(d), tr("章节计划"))
@@ -206,9 +228,29 @@ class NovelPlanDialog(QDialog):
         nm = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
                             (self.drama_id,))["novel_meta"], {}) or {}
         nm["word_count"] = self.word_spin.value()
-        nm["chapter_count"] = self.chapter_spin.value()
-        db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
-              (json.dumps(nm, ensure_ascii=False), db.now(), self.drama_id))
+        db.ex("UPDATE dramas SET novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
+              (json.dumps(nm, ensure_ascii=False), self.chapter_spin.value(),
+               db.now(), self.drama_id))
+
+    def _enter_busy(self) -> bool:
+        """占用生成槽;已被占用返回 False(提示并中止,避免并发互相覆盖)。"""
+        if getattr(self, "_busy", False):
+            warn(tr("已有生成任务在进行,请等它完成后再试"))
+            return False
+        self._busy = True
+        self._sync_busy_buttons()
+        return True
+
+    def _leave_busy(self) -> None:
+        self._busy = False
+        self._sync_busy_buttons()
+
+    def _sync_busy_buttons(self) -> None:
+        """生成中禁用其余生成入口,避免并发。"""
+        busy = getattr(self, "_busy", False)
+        for b in list(getattr(self, "_draft_btns", {}).values()) +                 [getattr(self, "chapters_btn", None), getattr(self, "chars_btn", None)]:
+            if b is not None and not busy:
+                b.setEnabled(True)
 
     def _ai_chapters(self):
         """AI 生成章节计划:**流式**显示思考与结果,完成才落库。"""
@@ -217,17 +259,54 @@ class NovelPlanDialog(QDialog):
         from .streaming import stream_into
         if not ensure_ready("text", None):
             return
+        if not self._enter_busy():
+            return
         n, words = self.chapter_spin.value(), self.word_spin.value()
         self._save_project_meta()
         self._on_size_changed()
         btn = self.chapters_btn
-        btn.busy(tr('生成 {} 章计划中').format(n))
         self.tabs.setCurrentIndex(self.tabs.count() - 1)     # 章节计划页
         editor = self.chapters_edit
+
+        if n > novel_pipe.CHAPTER_PLAN_LIMIT:
+            # 长篇:一次请求写不下(999 章会被模型压成散文、解析全废)→ 分批生成
+            from ..core.taskmgr import TASKMGR
+            from ..core.preflight import ensure_ready as _er
+            btn.busy(tr('生成 {} 章计划中').format(n))
+            editor.clear()
+            self.plan_stat.setText(tr('分批生成中 0/{n} 章…').format(n=n))
+
+            def job(tid):
+                def prog(pct, done, total):
+                    TM_stage = TASKMGR.set_stage
+                    TM_stage(tid, f"chapters {done}/{total}")
+                    from PySide6.QtCore import QTimer
+                    QTimer.singleShot(0, lambda: self.plan_stat.setText(
+                        tr('分批生成中 {done}/{total} 章…').format(done=done, total=total)))
+                return novel_pipe.generate_chapters_batched(
+                    self.drama_id, chapter_count=n, word_count=words, progress=prog)
+
+            def done(tid, result, error):
+                btn.idle()
+                self._leave_busy()
+                if error:
+                    err(tr('章节计划生成失败:{}').format(str(error)[:160]))
+                    return
+                self._reload_tabs()
+                self._update_plan_stat()
+                editor.setPlainText(novel_pipe.chapters_to_text(result['chapters']))
+                ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(
+                    result['count'], result['word_count']))
+
+            TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+            return
+
+        btn.busy(tr('生成 {} 章计划中').format(n))
         editor.clear()
 
         def finished(text: str) -> None:
             btn.idle()
+            self._leave_busy()
             try:
                 result = novel_pipe.persist_chapters(self.drama_id, text,
                                                     chapter_count=n, word_count=words)
@@ -241,6 +320,7 @@ class NovelPlanDialog(QDialog):
 
         def failed(msg: str) -> None:
             btn.idle()
+            self._leave_busy()
             editor.setPlainText("")
             err(tr('章节计划生成失败:{}').format(msg[:160]))
 
@@ -248,6 +328,8 @@ class NovelPlanDialog(QDialog):
                              # 板块名是提示词路由键(SECTION_SPEC 按中文名匹配),翻了模型就认不出要写哪一块
                              system=novel_pipe._draft_system("章节计划"),
                              config_id=None, temperature=0.4, json_mode=True,
+                             # 输出预算取该服务配置的「最大输出 token」
+                             max_tokens=None,
                              on_finished=finished, on_failed=failed, owner=self)
         self._stream_worker = worker
 
@@ -256,6 +338,8 @@ class NovelPlanDialog(QDialog):
         from ..core.preflight import ensure_ready
         from ..pipeline import novel as novel_pipe
         if not ensure_ready("text", None):
+            return
+        if not self._enter_busy():
             return
         d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (self.drama_id,))
         need_plan = not (db.jload(d["novel_chapters"], []) if d else [])
@@ -269,6 +353,7 @@ class NovelPlanDialog(QDialog):
 
         def done(tid, result, error):
             btn.idle()
+            self._leave_busy()
             if error:
                 err(error)
                 return
@@ -301,6 +386,7 @@ class NovelPlanDialog(QDialog):
         if w is not None and w.isRunning():
             w.cancel()
             w.wait(3000)
+        self._busy = False          # 关闭时释放生成槽,重开对话框不会卡在禁用态
         super().closeEvent(ev)
 
     def reject(self):
@@ -313,6 +399,35 @@ class NovelPlanDialog(QDialog):
                    "contract": ("novel_contract", "contract"),
                    "volume": ("novel_volume", "volume")}
 
+    def _apply_pov(self) -> None:
+        """写回项目叙事人称。
+
+        统一走 novel.set_novel_pov(存 novel_meta.contract.pov) —— 与「项目设置 → 叙事人称」
+        同一个数据源、get_novel_pov 也优先读它。此前这里另写合约 JSON 的 structured.pov,
+        两处不同源,切换后读回来还是旧值。
+        """
+        from ..pipeline import novel as novel_pipe
+        combo = getattr(self, "pov_combo", None)
+        if combo is None:
+            return
+        pov = novel_pipe.set_novel_pov(self.drama_id, combo.currentData())
+        # 合约正文是 JSON 时同步 structured.pov,保持两处表述一致
+        try:
+            raw = self.edits["contract"].toPlainText() if "contract" in self.edits else ""
+            if raw.strip().startswith("{"):
+                data = json.loads(raw)
+                if isinstance(data, dict):
+                    st = data.get("structured")
+                    if not isinstance(st, dict):
+                        st = {}
+                    st["pov"] = pov
+                    data["structured"] = st
+                    self.edits["contract"].setPlainText(json.dumps(data, ensure_ascii=False, indent=2))
+                    self._save_section("contract")
+        except Exception:  # noqa: BLE001 —— 合约非 JSON 时只写 meta 即可
+            pass
+        ok(tr("叙事人称已设为:{}").format(combo.currentText()))
+
     def _draft_section(self, key: str, name: str):
         """AI 起草该板块:**流式**显示 + 直接落库(见 novel.draft_section 的说明)。"""
         from ..core.preflight import ensure_ready
@@ -320,8 +435,11 @@ class NovelPlanDialog(QDialog):
         from .streaming import stream_into
         if not ensure_ready("text", None):
             return
+        if not self._enter_busy():
+            return
         miss = missing_prereq(self.drama_id, key)
         if miss:
+            self._leave_busy()
             warn(tr('请先生成「{}」再起草{}').format('、'.join(miss), name))
             return
         self._save_project_meta()          # 先落库,上下文里才有题材/简介

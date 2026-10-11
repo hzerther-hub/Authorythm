@@ -60,4 +60,3 @@ Karakterin kişilik özellikleri, dışa dönük duruş ve yüz ifadesi betimler
 
 ## Kaydetme
 
-`save_character_final_prompt` çağır: prompt parametresi stil sözcüğü içermez, **projenin görsel stili araç tarafından nihai promptun en başına otomatik enjekte edilir**.

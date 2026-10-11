@@ -16,10 +16,68 @@ NOVEL_STYLES = [
     ("悬疑紧张", "信息差驱动，多伏笔，短段制造压迫感，章末反转"),
     ("古风雅致", "文白相间，用词考究，意境优先，节奏沉稳"),
     ("幽默轻松", "吐槽视角，反差与梗密集，轻松诙谐但不脱离主线"),
-    ("硬核写实", "细节考据，冷静克制，强逻辑因果"),
+    ("硬核写实", "细节考据，冷静克制但不冷漠——动作与器物描写精确，同时保留人物内心戏与环境氛围，强逻辑因果"),
 ]
 NOVEL_STYLE_CUSTOM = "__custom__"
 DEFAULT_NOVEL_STYLE = NOVEL_STYLES[0][1]
+
+
+# ── 叙事人称(对齐参考项目 episode.vue 故事合约向导的 pov 四选项 + novel.ts 的「视角=」注入)──
+POV_OPTIONS: list[tuple[str, str]] = [
+    ('first', '第一人称(以「我」叙述,只写主角可知可感的)'),
+    ('second', '第二人称(以「你」叙述)'),
+    ('third_limited', '第三人称限知(跟随主角视角,不写他人内心)'),
+    ('third_omniscient', '第三人称全知(可自由出入任何人物内心)'),
+]
+POV_LABELS = dict(POV_OPTIONS)
+POV_DEFAULT = "third_limited"
+
+
+def get_novel_pov(drama_id: int) -> str:
+    """项目叙事人称。
+
+    两个存放位置都要认(历史上两套结构并存):
+      1) dramas.novel_meta.contract.pov —— 向导产出的 JSON 合约
+      2) dramas.novel_contract 的 JSON structured.pov —— 故事合约页存的
+    都取不到(或不是合法 pov 值)时回退第三人称限知。
+    """
+    d = db.q1("SELECT novel_meta, novel_contract FROM dramas WHERE id=?", (drama_id,))
+    if not d:
+        return POV_DEFAULT
+    meta = db.jload(d["novel_meta"], {}) or {}
+    pov = str(((meta.get("contract") or {}) if isinstance(meta.get("contract"), dict)
+               else {}).get("pov") or "").strip()
+    if pov in POV_LABELS:
+        return pov
+    raw = (d["novel_contract"] or "")
+    try:
+        st = (json.loads(raw) or {}).get("structured") or {}
+        pov = str(st.get("pov") or "").strip()
+        if pov in POV_LABELS:
+            return pov
+    except Exception:  # noqa: BLE001 —— 纯文本合约走回退
+        pass
+    return POV_DEFAULT
+
+
+def pov_rule(pov: str | None = None) -> str:
+    """写章硬约束里的人称条款。"""
+    return POV_LABELS.get(pov or "", POV_LABELS[POV_DEFAULT])
+
+
+def set_novel_pov(drama_id: int, pov: str) -> str:
+    """写回项目叙事人称(存novel_meta.contract.pov,兼容已有向导结构)。"""
+    pov = pov if pov in POV_LABELS else POV_DEFAULT
+    d = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload(d["novel_meta"], {}) or {} if d else {}
+    contract = meta.get("contract")
+    if not isinstance(contract, dict):
+        contract = {}
+    contract["pov"] = pov
+    meta["contract"] = contract
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+    return pov
 
 
 def get_novel_style(drama_id: int | None = None) -> str:
@@ -87,7 +145,7 @@ def _novel_settings_ctx(drama_id: int) -> str:
 故事合约:{(d['novel_contract'] or '未定')[:800]}
 分卷战略:{str(d['novel_volume'] or '未定')[:1200]}
 已有章节计划:{len(db.jload(d['novel_chapters'], []) or [])} 章
-目标全书:{nm.get('chapter_count') or d['total_episodes'] or '未定'} 章 / 每章 {nm.get('word_count') or '未定'} 字
+目标全书:{d['total_episodes'] or '未定'} 章 / 每章 {nm.get('word_count') or '未定'} 字
 人物状态台账:{_ledger_ctx(drama_id)}"""
 
 
@@ -108,10 +166,12 @@ CHAPTER_PLAN_PROMPT = """你是小说策划。基于已确定的项目设定,输
 - title ≤14 字;goal(本章目标)≤25 字;events(核心事件,写清冲突与结果)≤50 字;cliffhanger(章末钩子)≤25 字
 - 每章字数按 {words} 字安排,信息量与之匹配;不要为了凑章数复制情节
 - 服从总纲与分卷战略,人名与世界观术语必须与设定一致
+- **叙事人称(硬约束)**:{pov} —— 章节标题、目标、事件、钩子里的人物称谓必须与此人称一致,不得混用
 
 输出 JSON:{{"chapters":[{{"number":1,"title":"","goal":"","events":"","cliffhanger":""}}]}}"""
 
 SEGMENT_PLAN_PROMPT = """你是小说策划。{count} 章的长篇不适合逐章列细,改为**分段计划**。
+叙事人称(硬约束):{pov} —— 标题与事件描述的称谓必须与此人称一致。
 每段 20 章,共 {segments} 段。输出 JSON:
 {{"segments":[{{"range":"1-20","title":"","goal":"","key_events":[""],"arc":""}}],
  "chapters":[{{"number":1,"title":"","goal":"","events":"","cliffhanger":""}}]}}
@@ -121,7 +181,9 @@ SEGMENT_PLAN_PROMPT = """你是小说策划。{count} 章的长篇不适合逐�
 def _plan_scale(drama_id: int, chapter_count: int | None, word_count: int | None) -> tuple[int, int]:
     nm = db.jload((db.q1("SELECT novel_meta,total_episodes FROM dramas WHERE id=?", (drama_id,))
                    or {"novel_meta": None, "total_episodes": None})["novel_meta"], {}) or {}
-    n = int(chapter_count or nm.get("chapter_count") or db.q1(
+    # 章数单一来源 = dramas.total_episodes(「项目设置 → 集数」与「小说设定 → 全书章数」共用);
+    # novel_meta.chapter_count 为历史遗留,不再参与取值,避免两处显示不一致
+    n = int(chapter_count or db.q1(
         "SELECT total_episodes FROM dramas WHERE id=?", (drama_id,))["total_episodes"] or 60)
     words = int(word_count or nm.get("word_count") or 2500)
     return max(1, min(999, n)), words
@@ -132,11 +194,127 @@ def chapters_prompt(drama_id: int, chapter_count: int | None = None,
     """构造章节计划提示词(与 persist_chapters 配对,便于流式边收边显示)。"""
     n, words = _plan_scale(drama_id, chapter_count, word_count)
     ctx = _novel_settings_ctx(drama_id)
+    pov = pov_rule(get_novel_pov(drama_id))
     if n <= CHAPTER_PLAN_LIMIT:
-        return f"{ctx}\n\n{CHAPTER_PLAN_PROMPT.format(count=n, words=words)}"
+        return f"{ctx}\n\n{CHAPTER_PLAN_PROMPT.format(count=n, words=words, pov=pov)}"
     segs = (n + 19) // 20
     return f"{ctx}\n\n" + SEGMENT_PLAN_PROMPT.format(count=n, segments=segs,
-                                                          samples=segs * 3, words=words)
+                                                          samples=segs * 3, words=words,
+                                                          pov=pov)
+
+
+# 长篇分批生成:一次请求只让模型写一批(单批 40 章,JSON 体积可控),
+# 循环累积直到 n 章 —— 999 章单次请求会超出 token 预算,模型只能吐散文,解析全废。
+CHAPTER_BATCH = 40
+CHAPTER_BATCH_PROMPT = """你是小说策划。基于已确定的项目设定,输出**第 {start} 章到第 {end} 章**的逐章计划。
+
+要求:
+- 正好 {count} 章,number 从 {start} 连续到 {end}(全书共 {total} 章)
+- title ≤14 字;goal(本章目标)≤25 字;events(核心事件,写清冲突与结果)≤50 字;cliffhanger(章末钩子)≤25 字
+- 每章字数按 {words} 字安排;不要为了凑章数复制情节
+- 承接前情:{prev} ;后续走向:{next}
+- 服从总纲与分卷战略,人名与世界观术语必须与设定一致
+- **叙事人称(硬约束)**:{pov} —— 章节标题与事件描述的称谓必须与此人称一致
+- **只输出 JSON,不要任何解释文字**
+
+输出 JSON:{{"chapters":[{{"number":{start},"title":"","goal":"","events":"","cliffhanger":""}}]}}"""
+
+
+def chapters_batch_prompt(drama_id: int, start: int, count: int, total: int,
+                          word_count: int, prev_hint: str = "", next_hint: str = "") -> str:
+    """构造某一章区间的计划提示词(长篇分批生成用)。"""
+    ctx = _novel_settings_ctx(drama_id)
+    return CHAPTER_BATCH_PROMPT.format(
+        start=start, end=start + count - 1, count=count, total=total,
+        words=word_count, pov=pov_rule(get_novel_pov(drama_id)),
+        prev=(prev_hint or "全书开篇(第 1 章)")[:200],
+        next=(next_hint or "按总纲推进")[:200]) + "\n\n" + ctx
+
+
+def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
+                              word_count: int | None = None,
+                              config_id: int | None = None,
+                              progress=None) -> dict:
+    """分批生成整本书的逐章计划并落库。progress(percent, done, total)。"""
+    n, words = _plan_scale(drama_id, chapter_count, word_count)
+    all_ch: list[dict] = []
+    total_batches = (n + CHAPTER_BATCH - 1) // CHAPTER_BATCH
+    for bi in range(total_batches):
+        start = bi * CHAPTER_BATCH + 1
+        cnt = min(CHAPTER_BATCH, n - start + 1)
+        prev_hint = ""
+        if all_ch:
+            last = all_ch[-1]
+            prev_hint = f"第{last['number']}章《{last.get('title','')}》钩子:{last.get('cliffhanger','')}"
+        raw = runner.run_agent("novel_planner",
+                               chapters_batch_prompt(drama_id, start, cnt, n, words,
+                                                     prev_hint=prev_hint),
+                               temperature=0.4, config_id=config_id,
+                               # 输出预算取该服务配置的「最大输出 token」
+                               max_tokens=None)
+        data = runner.extract_json(raw) or {}
+        batch = _clean_chapter_list(data.get("chapters"), n)
+        if not batch:
+            raise RuntimeError(f"第 {start}-{start + cnt - 1} 章生成失败"
+                               f"(返回 {len(raw)} 字,疑似被截断)")
+        all_ch += batch
+        if progress:
+            progress(int(len(all_ch) * 100 / n), len(all_ch), n)
+    all_ch.sort(key=lambda c: c["number"])
+    nm = db.jload((db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+                   or {"novel_meta": None})["novel_meta"], {}) or {}
+    nm.pop("chapter_count", None)    # 真源统一为 total_episodes
+    nm["word_count"] = words
+    db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
+          (json.dumps(all_ch, ensure_ascii=False), json.dumps(nm, ensure_ascii=False),
+           n, db.now(), drama_id))
+    return {"count": len(all_ch), "word_count": words, "chapters": all_ch}
+
+
+def _parse_chapters_lenient(raw: str) -> list:
+    """从可能**被截断**的 JSON 里救回已生成的章节。
+
+    思考型模型把输出预算耗尽时,{"chapters":[{...},{... 结尾会断在半截。
+    这里逐个对象回退解析:完整对象照收,最后那个残缺对象丢弃,
+    宁可少几章也不要整批报废。
+    """
+    import re as _re
+    out: list[dict] = []
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(raw):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0 and start >= 0:
+                frag = raw[start:i + 1]
+                try:
+                    obj = json.loads(frag)
+                    if isinstance(obj, dict) and (obj.get("goal") or obj.get("events")):
+                        out.append(obj)
+                except Exception:  # noqa: BLE001
+                    pass
+                start = -1
+    if not out:
+        m = _re.search(r'"chapters"\s*:', raw)
+        if m:
+            return _parse_chapters_lenient(raw[m.end():])
+    return out
 
 
 def persist_chapters(drama_id: int, raw: str, chapter_count: int | None = None,
@@ -150,10 +328,15 @@ def persist_chapters(drama_id: int, raw: str, chapter_count: int | None = None,
     chapters = _clean_chapter_list(data.get("chapters"), n,
                                    allow_sparse=(n > CHAPTER_PLAN_LIMIT))
     if not chapters:
+        # JSON 不完整(被输出预算截断)→ 逐对象抢救已生成的章节
+        salvaged = _clean_chapter_list(_parse_chapters_lenient(raw), n, allow_sparse=True)
+        if salvaged:
+            chapters = salvaged
+    if not chapters:
         raise RuntimeError(f"未解析出章节计划(前 120 字:{raw[:120]})")
     nm = db.jload((db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
                    or {"novel_meta": None})["novel_meta"], {}) or {}
-    nm["chapter_count"] = n
+    nm.pop("chapter_count", None)    # 真源统一为 total_episodes
     nm["word_count"] = words
     db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
           (json.dumps(chapters, ensure_ascii=False), json.dumps(nm, ensure_ascii=False),
@@ -311,10 +494,10 @@ def chapters_from_text(text: str) -> list:
 
 def save_chapters(drama_id: int, chapters: list) -> int:
     meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
-    meta["chapter_count"] = len(chapters)
-    db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, updated_at=? WHERE id=?",
+    meta.pop("chapter_count", None)     # 真源统一为 total_episodes,不再留第二份
+    db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
           (json.dumps(chapters, ensure_ascii=False), json.dumps(meta, ensure_ascii=False),
-           db.now(), drama_id))
+           len(chapters), db.now(), drama_id))
     return len(chapters)
 
 
@@ -346,6 +529,7 @@ def chapter_prompt(episode_id: int) -> str:
 总纲: {(d['novel_outline'] or '')[:600]}
 世界观: {(d['novel_world'] or '')[:600]}
 故事合约: {(d['novel_contract'] or '')[:400]}
+叙事人称(硬约束): {pov_rule(get_novel_pov(ep['drama_id']))} —— 全章严格遵守,不得中途切换人称;人物内心只能写该人称允许的范围。
 本章计划: 第{ep['episode_number']}章 {plan.get('title','')} — 目标:{plan.get('goal','')} 事件:{plan.get('events','')} 钩子:{plan.get('cliffhanger','')}
 文风: {get_novel_style(ep['drama_id'])}
 人物状态台账(硬约束,不得无交代地跳变): {_ledger_ctx(ep['drama_id'])}
@@ -353,6 +537,13 @@ def chapter_prompt(episode_id: int) -> str:
 上一章结尾(衔接用): {prev_summary}
 
 请输出本章正文。
+
+正文硬约束(违反即不合格):
+- 段落必须是完整自然段:每段 3-6 句,严禁一行一句的流水账写法;
+- 每一段至少包含其一:心理描写(人物的念头/权衡/情绪暗涌)、环境细节(光线/气味/声音/温度/材质/周遭动静)、动作细节(带力度与身体反应);
+- 心理与环境要交织推进叙事,不是独立成段的装饰;
+- 对话后要有对方的动作/神态承接,不要只留一行引号;
+- 禁止用「叶尘没有动。」这类一句话一段的记账式写法;
 
 章节名优先沿用上面【本章计划】里的标题(原样使用,不要改写);
 无计划标题时再自行起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀)。
@@ -369,17 +560,30 @@ def _write_chapter_text(prompt: str, config_id: int | None, lang: str | None,
     还能从思考流里按 </think> 抢救。
     """
     from ..ai import text_stream
-    from .agents.prompts import load_prompt
+    from ..agents.prompts import load_prompt
     system = load_prompt("novel_writer", lang or db.get_setting("content_language", "zh"))
     parts: list[str] = []
     rparts: list[str] = []
     for kind, chunk in text_stream.chat_stream(prompt, system=system, config_id=config_id,
                                                temperature=0.6, max_tokens=max_tokens):
         (rparts if kind == "reasoning" else parts).append(chunk)
-    content = "".join(parts).strip()
+    content = _strip_think("".join(parts))
     if len(content) < 200:
-        reason = "".join(rparts)
-        cand = reason.split("</think>", 1)[1].strip() if "</think>" in reason else ""
+        # M3 实测会把成稿整段写进思考通道(哪个通道拿到成稿是随机的):
+        # 合并双通道,取最后一个「# 章节名」标记之后的部分 = 标题+全文;
+        # 再滤掉英文规划行(中文字符占比过低的行)。
+        combined = _strip_think("".join(rparts) + "\n" + "".join(parts))
+        idx = combined.rfind("\n# ")
+        cand = combined[idx:].strip() if idx >= 0 else ""
+
+        def _cjk_line(ln: str) -> bool:
+            ln = ln.strip()
+            if not ln or ln.startswith("#"):
+                return bool(ln)
+            cjk = sum(1 for ch in ln if "\u4e00" <= ch <= "\u9fff")
+            return cjk >= max(2, len(ln) * 0.3)
+
+        cand = "\n".join(ln for ln in cand.split("\n") if _cjk_line(ln))
         if len(cand) >= 200:
             content = cand
     return content, "".join(rparts)
@@ -396,10 +600,12 @@ def write_chapter(episode_id: int, config_id: int | None = None,
         raise RuntimeError("剧集(章)不存在")
     # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
     _enforce_novel_gate(ep["drama_id"])
-    content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, 8192)
-    if len(content) < 200:
-        # 思考型模型(M3 等)可能把小预算全花在 reasoning 上 → 用大预算再来一次
-        content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, 32768)
+    # 思考型模型(M3)行为有波动:偶发只输出标题一行。给三次机会(8k→32k→32k)。
+    content = ""
+    for budget in (8192, 32768, 32768):
+        content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, budget)
+        if len(content) >= 200:
+            break
     return _save_with_title(episode_id, content)
 
 
@@ -426,7 +632,7 @@ def _save_with_title(episode_id: int, content: str) -> str:
     if m:
         name = _clean_chapter_name(m.group(1))
         if name:
-            _apply_chapter_title(dict(ep), name)
+            _apply_chapter_title(dict(ep), name, text)
             return db.q1("SELECT content FROM episodes WHERE id=?", (episode_id,))["content"] or ""
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (text, db.now(), episode_id))
     return text
@@ -475,6 +681,7 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
         if issues:
             _stage("repairing")
             fix_prompt = ("审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8])
+                          + f"\n\n本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}(修复时必须保持不变)"
                           + f"\n\n原正文:\n{content[:14000]}")
             fixed = _strip_think(runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id))
             db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
@@ -571,13 +778,43 @@ def save_plan(drama_id: int, outline: str, world: str, contract: str, volume: st
           (outline, world, contract, volume, db.now(), drama_id))
 
 
+def check_pov_violation(content: str, pov: str) -> list[str]:
+    """规则化人称抽检:返回违规说明(空=通过)。
+
+    只做高置信判断避免误伤:第一人称看是否出现成段第三人称叙述;
+    第三人称看是否出现「我」作叙述者自称。
+    """
+    import re as _re
+    body = _re.sub(r"^#.*$", "", content or "", flags=_re.M)
+    issues: list[str] = []
+    n_wo = body.count("我")
+    if pov == "first":
+        third = len(_re.findall(r"(他|她)(?!们)", body))
+        if third >= 10 or n_wo == 0:
+            issues.append(f"设定为第一人称,但正文「我」仅 {n_wo} 次、「他/她」{third} 次,疑似人称漂移")
+    elif pov in ("third_limited", "third_omniscient") and n_wo > 5:
+        issues.append(f"设定为第三人称,但正文出现第一人称「我」{n_wo} 次")
+    return issues
+
+
 def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
     """六维审校,结果存 episodes.review_json。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
-    prompt = f"第 {ep['episode_number']} 章正文:\n{(ep['content'] or '')[:15000]}"
+    pov = get_novel_pov(ep["drama_id"])
+    prompt = (f"第 {ep['episode_number']} 章正文:\n{(ep['content'] or '')[:15000]}\n\n"
+              f"【本项目叙事人称】{pov_rule(pov)}(硬约束,审校时必须核对是否被违反)")
     data = runner.run_agent_json("novel_reviewer", prompt, config_id=config_id)
+    # 规则化人称抽检:模型漏检时兜底,不额外调用模型
+    violations = check_pov_violation(ep["content"] or "", pov)
+    if violations:
+        pov_dim = (data.setdefault("dimensions", {})).setdefault("pov", {})
+        if isinstance(pov_dim, dict):
+            pov_dim["pass"] = False
+            pov_dim.setdefault("issues", []).extend(violations)
+        if data.get("overall") not in ("fix",):
+            data["overall"] = "fix"
     db.ex("UPDATE episodes SET review_json=?, updated_at=? WHERE id=?",
           (json.dumps(data, ensure_ascii=False), db.now(), episode_id))
     return data
@@ -588,7 +825,9 @@ def edit_chapter(episode_id: int, instruction: str, config_id: int | None = None
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
-    prompt = f"修改指令: {instruction}\n\n正文:\n{ep['content'][:15000]}"
+    prompt = (f"修改指令: {instruction}\n"
+              f"本项目叙事人称(必须保持不变): {pov_rule(get_novel_pov(ep['drama_id']))}"
+              f"\n\n正文:\n{ep['content'][:15000]}")
     content = runner.run_agent("novel_editor", prompt, config_id=config_id)
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (content, db.now(), episode_id))
     return content
@@ -633,11 +872,15 @@ def _clean_chapter_name(raw: str) -> str:
     return name[:20].strip()
 
 
-def _apply_chapter_title(ep, name: str) -> str:
-    """写回 episodes.title = 「第N集 <name>」,并同步正文首行 `# <name>`。"""
+def _apply_chapter_title(ep, name: str, text: str | None = None) -> str:
+    """写回 episodes.title = 「第N集 <name>」,并同步正文首行 `# <name>`。
+
+    text 必须传本次生成的新正文;不传(或传 None)才会回退 ep["content"] 旧快照 ——
+    曾经只用旧快照,把刚生成的正文整段丢掉,落库只剩标题一行(实测 11 字符)。
+    """
     import re as _re
     title = f"第{ep['episode_number']}集 {name}"
-    text = ep["content"] or ""
+    text = (ep["content"] or "") if text is None else text
     if _re.match(r"^#\s+", text):
         new_text = _re.sub(r"^#\s+.*$", f"# {name}", text, count=1)
     else:
@@ -703,7 +946,9 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[st
     else:
         parts.append("【前文摘要】(本章为第一章)")
     parts.append("【本章正文节选】\n" + " ".join(text.split())[:2000])
-    parts.append("请为本章起一个简短、有钩子感的章节名:不超过 12 个汉字,不带「第N集」前缀。")
+    parts.append(f"本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}")
+    parts.append("请为本章起一个简短、有钩子感的章节名:不超过 12 个汉字,不带「第N集」前缀,"
+                 "标题里的称谓必须符合上述叙事人称。")
     parts.append("只输出章节名本身(一行纯文本,不要引号、书名号、前缀和任何解释)。")
     raw = runner.run_agent("novel_writer", "\n".join(parts), config_id=config_id)
     name = _clean_chapter_name(raw)
@@ -931,7 +1176,9 @@ def _strip_tool_calls(raw: str) -> str:
     if cleaned and cleaned != raw.strip():
         return cleaned
     if "tool_call" in raw:
-        m = re.search(r'"content"\s*:\s*"((?:[^"\]|\.)*)"', raw)
+        # 修:原模式 [^"\] 的 \] 是转义符不闭合字符集,整个类"未闭合",
+        # 模型输出含 tool_call 字样时必崩。正确写法:[^"\\](非引号非反斜杠) | \\. (转义对)
+        m = re.search(r'"content"\s*:\s*"((?:[^"\\]|\\.)*)"', raw)
         if m and len(m.group(1)) > 40:
             try:
                 return m.group(1).encode().decode("unicode_escape")

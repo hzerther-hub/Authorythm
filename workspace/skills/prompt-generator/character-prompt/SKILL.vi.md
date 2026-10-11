@@ -60,4 +60,3 @@ nền trắng tinh, ánh sáng mềm mại đồng đều, chất điện ảnh
 
 ## Lưu trữ
 
-Gọi `save_character_final_prompt`: tham số prompt không chứa từ phong cách, **phong cách hình ảnh của dự án do công cụ tự động chèn vào phần đầu tiên của prompt cuối cùng**.

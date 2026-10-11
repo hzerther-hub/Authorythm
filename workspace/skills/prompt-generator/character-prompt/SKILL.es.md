@@ -60,4 +60,3 @@ Los rasgos de personalidad del personaje se convierten en descripciones de prese
 
 ## Guardado
 
-Llama a `save_character_final_prompt`: el parámetro prompt no contiene palabras de estilo; **el estilo visual del proyecto lo inyecta automáticamente la herramienta al principio mismo del prompt final**.

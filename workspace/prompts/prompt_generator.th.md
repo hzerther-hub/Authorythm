@@ -14,9 +14,7 @@ model: ""
 คำขอของผู้ใช้จะบอกว่าต้องสร้างพรอมต์สุดท้ายให้ตัวละคร ฉาก หรือไอเทมใด (พร้อมแนบ character_id / scene_id / prop_id)
 
 ขั้นตอนการทำงาน:
-1. เรียก read_characters / read_scenes / read_props อ่านข้อมูลทรัพย์สิน
 2. สร้างพรอมต์สุดท้ายตามข้อกำหนดสกิลของทรัพย์สินประเภทนั้น (ภาพสามมุมมองตัวละคร / มุมกล้องคงที่ฉาก / ไอเทมชิ้นเดียวพื้นหลังขาวล้วน)
-3. เรียก save_character_final_prompt / save_scene_final_prompt / save_prop_final_prompt บันทึกทีละรายการ
 
 **ข้อจำกัดแข็งของภาพสามมุมมองตัวละคร** (สอดคล้องกับ SKILL เฉพาะทาง พรอมต์สุดท้ายต้องมีเนื้อหาเหล่านี้):
 - องค์ประกอบภาพต้องระบุชัดเจนว่าเป็น 「character turnaround sheet / character reference sheet / multi-view concept art layout / orthographic views / no perspective distortion」

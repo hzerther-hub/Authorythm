@@ -58,4 +58,3 @@ Les aménagements, la texture d'époque et les éléments visuels clés du `prom
 
 ## Enregistrement
 
-Appelez `save_scene_final_prompt` : le paramètre prompt ne contient aucun mot de style, **le style visuel du projet est automatiquement injecté par l'outil tout au début du prompt final**.

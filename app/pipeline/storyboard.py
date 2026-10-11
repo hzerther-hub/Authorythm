@@ -28,14 +28,66 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     script = ep["script_content"] or ""
     if not script.strip():
         raise RuntimeError("请先完成剧本改写")
-    chars = db.q("SELECT id, name FROM characters WHERE drama_id=?", (ep["drama_id"],))
-    scenes = db.q("SELECT id, name, setting_tags FROM scenes WHERE drama_id=?", (ep["drama_id"],))
-    props = db.q("SELECT id, name FROM props WHERE drama_id=?", (ep["drama_id"],))
-    assets = ", ".join(r["name"] for r in chars) or "无"
+    chars = db.q("SELECT id, name, appearance, styling FROM characters WHERE drama_id=? AND deleted_at IS NULL",
+                 (ep["drama_id"],))
+    scenes = db.q("SELECT id, name, location, time, prompt, lighting, setting_tags FROM scenes "
+                  "WHERE drama_id=? AND deleted_at IS NULL", (ep["drama_id"],))
+    props = db.q("SELECT id, name, type, description FROM props WHERE drama_id=? AND deleted_at IS NULL",
+                 (ep["drama_id"],))
+    # 资产清单对齐参考项目 read_storyboard_context 的返回:角色带完整样貌/妆造(不截断),
+    # 场景带 location/time/prompt(空间陈设年代质感)/lighting,道具带类型与外观描述。
+    # atmosphere 的光线/色调/环境感受三层都要从这里取材:只喂 lighting 模型只能凭空编,
+    # 这正是之前氛围比参考项目差一截的根因。
+    char_lines = [f"- {r['name']}(样貌:{r['appearance'] or ''};妆造:{r['styling'] or ''})"
+                  for r in chars] or ["- 无"]
+    scene_lines = [f"- {r['name']} / 地点:{r['location']} / 时间:{r['time'] or ''} / "
+                   f"环境:{r['prompt'] or ''} / 光影:{r['lighting'] or ''}"
+                   for r in scenes] or ["- 无"]
+    prop_lines = [f"- {r['name']}({r['type'] or ''}:{r['description'] or ''})"
+                  for r in props] or ["- 无"]
+    assets = ("角色(@角色名引用):\n" + "\n".join(char_lines)
+              + "\n场景(@场景名引用,含光影供 atmosphere 取材):\n" + "\n".join(scene_lines)
+              + "\n道具(@道具名引用):\n" + "\n".join(prop_lines))
     prompt = f"""剧本(第 {ep['episode_number']} 集,画面比例 {aspect}):
 {script[:14000]}
 
-可用资产(@引用): {assets}"""
+可用资产:
+{assets}"""
+    # 输出格式规范(对齐参考项目 storyboard-breaker skill + video-prompt skill):
+    # description 按【镜头N】子镜头(运镜在前/画面/台词);video_prompt 信息头 +
+    # 按 3 秒分段带时间戳,段内 @场景/@角色/@道具 引用,切镜对齐【镜头N】结构
+    prompt += ("""
+
+【时长分配规范(硬规则)】
+- 每镜 duration 按内容节奏在 8-15 秒内分配,且必须覆盖该镜全部台词的朗读时间
+- 对话/过渡段偏短(8-10 秒),动作/高潮/多子镜头段偏长(11-15 秒)
+- 各镜时长必须参差不齐、贴合叙事节奏,严禁全部输出同一数值
+
+【description 规范(硬规则)】
+- 按【镜头1】【镜头2】…逐子镜头描述观众实际看到和听到的内容
+- 每个子镜头开头先写运镜(如"镜头从中景匀速缓推至特写"),再写画面(谁+具体动作+肢体细节+表情)
+- 台词以「角色名说：「台词」」写进对应【镜头N】内;旁白写「旁白：内容」
+- 运镜词库按段落类型选择:铺垫段→拉远揭示/升降俯瞰/横移跟随;对话段→过肩近景/缓推/固定微动(呼吸感起伏);情绪段→心跳脉冲式缓推/手持晃动/颤抖;动作段→疾速追尾/打斗穿梭/横移跟随;爆点段→子弹时间/急停定帧/凝视聚焦;悬疑惊悚→窥视视角/荷兰角/主观视角(点睛特技一集最多 1-2 处)
+- 禁止一行一段的流水账;每段 3-6 句完整描述
+
+【atmosphere 规范(硬规则,对齐参考项目 storyboard-breaker:光线+色调+声音+整体氛围)】
+- 写 2-4 句完整短句,四层都要有,禁止关键词罗列:
+  ① 光线:光源+方向+冷暖(如"日光灯冷白均匀照明");光线层必须从该镜匹配到的场景光影(lighting)延展,再叠加本镜时刻/情绪的增量
+  ② 色调:整体色彩倾向与明暗关系
+  ③ 声音:至少一层持续可听的环境音,写质感比喻(如"键盘声透过磨砂玻璃传来,喑哑如雨")
+  ④ 整体氛围:把情绪落到具体物件或人的状态(如"整间屋子冷静、程序化、没有任何温度")
+- 禁止"天气+感受"式短语(如"正午暴晒,热浪扭曲,恍惚")
+
+【video_prompt 规范(硬规则)】
+- 第一行是信息头:出场人物(@角色名)与场景(@场景名),独立一行,句号结尾;有道具出场可追加 道具：@道具名
+- 之后按 3 秒为一段,每段单独一行:格式 = 时间范围[起-止秒] + @场景引用 + 景别/运镜 + @角色引用 + 主体动作·表情 + 对白/旁白 + 氛围光线
+- description 的每个【镜头N】映射为 1-2 个连续的 3 秒段,顺序一致不遗漏;段数 = duration ÷ 3 向上取整
+- 每段必须有镜头运动(位移/变焦/跟随/呼吸感起伏),禁止整段"固定镜头"静止画面;运镜写法="起始景别+运动方式+速度"
+- 台词写「角色名说：「台词」」;情绪全部转为可见描写(动作/表情/肢体),不写抽象词
+- 每段至少一个 @ 引用;名字必须与上面可用资产清单完全一致
+- 每段末尾的氛围光线与环境音取自本镜 atmosphere,不要另造一套
+""")
+
     prompt += ("\n\n请输出 JSON 对象:"
                '{"storyboards":[…]};每镜字段 '
                'number/title/content/shot_type/angle/movement/location/time/description/'
@@ -52,14 +104,17 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     prop_names = [r["name"] for r in props]
     _clear_episode_bindings(episode_id)
     total_dur = 0.0
+    # 强制重编号 1..N:模型 number 只用于排序(幻觉出 14-30 起始编号时,
+    # 任务列表会变成 #14 在前 #01 在后 —— 对齐参考项目按镜号顺序)
+    boards.sort(key=lambda b: (int(b.get("number") or 10**6), ))
     for i, b in enumerate(boards, start=1):
-        num = int(b.get("number") or i)
+        num = i
         scene_id = _match_scene(b, scene_by_name)
         inherit = (scene_by_name.get(b.get("location") or "", {}) or {}).get("setting_tags")
         tags = b.get("setting_tags") or inherit
         if isinstance(tags, str):
             tags = [t.strip() for t in tags.replace("、", ",").split(",") if t.strip()]
-        dur = float(b.get("duration") or 10)
+        dur = _resolve_duration(b)
         total_dur += dur
         # 幂等 upsert:已存在的镜头保留生成物(视频/首帧/字幕),只更新描述类字段
         existing = db.q1("SELECT id FROM storyboards WHERE episode_id=? AND storyboard_number=?",
@@ -84,7 +139,11 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                    bgm_prompt,sound_effect,scene_id,setting_tags,content,duration,status,created_at,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
                 (episode_id, num) + vals + (ts, ts))
-        _bind_assets(sb_id, b, name_to_id, prop_by_id, prop_names, ts)
+        _bind_assets(sb_id, b, name_to_id, prop_by_id, prop_names, ts, episode_id)
+        sid_row = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (sb_id,))
+        if sid_row and sid_row["scene_id"]:
+            db.ex("INSERT OR IGNORE INTO episode_scenes(episode_id,scene_id) VALUES(?,?)",
+                  (episode_id, sid_row["scene_id"]))
     db.ex("UPDATE episodes SET duration=?, updated_at=? WHERE id=?",
           (max(1, round(total_dur / 60)), ts, episode_id))
     db.touch("episodes", episode_id)
@@ -92,7 +151,7 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
 
 
 def _extract_boards(data) -> list:
-    """兼容三种返回形态:{"storyboards":[…]} / {"boards":[…]} / 裸数组。"""
+    '''兼容三种返回形态:{"storyboards":[…]} / {"boards":[…]} / 裸数组。'''
     if isinstance(data, list):
         return [b for b in data if isinstance(b, dict)]
     if isinstance(data, dict):
@@ -127,19 +186,49 @@ def _match_scene(b: dict, scene_by_name: dict) -> int | None:
     return None
 
 
+def _resolve_duration(b: dict) -> float:
+    """分镜时长:模型给了就用(夹取 2-30);没给则按子镜头数与台词字数分配 8-15 秒。
+
+    模型常省略 duration,固定兜底值会让全片时长一模一样(实测 17 镜全是 5s),
+    这里按【镜头N】数量(每镜头约 3 秒)+ 台词字数推算,保证参差不齐且贴合内容。
+    """
+    import re as _re
+    raw = b.get("duration")
+    try:
+        if raw is not None and float(raw) > 0:
+            return min(30.0, max(2.0, float(raw)))
+    except (TypeError, ValueError):
+        pass
+    text = (b.get("description") or b.get("content") or "")
+    shots = max(1, len(_re.findall(r"【镜头\d+】", text)))
+    dialogue = len(_re.findall(r"说：「[^」]*」", text))
+    sec = shots * 3.0 + min(4.0, dialogue * 0.12)      # 每子镜头约 3s + 台词补量
+    sec += (int(b.get("number") or 1) % 3) * 0.5          # 相邻镜不撞同一值
+    return min(15.0, max(8.0, round(sec)))
+
+
 def _bind_assets(sb_id: int, b: dict, name_to_id: dict, prop_by_id: dict,
-                 prop_names: list, ts: str) -> None:
+                 prop_names: list, ts: str, episode_id: int | None = None) -> None:
     """把本镜出现的 @角色 / @道具 绑定到分镜(对齐 syncStoryboardCharacters/Props)。
 
     兼容两种形态:`characters: ["叶尘"]` 与 `char_ids: [3]`(模型有时直接给 id)。
+    绑定的角色/道具若尚未关联本集,自动补 episode_characters/episode_props/episode_scenes
+    关联(对齐参考项目 save_storyboards 工具的自愈逻辑)——否则参考素材面板按本集
+    关联过滤,这些资产根本不显示。
     """
     names = _refs_to_names(b, "characters", name_to_id, prop_by_id)
     for name, cid, vid in names:
         db.ex("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id,variant_id) "
               "VALUES(?,?,?)", (sb_id, cid, vid))
+        if episode_id:
+            db.ex("INSERT OR IGNORE INTO episode_characters(episode_id,character_id) VALUES(?,?)",
+                  (episode_id, cid))
     for _name, pid, _vid in _refs_to_names(b, "props", prop_by_id, prop_by_id):
         db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
               (sb_id, pid))
+        if episode_id:
+            db.ex("INSERT OR IGNORE INTO episode_props(episode_id,prop_id) VALUES(?,?)",
+                  (episode_id, pid))
 
 
 def _refs_to_names(b: dict, key: str, id_by_name: dict, prop_by_id: dict) -> list:
@@ -195,7 +284,7 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
 视觉风格前缀: {style}
 
 分镜 #{r['storyboard_number']}:
-{r['content'][:1500]}"""
+{(r['description'] or r['content'] or '')[:1500]}"""
         try:
             data = runner.run_agent_json("prompt_generator", prompt, lang=lang, config_id=config_id)
             vp = data.get("video_prompt") if isinstance(data, dict) else None
@@ -222,7 +311,7 @@ def clean_junk_storyboards(episode_id: int) -> int:
     """
     removed = 0
     for sb in db.q("SELECT * FROM storyboards WHERE episode_id=?", (episode_id,)):
-        desc = (sb["content"] or "").strip()
+        desc = (sb["description"] or sb["content"] or "").strip()
         img = (sb["image_prompt"] or "").strip()
         vid = (sb["video_prompt"] or "").strip()
         if len(desc) < JUNK_DESC_MIN and len(img) < JUNK_IMAGE_MIN and len(vid) < JUNK_VIDEO_MIN:

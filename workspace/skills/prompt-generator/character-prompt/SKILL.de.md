@@ -60,4 +60,3 @@ Persönlichkeitsmerkmale des Charakters sind in Beschreibungen äußerer Ausstra
 
 ## Speichern
 
-`save_character_final_prompt` aufrufen: Der Parameter prompt enthält keine Stilwörter — **den Bildstil des Projekts injiziert das Werkzeug automatisch an den allerersten Anfang des finalen Prompts**.

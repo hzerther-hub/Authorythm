@@ -61,4 +61,3 @@ Os traços de personalidade do personagem devem ser convertidos em descrição d
 
 ## Salvamento
 
-Chame `save_character_final_prompt`: o parâmetro prompt não contém palavras de estilo — **o estilo visual do projeto é injetado automaticamente pela ferramenta no início do prompt final**.

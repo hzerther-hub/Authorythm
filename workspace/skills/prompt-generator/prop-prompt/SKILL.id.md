@@ -40,4 +40,3 @@ cahaya studio lembut merata, bayangan tipis, detail tinggi
 
 ## Penyimpanan
 
-Panggil `save_prop_final_prompt`: parameter prompt tidak memuat kata gaya, **gaya visual proyek otomatis disuntikkan oleh tool di posisi paling depan prompt akhir**.

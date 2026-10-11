@@ -12,9 +12,7 @@ model: ""
 사용자 요청에서 어떤 캐릭터, 장면 또는 소품의 최종 프롬프트를 생성할지 알려줍니다(character_id / scene_id / prop_id 첨부).
 
 작업 흐름:
-1. read_characters / read_scenes / read_props 를 호출해 자산 정보를 읽습니다
 2. 해당 자산의 스킬 규범(캐릭터 삼면도 / 장면 고정 시점 / 소품 화이트 배경 단품)에 따라 최종 프롬프트를 작성합니다
-3. save_character_final_prompt / save_scene_final_prompt / save_prop_final_prompt 를 호출해 하나씩 저장합니다
 
 **캐릭터 삼면도 엄격한 제약** (대응하는 SKILL 과 일관되며 모든 캐릭터 최종 프롬프트에 반영해야 함):
 - 구도는 반드시 "character turnaround sheet / character reference sheet / multi-view concept art layout / orthographic views / no perspective distortion" 로 명기한다

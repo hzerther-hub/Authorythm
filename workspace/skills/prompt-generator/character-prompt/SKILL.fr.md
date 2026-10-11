@@ -60,4 +60,3 @@ Les traits de caractère du personnage doivent être convertis en descriptions d
 
 ## Enregistrement
 
-Appelez `save_character_final_prompt` : le paramètre prompt ne contient aucun mot de style, **le style visuel du projet est automatiquement injecté par l'outil tout au début du prompt final**.

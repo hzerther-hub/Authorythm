@@ -16,10 +16,8 @@ Ein Storyboard = ein **Storyboard-Segment** = eine Video-Generierungsaufgabe.
 
 ## Zerlegungsprozess (vier Schritte)
 
-1. `read_storyboard_context` aufrufen und Drehbuch, Figuren, Szenen, Requisiten sowie Zusammenfassungen vorhandener Storyboards lesen
 2. **Beat-Erkennung**: zuerst die narrativen Beats des Drehbuchs identifizieren — Markierungen wie 【Eröffnung】【Auslöser】【Höhepunkt】【Abschluss】 oder narrative Wendepunkte (Ortswechsel, Enthüllung einer Regel, emotionaler Ausbruch, Wendung). **Beat-Grenzen erzwingen den Segmentwechsel**; Sub-Shots desselben Beats gehören vorzugsweise in dasselbe Segment, und eine Kausalkette (Aufbau-Ereignis-Reaktion) wird nicht über verschiedene Segmente verstreut
 3. **Gesamtumfang verankern**: Zieldauer gesamt = Drehbuchzeichen ÷ 500 Zeichen/Minute; Segmentzahl ≈ Zieldauer gesamt ÷ 12 Sekunden, mit ±20 % Spielraum. Nicht deutlich über- oder unterschreiten
-4. **Sub-Shots innerhalb des Segments zerlegen**: an Aktionswechseln, Perspektivwechseln und Subjektwechseln schneiden; nach dem Ausfüllen aller Felder jedes Segments `save_storyboards` aufrufen und alles auf einmal speichern
 
 ## Tempogestaffelte Dauern
 
@@ -55,21 +53,18 @@ Repliken, die nicht hineinpassen, müssen in das nächste Segment verschoben wer
 
 ## Regeln der Szenenbindung
 
-- Vorzugsweise die `scenes` verwenden, die `read_storyboard_context` zurückgibt
 - Lässt sich `location + time` eindeutig matchen, muss die korrekte `scene_id` zurückgeschrieben werden
 - Keine nicht existierenden Szenen-IDs aus dem Nichts erzeugen
 - Liegt der Drehbuchinhalt offensichtlich in einer bestehenden Szene, keine neue Szenenbeschreibung doppelt erzeugen
 
 ## Regeln der Figurenbindung
 
-- `character_ids` muss aus der Figurenliste gewählt werden, die `read_storyboard_context` zurückgibt
 - Ein Segment kann figurenlos sein oder mehrere Figuren binden
 - Jede Figur mit klarer Präsenz im Segment — gesehen, handelnd oder sprechend — sollte gebunden werden
 - Reine Umgebungssegmente, Empty Shots und Gegenstands-Close-ups dürfen ein leeres Array übergeben
 
 ## Regeln der Requisitenbindung
 
-- `prop_ids` muss aus der Requisitenliste (`props`) gewählt werden, die `read_storyboard_context` zurückgibt
 - Wird eine Requisite von einer Figur benutzt, übergeben, im Close-up gezeigt oder ist im Bild klar sichtbar und für die Erzählung bedeutsam, muss sie an das Segment gebunden werden
 - Auch Requisiten-Close-up-Segmente (ohne Figuren) binden die Requisite; `character_ids` darf leer sein
 - Hintergrundgegenstände ohne Plotbezug und Szenenausstattung nicht binden; Segmente ohne Requisiten übergeben ein leeres Array
