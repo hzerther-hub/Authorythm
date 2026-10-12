@@ -26,9 +26,9 @@ from ..ai.jev_gate import JevBreaker
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
-from ..core.theme import (SLATE_PIPE_QSS, SLATE_PAPER, SLATE_BAR, SLATE_BAR_INK,
-                          SLATE_BAR_DIM, SLATE_BG, SLATE_HAIR, SLATE_MUTED,
-                          SLATE_META, SLATE_TRACK, MONO_STACK)
+from ..core.theme import (SLATE_PIPE_QSS, SLATE_ASSET_QSS, SLATE_PAPER, SLATE_BAR,
+                          SLATE_BAR_INK, SLATE_BAR_DIM, SLATE_BG, SLATE_HAIR,
+                          SLATE_MUTED, SLATE_META, SLATE_TRACK, MONO_STACK)
 from ..pipeline import comic as comic_pipe
 from ..pipeline import extractor as extract_pipe
 from ..pipeline import merge as merge_pipe
@@ -591,6 +591,10 @@ class EpisodePage(QWidget):
         body.setStretchFactor(1, 1)
         root.addWidget(body, 1)
         TASKMGR.updated.connect(self._refresh_status)
+        # Director's Slate:在 EpisodePage 子树覆盖 #assetCard / #taskRow / #comicCard
+        # 等的视觉风格。与 StepNav 已挂的 SLATE_PIPE_QSS 互不冲突(objectName 重叠为零)。
+        # 用 self.setStyleSheet 把规则挂到根,Qt 级联覆盖原来 ASSET_QSS_LIGHT 的同名规则
+        self.setStyleSheet(SLATE_ASSET_QSS)
         self._loading = False
         self._sb_split_running = False
         self._sb_split_task = 0

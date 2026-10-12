@@ -592,6 +592,186 @@ QPushButton#pipeToggle { background: transparent; border: 1px solid """ + SLATE_
 QPushButton#pipeToggle:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
 """
 
+# ── ASSET_QSS 的 slate 版本 ──
+#  复用 ASSET_QSS_LIGHT 同样的 selector 命名(#assetCard / #coverBadge / #coverTag /
+#  #sectionTitle / #addBtn / #segTab / #segWrap / #monoTag / #statusDot / #finalPrompt /
+#  #roleTag / #taskList / #taskRow / #taskIndex / #taskName / #taskMeta / #taskError /
+#  #inspector / #inspectorLabel / #playerStage / #heroLabel / #paramCard / #effective /
+#  #refTab / #refCard / #videoHistoryCard / #historyTime / #historyBadge / #chip /
+#  #refState / #refThumb / #comicCard / #comicIndex / #comicThumb / #comicDialogue /
+#  #narrationBox / #narrationHead / #narrationHint / #stitchBox / #mergePending /
+#  #mergingWait / #videoThumb / #videoThumbIcon / #comicThumbBox 等),把 #f97316/
+#  #fdf0e6 体系全替换成 #0E0F12 / #F5F4EF slate 体系。
+SLATE_ASSET_QSS = """
+QWidget#prodBar { background: transparent; }
+QWidget#prodContent { background: transparent; }
+QLabel#sectionTitle { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 11px; font-weight: 700; letter-spacing: 2px; padding-top: 4px; }
+QPushButton#addBtn { border: 1px dashed """ + SLATE_HAIR + """; color: """ + SLATE_MUTED + """;
+  background: transparent; border-radius: 3px; padding: 2px 10px; font-size: 11px;
+  font-weight: 600; letter-spacing: 0.5px; }
+QPushButton#addBtn:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """;
+  background: """ + SLATE_BG + """; }
+QPushButton#segTab { background: transparent; border: 1px solid transparent;
+  border-radius: 3px; padding: 4px 12px; font-size: 11px; font-weight: 600;
+  color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  letter-spacing: 0.3px; }
+QPushButton#segTab:hover { color: """ + SLATE_BAR + """; }
+QPushButton#segTab:checked { background: """ + SLATE_BAR + """; color: """ + SLATE_BAR_INK + """;
+  border-color: """ + SLATE_BAR + """; font-weight: 700; }
+QFrame#segWrap { background: transparent; border: 1px solid """ + SLATE_HAIR + """; border-radius: 3px; }
+QLabel#monoTag { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 1px 7px; color: """ + SLATE_MUTED + """;
+  font-family: """ + MONO_STACK + """; font-size: 11px; letter-spacing: 0.3px; }
+QFrame#assetCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#assetCard:hover { border-color: """ + SLATE_BAR + """; }
+QLabel#coverBadge { background: rgba(14,15,18,0.85); color: """ + SLATE_BAR_INK + """;
+  border-radius: 2px; padding: 1px 6px; font-family: """ + MONO_STACK + """;
+  font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+QLabel#coverBadge[state="ready"] { background: """ + SLATE_ST_DONE + """; }
+QLabel#coverBadge[state="pending"] { background: rgba(194,143,76,0.85); }
+QLabel#coverTag { background: rgba(14,15,18,0.78); color: """ + SLATE_BAR_INK + """;
+  border-radius: 2px; padding: 0 5px; font-family: """ + MONO_STACK + """;
+  font-size: 9px; letter-spacing: 0.4px; }
+QLabel#placeholderIcon { color: """ + SLATE_HAIR + """; font-size: 22px; }
+QLabel#roleTag { border: 1px solid """ + SLATE_HAIR + """; border-radius: 2px;
+  padding: 1px 7px; font-family: """ + MONO_STACK + """; font-size: 10px;
+  background: transparent; color: """ + SLATE_MUTED + """; letter-spacing: 0.3px; }
+QLabel#roleTag[role="lead"] { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QLabel#roleTag[role="supporting"] { border-color: #5a6e85; color: #5a6e85; }
+QLabel#roleTag[role="extra"] { border-color: """ + SLATE_HAIR + """; color: """ + SLATE_MUTED + """; }
+QFrame#finalPrompt { border-top: 1px solid """ + SLATE_HAIR + """; }
+QLabel#finalLabel { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 9px; font-weight: 700; letter-spacing: 2px; }
+QLabel#finalText { color: """ + SLATE_MUTED + """; font-size: 11px; }
+QLabel#statusDot { border-radius: 2px; padding: 0 6px; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.3px;
+  background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  color: """ + SLATE_MUTED + """; }
+QLabel#statusDot[state="ready"] { border-color: """ + SLATE_ST_DONE + """;
+  color: """ + SLATE_ST_DONE + """; }
+QLabel#statusDot[state="pending"] { border-color: """ + SLATE_ST_PROG + """;
+  color: """ + SLATE_ST_PROG + """; }
+QLabel#statusDot[state="failed"] { border-color: """ + SLATE_ST_FAIL + """;
+  color: """ + SLATE_ST_FAIL + """; }
+QFrame#propsEmpty { border: 1px dashed """ + SLATE_HAIR + """; border-radius: 4px; }
+QFrame#svcCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#svcCard:hover { border-color: """ + SLATE_BAR + """; }
+QFrame#emptyState { background: transparent; border: 1px dashed """ + SLATE_HAIR + """; border-radius: 4px; }
+QFrame#taskList { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#taskHead { background: transparent; border: none;
+  border-bottom: 1px solid """ + SLATE_HAIR + """; }
+QLabel#taskTitle { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 12px; font-weight: 700; letter-spacing: 1.5px; }
+QPushButton#metricPill { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 2px; padding: 2px 9px; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 600; letter-spacing: 0.5px;
+  color: """ + SLATE_MUTED + """; }
+QPushButton#metricPill:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QPushButton#metricPill[state="pending"] { border-color: """ + SLATE_ST_PROG + """;
+  color: """ + SLATE_ST_PROG + """; }
+QPushButton#metricPill[state="done"] { border-color: """ + SLATE_ST_DONE + """;
+  color: """ + SLATE_ST_DONE + """; }
+QPushButton#metricPill[state="failed"] { border-color: """ + SLATE_ST_FAIL + """;
+  color: """ + SLATE_ST_FAIL + """; }
+QPushButton#metricPill[state="all"] { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QPushButton#metricPill:checked { border-width: 2px; }
+QFrame#taskRow { background: transparent; border: none;
+  border-top: 1px solid """ + SLATE_TRACK + """; }
+QFrame#taskRow:hover { background: """ + SLATE_BG + """; }
+QFrame#taskRow[state="selected"] { background: """ + SLATE_BG + """;
+  border-left: 3px solid """ + SLATE_BAR + """; }
+QFrame#taskRow[state="done"] { background: rgba(110,140,94,0.06); }
+QFrame#taskRow[state="failed"] { background: rgba(161,72,68,0.06); }
+QLabel#taskIndex { background: """ + SLATE_BAR + """; color: """ + SLATE_BAR_INK + """;
+  border-radius: 2px; padding: 0 5px; font-family: """ + MONO_STACK + """;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px; }
+QLabel#taskName { color: """ + SLATE_META + """; font-size: 12px; font-weight: 600; }
+QLabel#taskMeta { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; letter-spacing: 0.3px; }
+QLabel#taskError { color: """ + SLATE_ST_FAIL + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; }
+QFrame#inspector { background: """ + SLATE_BG + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#playerPanel { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QLabel#playerStage { background: """ + SLATE_BAR + """; color: #b8bcc4;
+  border-radius: 3px; font-family: """ + MONO_STACK + """; font-size: 11px; }
+QLabel#inspectorLabel { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 1.5px; }
+QLabel#heroLabel { color: """ + SLATE_BAR + """; border-left: 3px solid """ + SLATE_BAR + """;
+  padding-left: 6px; font-family: """ + MONO_STACK + """; font-size: 11px;
+  font-weight: 700; letter-spacing: 1.5px; }
+QFrame#paramCard { background: """ + SLATE_BG + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QLabel#effective { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_BAR + """;
+  border-radius: 3px; padding: 3px 8px; font-family: """ + MONO_STACK + """;
+  font-size: 11px; color: """ + SLATE_BAR + """; font-weight: 700;
+  letter-spacing: 0.5px; }
+QPushButton#refTab { background: transparent; border: none;
+  border-bottom: 2px solid transparent; padding: 5px 10px 7px;
+  font-family: """ + MONO_STACK + """; font-size: 11px; font-weight: 600;
+  color: """ + SLATE_MUTED + """; letter-spacing: 0.5px; }
+QPushButton#refTab:checked { color: """ + SLATE_BAR + """;
+  border-bottom-color: """ + SLATE_BAR + """; font-weight: 700; }
+QFrame#refCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#refCard[bound="1"] { border-color: """ + SLATE_BAR + """; border-width: 2px; }
+QFrame#videoHistoryCard { background: """ + SLATE_PAPER + """;
+  border: 1px solid """ + SLATE_HAIR + """; border-radius: 3px; }
+QFrame#videoHistoryCard:hover { border-color: """ + SLATE_BAR + """; }
+QFrame#videoHistoryCard[current="1"] { border-color: """ + SLATE_ST_DONE + """; }
+QFrame#videoHistoryCard[previewing="1"] { border-color: """ + SLATE_ST_PROG + """; }
+QLabel#historyTime { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; letter-spacing: 0.3px; }
+QLabel#historyBadge { color: """ + SLATE_ST_DONE + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
+QLabel#refState { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 11px; letter-spacing: 0.3px; }
+QLabel#refState[ok="1"] { color: """ + SLATE_ST_DONE + """; }
+QLabel#chip { background: transparent; color: """ + SLATE_MUTED + """;
+  border: 1px solid """ + SLATE_HAIR + """; border-radius: 2px; padding: 1px 8px;
+  font-family: """ + MONO_STACK + """; font-size: 10px; letter-spacing: 0.5px; }
+QFrame#historyStrip { background: transparent; border: none;
+  border-bottom: 1px solid """ + SLATE_HAIR + """; }
+QFrame#comicCard { background: """ + SLATE_PAPER + """;
+  border: 1px solid """ + SLATE_HAIR + """; border-radius: 4px; }
+QFrame#comicCard[state="failed"] { border-color: """ + SLATE_ST_FAIL + """; }
+QLabel#comicIndex { background: """ + SLATE_BAR + """; color: """ + SLATE_BAR_INK + """;
+  border-radius: 2px; padding: 0 5px; font-family: """ + MONO_STACK + """;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.5px; }
+QLabel#comicThumb { background: """ + SLATE_BG + """; color: """ + SLATE_MUTED + """;
+  border-radius: 4px; font-size: 18px; }
+QLabel#comicDialogue { background: """ + SLATE_BG + """;
+  border-left: 2px solid """ + SLATE_BAR + """; border-radius: 3px;
+  padding: 3px 7px; font-size: 11px; color: """ + SLATE_META + """; }
+QFrame#narrationBox { background: """ + SLATE_BG + """; border: 1px dashed """ + SLATE_HAIR + """;
+  border-radius: 3px; }
+QLabel#narrationHead { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 2px; }
+QLabel#narrationHint { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; letter-spacing: 0.3px; }
+QLabel#comicError { color: """ + SLATE_ST_FAIL + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; }
+QFrame#stitchBox { background: """ + SLATE_BG + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QWidget#mergePending { background: transparent; border: none; }
+QLabel#mergingWait { color: """ + SLATE_MUTED + """; background: transparent;
+  border: none; opacity: 1; font-family: """ + MONO_STACK + """; font-size: 10px;
+  letter-spacing: 0.5px; }
+QLabel#mergingWait[pulse="1"] { opacity: 0.35; }
+QLabel#monoTag[mergeElapsed] { color: """ + SLATE_ST_PROG + """; }
+QLabel#refThumb { color: """ + SLATE_MUTED + """; background: """ + SLATE_BG + """;
+  border-radius: 4px; font-size: 22px; }
+QFrame#comicThumbBox { background: """ + SLATE_BG + """; border: none;
+  border-top-left-radius: 4px; border-top-right-radius: 4px; }
+QFrame#videoThumb { background: """ + SLATE_BG + """; border-radius: 3px; }
+QLabel#videoThumbIcon { color: """ + SLATE_MUTED + """; background: transparent; }
+"""
+
 
 def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
