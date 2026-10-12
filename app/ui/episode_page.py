@@ -1007,8 +1007,11 @@ class EpisodePage(QWidget):
         self.gate_lab = W.muted("")
         self.gate_lab.setStyleSheet(
             "color:#ad6800; background:#fff7e6; border-radius:6px; padding:4px 8px;")
+        self.gate_lab.setMaximumHeight(0)
         self.gate_lab.setVisible(False)
         bl.addWidget(self.gate_lab)
+        bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        bar.setMaximumHeight(120)
         lay.addWidget(bar)
 
         # 自定义文风编辑区(选「自定义…」时展开)
@@ -1034,7 +1037,8 @@ class EpisodePage(QWidget):
         # raw_status 改成右浮状态标签,默认隐藏需要时再显示。
         self.ai_edit_hint = QLabel("✨ " + tr("ai_edit_shortcut_hint"))
         self.ai_edit_hint.setObjectName("muted")
-        self.ai_edit_hint.setStyleSheet("color:#86909c; font-size:11px; padding:0; background:transparent;")
+        self.ai_edit_hint.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.ai_edit_hint.setMaximumHeight(20)
         bl.addWidget(self.ai_edit_hint)
         # 生成过程状态条:流式思考/输出进度实时显示在这(不进正文编辑器)
         self.raw_status = QLabel("")
@@ -1046,6 +1050,9 @@ class EpisodePage(QWidget):
         # 小说线第二行:审校 / 改稿 / 朗读
         bar2 = QFrame()
         bar2.setObjectName("taskHead")
+        # 同样:不强制 max height,raw_edit 内容短时 bar2 会拉伸到 486+ 把布局撑空
+        bar2.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        bar2.setMaximumHeight(56)
         b2 = QHBoxLayout(bar2)
         b2.setContentsMargins(12, 6, 12, 6)
         b2.setSpacing(8)
