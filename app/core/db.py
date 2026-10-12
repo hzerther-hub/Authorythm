@@ -376,6 +376,8 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN subtitle_url TEXT",
                 "ALTER TABLE storyboards ADD COLUMN setting_tags TEXT",
                 "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT",
+                # 旁白起播时间(用户要求:不必一开始讲,但 default 是 0)
+                "ALTER TABLE storyboards ADD COLUMN narration_start REAL DEFAULT 0",
                 "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'",
                 "ALTER TABLE dramas ADD COLUMN intro_title TEXT",
                 "ALTER TABLE dramas ADD COLUMN intro_font TEXT",

@@ -3111,9 +3111,15 @@ class EpisodePage(QWidget):
         self.sb_narr_dur.blockSignals(True)
         self.sb_narr_dur.setValue(max(1, int(r["narration_duration"] or r["duration"] or 10)))
         self.sb_narr_dur.blockSignals(False)
+        if hasattr(self, "sb_narr_start"):
+            self.sb_narr_start.blockSignals(True)
+            self.sb_narr_start.setValue(int(r["narration_start"] or 0))
+            self.sb_narr_start.blockSignals(False)
         self.sb_duration.blockSignals(True)
         self.sb_duration.setValue(max(2, min(30, int(r["duration"] or 10))))
         self.sb_duration.blockSignals(False)
+        if hasattr(self, "_check_narration_fit"):
+            self._check_narration_fit()
         audio = (r["video_prompt"] or "") + (r["content"] or "")
         self.sb_gen_audio.setChecked("--no-audio" not in audio and "--no_audio" not in audio)
         self._update_narration_count()
@@ -3476,6 +3482,30 @@ class EpisodePage(QWidget):
             return
         db.ex("UPDATE storyboards SET narration_duration=?, updated_at=? WHERE id=?",
               (float(value), db.now(), self._sb_id))
+        self._check_narration_fit()
+
+    def _save_narration_start(self, value: int):
+        if not self._sb_id:
+            return
+        db.ex("UPDATE storyboards SET narration_start=?, updated_at=? WHERE id=?",
+              (float(value), db.now(), self._sb_id))
+        self._check_narration_fit()
+
+    def _check_narration_fit(self):
+        """旁白起 + 时 长 ≤ 镜长,否则给红条警告 + 禁用合成按钮。"""
+        try:
+            start = self.sb_narr_start.value()
+            dur = self.sb_narr_dur.value()
+            shot = self.sb_duration.value() if hasattr(self, "sb_duration") else 10
+        except (AttributeError, RuntimeError):
+            return
+        if start + dur > shot:
+            self.sb_narr_warn.setText(
+                f"⚠ 起 + 长 {start + dur}s > 镜长 {shot}s")
+            self.sb_tts_btn.setEnabled(False)
+        else:
+            self.sb_narr_warn.setText("")
+            self.sb_tts_btn.setEnabled(bool(self.sb_narration.toPlainText().strip()))
 
     def _save_duration(self, value: int):
         if not self._sb_id:
