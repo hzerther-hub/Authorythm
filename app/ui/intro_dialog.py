@@ -102,7 +102,7 @@ class IntroPreview(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         whole = self.rect()
-        p.fillRect(whole, QColor("#17181c"))      # 舞台底(画幅框外的信箱区)
+        p.fillRect(whole, QColor("#2e3138"))     # 舞台底(画幅框外的信箱区,明显浅于卡片)
         rect = self.stage_rect().toAlignedRect()
         p.fillRect(rect, Qt.black)
         if self.bg_image:                      # 叠加模式:铺分镜真实首帧/合成图当背景

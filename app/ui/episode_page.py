@@ -3802,11 +3802,14 @@ class EpisodePage(QWidget):
             # 无首帧先补一张「有景物有人物」的定场帧再生成 —— 纯文生视频
             # 开场常是黑帧/空镜,成片第一眼没有画面(用户要求第一帧必须带景带人)
             first_frame = sb["first_frame_image"]
+            # generate_video 的下游(agnes _inline / video_contract)全部按 str 处理,
+            # media_url_to_path 返回 Path,必须在这里转掉 —— 不转就是
+            # 'WindowsPath' object has no attribute 'startswith' 整镜崩溃
             if first_frame:
-                first_frame = config.media_url_to_path(first_frame)
+                first_frame = str(config.media_url_to_path(first_frame))
             else:
-                first_frame = config.media_url_to_path(shot_tools.generate_first_frame(
-                    self.episode_id, sb_id, config_id=self.image_model.currentData()))
+                first_frame = str(config.media_url_to_path(shot_tools.generate_first_frame(
+                    self.episode_id, sb_id, config_id=self.image_model.currentData())))
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
                 first_frame=first_frame, reference_images=ref_list,

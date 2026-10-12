@@ -249,6 +249,7 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
         """
         if not u:
             return u
+        u = str(u)                    # 调用方可能传 Path 对象(首帧取自 _local_to_data_url 前的路径)
         if u.startswith("data:"):
             return u
         if u.startswith(("http://", "https://")):

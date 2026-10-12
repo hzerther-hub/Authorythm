@@ -141,16 +141,30 @@ def is_fallbackable_error(err) -> bool:
 
 
 def is_permanent_error(err) -> bool:
-    """4xx 客户端错误 → 立即失败,不再退避重试。"""
+    """是否立即失败、不再退避重试。
+
+    - 带 HTTP 状态的协议错误:4xx 客户端错 → 永久(408/409/425/429 除外);
+    - requests 网络层异常(连接reset/超时)→ 可重试;
+    - **其余一律永久**:没有 HTTP 语义又非网络抖动的,基本是本地代码 bug
+      (AttributeError/TypeError/KeyError…)。之前这类也被当可重试,实测
+      WindowsPath.startswith 崩溃被白白退避重试 4 次(30s/45s/68s),
+      既浪费时间又把真错误埋进重试链末尾。
+    """
     msg = str(getattr(err, "message", "") or err)
     m = re.search(r"HTTP (\d{3})", msg)
-    if not m:
+    if m:
+        code = int(m.group(1))
+        if 400 <= code < 500:
+            # 408/429 是请求超时与限流,仍属可恢复
+            return code not in (408, 409, 425, 429)
         return False
-    code = int(m.group(1))
-    if 400 <= code < 500:
-        # 408/429 是请求超时与限流,仍属可恢复
-        return code not in (408, 409, 425, 429)
-    return False
+    try:
+        import requests
+        if isinstance(err, requests.exceptions.RequestException):
+            return False
+    except ImportError:  # pragma: no cover
+        pass
+    return True
 
 
 def parse_retry_at(text: str) -> datetime | None:
