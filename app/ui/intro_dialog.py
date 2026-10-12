@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QFont, QFontDatabase, QPainter, QPen
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QSlider, QSpinBox,
@@ -20,11 +20,12 @@ from .braille import WaitingButton
 
 
 class IntroPreview(QWidget):
-    """片头预览:黑底(或首帧图)+ 真字体文字 + 九宫格辅助线,支持拖拽定位。"""
+    """片头预览:撑满舞台区,内部按项目画幅(竖屏 9:16 / 横屏 16:9)居中出画幅框,
+    黑底(或首帧图)+ 真字体文字 + 九宫格辅助线,支持拖拽定位(坐标相对画幅框)。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(180)
+        self.setMinimumHeight(240)
         self.setMouseTracking(True)
         self.px = 0.5
         self.py = 0.5
@@ -34,7 +35,24 @@ class IntroPreview(QWidget):
         self.show_grid = True
         self.bg_image: str | None = None
         self._font_id = -1
+        self._aw, self._ah = 9, 16       # 项目画幅,默认竖屏
         self._load_font()
+
+    def set_aspect(self, aw: int, ah: int):
+        self._aw, self._ah = max(1, aw), max(1, ah)
+        self.update()
+
+    def stage_rect(self) -> QRectF:
+        """画幅框:舞台内按比例居中的最大矩形(信箱式)。"""
+        r = self.rect()
+        aw, ah = self._aw, self._ah
+        if r.width() / r.height() > aw / ah:      # 舞台更宽 → 高度撑满,宽按比例收
+            h = r.height()
+            w = h * aw / ah
+        else:                                     # 舞台更高 → 宽度撑满,高按比例收
+            w = r.width()
+            h = w * ah / aw
+        return QRectF((r.width() - w) / 2, (r.height() - h) / 2, w, h)
 
     def _load_font(self):
         if not self.font_file:
@@ -67,11 +85,13 @@ class IntroPreview(QWidget):
         """拖拽结束回调(子类/外部绑定)。"""
 
     def _drag_from(self, x, y):
-        self._off = (x - self.px * self.width(), y - self.py * self.height())
+        r = self.stage_rect()
+        self._off = (x - (r.x() + self.px * r.width()), y - (r.y() + self.py * r.height()))
 
     def _move_to(self, x, y):
-        self.px = max(0.02, min(0.98, (x - self._off[0]) / max(1, self.width())))
-        self.py = max(0.02, min(0.98, (y - self._off[1]) / max(1, self.height())))
+        r = self.stage_rect()
+        self.px = max(0.02, min(0.98, (x - self._off[0] - r.x()) / max(1.0, r.width())))
+        self.py = max(0.02, min(0.98, (y - self._off[1] - r.y()) / max(1.0, r.height())))
         self.update()
 
     def set_pos(self, px, py):
@@ -81,7 +101,9 @@ class IntroPreview(QWidget):
     def paintEvent(self, ev):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        rect = self.rect()
+        whole = self.rect()
+        p.fillRect(whole, QColor("#17181c"))      # 舞台底(画幅框外的信箱区)
+        rect = self.stage_rect().toAlignedRect()
         p.fillRect(rect, Qt.black)
         if self.bg_image:                      # 叠加模式:铺分镜真实首帧/合成图当背景
             pm = W.pixmap_from_media(self.bg_image, rect.width(), rect.height())
@@ -90,19 +112,20 @@ class IntroPreview(QWidget):
         if self.show_grid:                      # 九宫格辅助线
             p.setPen(QPen(Qt.darkGray, 1, Qt.DotLine))
             for i in (1, 2):
-                p.drawLine(int(rect.width() * i / 3), 0, int(rect.width() * i / 3), rect.height())
-                p.drawLine(0, int(rect.height() * i / 3), rect.width(), int(rect.height() * i / 3))
+                p.drawLine(rect.x() + int(rect.width() * i / 3), rect.y(),
+                           rect.x() + int(rect.width() * i / 3), rect.y() + rect.height())
+                p.drawLine(rect.x(), rect.y() + int(rect.height() * i / 3),
+                           rect.x() + rect.width(), rect.y() + int(rect.height() * i / 3))
         if self.title:
             f = QFont(self.font())
-            f.setPixelSize(max(10, int(self.height() * self.size_pct)))
+            f.setPixelSize(max(10, int(rect.height() * self.size_pct)))
             f.setBold(True)
             p.setFont(f)
             p.setPen(Qt.white)
             fm = p.fontMetrics()
             tw, th = fm.horizontalAdvance(self.title), fm.height()
-            x = int(self.px * self.width() - tw / 2)
-            y = int(self.py * self.height() + th / 2)
-            p.drawText(self.rect(), Qt.AlignLeft | Qt.AlignTop, self.title) if False else None
+            x = int(rect.x() + self.px * rect.width() - tw / 2)
+            y = int(rect.y() + self.py * rect.height() + th / 2)
             p.drawText(x, y, self.title)
         p.end()
 
@@ -125,11 +148,11 @@ class IntroEditorDialog(QDialog):
 
         self.aspect = aspect or "16:9"
 
-        # ── 左:预览舞台 + 拖拽提示 + 播放/重置 ──
+        # ── 左:预览舞台(撑满)+ 拖拽提示 + 播放/重置 ──
         left = QVBoxLayout()
         self.preview = IntroPreview()
-        self.preview.setMinimumHeight(240)
-        self._apply_preview_aspect()
+        self.preview.setMinimumHeight(300)
+        self._set_preview_aspect()
         left.addWidget(self.preview, 1)
         hint = W.muted(tr("intro_drag_hint"))
         hint.setAlignment(Qt.AlignCenter)
@@ -214,8 +237,6 @@ class IntroEditorDialog(QDialog):
         body.addLayout(left, 3)
         body.addLayout(right, 2)
         root.addLayout(body, 1)
-        # 预览舞台定尺寸后居中摆放(参考 intro-editor-stage)
-        left.setAlignment(self.preview, Qt.AlignCenter)
 
         btns = QHBoxLayout()
         save = W.primary_btn(tr("save"))
@@ -262,18 +283,16 @@ class IntroEditorDialog(QDialog):
         self.preview.bg_image = (row["first_frame_image"] or row["composed_image"]) if row else None
         self.preview.update()
 
-    def _apply_preview_aspect(self):
-        """预览按项目画幅比例定尺寸:冒号形式必须转斜杠,否则比例失效、预览高度塌 0。"""
-        raw = str(self.aspect or "16:9")
+    def _set_preview_aspect(self):
+        """把项目画幅交给预览(冒号/斜杠都收):舞台撑满,画幅框在内部按比例居中。"""
+        raw = str(self.aspect or "9:16")
         try:
             aw, ah = (int(x) for x in raw.replace(":", "/").split("/"))
         except (ValueError, TypeError):
-            aw, ah = 16, 9
+            aw, ah = 9, 16
         if aw <= 0 or ah <= 0:
-            aw, ah = 16, 9
-        # 按比例算预览高度(目标宽 440),夹在 [180, 260];竖版时宽度随之收窄
-        h = max(180, min(260, int(440 * ah / aw)))
-        self.preview.setFixedSize(max(140, int(h * aw / ah)), h)
+            aw, ah = 9, 16
+        self.preview.set_aspect(aw, ah)
 
     def _play(self):
         """模拟 ffmpeg 同款淡入淡出:fade = min(0.4, dur/3)。"""

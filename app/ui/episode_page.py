@@ -2109,9 +2109,11 @@ class EpisodePage(QWidget):
             people = 1 if table == "characters" else 0
             if "画面质量要求" not in prompt:   # 详情页生成的最终提示词已含守卫,不重复
                 prompt = (prompt + "\n" + image_client.build_image_quality_guard(people))
+            # 尺寸对齐参考:角色/场景 1920x1080(三视图/概念图横幅),道具 1024x1024(产品特写)
+            size = "1024x1024" if table == "props" else "1920x1080"
             out, _provider = image_client.generate_image(prompt, config_id=self._active_image_config(),
                                                         reference_images=refs or None,
-                                                        size="1920x1080", people=people)
+                                                        size=size, people=people)
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), row_id))
             return url
@@ -4094,6 +4096,7 @@ class EpisodePage(QWidget):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id, config_id=self.text_model.currentData())
             out, _p = image_client.generate_image(
                 fp, config_id=self.image_model.currentData(),
+                size="1024x1536",
                 people=comic_pipe.panel_people_count(panel_id))
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), panel_id))
@@ -4133,6 +4136,7 @@ class EpisodePage(QWidget):
                                                     config_id=self.text_model.currentData())
                 out, _p = image_client.generate_image(
                     fp, config_id=self.image_model.currentData(),
+                    size="1024x1536",
                     people=comic_pipe.panel_people_count(pid))
                 db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                       (config.path_to_media_url(out), db.now(), pid))
