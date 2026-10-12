@@ -144,8 +144,22 @@ class SaveOnBlurEdit(QPlainTextEdit):
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
-        # viewport 宽改了 → 重新算高
-        self._auto_resize()
+        # 用户反馈:输入框在不停地抖动(红框闪烁)—— 根因是 resizeEvent 频繁
+        # 触发 _auto_resize,而 _auto_resize 的 updateGeometry 又触发下一次
+        # resizeEvent,死循环刷新导致 focus 描边跳。
+        # 修:1) 加 _resizing 防重入;2) 只在宽度变了 ≥2px 才计算(像素 jitter 跳过)
+        if getattr(self, "_resizing", False):
+            return
+        new_w = ev.size().width()
+        prev_w = getattr(self, "_last_resize_w", None)
+        if prev_w is not None and abs(new_w - prev_w) < 2:
+            return
+        self._last_resize_w = new_w
+        self._resizing = True
+        try:
+            self._auto_resize()
+        finally:
+            self._resizing = False
 
     def _schedule_resize(self) -> None:
         from PySide6.QtCore import QTimer
@@ -155,6 +169,8 @@ class SaveOnBlurEdit(QPlainTextEdit):
         # QPlainTextEdit 高度自适应的唯一稳定做法:用 QFontMetrics 自算
         # —— 用 vp 宽折算每段占几行,总行数 × lineSpacing + padding。
         # 关键:同时设 setMin/setMax = h,让容器尊重真实高度而不是被拉伸
+        if getattr(self, "_resizing", False):
+            return
         vp_w = self.viewport().width()
         if vp_w <= 0:
             self._schedule_resize()
