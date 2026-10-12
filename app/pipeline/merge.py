@@ -323,10 +323,25 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
          "processing", ts, ts))
     try:
         has_narr = any(narrations)
-        if intro or has_narr:
+        if intro and intro.get("card") and not intro.get("overlay") and not has_narr:
+            # 标题卡片头走**无损**:标题卡渲染成独立片段(h264+aac)与正片一起
+            # concat demuxer -c copy —— 正片零转码(此前的 filter_complex 会把
+            # 全部镜头重压一遍)。叠加模式/旁白混音本质需要滤镜,仍走重编码路径。
+            fps_v = 30.0
+            try:
+                num, _, den = str(probe(shots[0]).get("fps") or "30/1").partition("/")
+                fps_v = float(num) / max(1e-6, float(den or 1))
+            except Exception:  # noqa: BLE001
+                fps_v = 30.0
+            clip = _intro.render_intro_clip(intro, fps_hint=fps_v)
+            path, channel = auto_merge([str(clip)] + [str(p) for p in shots], out,
+                                       progress, stop_check)
+            merged = path
+            channel = "无损拼接 + 片头标题卡"
+        elif intro or has_narr:
             merged = _merge_filtered(shots, narrations, out, intro, stop_check)
             channel = ("统一参数拼接" if not has_narr else "统一参数拼接 + 旁白混音") \
-                      + (" + 片头" if intro else "")
+                      + (" + 片头叠加" if intro and intro.get("overlay") else (" + 片头" if intro else ""))
         else:
             path, channel = auto_merge([str(p) for p in shots], out, progress, stop_check)
             merged = path

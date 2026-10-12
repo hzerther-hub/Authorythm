@@ -36,6 +36,44 @@ def default_download_dir() -> Path:
 
 def download_media(url: str | None, filename: str, dest_dir: Path | None = None) -> Path:
     """把 /static/... 对应的本地文件复制到下载目录;返回落地路径。"""
+    src = _validated_src(url)
+    dest_dir = dest_dir or default_download_dir()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dst = dest_dir / sanitize_filename(filename)
+    i = 1
+    while dst.exists():
+        dst = dest_dir / sanitize_filename(f"{Path(filename).stem}_{i}{Path(filename).suffix}")
+        i += 1
+    shutil.copy2(src, dst)
+    return dst
+
+
+def download_media_ask(parent, url: str | None, filename: str) -> Path | None:
+    """弹「另存为」对话框选择位置后复制(对齐图片下载的体验);取消返回 None。
+
+    默认目录仍指向 Downloads,文件名可改;覆盖已有文件由对话框自身确认。
+    """
+    from PySide6.QtWidgets import QFileDialog
+    src = _validated_src(url)
+    default = default_download_dir() / sanitize_filename(filename)
+    ext = default.suffix or ".mp4"
+    caption = "Save"
+    try:
+        from ..core.i18n import tr
+        caption = tr("download")
+    except Exception:  # noqa: BLE001
+        pass
+    path, _ = QFileDialog.getSaveFileName(parent, caption, str(default), f"*{ext};;All (*)")
+    if not path:
+        return None
+    dst = Path(path)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+    return dst
+
+
+def _validated_src(url: str | None) -> Path:
+    """下载源校验:地址为空/文件缺失/空文件给可读错误。"""
     if not url:
         raise RuntimeError("该素材还没有生成文件,无法下载")
     src = config.media_url_to_path(url)
@@ -46,15 +84,7 @@ def download_media(url: str | None, filename: str, dest_dir: Path | None = None)
         raise RuntimeError("下载失败:文件内容为空,请重新生成后再试")
     if size > MAX_BYTES:
         raise RuntimeError(f"文件超过 400MB({size/1048576:.0f}MB),请直接访问数据目录 {config.STATIC_DIR}")
-    dest_dir = dest_dir or default_download_dir()
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dst = dest_dir / sanitize_filename(filename)
-    i = 1
-    while dst.exists():
-        dst = dest_dir / sanitize_filename(f"{Path(filename).stem}_{i}{Path(filename).suffix}")
-        i += 1
-    shutil.copy2(src, dst)
-    return dst
+    return src
 
 
 def download_asset_image(row: dict, kind: str, variant_label: str = "") -> Path:
@@ -72,6 +102,23 @@ def download_storyboard_video(sb: dict, suffix: str = "") -> Path:
     title = (sb.get("title") or "").strip()
     fn = f"第{n:02d}镜{('_' + title) if title else ''}{suffix}.mp4"
     return download_media(sb.get("video_url") or sb.get("composed_video_url"), fn)
+
+
+def download_storyboard_video_ask(parent, sb: dict, suffix: str = "") -> Path | None:
+    """分镜视频下载(弹「另存为」选位置;取消返回 None)。"""
+    n = int(sb.get("storyboard_number") or 0)
+    title = (sb.get("title") or "").strip()
+    fn = f"第{n:02d}镜{('_' + title) if title else ''}{suffix}.mp4"
+    return download_media_ask(parent, sb.get("video_url") or sb.get("composed_video_url"), fn)
+
+
+def download_merge_ask(parent, merge: dict) -> Path | None:
+    """成片下载(弹「另存为」选位置;取消返回 None):<项目名>_第N集.mp4。"""
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (merge["episode_id"],))
+    d = db.q1("SELECT title FROM dramas WHERE id=?", (ep["drama_id"],)) if ep else None
+    title = sanitize_filename((d["title"] if d else "短剧"), "短剧")
+    fn = f"{title}_第{ep['episode_number'] if ep else 1}集.mp4"
+    return download_media_ask(parent, merge.get("merged_url"), fn)
 
 
 def download_merge(merge: dict) -> Path:

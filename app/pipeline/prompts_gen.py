@@ -66,6 +66,14 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     fp = (data or {}).get("final_prompt", "")
     if not fp:
         raise RuntimeError("提示词生成失败(重试后仍为空,请检查文本服务)")
+    # 三视图规范校验(对齐参考 ensureCharacterPrompt + prompt_generator 硬性约束):
+    # ①必须含英文构图 token(character turnaround sheet 等 —— 模型对英文 token 权重最高,
+    #   实测只写中文「三视图布局」会被无视,出单人立绘);②内容比风格前缀长不出 80 字的
+    # 判为模型偷懒只回了前缀。不合格一律拦下重试
+    prefix = _style_prefix(c["drama_id"])
+    has_layout_token = any(k in fp for k in ("turnaround", "reference sheet", "multi-view", "orthographic"))
+    if not has_layout_token or len(fp) <= len(prefix) + 80:
+        raise RuntimeError("提示词不合格:缺少三视图英文构图 token(turnaround/reference sheet 等),请重试")
     # 只落库正向提示词。质量守卫与负向词由 app/ai/prompt_guards.py 在**生图时统一追加**
     # (positive 走 apply_image_quality_guard、负面走 negative_prompt),不再拼接进资产
     # 提示词正文 —— 否则每个角色的 final_prompt 都拖着一段重复的守卫文本,详情页难以编辑,

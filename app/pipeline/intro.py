@@ -163,6 +163,51 @@ def build_intro_spec(drama_id: int, title_override: str | None = None,
     }
 
 
+def render_intro_clip(spec: dict, fps_hint: float = 30.0) -> Path:
+    """把标题卡渲染成独立视频片段(h264+aac),供**无损 concat** 前置到成片。
+
+    此前片头一律走 filter_complex 整段重编码(正片跟着再压一遍,有损)。改为:
+    标题卡单独按 ref_w/ref_h 渲染成 mp4,与正片一起过 auto_merge 的 concat demuxer
+    (-c copy,正片零转码);若片段指纹与正片不一致,auto_merge 只对齐这一个异类片段。
+    片头名取 spec['title'](行内输入 → 项目片头名 → 剧名 的链路在 build_intro_spec)。
+    """
+    import subprocess
+    ff = config.find_ffmpeg()
+    if not ff:
+        raise RuntimeError("未找到 ffmpeg,请安装或设置 FFMPEG_BIN 环境变量。")
+    font_tmp = _make_temp_font(Path(spec["font_path"]))
+    txt_tmp = _make_temp_text(spec["title"])
+    f, t = esc_path(font_tmp), esc_path(txt_tmp)
+    fs, dur = spec["font_size"], spec["duration"]
+    fade = min(0.4, dur / 3)
+    px, py = spec.get("pos_x"), spec.get("pos_y")
+    x_expr = f"w*{px}-text_w/2" if px is not None else "(w-text_w)/2"
+    y_expr = f"h*{py}-text_h/2" if py is not None else "(h-text_h)/2"
+    fps_s = f"{max(1.0, float(fps_hint or 30.0)):.3f}".rstrip("0").rstrip(".")
+    out = config.STATIC_DIR / "merged" / f"intro_{uuid.uuid4().hex[:8]}.mp4"
+    vf = (f"drawtext=fontfile='{f}':textfile='{t}':fontcolor=white:fontsize={fs}"
+          f":x={x_expr}:y={y_expr}"
+          f",fade=t=in:st=0:d={fade},fade=t=out:st={dur - fade}:d={fade}"
+          f",format=yuv420p,setsar=1")
+    cmd = [ff, "-y", "-hide_banner", "-loglevel", "error",
+           "-f", "lavfi", "-i",
+           f"color=c=black:s={spec['ref_w']}x{spec['ref_h']}:r={fps_s}:d={dur}",
+           "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+           "-t", f"{dur}",
+           "-vf", vf,
+           "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+           "-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2",
+           "-shortest", "-movflags", "+faststart", str(out)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if proc.returncode != 0 or not out.exists():
+            raise RuntimeError(f"片头片段渲染失败:{proc.stderr[-300:]}")
+    finally:
+        font_tmp.unlink(missing_ok=True)
+        txt_tmp.unlink(missing_ok=True)
+    return out
+
+
 def _drawtext(font: str, text: str, fs: int, x_expr: str, y_expr: str,
               alpha_expr: str | None = None, enable: str | None = None) -> str:
     s = (f"drawtext=fontfile='{font}':textfile='{text}':fontcolor=white:fontsize={fs}"

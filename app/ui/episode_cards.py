@@ -250,23 +250,50 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
 
 
 # ── 资产卡 ──
+def apply_asset_busy(card, cover, gen_btns: list, busy: bool):
+    """资产卡生成中状态:封面盖半透明遮罩+盲文转圈,文绘/图绘按钮变旋转字并禁点。
+
+    gen_btns 为 [(按钮, 原文字)];卡片按 busy 重建,无需恢复逻辑。
+    """
+    if cover is not None:
+        cover.set_pending(busy)
+    if not busy:
+        return
+    from PySide6.QtCore import QTimer
+    from .braille import BRAILLE_FRAMES
+    for b, _orig in gen_btns:
+        b.setEnabled(False)
+        b.setText(BRAILLE_FRAMES[0])
+    state = {"i": 0}
+
+    def tick():
+        state["i"] = (state["i"] + 1) % len(BRAILLE_FRAMES)
+        for b, _orig in gen_btns:
+            b.setText(BRAILLE_FRAMES[state["i"]])
+    t = QTimer(card)
+    t.timeout.connect(tick)
+    t.start(90)
+    card._busy_timer = t
+
+
 class CharacterAssetCard(QFrame):
     """角色卡:16:9 立绘 + 角色角标 + 样貌/妆造 + 图绘/文绘/上传/换脸/变体 + 最终提示词。"""
 
     def __init__(self, row: dict, labels: dict, *, on_delete=None, on_gen_image=None, on_gen_text=None,
                  on_upload=None, on_face_swap=None, on_variants=None, on_prompt=None,
-                 on_open=None):
+                 on_open=None, busy: bool = False):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(7)
-        lay.addWidget(CoverBox(row.get("image_url"), 248, 140, "☺",   # 16:9(对齐参考 .character-portrait)
-                               badge=(labels["cover_done"] if row.get("image_url")
-                                      else labels["cover_todo"]),
-                               badge_state="ready" if row.get("image_url") else "todo",
-                               tag_text=labels["cover_tag"],
-                               on_click=on_open))
+        cover = CoverBox(row.get("image_url"), 248, 140, "☺",   # 16:9(对齐参考 .character-portrait)
+                         badge=(labels["cover_done"] if row.get("image_url")
+                                else labels["cover_todo"]),
+                         badge_state="ready" if row.get("image_url") else "todo",
+                         tag_text=labels["cover_tag"],
+                         on_click=on_open, pending=busy)
+        lay.addWidget(cover)
         # 名字块独占整行(此前与按钮同排,长名被挤到 ~30px 宽后省略;超长自动折行)
         name_wrap = QWidget()
         name_wrap.setStyleSheet("border:none; background:transparent;")
@@ -300,11 +327,12 @@ class CharacterAssetCard(QFrame):
         btns = QHBoxLayout()
         btns.setSpacing(3)
         btns.setContentsMargins(0, 0, 0, 0)
-        for text, tip, cb, enabled in (
-            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True),
-            (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
-            (labels["upload"], labels["upload_tip"], on_upload, True),
-            (labels["face_swap"], labels["face_swap_tip"], on_face_swap, True),
+        gen_btns = []      # 文绘/图绘两键:生成中变盲文旋转字(apply_asset_busy)
+        for text, tip, cb, enabled, is_gen in (
+            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True, True),
+            (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True, True),
+            (labels["upload"], labels["upload_tip"], on_upload, True, False),
+            (labels["face_swap"], labels["face_swap_tip"], on_face_swap, True, False),
         ):
             b = QPushButton(text)
             b.setToolTip(tip)
@@ -321,6 +349,8 @@ class CharacterAssetCard(QFrame):
                 "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
+            if is_gen:
+                gen_btns.append((b, text))
             btns.addWidget(b, 1)
         if on_delete:                      # 单个删除:删掉不对的资产后重新提取
             db = QPushButton("🗑")
@@ -344,6 +374,7 @@ class CharacterAssetCard(QFrame):
         lay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                         labels["prompt_ph"], on_prompt))
         _snug_card(self)
+        apply_asset_busy(self, cover, gen_btns, busy)
 
 
 class AssetCard(QFrame):
@@ -351,7 +382,7 @@ class AssetCard(QFrame):
 
     def __init__(self, row: dict, labels: dict, kind: str, *,
                  on_gen=None, on_upload=None, on_prompt=None, on_open=None,
-                 on_delete=None, on_gen_text=None, on_gen_vary=None):
+                 on_delete=None, on_gen_text=None, on_gen_vary=None, busy: bool = False):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QVBoxLayout(self)
@@ -359,12 +390,13 @@ class AssetCard(QFrame):
         lay.setSpacing(0)
         has = bool(row.get("image_url"))
         # 封面占满卡宽:此前固定两列(主图+漫画图),单封面只占左半
-        lay.addWidget(CoverBox(row.get("image_url"), 248, (140 if kind == "scene" else 200),
-                               "⌖" if kind == "scene" else "▣",
-                               badge=labels["cover_done"] if has else labels["cover_todo"],
-                               badge_state="ready" if has else "todo",
-                               tag_text=labels["cover_tag"],
-                               on_click=on_open))
+        cover = CoverBox(row.get("image_url"), 248, (140 if kind == "scene" else 200),
+                         "⌖" if kind == "scene" else "▣",
+                         badge=labels["cover_done"] if has else labels["cover_todo"],
+                         badge_state="ready" if has else "todo",
+                         tag_text=labels["cover_tag"],
+                         on_click=on_open, pending=busy)
+        lay.addWidget(cover)
         body = QWidget()
         body.setStyleSheet("border:none;")
         blay = QVBoxLayout(body)
@@ -405,6 +437,7 @@ class AssetCard(QFrame):
                    "QPushButton:hover{background:#f2f3f5;}"
                    "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
         # 文绘:纯文字出图,始终可用;图绘:基于已有形象图重绘(与角色卡一致的两条路径)
+        gen_btns = []
         for text, tip, cb, enabled in (
             (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
             (labels["gen_image"], labels["gen_image_tip"], on_gen_vary, True),
@@ -416,6 +449,7 @@ class AssetCard(QFrame):
             b.setEnabled(enabled)
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
+            gen_btns.append((b, text))
             flay.addWidget(b)
         flay.addStretch(1)
         up = QPushButton(labels["upload"])
@@ -436,6 +470,7 @@ class AssetCard(QFrame):
             flay.addWidget(dp)
         lay.addWidget(foot)
         _snug_card(self)
+        apply_asset_busy(self, cover, gen_btns, busy)
 
 
 class ComicAssetRow(QFrame):

@@ -1888,6 +1888,7 @@ class EpisodePage(QWidget):
                 if r.get("comic_image_url"):
                     comic_ready += 1
                 comic_total += 1
+                _busy = f"{kind}:{r['id']}" in getattr(self, "_asset_busy", set())
                 card = (C.CharacterAssetCard(r, _labels, on_gen_image=self._cb_gen_image(r, kind),
                                               on_gen_text=self._cb_gen_text(r, kind),
                                               on_upload=self._cb_upload(r, kind),
@@ -1897,7 +1898,8 @@ class EpisodePage(QWidget):
                                               if kind == "characters" else None,
                                               on_prompt=self._cb_prompt(r, kind),
                                               on_open=self._cb_open(r, kind),
-                                              on_delete=self._cb_delete_asset(r, kind))
+                                              on_delete=self._cb_delete_asset(r, kind),
+                                              busy=_busy)
                        if kind == "characters"
                        else C.AssetCard(r, _labels, kind[:-1],
                                         on_gen=self._cb_gen_text(r, kind),
@@ -1906,7 +1908,8 @@ class EpisodePage(QWidget):
                                         on_upload=self._cb_upload(r, kind),
                                         on_prompt=self._cb_prompt(r, kind),
                                         on_open=self._cb_open(r, kind),
-                                        on_delete=self._cb_delete_asset(r, kind)))
+                                        on_delete=self._cb_delete_asset(r, kind),
+                                        busy=_busy))
                 grid.addWidget(card, n // cols[kind], n % cols[kind])
                 n += 1
             sec["host"].setVisible(n > 0)
@@ -2054,13 +2057,20 @@ class EpisodePage(QWidget):
             ok(tr("还没有形象图,建议先用「文绘」出图,之后再用「图绘」重绘"))
             return
 
+        if not hasattr(self, "_asset_busy"):
+            self._asset_busy = set()
+        _key = f"{table}:{row_id}"
+
         def job(tid):
             return self._gen_one(row_id, table, by_text)
 
         def done(tid, result, error):
             if error:
                 err(str(error)[:220])
+            self._asset_busy.discard(_key)
             self._reload_assets()
+        self._asset_busy.add(_key)
+        self._reload_assets()      # 立即进入等待态:封面转圈 + 文绘/图绘键禁点
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _gen_one(self, row_id: int, table: str, by_text: bool) -> str:
@@ -2128,6 +2138,9 @@ class EpisodePage(QWidget):
             return
         n = len(rows)
         ok(tr("开始批量文绘,共 {} 个资产(串行,间隔 3 秒)").format(n))
+        if not hasattr(self, "_asset_busy"):
+            self._asset_busy = set()
+        _keys = [f"{table}:{r['id']}" for r in rows]
 
         def job(tid):
             done_cnt = 0
@@ -2145,6 +2158,8 @@ class EpisodePage(QWidget):
             btn = self._batch_btns.get(table)
             if btn:
                 btn.idle()
+            for k in _keys:
+                self._asset_busy.discard(k)
             self._reload_assets()
             if error:
                 err(str(error)[:200])
@@ -2154,6 +2169,9 @@ class EpisodePage(QWidget):
         btn = self._batch_btns.get(table)
         if btn:
             btn.busy(tr("in_progress"))
+        for k in _keys:
+            self._asset_busy.add(k)
+        self._reload_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _upload_image(self, row_id: int, table: str):
@@ -2399,6 +2417,13 @@ class EpisodePage(QWidget):
         self.sb_player_title.setObjectName("taskTitle")
         pl_head.addWidget(self.sb_player_title)
         pl_head.addStretch(1)
+        # 弹出大窗播放(比内嵌播放器大一圈,独立可缩放)。放在标题行右侧,
+        # 比 ↓ 下载键大一号,方便一眼点到。
+        self.sb_pop_btn = QPushButton("⤢")
+        self.sb_pop_btn.setFixedSize(40, 32)
+        self.sb_pop_btn.setToolTip(tr("pop_out_player"))
+        self.sb_pop_btn.clicked.connect(self._pop_out_player)
+        pl_head.addWidget(self.sb_pop_btn)
         self.sb_dl_btn = QPushButton("↓")
         self.sb_dl_btn.setToolTip(tr("download"))
         self.sb_dl_btn.clicked.connect(self._download_selected)
@@ -2856,6 +2881,7 @@ class EpisodePage(QWidget):
             else:
                 self.sb_empty_btn.idle()
         self.sb_dl_btn.setEnabled(bool(vid))
+        self.sb_pop_btn.setEnabled(bool(vid))
         self.sb_tts_btn.setEnabled(bool((r["narration"] or "").strip()))
         audio_url = r["narration_audio_url"]
         self.sb_narr_audio.setText(
@@ -2970,8 +2996,9 @@ class EpisodePage(QWidget):
         suffix = "_" + (r["created_at"] or "")[5:16].replace("T", "_").replace(":", "") if r.get("created_at") else ""
         fn = f"第{n:02d}镜{('_' + title) if title else ''}{suffix}.mp4"
         try:
-            p = dl_mod.download_media(config.path_to_media_url(Path(r["local_path"])), fn)
-            ok(tr('已下载:{}').format(p.name))
+            p = dl_mod.download_media_ask(self, config.path_to_media_url(Path(r["local_path"])), fn)
+            if p:
+                ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e)[:200])
 
@@ -3027,15 +3054,19 @@ class EpisodePage(QWidget):
             self._poster_label = QLabel()
             self._poster_label.setAlignment(Qt.AlignCenter)
             self._poster_label.setStyleSheet("border:none;")
+            # 海报页接同一手势 —— 否则未起播时海报盖在视频控件上,点击画面收不到事件
+            self._poster_label.mousePressEvent = lambda _e: self._toggle_play()
             self._player_stack = QStackedWidget()
             self._player_stack.setMinimumHeight(150)
             self._player_stack.addWidget(self._poster_label)   # 0 = 海报
             self._player_stack.addWidget(self._player_widget)  # 1 = 真实画面
+            self._poster_label.setCursor(Qt.PointingHandCursor)
             self.sb_player.layout().insertWidget(0, self._player_stack)
             self._player.positionChanged.connect(self._on_player_pos)
             self._player.durationChanged.connect(self._on_player_dur)
             self._player.playbackStateChanged.connect(self._on_player_state)
-        self._player_widget.setVisible(True)
+        # 视频控件已在 stack 内,由 _poster_show() 决定显示哪一页,这里不要单独 setVisible
+        self._player_stack.setVisible(True)
         self._player_widget.setStyleSheet("border:none; border-radius:6px;")
         from PySide6.QtCore import QUrl
         src = config.media_url_to_path(url) if str(url).startswith(("/static/", "static/")) else url
@@ -3418,6 +3449,22 @@ class EpisodePage(QWidget):
         if self._sb_id:
             self._generate_one(self._sb_id)
 
+    def _pop_out_player(self):
+        """弹出大窗播放。跟随当前预览源:历史里选了就放那条,否则放本镜当前视频。"""
+        from .task_panel import BigPlayerDialog
+        target = getattr(self, "_history_preview_path", "") or ""
+        if not target:
+            sb = db.q1("SELECT video_url FROM storyboards WHERE id=?", (self._sb_id,))
+            if sb and sb["video_url"]:
+                target = str(config.media_url_to_path(sb["video_url"]))
+        if not target or not Path(target).exists():
+            warn(tr("no_video_yet"))
+            return
+        head = db.q1("SELECT storyboard_number FROM storyboards WHERE id=?", (self._sb_id,))
+        n = int(head["storyboard_number"]) if head else 0
+        BigPlayerDialog(tr("pop_out_player_tip").format(n), target,
+                        parent=self.window()).exec()
+
     def _download_selected(self):
         row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
         if row:
@@ -3461,8 +3508,9 @@ class EpisodePage(QWidget):
     def _download_sb(self, sb: dict):
         from ..core import download as dl_mod
         try:
-            p = dl_mod.download_storyboard_video(sb)
-            ok(tr('已下载:{}').format(p.name))
+            p = dl_mod.download_storyboard_video_ask(self, sb)
+            if p:
+                ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e))
 
@@ -3707,6 +3755,11 @@ class EpisodePage(QWidget):
             "AND (video_url IS NOT NULL OR composed_video_url IS NOT NULL)",
             (self.episode_id,))["c"]
 
+        # 主线程快照:worker 线程里不能碰 UI 控件(重建后 C++ 对象已析构)
+        snap_res = self.res_combo.currentText()
+        snap_cfg = self.video_model.currentData()
+        snap_img = self.image_model.currentData()
+
         def job(tid):
             done_n = 0
             fails: list[str] = []
@@ -3715,7 +3768,8 @@ class EpisodePage(QWidget):
                     _time.sleep(3)
                 _TM.set_stage(tid, f"{i + 1}/{len(rows)}")   # 任务面板显示进行到第几镜
                 try:
-                    self._gen_one_video(r["id"])
+                    self._gen_one_video(r["id"], res=snap_res, config_id=snap_cfg,
+                                        image_cfg=snap_img)
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc).replace("\n", " ")[:120]
@@ -3790,10 +3844,18 @@ class EpisodePage(QWidget):
     def _drama_aspect(self) -> str:
         return getattr(self, "_drama_aspect_ratio", "9:16")
 
-    def _gen_one_video(self, sb_id: int) -> str:
-        """同步生成本镜视频(批量串行路径逐镜调用);失败置 failed 并抛出。"""
+    def _gen_one_video(self, sb_id: int, res: str | None = None,
+                       config_id: int | None = None,
+                       image_cfg: int | None = None) -> str:
+        """同步生成本镜视频(批量串行路径逐镜调用);失败置 failed 并抛出。
+
+        res / config_id 由调用方在**主线程**取值后传入:本函数跑在 worker 线程,
+        若在这里直接读 self.res_combo / self.video_model,一旦语言切换或页面重建
+        销毁了控件,就会抛 libshiboken "Internal C++ object already deleted"
+        (实测 10/14 次生成失败是这个)。
+        """
         from ..pipeline import shot_tools
-        res = self.res_combo.currentText()
+        res = res if res is not None else self.res_combo.currentText()
         sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
         db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
         try:
@@ -3809,11 +3871,12 @@ class EpisodePage(QWidget):
                 first_frame = str(config.media_url_to_path(first_frame))
             else:
                 first_frame = str(config.media_url_to_path(shot_tools.generate_first_frame(
-                    self.episode_id, sb_id, config_id=self.image_model.currentData())))
+                    self.episode_id, sb_id,
+                    config_id=image_cfg if image_cfg is not None else self.image_model.currentData())))
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
                 first_frame=first_frame, reference_images=ref_list,
-                config_id=self.video_model.currentData(),
+                config_id=config_id if config_id is not None else self.video_model.currentData(),
                 aspect_ratio=self._drama_aspect())
             # 用户在跑的过程中点了「停止生成」→ 丢弃这次结果,别把已归位的状态再写回去
             if sb_id in self._cancelled_sb:
@@ -3869,8 +3932,14 @@ class EpisodePage(QWidget):
             if srow:
                 self._refresh_video_panel(dict(srow))
 
+        # 主线程快照:worker 线程里不能碰 UI 控件(重建后 C++ 对象已析构)
+        snap_res = self.res_combo.currentText()
+        snap_cfg = self.video_model.currentData()
+        snap_img = self.image_model.currentData()
+
         def job(tid):
-            p = self._gen_one_video(sb_id)
+            p = self._gen_one_video(sb_id, res=snap_res, config_id=snap_cfg,
+                                    image_cfg=snap_img)
             # 成片路径落任务行(历史视频列表据此展示;对齐参考项目 local_path)
             from ..core import taskmgr as _TM
             _TM.finish_task(tid, "completed", local_path=str(p))
@@ -4206,11 +4275,8 @@ class EpisodePage(QWidget):
         refresh = QPushButton("⟳ " + tr("refresh"))
         refresh.clicked.connect(self._reload_export)
         head1.addWidget(refresh)
-        # 本地无损合并工具(独立文件合并,归到成片处;对齐 easymerger)
-        self.merger_btn = QPushButton("⧉ " + tr("merger_title"))
-        self.merger_btn.setToolTip(tr("merger_intro"))
-        self.merger_btn.clicked.connect(self._open_merger_tool)
-        head1.addWidget(self.merger_btn)
+        # 「无损合并」独立入口已移除(用户要求):拼接所选本身就是无损链路
+        # (标题卡片头 = 独立片段 + concat -c copy),不再需要单独的工具页入口
         body.addLayout(head1)
         self.merge_scroll = QScrollArea()
         self.merge_scroll.setWidgetResizable(True)
@@ -4325,6 +4391,7 @@ class EpisodePage(QWidget):
 
     def _merge_card(self, m: dict) -> QWidget:
         """成片卡:16:9 缩略 + 时间/时长 + 下载(对齐 .merge-card)。"""
+        from . import episode_cards as C      # mono_tag 等小组件(方法内导入,防并行重构丢引用)
         card = W.make_card()
         card.setFixedWidth(260)
         lay = QVBoxLayout(card)
@@ -4340,7 +4407,11 @@ class EpisodePage(QWidget):
         if done:
             im = QLabel()
             im.setAlignment(Qt.AlignCenter)
-            im.setPixmap(W.pixmap_from_media(m["merged_url"], 244, 146))
+            # 成片是 mp4,QPixmap 读不了 —— 用海报帧(ffmpeg 抽 0.5s)做缩略,
+            # 否则卡片永远是黑块,看不出拼接出了什么(对齐参考项目 video poster)
+            from ..pipeline import video_poster
+            poster = video_poster.poster_url(m["merged_url"])
+            im.setPixmap(W.pixmap_from_media(poster or m["merged_url"], 244, 146))
             im.setCursor(Qt.PointingHandCursor)
             im.mousePressEvent = lambda _e, mm=m: self._play_merge(mm)
             tl.addWidget(im, 1)
@@ -4680,8 +4751,9 @@ class EpisodePage(QWidget):
     def _download_merge(self, merge: dict):
         from ..core import download as dl_mod
         try:
-            p = dl_mod.download_merge(merge)
-            ok(f"{tr('download_ok')}:{p.name}")
+            p = dl_mod.download_merge_ask(self, merge)
+            if p:
+                ok(f"{tr('download_ok')}:{p.name}")
         except Exception as e:  # noqa: BLE001
             err(str(e))
 

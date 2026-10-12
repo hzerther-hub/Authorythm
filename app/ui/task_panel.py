@@ -10,8 +10,8 @@ from __future__ import annotations
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QScrollArea, QTextEdit, QVBoxLayout,
-                               QWidget)
+                               QPushButton, QScrollArea, QSlider, QTextEdit,
+                               QVBoxLayout, QWidget)
 
 from datetime import datetime
 
@@ -238,3 +238,75 @@ class TaskDrawer(QWidget):
         state_lab.setStyleSheet(f"color:{DOT_COLOR.get(state, '#86909c')}; font-size:11px;")
         lay.addWidget(state_lab)
         return row
+
+class BigPlayerDialog(QDialog):
+    """弹出的大窗播放器:独立可缩放,带播放/暂停与进度条。
+
+    内嵌播放器固定 198px 高,竖屏短剧在那点高度里几乎看不清;这里给一个
+    可自由缩放的窗口,默认按视频比例撑大,方便逐帧核对画面。
+    """
+
+    def __init__(self, title: str, path: str, parent=None):
+        super().__init__(parent)
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        from PySide6.QtMultimediaWidgets import QVideoWidget
+        self.setWindowTitle(title)
+        self.resize(960, 760)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(12, 12, 12, 10)
+        lay.setSpacing(8)
+        self._vw = QVideoWidget()
+        self._vw.setMinimumHeight(360)
+        self._vw.setStyleSheet("border:none; border-radius:8px; background:#000;")
+        lay.addWidget(self._vw, 1)
+        self._player = QMediaPlayer(self)
+        self._player.setVideoOutput(self._vw)
+        self._player.setAudioOutput(QAudioOutput(self._player))
+        self._player.setSource(QUrl.fromLocalFile(str(path)))
+        ctl = QHBoxLayout()
+        self._btn = QPushButton("▶")
+        self._btn.setFixedSize(44, 32)
+        self._btn.clicked.connect(self._toggle)
+        self._pos = QSlider(Qt.Horizontal)
+        self._pos.setEnabled(False)
+        self._pos.sliderMoved.connect(lambda v: self._player.setPosition(v))
+        self._lab = QLabel("0:00 / 0:00")
+        self._lab.setObjectName("muted")
+        self._player.durationChanged.connect(
+            lambda d: (self._pos.setRange(0, max(1, int(d))), self._lab.setText(
+                f"0:00 / {int(d//60000)}:{int(d//1000)%60:02d}")))
+        self._player.positionChanged.connect(
+            lambda ms: self._lab.setText(f"{int(ms//60000)}:{int(ms//1000)%60:02d} / "
+                                         f"{int(self._player.duration()//60000)}:"
+                                         f"{int(self._player.duration()//1000)%60:02d}"))
+        self._player.playbackStateChanged.connect(
+            lambda st: self._btn.setText("⏸" if st == QMediaPlayer.PlaybackState.PlayingState else "▶"))
+        ctl.addWidget(self._btn)
+        ctl.addWidget(self._pos, 1)
+        ctl.addWidget(self._lab)
+        lay.addLayout(ctl)
+        # 按视频实际比例给个合适的初始窗口尺寸
+        from pathlib import Path as _P
+        import subprocess as _sp
+        try:
+            from ..core import config as _cfg
+            exe = _cfg.find_ffprobe()
+            if exe:
+                import json as _json
+                r = _sp.run([exe, "-v", "quiet", "-print_format", "json", "-show_streams",
+                             "-select_streams", "v:0", str(path)], capture_output=True, text=True)
+                st = _json.loads(r.stdout)["streams"][0]
+                w, h = int(st["width"]), int(st["height"])
+                hgt = min(900, max(480, int(w * 0.62) + 120))
+                self.resize(min(1400, w + 60), hgt)
+        except Exception:  # noqa: BLE001
+            pass
+        self._player.play()
+
+    def _toggle(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+        else:
+            self._player.play()
