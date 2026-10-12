@@ -296,6 +296,51 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
     return done
 
 
+def gen_atmospheres(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
+    """按四层规范(光线+色调+声音+整体氛围)整集重写 atmosphere;返回成功数。
+
+    与拆分共用同一条规范(见 split_storyboards 里的【atmosphere 规范】),
+    光线层从该镜匹配到的场景 lighting 延展 —— 给旧规则拆出来的分镜补一条
+    不用整集重拆的升级路径。返回纯文本,不走 JSON 解析。
+    """
+    rows = db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number",
+                (episode_id,))
+    if not rows:
+        raise RuntimeError("请先「重新拆分」生成分镜")
+    scenes = db.q("SELECT id, name, location, time, lighting FROM scenes "
+                  "WHERE drama_id=(SELECT drama_id FROM episodes WHERE id=?)", (episode_id,))
+    scene_by_id = {r["id"]: dict(r) for r in scenes}
+    scene_by_loc = {r["location"]: dict(r) for r in scenes if r["location"]}
+    system = ("你是影视美术指导。只输出氛围描述本身,不要任何前言、解释或引号。"
+              "氛围 = 光线 + 色调 + 声音 + 整体氛围,写 2-4 句完整短句:"
+              "光线从给定场景光影延展(光源+方向+冷暖);色调写色彩倾向与明暗;"
+              "声音至少一层持续可听的环境音并带质感比喻;整体氛围把情绪落到具体物件或人的状态。"
+              "禁止\"天气+感受\"式关键词罗列。")
+    done = 0
+    for r in rows:
+        sc = scene_by_id.get(r["scene_id"]) or scene_by_loc.get(r["location"] or "") or {}
+        prompt = f"""镜头 #{r['storyboard_number']} 《{r['title'] or ''}》
+场景: {r['location'] or sc.get('location') or ''} {r['time'] or sc.get('time') or ''}
+场景光影: {sc.get('lighting') or '(未记录,按场景与时段推断)'}
+画面描述:
+{(r['description'] or r['content'] or '')[:1000]}
+当前氛围(需要按规范重写):
+{r['atmosphere'] or '(空)'}
+
+请输出这个镜头的氛围描述。"""
+        try:
+            text = runner.run_agent("prompt_generator", prompt, lang=lang,
+                                    config_id=config_id, system=system).strip()
+            text = text.strip('"“”').strip()
+            if text and 10 < len(text) < 500:
+                db.ex("UPDATE storyboards SET atmosphere=?, updated_at=? WHERE id=?",
+                      (text, db.now(), r["id"]))
+                done += 1
+        except Exception:  # noqa: BLE001 —— 单镜失败不阻断整批
+            continue
+    return done
+
+
 # ── 垃圾分镜清理(对齐原版 StoryboardSplit junk-removed) ──
 JUNK_DESC_MIN = 50
 JUNK_IMAGE_MIN = 30

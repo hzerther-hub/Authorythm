@@ -275,10 +275,12 @@ def auto_merge(files: list[str], out: str | Path, progress=None, stop_check=None
 
 def episode_shot_files(episode_id: int, only_ids: list[int] | None = None) -> list[Path]:
     rows = db.q("SELECT * FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (episode_id,))
+    by_id = {r["id"]: r for r in rows}
+    # 传了 only_ids 就按调用方顺序(导出页支持手动调序,对齐参考 orderedExportSelectedIds);
+    # 没传按镜号
+    iter_rows = [by_id[i] for i in only_ids if i in by_id] if only_ids else rows
     files = []
-    for r in rows:
-        if only_ids and r["id"] not in only_ids:
-            continue
+    for r in iter_rows:
         url = r["video_url"] or r["composed_video_url"]
         if not url:
             continue
@@ -344,25 +346,22 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
 
 def _episode_narrations(episode_id: int, only_ids: list[int] | None,
                         shots: list[Path]) -> list[Path | None]:
-    """逐镜头对齐的旁白文件(按镜号顺序,与 shots 一一对应;缺失/文件丢失去 None)。"""
+    """逐镜头对齐的旁白文件(**与 shots 顺序一一对应**;缺失/文件丢失去 None)。
+
+    shots 现在可按用户手动调序传入,这里以文件路径反查所属分镜,而不是再按镜号
+    重排一遍 —— 否则镜头换了序、旁白还钉在旧镜号上,音画就错位了。
+    """
     rows = db.q("SELECT id, video_url, composed_video_url, narration_audio_url "
                 "FROM storyboards WHERE episode_id=? ORDER BY storyboard_number", (episode_id,))
-    keep = set(only_ids) if only_ids else {r["id"] for r in rows}
-    shot_set = {str(p) for p in shots}
-    out: list[Path | None] = []
+    narr_by_path: dict[str, Path | None] = {}
     for r in rows:
-        if r["id"] not in keep:
-            continue
         url = r["video_url"] or r["composed_video_url"]
-        if not url or str(config.media_url_to_path(url)) not in shot_set:
+        if not url:
             continue
         n = r["narration_audio_url"]
-        if n:
-            np_ = config.media_url_to_path(n)
-            out.append(np_ if np_.exists() else None)
-        else:
-            out.append(None)
-    return out
+        narr_by_path[str(config.media_url_to_path(url))] = (
+            config.media_url_to_path(n) if n and config.media_url_to_path(n).exists() else None)
+    return [narr_by_path.get(str(p)) for p in shots]
 
 
 def _majority_size(shots: list[Path]) -> tuple[int, int]:

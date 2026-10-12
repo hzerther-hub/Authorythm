@@ -280,8 +280,13 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
     import time
     for _ in range(poll_rounds):
         time.sleep(poll_seconds)
-        pr = requests.get(poll_url, headers={"Authorization": headers.get("Authorization", "")},
-                          timeout=30)
+        try:
+            pr = requests.get(poll_url, headers={"Authorization": headers.get("Authorization", "")},
+                              timeout=60)
+        except requests.RequestException:
+            # 单次轮询网络抖动(读超时/断连)不终局,继续等下一轮(对齐参考版 pollTask;
+            # 此前 30s ReadTimeout 直接炸掉整个任务,是 agnes 成片率低的主因之一)
+            continue
         if pr.status_code != 200:
             continue          # 与参考版 pollTask 相同:单次轮询失败不终局,继续等
         status, url_v, err, _dur = parse_poll_response(pr.json())

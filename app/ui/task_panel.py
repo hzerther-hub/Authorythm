@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
+                               QPushButton, QScrollArea, QTextEdit, QVBoxLayout,
+                               QWidget)
 
 from datetime import datetime
 
@@ -23,6 +24,55 @@ STATE_OF = {"processing": ("pending", "in_progress"), "completed": ("done", "don
             "failed": ("failed", "failed"), "blocked": ("failed", "failed"),
             "pending": ("ready", "pending")}
 DOT_COLOR = {"pending": "#e0794b", "done": "#16a34a", "failed": "#dc2626", "ready": "#86909c"}
+
+
+class ErrorDialog(QDialog):
+    """完整错误详情:等宽只读框(可选中)+ 一键复制。
+
+    错误常常是 4KB 级别的 traceback,列表里只截断显示 120 字符,tooltip 也没法
+    方便地拿走全文 —— 排查时要贴给日志/工单,这里给一个能直接 Ctrl+A / 复制的框。
+    """
+
+    def __init__(self, title: str, text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(760, 460)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 14, 14, 12)
+        lay.setSpacing(8)
+        box = QTextEdit()
+        box.setReadOnly(True)
+        box.setPlainText(text)
+        box.setLineWrapMode(QTextEdit.NoWrap)
+        # 等宽:traceback 要按行读。必须走样式表 —— 主题的 FONT_STACK 是全局
+        # font-family,优先级高于 setFont,直接 setFont(Consolas) 会被吃掉。
+        # 报错文案里混着中文,Consolas 无 CJK 字形时 Qt 会自动回退,不影响。
+        box.setObjectName("errDetail")
+        box.setStyleSheet("#errDetail{font-family:Consolas,'Courier New',monospace;"
+                          "font-size:12px;}")
+        lay.addWidget(box, 1)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        copy_btn = QPushButton(tr("copy"))
+        close_btn = QPushButton(tr("u_close"))
+        copy_btn.setDefault(True)
+        row.addWidget(copy_btn)
+        row.addWidget(close_btn)
+        lay.addLayout(row)
+        close_btn.clicked.connect(self.accept)
+        copy_btn.clicked.connect(lambda: self._copy(box, text))
+
+    @staticmethod
+    def _copy(box, text: str) -> None:
+        """全选后走 Qt 剪贴板 —— 比构造隐藏 textarea 稳,也不依赖焦点。"""
+        box.selectAll()
+        QApplication.clipboard().setText(text)
+        from .toast import ok
+        ok(tr("copied"))
+
+
+def show_error_dialog(title: str, text: str, parent=None) -> None:
+    ErrorDialog(title, text, parent).exec()
 
 
 class TaskDrawer(QWidget):
@@ -177,7 +227,11 @@ class TaskDrawer(QWidget):
             er = QLabel(str(r["error_msg"])[:120])
             er.setObjectName("taskError")
             er.setWordWrap(True)
-            er.setToolTip(str(r["error_msg"]))
+            er.setToolTip(tr("click_view_error"))
+            er.setCursor(Qt.PointingHandCursor)
+            full = str(r["error_msg"])
+            er.mouseReleaseEvent = lambda _e, t=full: show_error_dialog(
+                tr("error_detail"), t, parent=self.window())
             main.addWidget(er)
         lay.addLayout(main, 1)
         state_lab = QLabel(label)

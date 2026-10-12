@@ -72,6 +72,26 @@ def avatar(initial: str, size: int = 44) -> QLabel:
     return lab
 
 
+_DPR_CACHE: list[float] = []
+
+
+def _ui_dpr() -> float:
+    """UI 缩放倍数(取所有屏幕最大值并缓存,封顶 2.5)。
+
+    HiDPI(Windows 125%/150% 缩放)下按逻辑像素出图会被系统拉伸发糊,
+    缩略图一律按 dpr 倍的物理像素加载再 setDevicePixelRatio。
+    """
+    if not _DPR_CACHE:
+        try:
+            from PySide6.QtWidgets import QApplication
+            app = QApplication.instance()
+            dprs = [s.devicePixelRatio() for s in app.screens()] if app else []
+            _DPR_CACHE.append(min(2.5, max(dprs, default=2.0)))
+        except Exception:  # noqa: BLE001  —— 无实例/无屏幕时按 2 倍出图
+            _DPR_CACHE.append(2.0)
+    return _DPR_CACHE[0]
+
+
 def pixmap_cover_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
     """从媒体地址加载图片并**铺满裁切**成 w×h(对齐参考项目 object-fit:cover)。
 
@@ -83,27 +103,38 @@ def pixmap_cover_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
         p = config.media_url_to_path(url_or_path) if str(url_or_path).startswith(("/static/", "static/")) else Path(url_or_path)
         if p.exists():
             pm = QPixmap(str(p))
+    dpr = _ui_dpr()
     if pm.isNull():
-        pm = QPixmap(w, h or w)
+        pm = QPixmap(int(w * dpr), int((h or w) * dpr))
         pm.fill(QColor("#e8eaf0"))
     if h:
-        return pm.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-    return pm.scaledToWidth(w, Qt.SmoothTransformation)
+        pm = pm.scaled(int(w * dpr), int(h * dpr), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+    else:
+        pm = pm.scaledToWidth(int(w * dpr), Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 def pixmap_from_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
-    """从 /static/... 或本地路径加载图片;失败给纯色占位。"""
+    """从 /static/... 或本地路径加载图片;失败给纯色占位。
+
+    按 dpr 倍物理像素缩放再挂 devicePixelRatio,HiDPI 屏不再被系统拉伸发糊。
+    """
     pm = QPixmap()
     if url_or_path:
         p = config.media_url_to_path(url_or_path) if str(url_or_path).startswith(("/static/", "static/")) else Path(url_or_path)
         if p.exists():
             pm = QPixmap(str(p))
+    dpr = _ui_dpr()
     if pm.isNull():
-        pm = QPixmap(w, h or w)
+        pm = QPixmap(int(w * dpr), int((h or w) * dpr))
         pm.fill(QColor("#e8eaf0"))
     if h:
-        return pm.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-    return pm.scaledToWidth(w, Qt.SmoothTransformation)
+        pm = pm.scaled(int(w * dpr), int(h * dpr), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    else:
+        pm = pm.scaledToWidth(int(w * dpr), Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(dpr)
+    return pm
 
 
 class StatBar(QWidget):

@@ -67,6 +67,42 @@ def finish_task(task_id: int, status: str, error: str | None = None,
           (status, error, result_url, local_path, db.now(), task_id))
 
 
+def delete_video_task(task_id: int) -> str | None:
+    """删除一条视频任务记录与其成片文件(对齐参考项目 DELETE /tasks/:id)。
+
+    若删的是该分镜**当前主视频**,把剩余最新一条已完成记录晋级为 video_url
+    (没有则置空、状态归位 failed 让用户能重试);返回晋级后的视频地址(可为 '')。
+    文件被占用删不动时不阻断记录清理(Windows 播放器句柄由 UI 侧先释放)。
+    """
+    from pathlib import Path
+    t = db.q1("SELECT * FROM sys_task WHERE id=? AND type='video'", (task_id,))
+    if not t:
+        return None
+    if t["local_path"]:
+        try:
+            Path(t["local_path"]).unlink(missing_ok=True)
+        except OSError:
+            pass
+    db.ex("DELETE FROM sys_task WHERE id=?", (task_id,))
+    sb_id = t["storyboard_id"]
+    if not sb_id:
+        return None
+    from . import config as _cfg
+    sb = db.q1("SELECT video_url FROM storyboards WHERE id=?", (sb_id,))
+    deleted_media = _cfg.path_to_media_url(Path(t["local_path"])) if t["local_path"] else None
+    promoted = ""
+    if sb and deleted_media and sb["video_url"] == deleted_media:
+        nxt = db.q1("""SELECT local_path FROM sys_task WHERE type='video' AND storyboard_id=?
+                       AND status='completed' AND local_path IS NOT NULL AND local_path<>''
+                       ORDER BY created_at DESC LIMIT 1""", (sb_id,))
+        if nxt and nxt["local_path"]:
+            promoted = _cfg.path_to_media_url(Path(nxt["local_path"]))
+        db.ex("""UPDATE storyboards SET video_url=?,
+                status=CASE WHEN ?<>'' THEN 'completed' ELSE 'failed' END, updated_at=?
+                WHERE id=?""", (promoted or None, promoted, db.now(), sb_id))
+    return promoted
+
+
 def active_count() -> int:
     row = db.q1("SELECT COUNT(*) c FROM sys_task WHERE status='processing'")
     return row["c"] if row else 0

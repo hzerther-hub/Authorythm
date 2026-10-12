@@ -6,6 +6,8 @@
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QSize
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QPolygonF
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
@@ -493,6 +495,7 @@ class VideoTaskRow(QFrame):
                  on_click=None, on_action=None):
         super().__init__()
         self.setObjectName("taskRow")
+        self._selected = selected
         self.setProperty("state", "selected" if selected else state)
         self._name = name
         self._meta = meta
@@ -516,11 +519,13 @@ class VideoTaskRow(QFrame):
             im.setAlignment(Qt.AlignCenter)
             im.setPixmap(W.pixmap_from_media(thumb_url, 56, 32))
             pl.addWidget(im)
+            self._thumb_label = im
         else:
             ph = QLabel("🎬")
             ph.setAlignment(Qt.AlignCenter)
             ph.setObjectName("videoThumbIcon")
             pl.addWidget(ph)
+            self._thumb_label = ph
         idx = QLabel(f"#{index:02d}")
         idx.setObjectName("taskIndex")
         pl.addWidget(idx, 0, Qt.AlignLeft)
@@ -540,19 +545,76 @@ class VideoTaskRow(QFrame):
         mt.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         main.addWidget(mt)
         lay.addLayout(main, 1)
+        # 操作区:图标键与旋转子两个宿主常驻,按状态切换可见性(set_state 可原地换态,
+        # 批量进行中不重建整列也能让当前镜转起来)
+        act_host = QWidget()
+        act_host.setFixedSize(24, 24)
+        al = QHBoxLayout(act_host)
+        al.setContentsMargins(0, 0, 0, 0)
+        al.setSpacing(0)
         act = QPushButton()
-        act.setIcon(video_camera_icon(self.palette().color(QPalette.ButtonText)))
-        act.setIconSize(QSize(15, 15))
         act.setToolTip(action_tip)
         act.setFixedSize(24, 24)
-        act.setEnabled(state != "pending")
+        act.setIcon(video_camera_icon(self.palette().color(QPalette.ButtonText)))
+        act.setIconSize(QSize(15, 15))
+        act.setEnabled(True)
         act.setCursor(Qt.PointingHandCursor)
         if on_action:
             act.clicked.connect(lambda _=False: on_action())
-        lay.addWidget(act)
+        spin_host = QWidget()
+        spin_host.setFixedSize(24, 24)
+        from .braille import BrailleSpinner
+        _sl = QVBoxLayout(spin_host)
+        _sl.setContentsMargins(0, 0, 0, 0)
+        _spin = BrailleSpinner(color="#f97316", size=9, parent=spin_host)
+        _sl.addWidget(_spin)
+        al.addWidget(act)
+        al.addWidget(spin_host)
+        lay.addWidget(act_host)
+        self.act_btn = act
+        self._spin = _spin
+        self._apply_state(state)
         self.setCursor(Qt.PointingHandCursor)
         if on_click:
             self.mousePressEvent = lambda _e: on_click()
+
+    def _apply_state(self, state: str):
+        pending = state == "pending"
+        self.act_btn.setVisible(not pending)
+        self.act_btn.setEnabled(not pending)
+        if pending:
+            self._spin.start("")
+        else:
+            self._spin.stop()
+        self._spin.parentWidget().setVisible(pending)
+        self.setProperty("state", "selected" if self._selected else state)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+    def set_state(self, state: str, state_label: str, meta: str | None = None,
+                  thumb_url: str | None = None):
+        """批量进行中原地换态:pending↔图标键 + 状态样式 + 元信息行,不重建列表。"""
+        self._state = state
+        self._state_label = state_label
+        if meta is not None:
+            self._meta = meta
+            for lab in self.findChildren(QLabel):
+                if lab.objectName() == "taskMeta":
+                    lab.setText(meta)
+                    lab.setToolTip(meta)
+        if thumb_url and thumb_url != self._thumb:
+            self._thumb = thumb_url
+        self._apply_state(state)
+
+    def refresh_thumb(self, thumb_url: str | None):
+        """海报帧补抽完成后原地换缩略图,不用重建整列(保住滚动位置)。"""
+        lab = getattr(self, "_thumb_label", None)
+        if lab is None or not thumb_url or thumb_url == self._thumb:
+            return
+        self._thumb = thumb_url
+        lab.setObjectName("")           # 从 🎬 占位切成图片
+        lab.setPixmap(W.pixmap_from_media(thumb_url, 56, 32))
+        lab.setToolTip(thumb_url)
 
     def refresh(self, thumb_url: str | None = None):
         """原地更新缩略图与状态,避免整列重建导致滚动位置跳回顶部。"""
@@ -575,12 +637,16 @@ class RefCard(QFrame):
         lay.setSpacing(3)
         if url:
             im = QLabel()
-            im.setMinimumHeight(120)
+            im.setMinimumHeight(110)
             im.setAlignment(Qt.AlignCenter)
-            im.setPixmap(W.pixmap_from_media(url, 170, 130))
-            # 参考素材列收窄成两列卡片流后,图要跟着卡宽缩放而非撑宽卡片
+            # 按卡片显示宽度的富余分辨率加载(参考素材卡 ~300px 宽)
+            im.setPixmap(W.pixmap_from_media(url, 480, 360))
             im.setScaledContents(True)
-            im.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            # 高度必须跟随宽度按图片纵横比联动(heightForWidth),否则卡片被拉宽时
+            # setScaledContents 只横向拉伸 → 道具等宽图变形(参考项目为瀑布流自然比例)
+            sp = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            sp.setHeightForWidth(True)
+            im.setSizePolicy(sp)
             if on_click:
                 im.setCursor(Qt.PointingHandCursor)
                 im.mousePressEvent = lambda _e: on_click()
@@ -608,6 +674,57 @@ class RefCard(QFrame):
         lay.addWidget(st)
         if on_generate:
             lay.addWidget(link_label(tr("去生成 →"), on_generate))
+
+
+class VideoHistoryCard(QFrame):
+    """历史视频卡:96×54 抽帧缩略 + 时间 + 当前/预览角标 + 下载/删除键
+    (对齐参考项目 .video-history-item)。"""
+
+    def __init__(self, thumb_path: str | None, time_label: str, *, current: bool = False,
+                 previewing: bool = False, on_preview=None, on_download=None, on_delete=None):
+        super().__init__()
+        self.setObjectName("videoHistoryCard")
+        self.setProperty("current", "1" if current else "0")
+        self.setProperty("previewing", "1" if previewing else "0")
+        self.setCursor(Qt.PointingHandCursor)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 4, 4, 4)
+        lay.setSpacing(3)
+        im = QLabel()
+        im.setFixedSize(96, 54)
+        im.setAlignment(Qt.AlignCenter)
+        if thumb_path and Path(thumb_path).exists():
+            im.setPixmap(W.pixmap_cover_media(thumb_path, 96, 54))
+        else:
+            im.setText("🎬")
+            im.setObjectName("videoThumbIcon")
+        lay.addWidget(im)
+        foot = QHBoxLayout()
+        foot.setSpacing(2)
+        badge = QLabel(time_label)
+        badge.setObjectName("historyTime"
+                            if not (current or previewing) else "historyBadge")
+        if current:
+            badge.setText(f"{time_label} · ✓")
+        elif previewing:
+            badge.setText(f"{time_label} · ◉")
+        foot.addWidget(badge)
+        foot.addStretch(1)
+        dl = QPushButton("↓")
+        dl.setFixedSize(16, 16)
+        dl.setToolTip(tr("download"))
+        if on_download:
+            dl.clicked.connect(lambda _=False: on_download())
+        foot.addWidget(dl)
+        de = QPushButton("×")
+        de.setFixedSize(16, 16)
+        de.setToolTip(tr("delete"))
+        if on_delete:
+            de.clicked.connect(lambda _=False: on_delete())
+        foot.addWidget(de)
+        lay.addLayout(foot)
+        if on_preview:
+            self.mousePressEvent = lambda _e: on_preview()
 
 
 # ── 漫画格 ──

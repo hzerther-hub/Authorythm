@@ -32,7 +32,11 @@ def _ext_for(url: str) -> str:
 
 def _download(url: str, headers: dict | None = None) -> Path:
     out = config.STATIC_DIR / "videos" / f"{uuid.uuid4().hex}{_ext_for(url)}"
-    resp = requests.get(url, headers=headers or {}, timeout=600)
+    # 成片地址是带签名的 CDN 直链,带上上游 API 的 Authorization 反而会被拒(实测 401);
+    # 先裸下,401/403 再带鉴权头补一次(兼容个别确实要鉴权的 provider)
+    resp = requests.get(url, timeout=600)
+    if resp.status_code in (401, 403) and headers:
+        resp = requests.get(url, headers=headers, timeout=600)
     if resp.status_code != 200:
         raise AIError(f"下载生成视频失败 HTTP {resp.status_code}")
     out.write_bytes(resp.content)
@@ -190,9 +194,12 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
 
     # 提交 + 轮询整体走重试包装:永久错误立即失败,限流/队列满按长预算退避,
     # 上游给了 retry_at 时间戳就睡到那一刻(最多跟 2 次)。
+    # Agnes 限流预算 30 分钟(对齐参考 RATE_LIMIT_CREATE_BUDGET_MS:实测拥塞可持续
+    # 20 分钟+);其余 provider 维持默认 15 分钟不动。
     return _generate_with_retry(
         lambda: _dispatch_once(cfg, base, headers, prompt, resolution, duration,
-                               first_frame, refs, config_id, reference_images or []))
+                               first_frame, refs, config_id, reference_images or []),
+        rate_limit_budget_s=1800.0 if provider == "agnes" else 900.0)
 
 
 def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
@@ -209,7 +216,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                                     "role": "reference_image"})
         if first_frame:
             body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame)}})
-        resp = requests.post(f"{base}/contents/generations/tasks", json=body, headers=headers, timeout=120)
+        resp = requests.post(_ark_url(base, "/contents/generations/tasks"), json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
         task_id = resp.json().get("id")
@@ -217,7 +224,8 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             raise AIError(f"Seedance 响应缺少 id: {resp.text[:300]}")
 
         def check():
-            st = requests.get(f"{base}/contents/generations/tasks/{task_id}", headers=headers, timeout=30).json()
+            st = requests.get(_ark_url(base, f"/contents/generations/tasks/{task_id}"),
+                              headers=headers, timeout=60).json()
             status = st.get("status", "")
             video = (st.get("content") or {}).get("video_url") if isinstance(st.get("content"), dict) else None
             return ("failed" if status == "failed" else "running"), video, st.get("error")
@@ -558,6 +566,18 @@ RATE_LIMIT_BACKOFF_BASE_S = 30        # 退避基数 30 秒
 VIDEO_CREATE_SPACING_S = 15           # 视频提交全局串行门:两次提交最小间隔 15 秒
 _last_video_create_at: list = [0.0]
 _video_gate_lock = threading.Lock()
+
+
+def _ark_url(base: str, path: str) -> str:
+    """火山方舟端点拼接(对齐参考项目 joinProviderUrl):路径固定带 /api/v3 前缀。
+
+    base 配了 https://ark.cn-beijing.volces.com/api/v3 或裸域名的都能出正确地址
+    —— 此前裸域名直接拼 /contents/generations/tasks,上游 404 且响应体为空。
+    """
+    b = (base or "").rstrip("/")
+    if "/api/v3" not in b:
+        b += "/api/v3"
+    return f"{b}{path}"
 
 
 def _is_rate_limited(exc) -> bool:

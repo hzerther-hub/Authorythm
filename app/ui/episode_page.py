@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import json
 import time
+from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSpinBox, QSplitter,
+                               QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter,
                                QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
 
 from .confirm import ask
@@ -445,6 +446,11 @@ class EpisodePage(QWidget):
         self.task_btn.setToolTip(tr("tasks"))
         self.task_btn.clicked.connect(self._open_tasks)
         top.addWidget(self.task_btn)
+        # 运行中任务数:按钮后面挂一枚小徽标(无任务时隐藏,不给顶栏添噪音)
+        self.task_badge = QLabel("")
+        self.task_badge.setObjectName("taskBadge")
+        self.task_badge.setVisible(False)
+        top.addWidget(self.task_badge)
         root.addLayout(top)
         self.subtitle = W.muted("")
         root.addWidget(self.subtitle)
@@ -545,7 +551,11 @@ class EpisodePage(QWidget):
                     if i >= 0:
                         combo.blockSignals(True)
                         combo.setCurrentIndex(i)
-                        combo.setItemText(i, "🔒 " + combo.itemText(i))
+                        # 锁定标记用普通文字(🔒 彩色 emoji 会把下拉框行高撑高一截,
+                        # 顶栏两个框比别的高就是这个原因);完整说明放悬停提示
+                        name = combo.itemText(i)
+                        combo.setItemText(i, "[L] " + name)
+                        combo.setToolTip(tr("locked_video_model", name))
                         combo.blockSignals(False)
         self.video_model.currentIndexChanged.connect(self._sync_res_tiers)
         self._sync_res_tiers()
@@ -714,7 +724,9 @@ class EpisodePage(QWidget):
             stats = TASKMGR.ep_video_stats(self.episode_id)
             self._update_metric_pills(TASKMGR.ep_video_stats(self.episode_id))
             active = TASKMGR.active_count()
-            self.task_btn.setText(f"☰ {tr('tasks')}" + (f" · {active}" if active else ""))
+            # 纯图标按钮(用户要求去掉文字):运行中的任务数以按钮后的徽标显示
+            self.task_badge.setText(str(active) if active else "")
+            self.task_badge.setVisible(bool(active))
             self.nav.set_step_states(self._step_states())
             self._sync_nav_progress(self._step)
         finally:
@@ -1754,9 +1766,41 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_comic_assets(self):
-        for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
-            for r in db.q(f"SELECT id FROM {table} WHERE drama_id=? AND comic_image_url IS NULL", (self.drama_id,)):
-                self._gen_comic_asset(kind, r["id"])
+        """漫画风格批量:链式串行(上一个个完成再提下一个)+ 按钮全程等待态。"""
+        from ..pipeline import comic as comic_pipe
+        tasks = [(kind, r["id"])
+                 for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props"))
+                 for r in db.q(f"SELECT id FROM {table} WHERE drama_id=? AND comic_image_url IS NULL",
+                               (self.drama_id,))]
+        if not tasks:
+            info(tr("没有待生成的资产"))
+            return
+        btn = getattr(self, "_comic_batch", None)
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText("⠋ " + tr("in_progress"))
+
+        def run(i: int):
+            if i >= len(tasks):
+                if btn is not None:
+                    btn.setEnabled(True)
+                    btn.setText("📕 " + tr("batch_comic_style"))
+                self._reload_comic_assets()
+                return
+            kind, row_id = tasks[i]
+
+            def job(tid):
+                return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
+                                                    config_id=self.image_model.currentData())
+
+            def done(tid, result, error):
+                if error:
+                    err(str(error)[:220])
+                run(i + 1)
+
+            TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+        run(0)
 
     def _reload_comic_assets(self):
         if not getattr(self, "comic_asset_list", None):
@@ -2094,12 +2138,18 @@ class EpisodePage(QWidget):
             return {"done": done_cnt, "total": n}
 
         def done(tid, result, error):
+            btn = self._batch_btns.get(table)
+            if btn:
+                btn.idle()
             self._reload_assets()
             if error:
                 err(str(error)[:200])
             else:
                 ok(tr("批量文绘完成:{}/{} 成功").format(result["done"], result["total"]))
 
+        btn = self._batch_btns.get(table)
+        if btn:
+            btn.busy(tr("in_progress"))
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _upload_image(self, row_id: int, table: str):
@@ -2148,9 +2198,15 @@ class EpisodePage(QWidget):
         split_btn.clicked.connect(self._split_sb)
         bar.addWidget(split_btn)
         self.split_btn = split_btn
-        prompts_btn = QPushButton(tr("batch_prompts"))
+        prompts_btn = WaitingButton(tr("batch_prompts"))
         prompts_btn.clicked.connect(self._batch_vp)
+        self.batch_vp_btn = prompts_btn
         bar.addWidget(prompts_btn)
+        atmos_btn = WaitingButton(tr("batch_atmos"))
+        atmos_btn.setToolTip(tr("batch_atmos_tip"))
+        atmos_btn.clicked.connect(self._batch_atmos)
+        self.batch_atmos_btn = atmos_btn
+        bar.addWidget(atmos_btn)
         self.repair_btn = W.primary_btn("⟳ " + tr("auto_repair", 0))
         self.repair_btn.setToolTip(tr("auto_repair_tip"))
         self.repair_btn.setVisible(False)
@@ -2212,6 +2268,7 @@ class EpisodePage(QWidget):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(0)
         self.sb_task_lay = tl
+        self.sb_task_rows: dict[int, "object"] = {}   # sb_id → VideoTaskRow(批量心跳原地换态)
         tl.addStretch(1)
         ll.addWidget(self.sb_task_scroll, 1)
         wb.addWidget(left)
@@ -2391,19 +2448,56 @@ class EpisodePage(QWidget):
         sl.addWidget(self.sb_player, 1)
         sl.addWidget(self.sb_player_empty)
         rl3.addWidget(stage)
+        # 播放控制行:播放/暂停 + 进度条 + 时间;只在有视频时可见
+        # (此前只挂了 QVideoWidget 没有任何控件,成片出来也不知道怎么播)
+        self.sb_player_ctrl = QWidget()
+        self.sb_player_ctrl.setVisible(False)
+        pcl = QHBoxLayout(self.sb_player_ctrl)
+        pcl.setContentsMargins(0, 0, 0, 0)
+        pcl.setSpacing(7)
+        self.sb_play_btn = QPushButton("▶")
+        self.sb_play_btn.setFixedSize(34, 26)
+        self.sb_play_btn.setToolTip(tr("播放"))
+        self.sb_play_btn.clicked.connect(self._toggle_play)
+        pcl.addWidget(self.sb_play_btn)
+        self.sb_pos_slider = QSlider(Qt.Horizontal)
+        self.sb_pos_slider.sliderMoved.connect(
+            lambda v: self._player and self._player.setPosition(v))
+        pcl.addWidget(self.sb_pos_slider, 1)
+        self.sb_time_lab = QLabel("0:00 / 0:00")
+        self.sb_time_lab.setObjectName("muted")
+        pcl.addWidget(self.sb_time_lab)
+        rl3.addWidget(self.sb_player_ctrl)
+        # 历史视频:标题 + 横滚缩略行(对齐参考项目 .video-player-history;
+        # 数据来自 sys_task 里该分镜已完成的 video 记录,可预览/下载/删除)
         self.sb_history = QWidget()
         hl3 = QVBoxLayout(self.sb_history)
         hl3.setContentsMargins(0, 0, 0, 0)
         hl3.setSpacing(4)
+        hh = QHBoxLayout()
         self.sb_history_title = W.muted("")
-        hl3.addWidget(self.sb_history_title)
-        self.sb_history_row = QHBoxLayout()
-        self.sb_history_row.setSpacing(6)
+        hh.addWidget(self.sb_history_title)
+        self.sb_history_count = C.mono_tag("0")
+        hh.addWidget(self.sb_history_count)
+        hh.addStretch(1)
+        hl3.addLayout(hh)
+        self.sb_history_scroll = QScrollArea()
+        self.sb_history_scroll.setWidgetResizable(True)
+        self.sb_history_scroll.setFrameShape(QFrame.NoFrame)
+        self.sb_history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.sb_history_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.sb_history_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
+        self.sb_history_scroll.setFixedHeight(108)
         self.sb_history_row_host = QWidget()
-        self.sb_history_row_host.setLayout(self.sb_history_row)
-        hl3.addWidget(self.sb_history_row_host)
+        self.sb_history_row = QHBoxLayout(self.sb_history_row_host)
+        self.sb_history_row.setContentsMargins(0, 0, 0, 0)
+        self.sb_history_row.setSpacing(6)
+        self.sb_history_row.addStretch(1)
+        self.sb_history_scroll.setWidget(self.sb_history_row_host)
+        hl3.addWidget(self.sb_history_scroll)
         self.sb_history.setVisible(False)
         rl3.addWidget(self.sb_history)
+        self._history_preview_path = ""
         bh = QHBoxLayout()
         bl = QLabel(tr("bound_refs"))
         bl.setObjectName("inspectorLabel")
@@ -2494,6 +2588,7 @@ class EpisodePage(QWidget):
         lay.addWidget(self.sb_workbench, 1)
         self._sb_id = 0
         self._cancelled_sb: set = set()    # 已被用户手动停止的分镜,worker 回来时不再回写
+        self._poster_queued: set = set()    # 已排队抽过海报帧的分镜,避免重复起 ffmpeg
         self._task_filter = ""
         self._ref_kind = "character"
 
@@ -2518,6 +2613,12 @@ class EpisodePage(QWidget):
                 v.setValue(0)
         self._load_incomplete()
         self._refresh_status()
+        # 任务完成回调只走这里:右栏播放器/按钮状态也要跟着刷,否则空态按钮的
+        # 旋转子会一直转到用户手动点别的镜头为止
+        if self._sb_id:
+            srow = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+            if srow:
+                self._refresh_video_panel(dict(srow))
         if rows and not self._sb_id:
             self._select_storyboard(rows[0]["id"])
 
@@ -2550,6 +2651,8 @@ class EpisodePage(QWidget):
     def _render_task_list(self, rows: list):
         from . import episode_cards as C
         lay = self.sb_task_lay
+        if hasattr(self, "sb_task_rows"):
+            self.sb_task_rows.clear()
         while lay.count():
             it = lay.takeAt(0)
             w = it.widget()
@@ -2575,11 +2678,12 @@ class EpisodePage(QWidget):
             row = C.VideoTaskRow(
                 int(r["storyboard_number"]), (r["content"] or "")[:40] or tr("shot_n", r["storyboard_number"]),
                 meta, state, state_label, action_tip,
-                r.get("composed_video_url") or r.get("video_url"),
+                self._shot_thumb(r),
                 selected=(r["id"] == self._sb_id),
                 on_click=lambda _=False, i=r["id"]: self._select_storyboard(i),
                 on_action=lambda _=False, i=r["id"]: self._generate_one(i))
             lay.insertWidget(lay.count() - 1, row)
+            self.sb_task_rows[r["id"]] = row
         for state, pill in self._metric_pills.items():
             pill.setText(f"{counts.get(state, 0)} {pill.text().split(' ', 1)[1]}")
             pill.setChecked(self._task_filter == state)
@@ -2611,6 +2715,73 @@ class EpisodePage(QWidget):
         """点击筛选胶囊:「所有」= 清除筛选;再点同一枚状态胶囊也取消筛选。"""
         self._task_filter = "" if (state == "all" or self._task_filter == state) else state
         self._render_task_list(self._sb_rows())
+
+    def _shot_thumb(self, r: dict) -> str | None:
+        """列表行缩略图:用视频海报帧(抽好的首帧),没有就先占位并排队抽帧。
+
+        绝不能把视频文件直接当图片传给 pixmap_from_media —— Qt 渲染不了 mp4,
+        结果永远是「🎬」占位符,出了片也看不出画面。
+        """
+        from ..pipeline import video_poster
+        vid = r.get("composed_video_url") or r.get("video_url")
+        if not vid:
+            return None
+        url = video_poster.poster_url(vid)
+        if url:
+            return url
+        self._queue_poster(r["id"], vid)
+        return None
+
+    def _queue_poster_for(self, sb_id: int, vid: str, on_done=None):
+        """后台补抽海报帧(不建 sys_task 记录,避免污染任务列表)。
+
+        on_done 给播放器用:抽完之后回主线程把海报贴上去。
+        """
+        if sb_id in self._poster_queued:
+            return
+        self._poster_queued.add(sb_id)
+
+        class _Job(QRunnable):
+            def __init__(self, page, sb_id, vid, on_done):
+                super().__init__()
+                self.page, self.sb_id, self.vid = page, sb_id, vid
+                self.on_done = on_done
+                self.setAutoDelete(True)
+
+            def run(self):
+                from ..pipeline import video_poster
+                from ..core import config as _cfg
+                from pathlib import Path as _Path
+                try:
+                    src = _cfg.media_url_to_path(self.vid) if str(self.vid).startswith(
+                        ("/static/", "static/")) else _Path(self.vid)
+                    video_poster.extract_video_poster(src)
+                except Exception:  # noqa: BLE001
+                    pass
+                # 回主线程刷新那一行(海报可能刚生成好)
+                QTimer.singleShot(0, self.page._refresh_poster_row)
+                if self.on_done is not None:
+                    QTimer.singleShot(0, self.on_done)
+
+            def __getstate__(self):
+                raise TypeError  # QRunnable 不会被 pickle
+
+        pool = getattr(self, "_poster_pool", None)
+        if pool is None:
+            pool = self._poster_pool = QThreadPool.globalInstance()
+        pool.start(_Job(self, sb_id, vid, on_done))
+
+    def _queue_poster(self, sb_id: int, vid: str):
+        self._queue_poster_for(sb_id, vid)
+
+    def _refresh_poster_row(self):
+        """海报补抽完后只重绘受影响的行,不重建整个列表(保住滚动位置)。"""
+        row = self.sb_task_rows.get(getattr(self, "_sb_id", 0))
+        if row is None:
+            return
+        sb = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+        if sb:
+            row.refresh_thumb(self._shot_thumb(dict(sb)))
 
     def _sb_scene_name(self, r: dict) -> str:
         row = db.q1("SELECT s.location, s.time FROM storyboards sb "
@@ -2652,6 +2823,15 @@ class EpisodePage(QWidget):
         audio = (r["video_prompt"] or "") + (r["content"] or "")
         self.sb_gen_audio.setChecked("--no-audio" not in audio and "--no_audio" not in audio)
         self._update_narration_count()
+        self._refresh_video_panel(r)
+        self._render_setting_tags(r)
+        self._render_refs(r)
+        self._render_bound_refs(r)
+        self.sb_ai_prompt_btn.setEnabled(True)
+        self._render_task_list(self._sb_rows())
+
+    def _refresh_video_panel(self, r: dict):
+        """右栏播放器/行动键随分镜状态刷新(不碰编辑器,可在任务完成回调里安全重跑)。"""
         state, state_label = self._sb_state(r)
         vid = r["video_url"] or r["composed_video_url"]
         self.sb_player_title.setText(
@@ -2659,49 +2839,270 @@ class EpisodePage(QWidget):
         if vid:
             self._show_player(vid)
             self.sb_player_empty.setVisible(False)
+            self.sb_empty_btn.idle()
         else:
             self._clear_player()
             self.sb_player_empty.setVisible(True)
             pending = state == "pending"
             self.sb_empty_title.setText(tr("video_generating") if pending else tr("no_video_yet"))
             self.sb_empty_hint.setText("" if pending else tr("gen_video_hint"))
-            self.sb_empty_btn.setText(tr("in_progress") if pending else tr("generate"))
-            self.sb_empty_btn.setEnabled(not pending)
+            # 生成中 → 盲文旋转子动态等待(与其它生成按钮的等待效果一致),不用静态「生成中」文字
+            if pending:
+                self.sb_empty_btn.busy()
+            else:
+                self.sb_empty_btn.idle()
         self.sb_dl_btn.setEnabled(bool(vid))
         self.sb_tts_btn.setEnabled(bool((r["narration"] or "").strip()))
         audio_url = r["narration_audio_url"]
         self.sb_narr_audio.setText(
             f"{tr('tts_done')} · {r['narration_voice']}" if audio_url else "")
-        self._render_setting_tags(r)
-        self._render_refs(r)
-        self._render_bound_refs(r)
         self.sb_effective.setText(
             f"{self._video_model_name()} · {self._ep['resolution'] or '720p'} · {int(r['duration'] or 10)}s")
         self.sb_action_btn.setText(tr("redraw") if state == "done" else
                                    (tr("in_progress") if state == "pending" else tr("generate")))
         self.sb_action_btn.setEnabled(state != "pending")
         self.sb_stop_btn.setVisible(state == "pending")
-        self.sb_ai_prompt_btn.setEnabled(True)
+        self._render_video_history()
+
+    # ── 历史视频(对齐参考项目 sbVideoHistory / removeHistoryVideo) ──
+    def _render_video_history(self):
+        from . import episode_cards as C
+        self._backfill_video_task_paths()
+        lay = self.sb_history_row
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        lay.addStretch(1)
+        if not self._sb_id:
+            self.sb_history.setVisible(False)
+            return
+        rows = [dict(r) for r in db.q(
+            """SELECT * FROM sys_task WHERE type='video' AND storyboard_id=? AND status='completed'
+               AND local_path IS NOT NULL AND local_path<>'' ORDER BY created_at DESC""",
+            (self._sb_id,))]
+        self.sb_history.setVisible(bool(rows))
+        if not rows:
+            return
+        self.sb_history_title.setText(tr("sb_history"))
+        self.sb_history_count.setText(str(len(rows)))
+        sb = db.q1("SELECT video_url FROM storyboards WHERE id=?", (self._sb_id,))
+        cur_url = sb["video_url"] if sb else ""
+        for r in rows:
+            p = Path(r["local_path"])
+            media = config.path_to_media_url(p)
+            is_cur = bool(media and cur_url and cur_url == media)
+            is_prev = self._history_preview_path == str(p)
+            t = (r["created_at"] or "")[11:16] or "--:--"
+            card = C.VideoHistoryCard(
+                self._video_thumb(p), t, current=is_cur, previewing=is_prev,
+                on_preview=lambda pp=str(p): self._preview_history(pp),
+                on_download=lambda rr=dict(r): self._download_history(rr),
+                on_delete=lambda rr=dict(r): self._delete_history(rr))
+            lay.insertWidget(lay.count() - 1, card)
+
+    def _backfill_video_task_paths(self):
+        """旧任务行没存 local_path:把各分镜当前视频回填到其最新完成任务(一次性补数)。"""
+        for sb in db.q("""SELECT s.id, s.video_url FROM storyboards s WHERE s.episode_id=?
+                          AND s.video_url IS NOT NULL""", (self.episode_id,)):
+            row = db.q1("""SELECT id FROM sys_task WHERE type='video' AND storyboard_id=?
+                           AND status='completed' AND (local_path IS NULL OR local_path='')
+                           ORDER BY created_at DESC LIMIT 1""", (sb["id"],))
+            if row:
+                p = config.media_url_to_path(sb["video_url"])
+                if p.exists():
+                    db.ex("UPDATE sys_task SET local_path=? WHERE id=?", (str(p), row["id"]))
+
+    @staticmethod
+    def _video_thumb(path: Path) -> str | None:
+        """ffmpeg 抽第 0.5 秒一帧做视频缩略;缓存到 data/thumbs,无 ffmpeg 返回 None。"""
+        import subprocess
+        ff = config.find_ffmpeg()
+        if not ff or not path.exists():
+            return None
+        out = config.DATA_DIR / "thumbs" / f"task_{path.stem}.jpg"
+        if out.exists():
+            return str(out)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            subprocess.run([ff, "-ss", "0.5", "-i", str(path), "-frames:v", "1",
+                            "-vf", "scale=192:-2", "-y", str(out)],
+                           capture_output=True, timeout=20,
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except Exception:  # noqa: BLE001
+            return None
+        return str(out) if out.exists() else None
+
+    def _shot_thumb_url(self, r: dict) -> str | None:
+        """分镜的缩略图地址:首帧图优先,没有就 ffmpeg 抽视频首帧(QPixmap 读不了 mp4)。"""
+        ff_img = r.get("first_frame_image")
+        if ff_img:
+            p = config.media_url_to_path(ff_img) if str(ff_img).startswith(("/static/", "static/")) else Path(ff_img)
+            if p.exists():
+                return str(p)
+        vid = r.get("video_url") or r.get("composed_video_url")
+        if vid:
+            p = config.media_url_to_path(vid) if str(vid).startswith(("/static/", "static/")) else Path(vid)
+            if p.exists():
+                return self._video_thumb(p)
+        return None
+
+    def _preview_history(self, path_str: str):
+        """点历史卡:主播放器切到该文件预览(再点当前视频则回到主视频)。"""
+        self._history_preview_path = "" if self._history_preview_path == path_str else path_str
+        sb = db.q1("SELECT video_url FROM storyboards WHERE id=?", (self._sb_id,))
+        cur = config.media_url_to_path(sb["video_url"]) if sb and sb["video_url"] else None
+        target = self._history_preview_path or (str(cur) if cur and cur.exists() else "")
+        if target:
+            self._show_player(target)
+        self._render_video_history()
+
+    def _download_history(self, r: dict):
+        from ..core import download as dl_mod
+        sb = db.q1("SELECT storyboard_number, title FROM storyboards WHERE id=?", (self._sb_id,))
+        n = int(sb["storyboard_number"]) if sb else 0
+        title = (sb["title"] if sb else "").strip() if sb else ""
+        suffix = "_" + (r["created_at"] or "")[5:16].replace("T", "_").replace(":", "") if r.get("created_at") else ""
+        fn = f"第{n:02d}镜{('_' + title) if title else ''}{suffix}.mp4"
+        try:
+            p = dl_mod.download_media(config.path_to_media_url(Path(r["local_path"])), fn)
+            ok(tr('已下载:{}').format(p.name))
+        except Exception as e:  # noqa: BLE001
+            err(str(e)[:200])
+
+    def _delete_history(self, r: dict):
+        """删历史视频:先停播放释放文件句柄(Windows 占用时删不掉),确认后级联。"""
+        from ..core import taskmgr as TM
+        p = r["local_path"]
+        sb = db.q1("SELECT video_url FROM storyboards WHERE id=?", (self._sb_id,))
+        is_cur = bool(sb and sb["video_url"]
+                      and config.path_to_media_url(Path(p)) == sb["video_url"])
+        hint = tr("vid_del_current_hint") if is_cur else ""
+        if QMessageBox.question(self, tr("delete"),
+                                tr("vid_del_confirm") + (f"\n\n{hint}" if hint else ""),
+                                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        if hasattr(self, "_player"):
+            self._player.stop()
+        if self._history_preview_path == p:
+            self._history_preview_path = ""
+        promoted = TM.delete_video_task(int(r["id"]))
+        if is_cur and promoted is not None:
+            info(tr("vid_promoted_ok") + (f" → {Path(promoted).name}" if promoted else ""))
+        srow = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+        if srow:
+            self._refresh_video_panel(dict(srow))
         self._render_task_list(self._sb_rows())
 
     def _show_player(self, url: str):
-        from PySide6.QtMultimedia import QMediaPlayer, QVideoWidget
+        from PySide6.QtMultimedia import QMediaPlayer
+        from PySide6.QtMultimediaWidgets import QVideoWidget
+        from PySide6.QtWidgets import QVBoxLayout
         if not hasattr(self, "_player_widget"):
             self._player_widget = QVideoWidget()
             self._player_widget.setStyleSheet("border:none; border-radius:6px;")
             self._player = QMediaPlayer()
             self._player.setVideoOutput(self._player_widget)
+            # 音频输出必须显式挂上(Qt6 QMediaPlayer 不再默认出声)
+            from PySide6.QtMultimedia import QAudioOutput
+            self._audio_out = QAudioOutput(self._player)
+            self._player.setAudioOutput(self._audio_out)
             self._player_widget.setMinimumHeight(150)
+            # 点击画面 = 播放/暂停(对齐 web 播放器的直觉交互)
+            self._player_widget.mousePressEvent = lambda _e: self._toggle_play()
+            # sb_player 原是裸 QLabel(承载空态文案),首次挂播放器时补一个布局
+            if self.sb_player.layout() is None:
+                vl = QVBoxLayout(self.sb_player)
+                vl.setContentsMargins(0, 0, 0, 0)
             self.sb_player.layout().insertWidget(0, self._player_widget)
+            # 未播放时用海报帧占位(对齐参考项目 <video poster>):QVideoWidget 在
+            # 没起播前只有一块黑,看不出这个镜头成片长什么样
+            self._poster_label = QLabel()
+            self._poster_label.setAlignment(Qt.AlignCenter)
+            self._poster_label.setStyleSheet("border:none;")
+            self.sb_player.layout().insertWidget(1, self._poster_label)
+            self._player.positionChanged.connect(self._on_player_pos)
+            self._player.durationChanged.connect(self._on_player_dur)
+            self._player.playbackStateChanged.connect(self._on_player_state)
         self._player_widget.setVisible(True)
         self._player_widget.setStyleSheet("border:none; border-radius:6px;")
+        from PySide6.QtCore import QUrl
         src = config.media_url_to_path(url) if str(url).startswith(("/static/", "static/")) else url
         self._player.setSource(QUrl.fromLocalFile(str(src)))
+        self.sb_player_ctrl.setVisible(True)
+        self._apply_player_poster(url)
+        self._sync_play_btn()
+
+    def _apply_player_poster(self, url: str):
+        """播放器未起播时显示海报帧;缺海报就后台补抽,抽好再贴上去。"""
+        from PySide6.QtMultimedia import QMediaPlayer
+        from ..pipeline import video_poster
+        poster = video_poster.poster_url(url)
+        if not poster:
+            self._poster_label.clear()
+            self._poster_label.setVisible(False)
+            self._queue_poster_for(getattr(self, "_sb_id", 0), url,
+                                   lambda: self._apply_player_poster(url))
+            return
+        from . import widgets as _W
+        self._poster_label.setPixmap(_W.pixmap_from_media(poster, 640, 0))
+        self._poster_label.setVisible(
+            self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState)
+
+    def _on_player_state(self, state):
+        """起播即隐藏海报帧,让位给真实画面(停止/暂停后不再盖回去,避免挡住暂停画面)。"""
+        from PySide6.QtMultimedia import QMediaPlayer
+        self._sync_play_btn()
+        lab = getattr(self, "_poster_label", None)
+        if lab is None:
+            return
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            lab.setVisible(False)
+        elif self._player.position() == 0:
+            lab.setVisible(True)
+
+    def _toggle_play(self):
+        if not hasattr(self, "_player"):
+            return
+        from PySide6.QtMultimedia import QMediaPlayer
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+        else:
+            self._player.play()
+        self._sync_play_btn()
+
+    def _sync_play_btn(self):
+        if not hasattr(self, "_player"):
+            return
+        from PySide6.QtMultimedia import QMediaPlayer
+        playing = self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
+        self.sb_play_btn.setText("⏸" if playing else "▶")
+
+    @staticmethod
+    def _fmt_ms(ms: int) -> str:
+        s = int(ms // 1000)
+        return f"{s // 60}:{s % 60:02d}"
+
+    def _on_player_pos(self, ms: int):
+        self.sb_pos_slider.blockSignals(True)
+        self.sb_pos_slider.setRange(0, max(1, int(self._player.duration())))
+        self.sb_pos_slider.setValue(int(ms))
+        self.sb_pos_slider.blockSignals(False)
+        self.sb_time_lab.setText(f"{self._fmt_ms(ms)} / {self._fmt_ms(self._player.duration())}")
+
+    def _on_player_dur(self, ms: int):
+        self.sb_pos_slider.setRange(0, max(1, int(ms)))
+        self.sb_time_lab.setText(f"0:00 / {self._fmt_ms(ms)}")
 
     def _clear_player(self):
         if hasattr(self, "_player"):
             self._player.stop()
             self._player_widget.setVisible(False)
+        lab = getattr(self, "_poster_label", None)
+        if lab is not None:
+            lab.clear()          # 换镜头时别留着上一镜头的海报帧
+        self.sb_player_ctrl.setVisible(False)
 
     def _update_narration_count(self):
         n = len(self.sb_narration.toPlainText())
@@ -3218,13 +3619,49 @@ class EpisodePage(QWidget):
         QTimer.singleShot(6000, tick)
 
     def _batch_vp(self):
+        btn = getattr(self, "batch_vp_btn", None)
+
         def job(tid):
             return sb_pipe.gen_video_prompts(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
+
         def done(tid, result, error):
+            if btn:
+                btn.idle()
             if error:
                 err(str(error)[:220])
             else:
                 QMessageBox.information(self, tr("batch_prompts"), f"OK: {result}")
+        if btn:
+            btn.busy(tr("in_progress"))
+        TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
+
+    def _batch_atmos(self):
+        """整集按四层规范重写氛围(旧规则拆的分镜不用重拆也能升到新规范)。"""
+        btn = getattr(self, "batch_atmos_btn", None)
+        rows = db.q("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (self.episode_id,))["c"]
+        if not rows:
+            info(tr("请先「重新拆分」生成分镜"))
+            return
+        if not ask(self, tr("batch_atmos"),
+                   tr("batch_atmos_confirm").format(rows)):
+            return
+
+        def job(tid):
+            return sb_pipe.gen_atmospheres(self.episode_id, config_id=self.text_model.currentData(),
+                                           lang=self._drama_lang)
+
+        def done(tid, result, error):
+            if btn:
+                btn.idle()
+            if error:
+                err(str(error)[:220])
+            else:
+                ok(tr("氛围补齐完成:{}/{}").format(result, rows))
+            self._reload_storyboard()
+            if self._sb_id:
+                self._select_storyboard(self._sb_id)
+        if btn:
+            btn.busy(tr("in_progress"))
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
 
     def _one_video(self, sb_id: int):
@@ -3248,25 +3685,44 @@ class EpisodePage(QWidget):
             return
         # 串行:单任务内逐镜生成,每个间隔 3 秒(并发会撞上游限流/队列满)
         import time as _time
+        from ..core import taskmgr as _TM
+
+        self._batch_video_total = len(rows)
+        self._batch_video_done0 = db.q1(
+            "SELECT COUNT(*) c FROM storyboards WHERE episode_id=? "
+            "AND (video_url IS NOT NULL OR composed_video_url IS NOT NULL)",
+            (self.episode_id,))["c"]
 
         def job(tid):
             done_n = 0
+            fails: list[str] = []
             for i, r in enumerate(rows):
                 if i:
                     _time.sleep(3)
+                _TM.set_stage(tid, f"{i + 1}/{len(rows)}")   # 任务面板显示进行到第几镜
                 try:
                     self._gen_one_video(r["id"])
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
-                    err(tr("镜头 {} 失败:{}").format(i + 1, str(exc)[:100]))
-            return {"done": done_n, "total": len(rows)}
+                    msg = str(exc).replace("\n", " ")[:120]
+                    fails.append(f"#{r['id']}:{msg}")
+                    err(tr("镜头 {} 失败:{}").format(i + 1, msg))
+                    # 失败也写进阶段标记:toast 一闪就没,任务面板要能查到哪镜为什么挂
+                    _TM.set_stage(tid, f"{i + 1}/{len(rows)} · 最近失败 {msg}")
+            return {"done": done_n, "total": len(rows), "fails": fails}
 
         def done(tid, result, error):
             btn = getattr(self, "batch_video_btn", None)
             if btn:
                 btn.idle()
+            tick = getattr(self, "_batch_tick", None)
+            if tick is not None:
+                tick.stop()
             if error:
                 err(str(error)[:200])
+            elif result.get("fails"):
+                ok(tr("批量视频完成:{}/{} 成功").format(result["done"], result["total"])
+                   + "\n" + "\n".join(result["fails"][:6]))
             else:
                 ok(tr("批量视频完成:{}/{} 成功").format(result["done"], result["total"]))
             self._reload_storyboard()
@@ -3276,7 +3732,46 @@ class EpisodePage(QWidget):
         btn = getattr(self, "batch_video_btn", None)
         if btn:
             btn.busy(tr("in_progress"))
-        TASKMGR.submit("video", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+        tid = TASKMGR.submit("video", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+        # 批量心跳:任务行/统计胶囊/按钮进度每 2.5s 同步一次(不用等全部跑完),
+        # 当前正在生成的行会转圈,一眼看出进行到哪一镜
+        if tid:
+            self._batch_video_tid = tid
+            if not hasattr(self, "_batch_tick"):
+                self._batch_tick = QTimer(self)
+                self._batch_tick.setInterval(2500)
+                self._batch_tick.timeout.connect(self._tick_batch_video)
+            self._batch_tick.start()
+
+    def _tick_batch_video(self):
+        """批量视频进行中的界面同步:任务行原地换态 + 胶囊计数 + 按钮进度 N/M。"""
+        tid = getattr(self, "_batch_video_tid", 0)
+        t = db.q1("SELECT status FROM sys_task WHERE id=?", (tid,)) if tid else None
+        if not t or t["status"] != "processing":
+            self._batch_tick.stop()
+            return
+        rows = self._sb_rows()
+        total = getattr(self, "_batch_video_total", 0)
+        done0 = getattr(self, "_batch_video_done0", 0)
+        done_now = sum(1 for r in rows if r["video_url"] or r["composed_video_url"])
+        btn = getattr(self, "batch_video_btn", None)
+        if btn and total:
+            btn.setText(f"{min(max(done_now - done0, 0), total)}/{total}")
+        self._update_metric_pills(TASKMGR.ep_video_stats(self.episode_id))
+        # 行状态原地更新(不重建,保住滚动位置):完成/失败/正在生成的都即时反映
+        for sid, row_w in getattr(self, "sb_task_rows", {}).items():
+            r = next((x for x in rows if x["id"] == sid), None)
+            if not r:
+                continue
+            state, state_label = self._sb_state(r)
+            scene = self._sb_scene_name(r)
+            dur = int(r.get("duration") or 0)
+            meta = " · ".join([state_label, f"{dur}s"] + ([scene] if scene else []))
+            action_tip = {"done": tr("redraw"), "pending": tr("in_progress"),
+                          "failed": tr("retry"), "ready": tr("generate")}[state]
+            row_w.set_state(state, state_label, meta,
+                            r.get("composed_video_url") or r.get("video_url"))
+            row_w.act_btn.setToolTip(action_tip)
 
     def _gen_one_video(self, sb_id: int) -> str:
         """同步生成本镜视频(批量串行路径逐镜调用);失败置 failed 并抛出。"""
@@ -3287,9 +3782,17 @@ class EpisodePage(QWidget):
         try:
             prompt = shot_tools.resolve_prompt(dict(sb))
             ref_list = shot_tools.collect_reference_images(self.episode_id, sb_id)
+            # 无首帧先补一张「有景物有人物」的定场帧再生成 —— 纯文生视频
+            # 开场常是黑帧/空镜,成片第一眼没有画面(用户要求第一帧必须带景带人)
+            first_frame = sb["first_frame_image"]
+            if first_frame:
+                first_frame = config.media_url_to_path(first_frame)
+            else:
+                first_frame = config.media_url_to_path(shot_tools.generate_first_frame(
+                    self.episode_id, sb_id, config_id=self.image_model.currentData()))
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
-                first_frame=sb["first_frame_image"], reference_images=ref_list,
+                first_frame=first_frame, reference_images=ref_list,
                 config_id=self.video_model.currentData())
             # 用户在跑的过程中点了「停止生成」→ 丢弃这次结果,别把已归位的状态再写回去
             if sb_id in self._cancelled_sb:
@@ -3297,6 +3800,13 @@ class EpisodePage(QWidget):
                 raise RuntimeError(tr("stopped_by_user"))
             db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
                   (config.path_to_media_url(path), db.now(), sb_id))
+            # 出片即抽海报帧(worker 线程里做,不卡界面);列表缩略图直接用首帧,
+            # 不用整个视频去渲染(Qt 渲染不了 mp4)
+            try:
+                from ..pipeline import video_poster
+                video_poster.extract_video_poster(path)
+            except Exception:  # noqa: BLE001
+                pass
             return str(path)
         except Exception:
             db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
@@ -3329,8 +3839,21 @@ class EpisodePage(QWidget):
              tr("stop_generating_done").format(n))
 
     def _gen_video_job(self, sb_id: int):
+        # 立即置 processing 并刷新:任务行操作键/右栏马上进入旋转等待态,
+        # 不用等后台线程真正跑起来(status 由 _gen_one_video 再写一次,值相同)
+        db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
+        self._render_task_list(self._sb_rows())
+        if self._sb_id == sb_id:
+            srow = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+            if srow:
+                self._refresh_video_panel(dict(srow))
+
         def job(tid):
-            return self._gen_one_video(sb_id)
+            p = self._gen_one_video(sb_id)
+            # 成片路径落任务行(历史视频列表据此展示;对齐参考项目 local_path)
+            from ..core import taskmgr as _TM
+            _TM.finish_task(tid, "completed", local_path=str(p))
+            return p
         def done(tid, result, error):
             if error:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
@@ -3567,9 +4090,48 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 
     def _batch_comic(self):
+        """漫画批量配图:逐格**链式串行**(上一格完成再提下一格,不并发踩生图接口),
+        按钮全程等待态,最后一格完成才恢复(对齐其它批量按钮的等待效果)。"""
         rows = db.q("SELECT id FROM comic_panels WHERE episode_id=? AND image_url IS NULL", (self.episode_id,))
-        for r in rows:
-            self._one_panel_image(r["id"])
+        if not rows:
+            info(tr("没有待生成的资产"))
+            return
+        if not hasattr(self, "_comic_busy"):
+            self._comic_busy = set()
+        ids = [r["id"] for r in rows]
+        self._comic_busy.update(ids)
+        btn = getattr(self, "comic_batch_btn", None)
+        if btn:
+            btn.busy(tr("in_progress"))
+
+        def run(i: int):
+            if i >= len(ids):
+                if btn:
+                    btn.idle()
+                self._reload_comic()
+                return
+            pid = ids[i]
+
+            def job(tid):
+                fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
+                                                    config_id=self.text_model.currentData())
+                out, _p = image_client.generate_image(
+                    fp, config_id=self.image_model.currentData(),
+                    people=comic_pipe.panel_people_count(pid))
+                db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
+                      (config.path_to_media_url(out), db.now(), pid))
+                return str(out)
+
+            def done(tid, result, error):
+                self._comic_busy.discard(pid)
+                if error:
+                    err(str(error)[:220])
+                run(i + 1)          # done 在主线程回调,链式提交下一格
+
+            TASKMGR.submit("image", job, done, episode_id=self.episode_id)
+
+        self._reload_comic()
+        run(0)
 
     def _stitch(self):
         if not db.q1("SELECT id FROM video_merges WHERE episode_id=? AND model='comic_stitch'",
@@ -3697,6 +4259,7 @@ class EpisodePage(QWidget):
         self.shot_checks: dict[int, QCheckBox] = {}
         self.shot_cards: dict[int, QWidget] = {}
         self._selected: set[int] = set()
+        self._order: dict[int, int] = {}        # 镜头 → 拼接序号(用户手动调过才有)
         self._merge_cards: list[QWidget] = []     # 用于心跳刷新耗时
         self._pulse_on = False                     # 「拼接中」文字呼吸明暗
         self._merge_in_flight = False              # 有拼接在进行:按钮防重入
@@ -3800,8 +4363,8 @@ class EpisodePage(QWidget):
         return card
 
     def _play_merge(self, m: dict):
-        from .asset_dialogs import ImageViewerDialog
-        ImageViewerDialog(self, m["merged_url"], tr("merge_preview_title")).exec()
+        from .asset_dialogs import VideoPreviewDialog
+        VideoPreviewDialog(self, m["merged_url"], tr("merge_preview_title")).exec()
 
     # ── 镜头素材网格 ──
     def _all_shots(self) -> list:
@@ -3829,7 +4392,8 @@ class EpisodePage(QWidget):
         self._update_shot_stat(len(rows), len(usable_ids))
 
     def _shot_card(self, r: dict) -> QWidget:
-        """镜头卡:16:9 缩略 + #NN + 时长 + 勾选框 + 描述 + 状态点(对齐 .exp-card)。"""
+        """镜头卡:16:9 缩略 + #NN + 时长 + 勾选框 + 预览键 + 排序输入 + 描述 + 状态点
+        (对齐 .exp-card:选中后缩略上冒出序号框,输 N 与第 N 位互换)。"""
         card = W.make_card()
         card.setMinimumWidth(200)
         sid = r["id"]
@@ -3841,29 +4405,58 @@ class EpisodePage(QWidget):
         thumb.setFixedHeight(112)
         thumb.setStyleSheet("background:#14161a; border-radius:6px; border:none;")
         tl = QVBoxLayout(thumb)
-        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setContentsMargins(4, 4, 4, 4)
         tl.setSpacing(0)
         if vid:
             im = QLabel()
             im.setAlignment(Qt.AlignCenter)
-            im.setPixmap(W.pixmap_from_media(r["first_frame_image"] or vid, 184, 112))
+            # 首帧图优先,没有就抽视频首帧(QPixmap 读不了 mp4,直接塞是灰块)
+            im.setPixmap(W.pixmap_from_media(self._shot_thumb_url(r) or vid, 184, 112))
             tl.addWidget(im, 1)
         else:
             ph = QLabel("🎬")
             ph.setAlignment(Qt.AlignCenter)
             ph.setStyleSheet("color:#8b909a;")
             tl.addWidget(ph, 1)
+        top = QHBoxLayout()
         idx = QLabel(f"#{int(r['storyboard_number']):02d}")
         idx.setObjectName("taskIndex")
-        tl.addWidget(idx, 0, Qt.AlignLeft | Qt.AlignTop)
+        top.addWidget(idx)
+        top.addStretch(1)
         dur = QLabel(f"{int(r['duration'] or 0)}s")
         dur.setObjectName("taskIndex")
-        tl.addWidget(dur, 0, Qt.AlignRight | Qt.AlignTop)
+        top.addWidget(dur)
+        tl.addLayout(top)
+        bot = QHBoxLayout()
+        # 单镜预览(对齐 .exp-play):成片/单镜共用视频预览弹窗
+        pv = QPushButton("▶")
+        pv.setFixedSize(30, 22)
+        pv.setToolTip(tr("preview"))
+        pv.setEnabled(bool(vid))
+        if vid:
+            pv.setStyleSheet("background:rgba(0,0,0,0.55); color:white; border:none; border-radius:4px;")
+            pv.clicked.connect(lambda _=False, u=vid: self._preview_shot(u))
+        bot.addWidget(pv)
+        bot.addStretch(1)
+        # 排序输入:选中后出现,输 N 与当前第 N 位互换(对齐 exp-order-input)
+        order_spin = QSpinBox()
+        order_spin.setFixedSize(46, 22)
+        order_spin.setToolTip(tr("order_hint"))
+        sel_ids = self._ordered_selected()
+        order_spin.setRange(1, max(1, len(sel_ids)))
+        if sid in self._order:
+            order_spin.setValue(self._order[sid])
+        elif sid in sel_ids:
+            order_spin.setValue(sel_ids.index(sid) + 1)
+        order_spin.setVisible(sid in self._selected)
+        order_spin.valueChanged.connect(lambda v, i=sid: self._on_order_spin(i, v))
+        bot.addWidget(order_spin)
         cb = QCheckBox("")
         cb.setChecked(sid in self._selected)
         cb.setEnabled(bool(vid))
         cb.toggled.connect(lambda on, i=sid: self._on_shot_checked(i, on))
-        tl.addWidget(cb, 0, Qt.AlignRight | Qt.AlignBottom)
+        bot.addWidget(cb)
+        tl.addLayout(bot)
         lay.addWidget(thumb)
         line = QHBoxLayout()
         name = QLabel((r["content"] or r["title"] or "—")[:26])
@@ -3891,11 +4484,41 @@ class EpisodePage(QWidget):
     def _toggle_shot(self, sid: int):
         self._on_shot_checked(sid, sid not in self._selected)
 
+    def _ordered_selected(self) -> list[int]:
+        """勾选镜头的拼接顺序:手动调过序的优先,其余按镜号。"""
+        nums = {r["id"]: int(r["storyboard_number"]) for r in self._all_shots()}
+        return sorted(self._selected,
+                      key=lambda i: (self._order.get(i, 0) or nums.get(i, 10**9),
+                                     nums.get(i, 10**9)))
+
+    def _renumber_order(self):
+        """勾选集变化后重排 1..N(去掉已取消的,新勾的按镜号续尾)。"""
+        self._order = {sid: k + 1 for k, sid in enumerate(self._ordered_selected())}
+
+    def _on_order_spin(self, sid: int, v: int):
+        """输 N 与当前第 N 位互换(对齐参考 onExportOrderInput 的交换语义)。"""
+        ids = self._ordered_selected()
+        n = len(ids)
+        if not n or sid not in ids:
+            return
+        v = max(1, min(n, int(v)))
+        i, j = ids.index(sid), v - 1
+        if i == j:
+            return
+        ids[i], ids[j] = ids[j], ids[i]
+        self._order = {s: k + 1 for k, s in enumerate(ids)}
+        self._reload_shot_grid()
+
+    def _preview_shot(self, url: str):
+        from .asset_dialogs import VideoPreviewDialog
+        VideoPreviewDialog(self, url, tr("preview")).exec()
+
     def _on_shot_checked(self, sid: int, on: bool):
         if on:
             self._selected.add(sid)
         else:
             self._selected.discard(sid)
+        self._renumber_order()
         card = self.shot_cards.get(sid)
         cb = self.shot_checks.get(sid)
         if card:
@@ -3919,6 +4542,7 @@ class EpisodePage(QWidget):
     def _toggle_select_all(self):
         usable = {r["id"] for r in self._all_shots() if r["video_url"] or r["composed_video_url"]}
         self._selected = set() if self._selected else set(usable)
+        self._order = {}
         self._reload_shot_grid()
 
     # ── 片头 ──
@@ -3985,7 +4609,9 @@ class EpisodePage(QWidget):
                     lab.setText(self._merge_elapsed_sec(rows[mid]))
 
     def _merge(self):
-        ids = [i for i in self._selected if self.shot_checks.get(i) and self.shot_checks[i].isEnabled()]
+        # 拼接顺序 = 用户调过的序号(对齐参考 orderedExportSelectedIds),未调过按镜号
+        ids = [i for i in self._ordered_selected()
+               if self.shot_checks.get(i) and self.shot_checks[i].isEnabled()]
         if self._merge_in_flight:
             info(tr("merging"))
             return

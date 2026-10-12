@@ -47,14 +47,37 @@ def resolve_prompt(sb: dict, limit: int | None = None) -> str:
 
 
 def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | None = None) -> str:
-    """按分镜内容生成首帧图,写 storyboards.first_frame_image;返回 /static URL。"""
+    """生成首帧图并写 storyboards.first_frame_image;返回 /static URL。
+
+    首帧必须是一张「有景物、有人物」的开场定场画面(用户要求):
+    - 取 video_prompt 的信息头 + 第一个 [0-3秒] 段(即开场镜头的景别/人物/动作),
+      @名字 先解析成可读名字,不要把 @ 标记直接喂给出图模型;
+    - 带上本镜参考图(角色形象/场景),人物相貌与场景陈设才能对上;
+    - 明确要求出场人物全部入画、按描述站位,禁止空镜/背影/黑帧开场。
+    """
     sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
     if not sb:
         raise RuntimeError("分镜不存在")
     ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
     style = db.style_prompt(db.drama_style(ep["drama_id"]))
-    prompt = f"{style}, {sb['video_prompt'] or sb['content'][:300]}, 电影质感"
-    out, _p = image_client.generate_image(prompt, out_name=f"ff_{storyboard_id}.png", config_id=config_id)
+    resolved = resolve_prompt(dict(sb)) or (sb["content"] or "")[:300]
+    # 开场段 = 信息头(出场人物/场景)+ 首个时间段;找不到分段标记就用整段前 400 字
+    lines = [ln.strip() for ln in resolved.splitlines() if ln.strip()]
+    head = lines[0] if lines else ""
+    seg = next((ln for ln in lines[1:] if re.match(r"^\[\d", ln)), "")
+    opening = "。".join(x for x in (head, seg) if x)[:600] or resolved[:400]
+    opening = opening.replace("@", "")
+    people = 1
+    for ln in (head,):
+        m = re.findall(r"[@、,，]\s*([^\s@、,，。]+)", ln or "")
+        people = max(1, min(6, len(m))) if m else 1
+    prompt = (f"{style}。开场定场帧:按下面镜头描述生成视频第一帧画面,必须是包含出场人物与场景环境的"
+              f"完整画面 —— 人物全部入画、按描述站位,景别与运镜起点一致,不许空镜、背影、剪影或黑帧。\n"
+              f"{opening}\n电影质感,构图完整")
+    ref_list = collect_reference_images(episode_id, storyboard_id)
+    out, _p = image_client.generate_image(prompt, out_name=f"ff_{storyboard_id}.png",
+                                          config_id=config_id, reference_images=ref_list,
+                                          people=people)
     url = config.path_to_media_url(out)
     db.ex("UPDATE storyboards SET first_frame_image=?, updated_at=? WHERE id=?", (url, db.now(), storyboard_id))
     return url

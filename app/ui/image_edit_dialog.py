@@ -111,9 +111,15 @@ class ImageEditDialog(QDialog):
         tools.addLayout(rrow)
 
         tools.addWidget(self._section_label(tr("精调")))
+        # 实时预览:拖动滑杆 → 在「已固化画面」上叠加调整显示;点「应用调整」才写入
+        # (此前只有"应用"按钮,拖滑杆没有任何反应,像"精调无效")
+        self._adjust_base = self.current.copy()          # 合成基准
         self.brightness = self._slider(tools, tr("亮度"), 0, 200, 100)
         self.contrast = self._slider(tools, tr("对比度"), 0, 200, 100)
         self.saturation = self._slider(tools, tr("饱和度"), 0, 200, 100)
+        for s_ in (self.brightness, self.contrast, self.saturation):
+            s_.valueChanged.connect(self._preview_adjust)
+            s_.sliderReleased.connect(self._preview_adjust)
         apply_adj = QPushButton(tr("应用调整"))
         apply_adj.clicked.connect(self._apply_adjust)
         tools.addWidget(apply_adj)
@@ -219,6 +225,13 @@ class ImageEditDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             err(str(e)[:180])
             self._history.pop()
+        self._adjust_base = self.current.copy()
+        for s_ in (getattr(self, "brightness", None), getattr(self, "contrast", None),
+                   getattr(self, "saturation", None)):
+            if s_ is not None:
+                s_.blockSignals(True)
+                s_.setValue(100)
+                s_.blockSignals(False)
         self._render()
 
     def _apply_crop(self):
@@ -235,21 +248,38 @@ class ImageEditDialog(QDialog):
             box = (0, (h - nh) // 2, w, (h + nh) // 2)
         self._apply(lambda im: im.crop(box))
 
+    @staticmethod
+    def _enhance(im, b: float, c: float, s: float):
+        out = im.convert("RGB")
+        if b != 1.0:
+            out = ImageEnhance.Brightness(out).enhance(b)
+        if c != 1.0:
+            out = ImageEnhance.Contrast(out).enhance(c)
+        if s != 1.0:
+            out = ImageEnhance.Color(out).enhance(s)
+        return out
+
+    def _preview_adjust(self, *_):
+        """拖动滑杆实时预览:基准画面 + 当前三滑杆值(不进撤销栈、不改原图)。"""
+        self.current = self._enhance(self._adjust_base,
+                                     self.brightness.value() / 100.0,
+                                     self.contrast.value() / 100.0,
+                                     self.saturation.value() / 100.0).convert("RGBA")
+        self._render()
+
     def _apply_adjust(self):
         b = self.brightness.value() / 100.0
         c = self.contrast.value() / 100.0
         s = self.saturation.value() / 100.0
-
-        def fn(im):
-            out = im.convert("RGB")
-            if b != 1.0:
-                out = ImageEnhance.Brightness(out).enhance(b)
-            if c != 1.0:
-                out = ImageEnhance.Contrast(out).enhance(c)
-            if s != 1.0:
-                out = ImageEnhance.Color(out).enhance(s)
-            return out
-        self._apply(fn)
+        if (b, c, s) == (1.0, 1.0, 1.0):
+            return
+        self._apply(lambda im: self._enhance(im, b, c, s))
+        # 固化后基准同步、滑杆复位,避免"再拖一点"在已增强画面上二次叠加
+        self._adjust_base = self.current.copy()
+        for s_ in (self.brightness, self.contrast, self.saturation):
+            s_.blockSignals(True)
+            s_.setValue(100)
+            s_.blockSignals(False)
 
     def _apply_filter(self):
         name = self.filter_combo.currentText()
@@ -365,6 +395,7 @@ class ImageEditDialog(QDialog):
     def _undo(self):
         if self._history:
             self.current = self._history.pop()
+            self._adjust_base = self.current.copy()
             self._render()
 
     def _download(self):
