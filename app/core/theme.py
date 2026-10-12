@@ -556,6 +556,43 @@ QComboBox#slateSort:focus { border-color: """ + SLATE_BAR + """; }
 """
 
 
+# ── EpisodePage 侧栏 slate 版本 ──
+#  与启动台一样的色板,但语义同 StepNav 原组件 —— pipeItem / pipeSection /
+#  pipeSeg / pipeState / pipeToggle / pipeProgLabel / pipeTag 全复刻,只换视觉。
+SLATE_PIPE_QSS = """
+QWidget#sidebar { background: """ + SLATE_PAPER + """; border: none;
+  border-right: 1px solid """ + SLATE_HAIR + """; }
+QLabel#pipeSection { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 2px; padding: 0; }
+QLabel#pipeState { color: """ + SLATE_MUTED + """; font-size: 11px; padding: 0; }
+QLabel#pipeState[done="1"] { color: """ + SLATE_ST_DONE + """; font-weight: 700; }
+QLabel#pipeTag { color: """ + SLATE_BAR_INK + """; background: """ + SLATE_BAR + """;
+  border-radius: 2px; padding: 1px 5px; font-family: """ + MONO_STACK + """;
+  font-size: 9px; font-weight: 700; letter-spacing: 1px; }
+QPushButton#pipeItem { background: transparent; border: none; border-radius: 3px;
+  color: """ + SLATE_META + """; font-family: """ + MONO_STACK + """;
+  font-size: 11px; letter-spacing: 0.4px; padding: 7px 8px; text-align: left; }
+QPushButton#pipeItem:hover { background: """ + SLATE_BG + """; }
+QPushButton#pipeItem:checked { background: """ + SLATE_BAR + """; color: """ + SLATE_BAR_INK + """;
+  font-weight: 700; }
+QPushButton#pipeItem:disabled { color: #c8c7c2; background: transparent; }
+QWidget#pipeProgress { background: transparent; border: none; border-top: 1px solid """ + SLATE_HAIR + """;
+  border-bottom: 1px solid """ + SLATE_HAIR + """; padding: 8px 0; }
+QLabel#pipeProgLabel { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; letter-spacing: 1px; }
+QLabel#pipeProgLabel[on="1"] { color: """ + SLATE_BAR + """; font-weight: 700; }
+QLabel#pipeProgLabel[done="1"] { color: """ + SLATE_ST_DONE + """; }
+QPushButton#pipeSeg { background: """ + SLATE_TRACK + """; border: none;
+  border-radius: 1px; min-height: 4px; padding: 0; }
+QPushButton#pipeSeg[state="done"] { background: """ + SLATE_BAR + """; }
+QPushButton#pipeSeg[state="current"] { background: """ + SLATE_ST_PROG + """; }
+QPushButton#pipeToggle { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; padding: 6px; letter-spacing: 1px; }
+QPushButton#pipeToggle:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+"""
+
+
 def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
     from PySide6.QtGui import QColor, QPalette

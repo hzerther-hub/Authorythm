@@ -11,7 +11,8 @@ import time
 from pathlib import Path
 from datetime import datetime
 
-from PySide6.QtCore import Qt, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QRunnable, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QPainter, QPolygon, QFont, QColor
 from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -25,6 +26,9 @@ from ..ai.jev_gate import JevBreaker
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
+from ..core.theme import (SLATE_PIPE_QSS, SLATE_PAPER, SLATE_BAR, SLATE_BAR_INK,
+                          SLATE_BAR_DIM, SLATE_BG, SLATE_HAIR, SLATE_MUTED,
+                          SLATE_META, SLATE_TRACK, MONO_STACK)
 from ..pipeline import comic as comic_pipe
 from ..pipeline import extractor as extract_pipe
 from ..pipeline import merge as merge_pipe
@@ -179,8 +183,114 @@ ASSET_LABELS = {
 }
 
 
+class SlateProductionHeader(QFrame):
+    """拍板式 production roll header —— 顶部 36px 黑色细条。
+
+    左:PROJECT(剧名 mono caps)+ 编号;
+    中:EP N° + TAKE / ROLL 当前帧;
+    右:SCENE 当前阶段名 + 进行中点。
+    与启动台的 SlateStrip 同语汇但更克制 —— 既然本面已经有一整条侧栏在「拍板」,这里只
+    当一段收束的 production 标识,不抢戏。
+    """
+    H = 36
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("slateRollHeader")
+        self.setFixedHeight(self.H)
+        self._drama = ""
+        self._project_no = "----"
+        self._ep_label = "EP --"
+        self._take = "TAKE --/--"
+        self._scene = ""
+        self._status = "pending"
+        # 内部用 absolute layout / paintEvent,简单可靠
+        self.setStyleSheet("background:transparent; border:none;")
+
+    def update_info(self, *, drama_title: str, drama_id: int, ep_number: int,
+                    take_done: int, take_total: int, scene: str,
+                    status: str = "pending", collab_on: bool = False):
+        self._drama = (drama_title or "PROJECT").upper()
+        self._project_no = f"PROJECT N°{int(drama_id or 0):04d}"
+        self._ep_label = f"EP{int(ep_number or 0):02d}"
+        if take_total > 0:
+            self._take = f"TAKE {int(take_done):02d}/{int(take_total):02d}"
+        else:
+            self._take = "TAKE --/--"
+        self._scene = scene.upper()
+        self._status = status
+        self._collab = collab_on
+        self.update()
+
+    def paintEvent(self, ev):
+        from PySide6.QtGui import QColor, QFont
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        p.fillRect(0, 0, w, h, QColor(SLATE_BAR))
+        # 最左侧场记板斜条(同样画法,宽度小一档)
+        stripe_w = 28
+        step = 8
+        sw = 8
+        gap = 6
+        p.save()
+        p.setClipRect(0, 0, stripe_w, h)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(SLATE_BAR_INK))
+        x = -h
+        while x < stripe_w + h:
+            poly = QPolygon([
+                QPoint(x, h),
+                QPoint(x + sw, h),
+                QPoint(x + sw - h, 0),
+                QPoint(x - h, 0),
+            ])
+            p.drawPolygon(poly)
+            x += sw + gap
+        p.restore()
+        # 主字:PROJECT N°XXXX  EP N  TAKE X/Y  |  SCENE: 当前阶段
+        f = QFont()
+        f.setFamilies(["JetBrains Mono", "SFMono-Regular", "Menlo",
+                       "Consolas", "Courier New", "monospace"])
+        f.setPixelSize(11)
+        f.setBold(True)
+        f.setLetterSpacing(QFont.PercentageSpacing, 110)
+        p.setFont(f)
+        p.setPen(QColor(SLATE_BAR_INK))
+        left_text = f"{self._project_no}   ·   {self._ep_label}   ·   {self._take}"
+        p.drawText(QRect(stripe_w + 14, 0, w - stripe_w - 360, h),
+                   Qt.AlignVCenter | Qt.AlignLeft, left_text)
+        # 右侧 SCENE + collab + status dot
+        f2 = QFont(f)
+        f2.setBold(False)
+        f2.setPixelSize(10)
+        f2.setLetterSpacing(QFont.PercentageSpacing, 100)
+        p.setFont(f2)
+        p.setPen(QColor(SLATE_BAR_DIM))
+        # SCENE 字样放中央偏右,左边一个字头,右边状态点
+        scene_text = f"SCENE  {self._scene}"
+        if self._collab:
+            scene_text += "   ·   COLLAB"
+        p.drawText(QRect(0, 0, w - 18, h),
+                   Qt.AlignVCenter | Qt.AlignRight, scene_text)
+        # 状态点:最右端
+        from ..core.theme import SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_FAIL
+        color = {"completed": SLATE_ST_DONE, "active": SLATE_ST_PROG,
+                 "failed": SLATE_ST_FAIL}.get(self._status, SLATE_BAR_DIM)
+        p.setBrush(QColor(color))
+        p.setPen(Qt.NoPen)
+        r = 4
+        # 用 fontMetrics 算出 scene_text 宽度,把点放在它左边留 6px
+        w_scene = p.fontMetrics().horizontalAdvance(scene_text)
+        cx = w - 14 - w_scene - 10
+        p.drawEllipse(QPoint(cx, h // 2), r, r)
+
+
 class StepNav(QWidget):
-    """流水线侧栏(对齐原版 episode.vue):三段环节 + 环节状态 + 四段进度 + 折叠/刷新。"""
+    """流水线侧栏(对齐原版 episode.vue):三段环节 + 环节状态 + 四段进度 + 折叠/刷新。
+
+    视觉重写在 theme.SLATE_PIPE_QSS,这里只在 __init__ 末尾局部挂上以免污染其他面板
+    """
 
     step_changed = Signal(str)
     refresh_requested = Signal()
@@ -289,6 +399,9 @@ class StepNav(QWidget):
         self.refresh_btn.setCursor(Qt.PointingHandCursor)
         self.refresh_btn.clicked.connect(self.refresh_requested.emit)
         lay.addWidget(self.refresh_btn)
+        # Director's Slate:本控件只接这一段 QSS,既保留原对象名/信号不破坏其它面板,
+        # 又把侧栏视觉拉回拍板黑 + 米白风格
+        self.setStyleSheet(SLATE_PIPE_QSS)
 
     # ── 折叠 ──
     def toggle_collapsed(self):
@@ -454,6 +567,10 @@ class EpisodePage(QWidget):
         root.addLayout(top)
         self.subtitle = W.muted("")
         root.addWidget(self.subtitle)
+        # 拍板 production header:不进任何 split/spacer,贴正文紧上方一条细黑条,
+        # 显示 PROJECT N°/EP/TAKE/SCENE —— 与启动台 SlateStrip 同语汇但更克制
+        self.roll_header = SlateProductionHeader()
+        root.addWidget(self.roll_header)
 
         # 主体:侧栏 + 内容栈
         body = QSplitter(Qt.Horizontal)
@@ -496,6 +613,25 @@ class EpisodePage(QWidget):
         nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
         self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
         self.res_combo.setCurrentText(ep["resolution"] or "720p")
+        # 拍板头部:统计本集 take 进度,给用户一眼的「拍摄到第几镜」
+        try:
+            sb_done = db.q1(
+                "SELECT COUNT(*) c FROM storyboards WHERE episode_id=? AND video_url IS NOT NULL",
+                (episode_id,))["c"]
+            sb_total = nb
+        except Exception:  # noqa: BLE001
+            sb_done, sb_total = 0, 0
+        ep_status = (ep["status"] if "status" in ep.keys() else "pending") or "pending"
+        # scene 文案随当前 step 走 —— _step 在 _goto_step 内变化,这里用初值 raw
+        try:
+            scene_label = tr(STEP_LABELS.get(self._step, "raw_content")).upper()
+        except Exception:  # noqa: BLE001
+            scene_label = "RAW"
+        self.roll_header.update_info(
+            drama_title=d["title"], drama_id=drama_id,
+            ep_number=ep["episode_number"], take_done=sb_done, take_total=sb_total,
+            scene=scene_label, status=ep_status,
+        )
         # 小说项目隐藏制作/导出;宣传项目隐藏漫画
         work = d["work_type"]
         for k in ("assets", "storyboard", "export"):
@@ -611,6 +747,38 @@ class EpisodePage(QWidget):
         for k, p in self.panels.items():
             p.setVisible(k == key)
         self._sync_nav_progress(key)
+        # 同步 SCENE —— 拍板条上显示当前阶段
+        try:
+            scene_label = tr(STEP_LABELS.get(key, "raw_content")).upper()
+            # 不重新查 TAKE,避免每次切换都打数据库;数字用上次 load_episode 的值即可
+            self.roll_header.update_info(
+                drama_title=(self._drama["title"] if self._drama else ""),
+                drama_id=self.drama_id,
+                ep_number=(self._ep["episode_number"] if self._ep else 0),
+                take_done=0, take_total=0,
+                scene=scene_label,
+                status=(self._ep["status"] if self._ep else "pending") or "pending",
+            )
+            # 取 scene 部分之外的真实 TAKE 数字 —— 用一个轻 query
+            try:
+                done = db.q1(
+                    "SELECT COUNT(*) c FROM storyboards WHERE episode_id=? AND video_url IS NOT NULL",
+                    (self.episode_id,))["c"]
+                tot = db.q1(
+                    "SELECT COUNT(*) c FROM storyboards WHERE episode_id=?",
+                    (self.episode_id,))["c"]
+                self.roll_header.update_info(
+                    drama_title=(self._drama["title"] if self._drama else ""),
+                    drama_id=self.drama_id,
+                    ep_number=(self._ep["episode_number"] if self._ep else 0),
+                    take_done=done, take_total=tot,
+                    scene=scene_label,
+                    status=(self._ep["status"] if self._ep else "pending") or "pending",
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        except Exception:  # noqa: BLE001
+            pass
 
     def _sync_nav_progress(self, key: str):
         """四段跑马灯跟随当前步骤:导出归到「漫画」段(与原版四段一致)。"""
