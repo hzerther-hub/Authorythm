@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout,
 
 from ..core import db
 from ..core.i18n import tr
+from ..core.theme import SLATE_FORM_QSS
 from . import widgets as W
 
 WORK_TYPES = [
@@ -52,6 +53,9 @@ class NewProjectDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(tr("new_project"))
+        # Director's Slate:表单全局改 sharp 3px 描边 + 拍板黑主色 + mono caps,
+        # 跟启动台 / 侧栏 / 资产卡一套色板
+        self.setStyleSheet(SLATE_FORM_QSS)
         self.resize(560, 680)
         self._ref_video = ""
         self._product_img = ""
@@ -103,7 +107,10 @@ class NewProjectDialog(QDialog):
         btns = QHBoxLayout()
         cancel = QPushButton(tr("cancel"))
         cancel.clicked.connect(self.reject)
-        ok = W.primary_btn(tr("create"))
+        ok = QPushButton(tr("create"))
+        ok.setObjectName("slatePrimary")
+        ok.setCursor(Qt.PointingHandCursor)
+        ok.setDefault(True)
         ok.clicked.connect(self._submit)
         btns.addStretch(1)
         btns.addWidget(cancel)

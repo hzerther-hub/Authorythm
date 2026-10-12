@@ -772,6 +772,107 @@ QFrame#videoThumb { background: """ + SLATE_BG + """; border-radius: 3px; }
 QLabel#videoThumbIcon { color: """ + SLATE_MUTED + """; background: transparent; }
 """
 
+# ── NewProjectDialog / SettingsDialog 表单 slate 版本 ──
+#  全局控件级,挂在对话框根 setStyleSheet,跟 SLATE_ASSET_QSS / SLATE_CARD_QSS 互不干扰
+#  (后者只用于特定 objectName 的卡片)。
+SLATE_FORM_QSS = """
+QLineEdit { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 6px 10px; color: """ + SLATE_META + """; selection-background-color: """ + SLATE_BAR + """;
+  selection-color: """ + SLATE_BAR_INK + """; font-size: 13px; }
+QLineEdit:focus { border-color: """ + SLATE_BAR + """; }
+QLineEdit:disabled { background: """ + SLATE_BG + """; color: """ + SLATE_MUTED + """; }
+QComboBox { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 5px 10px; color: """ + SLATE_META + """;
+  font-size: 12px; min-height: 20px; }
+QComboBox:focus { border-color: """ + SLATE_BAR + """; }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView { background: """ + SLATE_PAPER + """;
+  border: 1px solid """ + SLATE_HAIR + """; selection-background-color: """ + SLATE_BG + """;
+  selection-color: """ + SLATE_BAR + """; outline: 0; padding: 4px; }
+QComboBox QAbstractItemView::item { padding: 4px 8px; border-radius: 2px; }
+QSpinBox, QDoubleSpinBox { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 4px 8px; color: """ + SLATE_META + """; }
+QSpinBox:focus, QDoubleSpinBox:focus { border-color: """ + SLATE_BAR + """; }
+QPlainTextEdit, QTextEdit { background: """ + SLATE_PAPER + """;
+  border: 1px solid """ + SLATE_HAIR + """; border-radius: 3px; padding: 6px 10px;
+  color: """ + SLATE_META + """; selection-background-color: """ + SLATE_BAR + """;
+  selection-color: """ + SLATE_BAR_INK + """; font-size: 12px; }
+QPlainTextEdit:focus, QTextEdit:focus { border-color: """ + SLATE_BAR + """; }
+QRadioButton { color: """ + SLATE_META + """; spacing: 8px; padding: 4px 0;
+  font-size: 12px; }
+QRadioButton::indicator { width: 14px; height: 14px;
+  border: 1.5px solid """ + SLATE_HAIR + """; border-radius: 7px;
+  background: """ + SLATE_PAPER + """; }
+QRadioButton::indicator:hover { border-color: """ + SLATE_BAR + """; }
+QRadioButton::indicator:checked { border-color: """ + SLATE_BAR + """;
+  background: """ + SLATE_BAR + """;
+  /* 内部圆点用一种不依赖图像的拙朴做法:在 indicator 内叠一层 */
+  image: none; }
+QRadioButton::indicator:checked { border: 4px solid """ + SLATE_BAR + """;
+  background: """ + SLATE_PAPER + """; }
+QCheckBox { color: """ + SLATE_META + """; spacing: 8px; padding: 4px 0;
+  font-size: 12px; }
+QCheckBox::indicator { width: 14px; height: 14px;
+  border: 1.5px solid """ + SLATE_HAIR + """; border-radius: 2px;
+  background: """ + SLATE_PAPER + """; }
+QCheckBox::indicator:hover { border-color: """ + SLATE_BAR + """; }
+QCheckBox::indicator:checked { background: """ + SLATE_BAR + """;
+  border-color: """ + SLATE_BAR + """; }
+QPushButton { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; color: """ + SLATE_META + """; padding: 6px 14px;
+  font-size: 12px; font-weight: 600; }
+QPushButton:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QPushButton:pressed { background: """ + SLATE_BG + """; }
+QPushButton:disabled { color: #c8c7c2; border-color: """ + SLATE_HAIR + """; background: transparent; }
+QPushButton#slatePrimary { background: """ + SLATE_BAR + """; border: 1px solid """ + SLATE_BAR + """;
+  border-radius: 3px; color: """ + SLATE_BAR_INK + """; padding: 7px 18px;
+  font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
+QPushButton#slatePrimary:hover { background: #1F2128; border-color: #1F2128; }
+QPushButton#slateDanger { background: transparent; border: 1px solid """ + SLATE_ST_FAIL + """;
+  border-radius: 3px; color: """ + SLATE_ST_FAIL + """; padding: 6px 14px;
+  font-size: 12px; font-weight: 600; }
+QPushButton#slateDanger:hover { background: """ + SLATE_ST_FAIL + """; color: """ + SLATE_BAR_INK + """; }
+QLabel { color: """ + SLATE_META + """; font-size: 12px; background: transparent; }
+QLabel[required="1"] { color: """ + SLATE_META + """; font-size: 12px; font-weight: 600; }
+QLabel#slateH2 { color: """ + SLATE_BAR + """; font-size: 15px; font-weight: 700;
+  letter-spacing: 0.3px; }
+QLabel#slateMuted { color: """ + SLATE_MUTED + """; font-size: 11px; }
+QLabel#slateGroupHead { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 2px; padding-top: 8px; }
+QGroupBox { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; margin-top: 14px; padding: 14px 12px 8px; }
+QGroupBox::title { subcontrol-origin: margin; subcontrol-position: top left;
+  padding: 0 8px; color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 2px; }
+QScrollArea { background: transparent; border: none; }
+QTabWidget::pane { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 0 0 4px 4px; top: -1px; padding: 12px; }
+QTabBar::tab { background: transparent; color: """ + SLATE_MUTED + """;
+  border: 1px solid transparent; border-bottom: none;
+  padding: 6px 16px; font-size: 12px; font-weight: 600; }
+QTabBar::tab:hover { color: """ + SLATE_BAR + """; }
+QTabBar::tab:selected { background: """ + SLATE_PAPER + """;
+  border-color: """ + SLATE_HAIR + """; color: """ + SLATE_BAR + """;
+  border-radius: 4px 4px 0 0; }
+QTableWidget { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; gridline-color: """ + SLATE_HAIR + """; }
+QHeaderView::section { background: """ + SLATE_BG + """; border: none;
+  border-right: 1px solid """ + SLATE_HAIR + """; border-bottom: 1px solid """ + SLATE_HAIR + """;
+  padding: 6px 8px; color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+QTreeWidget { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; }
+QTreeWidget::item { padding: 4px 0; }
+QTreeWidget::item:hover { background: """ + SLATE_BG + """; }
+QTreeWidget::item:selected { background: """ + SLATE_BG + """; color: """ + SLATE_BAR + """; }
+QListWidget { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; }
+QListWidget::item { padding: 6px 8px; }
+QListWidget::item:hover { background: """ + SLATE_BG + """; }
+QListWidget::item:selected { background: """ + SLATE_BG + """;
+  color: """ + SLATE_BAR + """; }
+"""
+
 
 def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
