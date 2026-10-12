@@ -2587,7 +2587,8 @@ class EpisodePage(QWidget):
         self.sb_narr_start = QSpinBox()
         self.sb_narr_start.setRange(0, 60)
         self.sb_narr_start.setSuffix(" s")
-        self.sb_narr_start.setFixedWidth(64)
+        # 之前 64 太窄数字稍长就显不全,改 76,跟 _save_narration_duration 同步
+        self.sb_narr_start.setFixedWidth(76)
         self.sb_narr_start.valueChanged.connect(self._save_narration_start)
         nr_foot.addWidget(self.sb_narr_start)
         nr_foot.addWidget(QLabel("→"))
@@ -2595,7 +2596,7 @@ class EpisodePage(QWidget):
         self.sb_narr_dur = QSpinBox()
         self.sb_narr_dur.setRange(1, 60)
         self.sb_narr_dur.setSuffix(" s")
-        self.sb_narr_dur.setFixedWidth(64)
+        self.sb_narr_dur.setFixedWidth(76)
         self.sb_narr_dur.valueChanged.connect(self._save_narration_duration)
         nr_foot.addWidget(self.sb_narr_dur)
         # 时长超镜长警告条 —— 旁白时长 + 起播点 ≤ 镜长
