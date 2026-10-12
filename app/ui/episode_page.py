@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QPoint, QRect, QRunnable, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QPainter, QPolygon, QFont, QColor
+from PySide6.QtGui import QPainter, QPolygon, QFont, QColor, QPixmap
 from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
                                QGridLayout, QHBoxLayout, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
@@ -146,15 +146,66 @@ def _sb_costume_context(sb_id: int, drama_id: int) -> str:
             + "\n".join(lines))
 
 
-def _sb_prompt_request(r: dict) -> str:
-    """「视频提示词」AI 重生成请求(对齐原版 inspector 的 AI 生成按钮)。"""
+_THINK_LINE = __import__("re").compile(
+    r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?"
+    r"(wait|actually|let me|let'?s|hmm|okay|so i|i need|i should|i will|i'?ll|"
+    r"the user|user wants|looking at|storyboard description|duration:|atmosphere:|"
+    r"character:|scene:|shot \d|\d+s?, so|but the user|let me draft|"
+    r"[一-鿿]{0,4}(让我|我想|首先|我需要|我应该|推理))",
+    __import__("re").I)
+
+
+def _strip_model_think(content: str) -> str:
+    """剥掉模型混进正文通道的思维链,只留可用正文。
+
+    实测:视频提示词生成时模型先吐一整段 <think>...(英文推理)…</think> 再给正文,
+    原实现直接 (result or "").strip() 落库,思维链被当成提示词存进库里。
+    这里额外处理未闭合的 <think> 尾巴 —— 有些模型只吐开头不闭合,此时正文全在
+    <think> 之后,直接剥会把正文一起丢掉,所以先尝试抢救闭合标签后的内容。
+    """
+    import re as _re
+    text = content or ""
+    # 成对块
+    text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.S)
+    # 未闭合:正文在思考之后,取最后一个 <think> 之后的内容。标签之后仍可能粘着一两行
+    # 英文思考("Let me analyze..."),用行级启发式丢掉开头的思考行 —— 单条正则处理不了
+    # 省略号/换行混排的情况(实测 "shot..." 就能让 [^.]*\. 回溯失败)。
+    if "<think>" in text:
+        tail = text.rsplit("<think>", 1)[-1]
+        if "</think>" not in tail:
+            lines = tail.splitlines()
+            # 剥掉 <think> 后第一行、以及思考段中间夹的空行,都必须一并吃掉:
+            # 只要碰到一行"既非空行、也不像思考"就停,否则空的思考段反而把整个
+            # 过滤器短路掉(实测 "The user wants...\\n\\n- Storyboard..." 这种排版)
+            while lines and (not lines[0].strip() or _THINK_LINE.match(lines[0])):
+                lines.pop(0)
+            text = "\n".join(lines)
+    # 工具调用残留
+    text = _re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", text, flags=_re.S)
+    # 去掉思考结束后可能粘着的英文元思考前缀(nov 综合征)
+    # 注意 ^\s*:剥掉 <think> 标签后正文往往以换行开头,用 ^ 直接锚定会漏匹配,
+    # 导致英文元思考原样留在提示词里。
+    text = _re.sub(r"(?s)^\s*(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.(\s+|(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.)+",
+                  "", text)
+    return text.strip()
+
+
+def _sb_prompt_request(r: dict, lang: str | None = None) -> str:
+    """「视频提示词」AI 重生成请求(对齐原版 inspector 的 AI 生成按钮)。
+
+    输出语言**跟随项目内容语言**:此前这里写死「英文」,run_agent 虽然传了 lang
+    并注入 LANGUAGE_SUFFIX,却被用户消息里的硬编码盖掉 —— 中文项目也稳定产出英文
+    提示词。
+    """
+    from ..agents.prompts import LANG_OUTPUT_NAME
+    lang_name = LANG_OUTPUT_NAME.get((lang or "zh").lower(), "中文")
     costume = ""
     if r.get("id") and r.get("drama_id"):
         try:
             costume = _sb_costume_context(r["id"], r["drama_id"])
         except Exception:  # noqa: BLE001 —— 着装判读异常不阻断提示词生成
             costume = ""
-    return f"""为下面这个镜头生成视频提示词(英文,一段,不要解释)。
+    return f"""为下面这个镜头生成视频提示词({lang_name},一段,不要解释)。
 {costume}
 画面描述:
 {r.get('description') or r.get('content') or tr('(无)')}
@@ -1303,6 +1354,15 @@ class EpisodePage(QWidget):
     def _generate_one(self, sb_id: int):
         """单镜生成视频(任务行右侧操作键 / 主行动键)。"""
         self._one_video(sb_id)
+
+    # ── 首帧预审(对齐参考 regen-first-frame / first-frame-approval)──
+    def _sb_image_status(self, sb_id: int) -> str:
+        row = db.q1("SELECT image_status, first_frame_image FROM storyboards WHERE id=?", (sb_id,))
+        if not row:
+            return "none"
+        if not (row["first_frame_image"] or "").strip():
+            return "none"
+        return row["image_status"] or "approved"
 
     def _update_ledger(self):
         """手动重跑本章状态台账(提取 → 合并 → Jev 门控);对应参考项目 update-state-ledger。"""
@@ -2733,6 +2793,16 @@ class EpisodePage(QWidget):
         self.sb_narr_audio.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.sb_narr_audio.setMaximumHeight(22)
         nr_foot.addWidget(self.sb_narr_audio)
+        # 试听已合成的旁白(有 url 才显示)。之前这里只有一句静态文字,
+        # 想确认音色/语速只能导出去用别的播放器听。
+        self.sb_narr_play_btn = QPushButton("▶")
+        self.sb_narr_play_btn.setObjectName("slateIconBtn")
+        self.sb_narr_play_btn.setFixedSize(28, 28)
+        self.sb_narr_play_btn.setCursor(Qt.PointingHandCursor)
+        self.sb_narr_play_btn.setToolTip(tr("play_narration"))
+        self.sb_narr_play_btn.setVisible(False)
+        self.sb_narr_play_btn.clicked.connect(self._toggle_narration_audio)
+        nr_foot.addWidget(self.sb_narr_play_btn)
         # 删除已合成音频(有 url 才显示)
         self.sb_narr_del_btn = QPushButton("🗑")
         self.sb_narr_del_btn.setObjectName("slateIconBtn")
@@ -2747,6 +2817,55 @@ class EpisodePage(QWidget):
         # spin 变化时实时警告 + 启用合成按钮
         self.sb_narr_start.valueChanged.connect(self._check_narration_fit)
         self.sb_narr_dur.valueChanged.connect(self._check_narration_fit)
+
+        # ── 首帧预览(对齐参考项目 episode.vue 的 first-frame-compare 区段)──
+        # 左:首帧图 / 空态+生成 CTA;右:本次首帧用到的参考(#1 #2 … 与
+        # build_shot_reference_list 同序);下:「确认出视频」把 image_status 标 approved。
+        ff_frame = QFrame()
+        ff_frame.setObjectName("paramCard")
+        ff_lay = QVBoxLayout(ff_frame)
+        ff_lay.setContentsMargins(10, 8, 10, 10)
+        ff_lay.setSpacing(6)
+        ff_head = QHBoxLayout()
+        ff_title = QLabel(tr("first_frame_section"))
+        ff_title.setObjectName("inspectorLabel")
+        ff_head.addWidget(ff_title)
+        ff_head.addStretch(1)
+        self.sb_ff_status = C.mono_tag("")
+        ff_head.addWidget(self.sb_ff_status)
+        ff_lay.addLayout(ff_head)
+        ff_grid = QHBoxLayout()
+        ff_grid.setSpacing(10)
+        self.sb_ff_img = QLabel()
+        self.sb_ff_img.setFixedSize(190, 150)
+        self.sb_ff_img.setAlignment(Qt.AlignCenter)
+        self.sb_ff_img.setObjectName("firstFrameImg")
+        ff_grid.addWidget(self.sb_ff_img)
+        ff_right = QVBoxLayout()
+        ff_right.setSpacing(3)
+        ff_rt = W.muted(tr("first_frame_used_refs"))
+        ff_rt.setObjectName("inspectorLabel")
+        ff_right.addWidget(ff_rt)
+        self.sb_ff_refs_row = QHBoxLayout()
+        self.sb_ff_refs_row.setSpacing(6)
+        ff_right.addLayout(self.sb_ff_refs_row)
+        ff_right.addStretch(1)
+        ff_grid.addLayout(ff_right, 1)
+        ff_lay.addLayout(ff_grid)
+        ff_act = QHBoxLayout()
+        self.sb_ff_gen_btn = QPushButton("▣ " + tr("gen_first_frame"))
+        self.sb_ff_gen_btn.setObjectName("refTab")
+        self.sb_ff_gen_btn.setCursor(Qt.PointingHandCursor)
+        self.sb_ff_gen_btn.clicked.connect(lambda _=False: self._gen_first_frame(self._sb_id))
+        self.sb_ff_approve_btn = QPushButton("✓ " + tr("approve_first_frame"))
+        self.sb_ff_approve_btn.setObjectName("refTab")
+        self.sb_ff_approve_btn.setCursor(Qt.PointingHandCursor)
+        self.sb_ff_approve_btn.clicked.connect(lambda _=False: self._approve_first_frame(self._sb_id))
+        ff_act.addWidget(self.sb_ff_gen_btn)
+        ff_act.addWidget(self.sb_ff_approve_btn)
+        ff_act.addStretch(1)
+        ff_lay.addLayout(ff_act)
+        el.addWidget(ff_frame)
 
         # 参考素材:角色 / 场景 / 道具 三个页签 —— 参考项目里它固定在检查器
         # 右列(video-inspector-refs 占 grid-column 2),与左列编辑区并排、各自滚动
@@ -3060,6 +3179,12 @@ class EpisodePage(QWidget):
             return "pending", tr("in_progress")
         if get("status") == "failed":
             return "failed", tr("failed")
+        # 首帧预审(对齐参考):有首帧未确认的分镜,ready 态细分"待确认"
+        ist = (get("image_status") or "none")
+        if ist == "pending_review":
+            return "ready", tr("首帧待确认")
+        if ist == "generating":
+            return "pending", tr("首帧生成中")
         return "ready", tr("pending")
 
     def _render_task_list(self, rows: list):
@@ -3095,7 +3220,10 @@ class EpisodePage(QWidget):
                 self._shot_thumb(r),
                 selected=(r["id"] == self._sb_id),
                 on_click=lambda _=False, i=r["id"]: self._select_storyboard(i),
-                on_action=lambda _=False, i=r["id"]: self._generate_one(i))
+                on_action=lambda _=False, i=r["id"]: self._generate_one(i),
+                on_regen=lambda _=False, i=r["id"]: self._regen_first_frame(i, skip_confirm=True),
+                on_approve=lambda _=False, i=r["id"]: self._approve_first_frame(i, True),
+                image_status=(dict(r).get("image_status") or "none"))
             lay.insertWidget(lay.count() - 1, row)
             self.sb_task_rows[r["id"]] = row
         for state, pill in self._metric_pills.items():
@@ -3245,6 +3373,7 @@ class EpisodePage(QWidget):
         self._update_narration_count()
         self._refresh_video_panel(r)
         self._render_setting_tags(r)
+        self._render_first_frame(r)
         self._render_refs(r)
         self._render_bound_refs(r)
         self.sb_ai_prompt_btn.setEnabled(True)
@@ -3277,6 +3406,10 @@ class EpisodePage(QWidget):
         audio_url = r["narration_audio_url"]
         self.sb_narr_audio.setText(
             f"{tr('tts_done')} · {r['narration_voice']}" if audio_url else "")
+        # 试听/删除按钮只在有音频时亮。之前 sb_narr_del_btn 的 setVisible(False) 只在
+        # 构造时出现过一次、之后再没被点亮,按钮和 _delete_narration_audio 都是死代码。
+        self.sb_narr_play_btn.setVisible(bool(audio_url))
+        self.sb_narr_del_btn.setVisible(bool(audio_url))
         self.sb_effective.setText(
             f"{self._video_model_name()} · {self._ep['resolution'] or '720p'} · {int(r['duration'] or 10)}s")
         self.sb_action_btn.setText(tr("redraw") if state == "done" else
@@ -3929,14 +4062,17 @@ class EpisodePage(QWidget):
         btn.busy(tr("ai_generate"))
 
         def job(tid):
-            return runner.run_agent("prompt_generator", _sb_prompt_request(r), lang=self._drama_lang)
+            return runner.run_agent("prompt_generator",
+                                    _sb_prompt_request(r, self._drama_lang),
+                                    lang=self._drama_lang)
 
         def done(tid, result, error):
             btn.idle()
             if error:
                 err(str(error)[:220])
                 return
-            text = (result or "").strip()
+            # 模型把思维链混进正文通道时,整段 <think> 会被原样存进 video_prompt
+            text = _strip_model_think(result)
             if not text:
                 err(tr("ai_empty"))
                 return
@@ -3955,6 +4091,90 @@ class EpisodePage(QWidget):
                 ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e))
+
+    def _render_first_frame(self, r: dict):
+        """刷新首帧预览区:图 / 空态、状态徽标、本次用到的参考、按钮可用性。"""
+        from ..pipeline import refs as refs_mod
+        url = (r.get("first_frame_image") or "").strip()
+        if url:
+            self.sb_ff_img.setPixmap(W.pixmap_from_media(url, 190, 150))
+        else:
+            self.sb_ff_img.setPixmap(QPixmap())     # 空态交给样式占位
+            self.sb_ff_img.setText(tr("no_first_frame"))
+            self.sb_ff_img.setAlignment(Qt.AlignCenter)
+        status = (r.get("image_status") or "none")
+        self.sb_ff_status.setText(tr("ff_status_" + status) if status != "none" else "")
+        # 本次首帧用到的参考:与 refs.build_shot_reference_list 同序,标 #1 #2 …
+        lay = self.sb_ff_refs_row
+        while lay.count():
+            it = lay.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        items = refs_mod.build_shot_reference_list(r)[:5] if self._sb_id else []
+        for i, item in enumerate(items, start=1):
+            cell = QWidget()
+            cl = QVBoxLayout(cell)
+            cl.setContentsMargins(0, 0, 0, 0)
+            cl.setSpacing(2)
+            im = QLabel()
+            im.setFixedSize(46, 46)
+            im.setAlignment(Qt.AlignCenter)
+            im.setPixmap(W.pixmap_from_media(item.get("image_url"), 46, 46))
+            cl.addWidget(im)
+            cap = QLabel(f"#{i} {item.get('name') or ''}"[:16])
+            cap.setObjectName("muted")
+            cap.setAlignment(Qt.AlignCenter)
+            cl.addWidget(cap)
+            lay.addWidget(cell)
+        if not items:
+            lay.addWidget(W.muted(tr("first_frame_no_refs")))
+        self.sb_ff_approve_btn.setEnabled(bool(url) and status != "approved")
+        self.sb_ff_gen_btn.setEnabled(bool(self._sb_id))
+
+    def _regen_first_frame(self, sb_id: int, skip_confirm: bool = False):
+        """重生首帧(对齐参考 regen-first-frame):完成后翻 pending_review 等用户确认。"""
+        if not skip_confirm:
+            if not ask(self, tr("重新生成首帧"),
+                       tr("将重新生成首帧图,已确认的首帧会回到待审状态。是否继续?")):
+                return
+        db.ex("UPDATE storyboards SET image_status='generating', updated_at=? WHERE id=?",
+              (db.now(), sb_id))
+        self._reload_storyboard()
+
+        def done(tid, result, error):
+            if error:
+                db.ex("UPDATE storyboards SET image_status='failed', updated_at=? WHERE id=?",
+                      (db.now(), sb_id))
+                err(str(error)[:200])
+            else:
+                db.ex("UPDATE storyboards SET image_status='pending_review', updated_at=? WHERE id=?",
+                      (db.now(), sb_id))
+                ok(tr("首帧重新生成已启动") + " ✅")
+            self._reload_storyboard()
+
+        def job(tid):
+            from ..pipeline import shot_tools
+            p = shot_tools.generate_first_frame(self.episode_id, sb_id,
+                                                config_id=self.image_model.currentData())
+            done(tid, p, None)     # shot_tools 同步返回;直接翻状态
+            return p
+        TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
+    def _approve_first_frame(self, sb_id: int):
+        """确认首帧:把 image_status 标 approved(对齐参考项目 approveFirstFrame)。"""
+        if not sb_id:
+            return
+        row = db.q1("SELECT first_frame_image FROM storyboards WHERE id=?", (sb_id,))
+        if not row or not (row["first_frame_image"] or "").strip():
+            warn(tr("no_first_frame"))
+            return
+        db.ex("UPDATE storyboards SET image_status='approved', updated_at=? WHERE id=?",
+              (db.now(), sb_id))
+        ok(tr("approve_frame_done"))
+        r = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+        if r:
+            self._render_first_frame(dict(r))
 
     def _gen_first_frame(self, sb_id: int):
         from ..pipeline import shot_tools
@@ -4181,24 +4401,85 @@ class EpisodePage(QWidget):
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
 
     def _one_video(self, sb_id: int):
+        # 首帧预审门控:有首帧但未确认 → 提示先确认(避免盲烧钱);老数据 approved 不受影响
+        ist = self._sb_image_status(sb_id)
+        if ist in ("pending_review", "generating", "failed"):
+            warn(tr("请先生成首帧图并确认") + f"(当前: {ist})")
+            return
         self._gen_video_job(sb_id)
 
     def _batch_video(self):
-        rows = db.q("SELECT id FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
-                    (self.episode_id,))
-        if not rows:
+        """批量生成视频:确认框先选范围。
+
+        缺失/失败(默认)只补空镜与重跑失败的 —— 不重复烧已有视频的额度;
+        「全部」连已完成的也重新生成(明确要求重出时才选)。
+        """
+        all_ids = [dict(r) for r in db.q(
+            "SELECT id, storyboard_number, video_url, composed_video_url, status FROM storyboards "
+            "WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,))]
+        if not all_ids:
             QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
             return
-        # 批量生成前确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
-        total = db.q1("SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE episode_id=? AND video_url IS NULL AND composed_video_url IS NULL",
-                      (self.episode_id,))["s"]
+        missing = [r for r in all_ids if not (r["video_url"] or r["composed_video_url"])]
+        failed = [r for r in all_ids if r["status"] == "failed"]
+        todo_default = sorted({r["id"] for r in missing} | {r["id"] for r in failed})
+        nums = {r["id"]: r["storyboard_number"] for r in all_ids}
+
+        # 范围选择框:缺失/失败(默认) / 全部重新生成 / 取消
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("batch_video"))
+        dlg.resize(480, 240)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel(tr("批量视频范围")))
+        rb_missing = QRadioButton(tr("仅缺失与失败({} 镜:{})——已有视频不重复生成")
+                                  .format(len(todo_default),
+                                          ", ".join(str(nums[i]) for i in todo_default[:12])
+                                          + ("…" if len(todo_default) > 12 else "")))
+        rb_missing.setChecked(True)
+        v.addWidget(rb_missing)
+        rb_all = QRadioButton(tr("全部 {} 镜(已完成的也重新生成)".format(len(all_ids))))
+        v.addWidget(rb_all)
+        info = QLabel(tr("将消耗视频额度 · 模型:{} · 分辨率:{}")
+                      .format(self.video_model.currentText(), self.res_combo.currentText()))
+        info.setWordWrap(True)
+        v.addWidget(info)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        cancel = QPushButton(tr("u_cancel"))
+        cancel.clicked.connect(dlg.reject)
+        go = QPushButton(tr("下一步"))
+        go.setObjectName("primary")
+        go.clicked.connect(dlg.accept)
+        btns.addWidget(cancel)
+        btns.addWidget(go)
+        v.addLayout(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        ids = [r["id"] for r in all_ids] if rb_all.isChecked() else todo_default
+        # 首帧预审门控:跳过未确认的分镜(有首帧但 pending_review/generating/failed)
+        unapproved = [i for i in ids if self._sb_image_status(i) in ("pending_review", "generating", "failed")]
+        if unapproved:
+            nums = {r["id"]: r["storyboard_number"] for r in all_ids}
+            ids = [i for i in ids if i not in unapproved]
+            warn(tr("已跳过 {} 个未确认首帧的分镜:{}").format(
+                len(unapproved), ", ".join(str(nums[i]) for i in unapproved[:12]) + ("…" if len(unapproved) > 12 else "")))
+        if not ids:
+            QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
+            return
+        rows = ids
+        # 二次确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
+        marks = ",".join("?" * len(ids))
+        total = db.q1(f"SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE id IN ({marks})",
+                      tuple(ids))["s"]
         model_txt = self.video_model.currentText()
         stats = TASKMGR.ep_video_stats(self.episode_id)
         if not ask(self, tr("batch_video"),
                    tr("即将生成 {} 个镜头(约 {}s)\n模型:{}\n分辨率:{}\n当前任务:{} {} · {} {}\n\n确认开始?")
-                   .format(len(rows), int(total), model_txt, self.res_combo.currentText(),
+                   .format(len(ids), int(total), model_txt, self.res_combo.currentText(),
                            tr("done"), stats["completed"], tr("failed"), stats["failed"])):
             return
+
+
         # 串行:单任务内逐镜生成,每个间隔 3 秒(并发会撞上游限流/队列满)
         import time as _time
         from ..core import taskmgr as _TM
@@ -4431,6 +4712,17 @@ class EpisodePage(QWidget):
             voice_used = tts_client.DEFAULT_VOICE
             db.ex("UPDATE storyboards SET narration_audio_url=?, narration_voice=?, updated_at=? WHERE id=?",
                   (audio_url, voice_used, db.now(), sb_id))
+            # 覆盖上一次:旧音频 uuid 命名,换台不删就成孤儿文件一直堆在磁盘。
+            # 必须在新文件写成功、库已更新之后才删旧的 —— 中途失败时宁可多留一个,
+            # 也不能把上一条还好的音频删掉。
+            if old_url and old_url != audio_url:
+                try:
+                    op = (config.media_url_to_path(old_url)
+                          if old_url.startswith(("/static/", "static/")) else Path(old_url))
+                    if op.exists() and op != Path(p):
+                        op.unlink()
+                except Exception:  # noqa: BLE001
+                    pass
             return str(p)
         def done(tid, result, error):
             if error:
@@ -4440,11 +4732,45 @@ class EpisodePage(QWidget):
                 ok("♪ 合成完成")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
-    def _delete_narration_audio(self):
-        """删除已生成的旁白音频:对齐 xiaoshuo DELETE /storyboards/:id/narration/audio。
+    def _toggle_narration_audio(self):
+        """试听/暂停当前镜的旁白音频。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        if not self._sb_id:
+            return
+        sb = db.q1("SELECT narration_audio_url FROM storyboards WHERE id=?", (self._sb_id,))
+        url = sb and sb["narration_audio_url"]
+        if not url:
+            return
+        p = config.media_url_to_path(url) if url.startswith(("/static/", "static/")) else Path(url)
+        if not p.exists():
+            warn(tr("narration_file_missing"))
+            return
+        if not hasattr(self, "_narr_player"):
+            self._narr_player = QMediaPlayer(self)
+            self._narr_audio_out = QAudioOutput(self._narr_player)
+            self._narr_player.setAudioOutput(self._narr_audio_out)
+            self._narr_player.playbackStateChanged.connect(self._sync_narr_play_btn)
+            self._narr_player.mediaStatusChanged.connect(self._on_narr_status)
+        pl = self._narr_player
+        if pl.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            pl.pause()
+            return
+        if pl.source() != QUrl.fromLocalFile(str(p)):
+            pl.setSource(QUrl.fromLocalFile(str(p)))
+        pl.play()
 
-        清字段同时删磁盘文件 —— 删旧路径再合成新路径不会撞到旧 uuid 文件名。
-        """
+    def _sync_narr_play_btn(self, state):
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.sb_narr_play_btn.setText(
+            "⏸" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
+
+    def _on_narr_status(self, status):
+        """播完把按钮拨回 ▶,否则会一直停在暂停图标。"""
+        from PySide6.QtMultimedia import QMediaPlayer
+        if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            self._narr_player.setPosition(0)
+            self.sb_narr_play_btn.setText("▶")
 
     def _delete_narration_audio(self):
         """删除已生成的旁白音频:落库清字段 + 删本地文件。"""

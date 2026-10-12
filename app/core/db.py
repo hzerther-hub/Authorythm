@@ -366,6 +366,8 @@ def init_db() -> None:
                 "ALTER TABLE dramas ADD COLUMN skip_creative INTEGER DEFAULT 0",
                 "ALTER TABLE dramas ADD COLUMN total_episodes INTEGER",
                 "ALTER TABLE storyboards ADD COLUMN reference_images TEXT",
+                # 首帧图预审状态:none/generating/pending_review/approved/failed(对齐参考)
+                "ALTER TABLE storyboards ADD COLUMN image_status TEXT DEFAULT 'none'",
                 "ALTER TABLE storyboards ADD COLUMN title TEXT",
                 "ALTER TABLE storyboards ADD COLUMN location TEXT",
                 "ALTER TABLE storyboards ADD COLUMN time TEXT",
@@ -405,6 +407,17 @@ def init_db() -> None:
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('tours_seen','0',?)", (now(),))
     # 恢复中断任务(对齐原版):按"产出是否已落"归位,而不是一律标 failed
     settle_interrupted_tasks(db, now())
+    # 首帧预审老数据兜底:first_frame_image 已有内容说明用户隐式批准过(已能出视频),
+    # 自动升级 approved,不破坏现有可出视频的分镜(对齐参考 sqlite-schema.ts)
+    try:
+        cur = db.execute(
+            "UPDATE storyboards SET image_status='approved' "
+            "WHERE (first_frame_image IS NOT NULL AND first_frame_image != '') "
+            "AND (image_status IS NULL OR image_status='none')")
+        if cur.rowcount:
+            print(f"🖼️ {cur.rowcount} 条历史分镜首帧图已回填为 approved")
+    except Exception:  # noqa: BLE001 —— 列还没建出来时忽略(全新库走 DDL 默认值)
+        pass
     db.commit()
     _seed_sample_project()
 

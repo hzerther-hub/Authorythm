@@ -35,6 +35,7 @@ class IntroPreview(QWidget):
         self.show_grid = True
         self.bg_image: str | None = None
         self._font_id = -1
+        self._font_family = ""
         self._aw, self._ah = 9, 16       # 项目画幅,默认竖屏
         self._load_font()
 
@@ -62,7 +63,12 @@ class IntroPreview(QWidget):
             self._font_id = QFontDatabase.addApplicationFont(str(p))
             fams = QFontDatabase.applicationFontFamilies(self._font_id)
             if fams:
+                # 字体族必须**单独记一份**:主题的全局 font-family 样式表优先级高于
+                # setFont(),只调 self.setFont() 的话 self.font() 拿回来的仍是主题字体,
+                # 绘制时 QFont(self.font()) 就等于换了字体却看不出变化。
+                self._font_family = fams[0]
                 self.setFont(QFont(fams[0], 12))
+            self.update()
 
     def set_font(self, file: str):
         self.font_file = file
@@ -123,7 +129,9 @@ class IntroPreview(QWidget):
                 p.drawLine(rect.x(), rect.y() + int(rect.height() * i / 3),
                            rect.x() + rect.width(), rect.y() + int(rect.height() * i / 3))
         if self.title:
-            f = QFont(self.font())
+            # 用 _font_family 显式构造,不要退回 self.font():样式表的 font-family
+            # 会盖掉 setFont(),self.font() 拿到的不是用户选的字体
+            f = QFont(self._font_family) if self._font_family else QFont(self.font())
             f.setPixelSize(max(10, int(rect.height() * self.size_pct)))
             f.setBold(True)
             p.setFont(f)
@@ -255,8 +263,24 @@ class IntroEditorDialog(QDialog):
         root.addLayout(btns)
 
         # 预览联动(滑杆数值同步进 % 标签)
-        self.preview.on_moved = lambda: (self.x_slider.setValue(int(self.preview.px * 100)),
-                                         self.y_slider.setValue(int(self.preview.py * 100)))
+        def _sync_pos_from_preview():
+            """拖拽结束时把位置写回滑杆。
+
+            必须**先取快照再改滑杆**:元组表达式从左到右求值,若写成
+            (x_slider.setValue(px), y_slider.setValue(py)),第一个 setValue 会
+            同步触发 _sync_preview(),里面又拿 y_slider 的旧值把 preview.py 覆盖回
+            0.5;第二个 setValue 再读 preview.py 时读到的已经是 0.5 —— 松手就回中间。
+            这里再 blockSignals 彻底断开重入。
+            """
+            px, py = self.preview.px, self.preview.py
+            for sl in (self.x_slider, self.y_slider):
+                sl.blockSignals(True)
+            self.x_slider.setValue(int(px * 100))
+            self.y_slider.setValue(int(py * 100))
+            for sl in (self.x_slider, self.y_slider):
+                sl.blockSignals(False)
+            self._sync_preview()
+        self.preview.on_moved = _sync_pos_from_preview
         self._sync_preview()
         self.title_edit.textChanged.connect(self._sync_preview)
         self.font_combo.currentIndexChanged.connect(self._sync_preview)

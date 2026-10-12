@@ -612,7 +612,8 @@ class VideoTaskRow(QFrame):
 
     def __init__(self, index: int, name: str, meta: str, state: str, state_label: str,
                  action_tip: str, thumb_url: str | None, *, selected: bool = False,
-                 on_click=None, on_action=None):
+                 on_click=None, on_action=None, on_regen=None, on_approve=None,
+                 image_status: str = "none"):
         super().__init__()
         self.setObjectName("taskRow")
         self._selected = selected
@@ -690,6 +691,25 @@ class VideoTaskRow(QFrame):
         _sl.addWidget(_spin)
         al.addWidget(act)
         al.addWidget(spin_host)
+        # 首帧预审:pending_review 时显示 ✓ 确认出视频;always 显示 ⟳ 重生首帧
+        if on_regen:
+            rg = QPushButton("⟳")
+            rg.setFixedSize(22, 22)
+            rg.setToolTip(tr("重新生成首帧"))
+            rg.setCursor(Qt.PointingHandCursor)
+            rg.setStyleSheet("QPushButton{font-size:11px;padding:0;}")
+            rg.clicked.connect(lambda _=False: on_regen())
+            lay.addWidget(rg)
+        if on_approve and image_status == "pending_review":
+            ap = QPushButton("✓")
+            ap.setFixedSize(22, 22)
+            ap.setToolTip(tr("确认出视频"))
+            ap.setCursor(Qt.PointingHandCursor)
+            ap.setStyleSheet(
+                "QPushButton{background:#16a34a;color:#fff;border:none;"
+                "border-radius:5px;font-weight:700;font-size:12px;padding:0;}")
+            ap.clicked.connect(lambda _=False: on_approve())
+            lay.addWidget(ap)
         lay.addWidget(act_host)
         self.act_btn = act
         self._spin = _spin
