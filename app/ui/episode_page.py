@@ -296,6 +296,7 @@ class StepNav(QWidget):
 
     step_changed = Signal(str)
     refresh_requested = Signal()
+    pipeline_expand_toggled = Signal()
 
     def __init__(self):
         super().__init__()
@@ -377,6 +378,19 @@ class StepNav(QWidget):
             lay.addWidget(q)
 
         lay.addStretch(1)
+
+        # 小说项目默认把「制作/导出」收起来(对齐参考项目 episode.vue:110 的
+        # isNovelProject 判定)。但**必须留一个展开入口** —— 参考项目额外做了
+        # 两条自动展开(改写成功、正文超 100 字),注释写明是避免
+        # 「看不到下面的剧视/漫画入口」;我们原先只有永久隐藏,小说项目想转短剧
+        # 就完全没有入口,属于做了半截。
+        self.pipeline_expand_btn = QPushButton("⤢  " + tr("expand_pipeline"))
+        self.pipeline_expand_btn.setObjectName("pipeToggle")
+        self.pipeline_expand_btn.setCursor(Qt.PointingHandCursor)
+        self.pipeline_expand_btn.setToolTip(tr("expand_pipeline_tip"))
+        self.pipeline_expand_btn.clicked.connect(
+            lambda _=False: self.pipeline_expand_toggled.emit())
+        lay.addWidget(self.pipeline_expand_btn)
 
         # ── 底部:折叠 + 四段跑马灯 + 刷新 ──
         self.collapse_btn = QPushButton("‹  " + tr("collapse_sidebar"))
@@ -626,6 +640,7 @@ class EpisodePage(QWidget):
         self.nav = StepNav()
         self.nav.step_changed.connect(self._goto_step)
         self.nav.refresh_requested.connect(self.refresh)
+        self.nav.pipeline_expand_toggled.connect(self.toggle_pipeline_expanded)
         body.addWidget(self.nav)
 
         self.stack_holder = QWidget()
@@ -685,11 +700,8 @@ class EpisodePage(QWidget):
             ep_number=ep["episode_number"], take_done=sb_done, take_total=sb_total,
             scene=scene_label, status=ep_status,
         )
-        # 小说项目隐藏制作/导出;宣传项目隐藏漫画
-        work = d["work_type"]
-        for k in ("assets", "storyboard", "export"):
-            self.panels[k].setVisible(work != "novel")
-        self.panels["comic"].setVisible(work not in ("novel", "promotion", "video_clone"))
+        # 小说项目收起制作/导出(可展开);宣传项目隐藏漫画
+        self._apply_work_type_visibility()
         # 让侧栏「常用」与对应 panel 同步可见/隐藏 —— 小说项目没「制作」面板,
         # 资产/分镜/漫画/拼接跳过去是空 tab,装「常用」整块藏起来更干净
         self._sync_quick_nav_to_panels()
@@ -835,6 +847,58 @@ class EpisodePage(QWidget):
         except Exception:  # noqa: BLE001
             pass
 
+    def toggle_pipeline_expanded(self):
+        """小说项目展开/收起「制作/导出」段(对齐参考项目 showFullPipeline)。"""
+        self._pipeline_expanded = not self._pipeline_expanded
+        self._pipeline_manually_collapsed = not self._pipeline_expanded
+        self._apply_work_type_visibility()
+
+    def _apply_work_type_visibility(self):
+        """按 work_type + 展开态决定各制作 panel 与侧栏快捷入口的可见性。
+
+        小说项目默认收起「制作/导出」(对齐参考项目 episode.vue:110 的
+        isNovelProject 判定);但必须留展开入口 —— 参考项目为此还加了改写成功后
+        自动展开,注释写明是避免「看不到下面的剧视/漫画入口」。
+        """
+        work = (self._drama or {}).get("work_type") or "drama"
+        novel = work == "novel"
+        expanded = not novel or self._pipeline_expanded
+        for k in ("assets", "storyboard", "export"):
+            if k in self.panels:
+                self.panels[k].setVisible(expanded)
+        if "comic" in self.panels:
+            self.panels["comic"].setVisible(
+                expanded and work not in ("novel", "promotion", "video_clone"))
+        btn = getattr(self.nav, "pipeline_expand_btn", None)
+        if btn is not None:
+            btn.setVisible(novel)
+            btn.setText(("⌄  " + tr("collapse_pipeline")) if self._pipeline_expanded
+                        else ("⤢  " + tr("expand_pipeline")))
+        self._sync_quick_nav_to_panels()
+        # 注意:这里**不能**调 _goto_step —— 它会执行 p.setVisible(k == key),
+        # 把上面刚放开的制作面板又全部藏回去。面板由用户点侧栏时再切。
+        # 必须把新的 states 推给 StepNav:它判断「整段不可用」用的是自己那份快照,
+        # 不推送的话按钮仍然是上一轮的 locked 结果,点了展开看起来毫无变化。
+        self.nav.set_step_states(self._step_states())
+
+    def maybe_auto_expand_pipeline(self):
+        """剧本改写完成后自动展开制作流程(对齐参考项目 doRewrite 的 onDone)。"""
+        work = (self._drama or {}).get("work_type") or "drama"
+        if work != "novel" or self._pipeline_expanded:
+            return False
+        text = ""
+        for name in ("sb_rewrite", "rewrite_edit", "rewrite_body"):
+            w = getattr(self, name, None)
+            if w is not None and hasattr(w, "toPlainText"):
+                text = w.toPlainText() or ""
+                break
+        if len(text) <= 0:
+            return False
+        self._pipeline_expanded = True
+        self._apply_work_type_visibility()
+        ok(tr("pipeline_expanded"))
+        return True
+
     def _sync_nav_progress(self, key: str):
         """四段跑马灯跟随当前步骤:导出归到「漫画」段(与原版四段一致)。"""
         order = [k for k, _ in PROGRESS_STEPS]
@@ -888,11 +952,15 @@ class EpisodePage(QWidget):
         """环节状态供侧栏 ✓ 标记与可用性:done / pending / locked(项目类型不支持)。"""
         done_keys = self._progress_done_keys()
         work = self._drama["work_type"] if self._drama else None
+        # 小说项目默认锁死制作段;用户展开制作流程后解除,否则点了展开也没用
+        # (StepNav._refresh_sections 会把整段 locked 的按钮全藏掉)
+        novel_open = work == "novel" and getattr(self, "_pipeline_expanded", False)
         st = {}
         for k in STEPS:
-            if k in ("assets", "storyboard", "export") and work == "novel":
+            if k in ("assets", "storyboard", "export") and work == "novel" and not novel_open:
                 st[k] = "locked"
-            elif k == "comic" and work in ("novel", "promotion", "video_clone"):
+            elif k == "comic" and (work in ("promotion", "video_clone")
+                                   or (work == "novel" and not novel_open)):
                 st[k] = "locked"
             elif k == "export":
                 st[k] = "done" if ("comic" in done_keys or "storyboard" in done_keys) else "pending"
@@ -1851,6 +1919,12 @@ class EpisodePage(QWidget):
                   (clean, db.now(), self.episode_id))
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
             self._reload_rewrite()
+            # 小说项目改写成功后自动展开制作流程(对齐参考项目 doRewrite 的 onDone:
+            # 避免「看不到下面的剧视/漫画入口」)
+            try:
+                self.maybe_auto_expand_pipeline()
+            except Exception:  # noqa: BLE001
+                pass
 
         def on_failed(msg):
             self._rewrite_running = False
@@ -2927,6 +3001,9 @@ class EpisodePage(QWidget):
         self._cancelled_sb: set = set()    # 已被用户手动停止的分镜,worker 回来时不再回写
         self._poster_queued: set = set()    # 已排队抽过海报帧的分镜,避免重复起 ffmpeg
         self._task_filter = ""
+        # 小说项目默认收起「制作/导出」,但可展开(对齐参考项目 showFullPipeline)
+        self._pipeline_expanded = False
+        self._pipeline_manually_collapsed = False
         self._ref_kind = "character"
 
     def _reload_storyboard(self):
