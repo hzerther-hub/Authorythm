@@ -4267,22 +4267,26 @@ class EpisodePage(QWidget):
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _one_tts(self, sb_id: int):
-        from PySide6.QtCore import QThread
-        snap_text_cfg = QThread.currentThread() is None  # placeholder
-        snap_text_cfg = self.text_model.currentData() if hasattr(self, "text_model") else None
+        # 关键bug:之前 snap_text_cfg = self.text_model.currentData() —— 把文本生成
+        # 配置 ID 传给 TTS 服务,但 registry.check_ready("tts", config_id) 在
+        # ai_service_configs WHERE service_type='tts' 里查,文本配置 ID 不在 ——
+        # 直接 raise NotConfigured("所选配置不存在"),worker 异常被 taskmgr 捕获
+        # 显示 ♪ 合成失败「所选配置不存在」,用户看不懂。
+        # 修:TTS 走自己的服务类型 —— 顶栏没有 TTS combo,这里直接 None 用 TTS 默认配置
+        # (火山豆包,registry 里按 is_default desc, priority desc 选第一)。
+        # 后续若加 top-level TTS combo,改成 snap_tts_cfg = self.tts_model.currentData() 即可。
         def job(tid):
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             text = (sb["narration"] or "").strip() or (sb["content"] or "")[:120]
             if not text:
                 raise RuntimeError(tr("无旁白文本"))
             p = tts_client.synthesize(text, target_duration=sb["duration"],
-                                       config_id=snap_text_cfg)
+                                       config_id=None)
             db.ex("UPDATE storyboards SET narration_audio_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(p), db.now(), sb_id))
             return str(p)
         def done(tid, result, error):
             if error:
-                # 原版只显示 ♪ —— 看不出原因。打印完整 traceback 让用户知道卡哪
                 err("♪ 合成失败:" + str(error)[:280])
             else:
                 self._reload_storyboard()
