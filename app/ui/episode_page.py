@@ -654,19 +654,18 @@ class EpisodePage(QWidget):
         self._goto_step("raw")
 
     def _mk_model_combo(self) -> QComboBox:
-        """顶栏模型下拉:可压缩——最小宽度不随内容涨,空间不足时文本省略显示。
+        """顶栏模型下拉:按 AdjustToContents 自适应最长条目 —— 用户要求完整显示模型名,
+        而非 AdjustToMinimumContentsLength 的中部省略号。
 
-        默认 QComboBox 的 sizeHint 取最长条目宽,四种服务 × 长配置名在窄窗口/其它
-        语言下会把顶栏撑到溢出(右侧分辨率/生成按钮被裁掉)。
+        上限不能无界(顶栏还有 +按钮 / 任务按钮 / 分辨率 等),设 maxWidth=300 兜底,
+        下拉弹层本身仍然完整(siz eHint 决定弹层宽度,不会被主框限制)。
         """
         c = QComboBox()
-        c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        c.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
         c.setMinimumContentsLength(8)
-        # Expanding + 固定最小宽:空间充裕时按比例分摊,不够时也不会被压成 0 宽
-        # (曾用 Ignored → 下拉框整块消失,只剩标签文字)
         c.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         c.setMinimumWidth(90)
-        c.setMaximumWidth(200)
+        c.setMaximumWidth(300)
         return c
 
     def _reload_models(self):
@@ -929,19 +928,16 @@ class EpisodePage(QWidget):
         return w
 
     def _panel_raw(self, lay):
-        """原始内容页:步骤指示器 + 字数统计在左,操作按钮群在右(对齐 .step-toolbar)。"""
+        """原始内容页:对齐 assets 工具条布局(直接 QHBoxLayout,不用 QFrame 框 —— 框在 Preferred
+        ExpansionPolicy 下会把内容撑到 303px 高,实测已修但视觉仍冗)。step + 字数 +
+        字数目标 + 文风 + 改写/批量/保存,空 stretch 推右;保存永远最尾。"""
         from . import episode_cards as C
         from .ai_edit_dialog import install_ai_edit_shortcut
-        lay.setContentsMargins(8, 6, 8, 8)
-        lay.setSpacing(0)
+        lay.setContentsMargins(10, 8, 12, 10)
+        lay.setSpacing(8)
 
-        bar = QFrame()
-        bar.setObjectName("taskHead")
-        bl = QVBoxLayout(bar)
-        bl.setContentsMargins(12, 8, 12, 8)
-        bl.setSpacing(6)
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(7)
         row.addWidget(self._step_indicator("01", tr("raw_content")))
         self.raw_count = QLabel("")
         self.raw_count.setObjectName("muted")
@@ -955,14 +951,13 @@ class EpisodePage(QWidget):
         row.addWidget(self.words_spin)
         row.addStretch(1)
 
-        # 文风:6 预设 + 自定义(对齐原版 NOVEL_STYLES)
+        # 文风:6 预设 + 自定义
         from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
         row.addWidget(QLabel(tr("style_label")))
         self.style_combo = QComboBox()
         self.style_combo.setMinimumWidth(116)
         self.style_combo.addItem("", "")
         for name, prompt in NOVEL_STYLES:
-            # 名字走 tr(),提示词保持中文 —— 后者是发给模型的指令,不是界面文案
             self.style_combo.addItem(tr(name), prompt)
         self.style_combo.addItem(tr("style_custom"), NOVEL_STYLE_CUSTOM)
         self.style_combo.currentIndexChanged.connect(self._on_style_pick)
@@ -972,7 +967,6 @@ class EpisodePage(QWidget):
         self.chapter_name_btn.setToolTip(tr("gen_title_tip"))
         self.chapter_name_btn.clicked.connect(lambda: self._gen_chapter_title())
         row.addWidget(self.chapter_name_btn)
-        # WaitingButton:busy() 时内嵌盲文 spinner + 禁用,生成期间按钮自身可见等待
         self.novel_btn = WaitingButton("📕 " + tr("ai_novel"), primary=True)
         self.novel_btn.clicked.connect(self._ai_novel)
         row.addWidget(self.novel_btn)
@@ -984,9 +978,7 @@ class EpisodePage(QWidget):
         self.review_badge.clicked.connect(self._show_review_detail)
         self.review_badge.setVisible(False)
         row.addWidget(self.review_badge)
-        # ? 帮助按钮:用户要求放在「保存」按钮前面 —— raw + rewrite 同款
-        # 放法;工具条末尾两个按钮组放 [review_badge][help(?)] + [save(💾)],
-        # 保存总是尾按钮,help 紧贴其左。
+        # ? 帮助按钮:放在「保存」按钮前面 —— raw + rewrite 同款
         from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
@@ -1002,17 +994,17 @@ class EpisodePage(QWidget):
         self.save_btn = W.primary_btn("💾 " + tr("save"))
         self.save_btn.clicked.connect(self._save_raw)
         row.addWidget(self.save_btn)
-        bl.addLayout(row)
+        lay.addLayout(row)
 
         self.gate_lab = W.muted("")
         self.gate_lab.setStyleSheet(
             "color:#ad6800; background:#fff7e6; border-radius:6px; padding:4px 8px;")
         self.gate_lab.setMaximumHeight(0)
         self.gate_lab.setVisible(False)
-        bl.addWidget(self.gate_lab)
-        bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        bar.setMaximumHeight(120)
-        lay.addWidget(bar)
+        # 隐藏状态根本不进 layout,需要时再 show()
+
+        # 不在这里放 ai_edit_hint 文字提示 —— 用户反馈「去掉红框里文字 + 让页面紧凑」,
+        # 这行 hint 信息改放 ? 帮助弹窗里查;主面板只放必要字段,不再占一行高 + 30px 留白
 
         # 自定义文风编辑区(选「自定义…」时展开)
         self.style_edit = C.SaveOnBlurEdit()
@@ -1030,21 +1022,17 @@ class EpisodePage(QWidget):
                                       self._open_replace, self._open_qa,
                                       self._open_find)
         self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
-        # AI 修改不走按钮:Ctrl+L 快捷键触发;这里只放文字提示
-        # 此前的 raw_row(QHBoxLayout)夹在 bar 和 raw_edit 之间,在垂直布局里
-        # 强加 30~80px 空白 —— 用户反馈「这一块的说明文字去年 高度的空白去掉」。
-        # 改为:把 ai_edit_hint 直接塞进 bar.bl 的尾部(贴 header 行下沿,无多余 spacing),
-        # raw_status 改成右浮状态标签,默认隐藏需要时再显示。
-        self.ai_edit_hint = QLabel("✨ " + tr("ai_edit_shortcut_hint"))
-        self.ai_edit_hint.setObjectName("muted")
-        self.ai_edit_hint.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
-        self.ai_edit_hint.setMaximumHeight(20)
-        bl.addWidget(self.ai_edit_hint)
+        # 上一次 commit 里被加进 bar.bl 的 ai_edit_hint 文字提示行 —— 用户要求
+        # 「去掉红框里文字」整段删除;不保留这一行。raw_status 也同步从 bar.bl
+        # 移到 lay 主垂直布局,默认隐藏,生成中才显。
         # 生成过程状态条:流式思考/输出进度实时显示在这(不进正文编辑器)
         self.raw_status = QLabel("")
         self.raw_status.setObjectName("muted")
         self.raw_status.setVisible(False)
-        bl.addWidget(self.raw_status)
+        # 隐藏状态时也得有 0 高度,否则会撑垂直布局;Qt setVisible 偶尔不灵得硬性兜底
+        self.raw_status.setMaximumHeight(0)
+        self.raw_status.setMinimumHeight(0)
+        lay.addWidget(self.raw_status)
         lay.addWidget(self.raw_edit, 1)
 
         # 小说线第二行:审校 / 改稿 / 朗读
@@ -1297,7 +1285,7 @@ class EpisodePage(QWidget):
             self.gate_lab.setVisible(bool(hint))
 
     def _set_raw_status(self, text: str):
-        """更新生成状态条(贴 ai_edit_hint 行);空文本隐藏,避免占空。"""
+        """更新生成状态条(在正文上方顶到 toolbar 边);空文本隐藏,避免占空。"""
         try:
             if getattr(self, "raw_status", None) is not None:
                 if text:
@@ -1641,8 +1629,9 @@ class EpisodePage(QWidget):
         bar = QFrame()
         bar.setObjectName("taskHead")
         # 编辑框隐藏时标题栏会被当成可扩张控件吃掉全部剩余高度(实测撑到 387px,
-        # 页面看着"变形"、中间一大片空白)——固定为内容高度
+        # 页面看着"变形"、中间一大片空白)——固定为内容高度,顺便 maxHeight 兜底
         bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        bar.setMaximumHeight(120)
         bl = QVBoxLayout(bar)
         bl.setContentsMargins(12, 8, 12, 8)
         bl.setSpacing(6)
