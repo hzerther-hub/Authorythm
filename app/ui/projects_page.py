@@ -202,11 +202,12 @@ class ProjectCard(QFrame):
     delete_requested = Signal(int, str)
     status_changed = Signal(int, str)
 
-    # 视觉骨架:4px 圆角卡片,顶 30px 拍板条,封面 280×140(2:1),底约 132px 三段
+    # 视觉骨架:4px 圆角卡片,顶 30px 拍板条,封面 2:1,底约 142px 三段
+    # 早期版 410 太长,封面下到状态行之间 80~100px 净空白 → 缩到 348
     CARD_W = 280
-    CARD_H = 410
+    CARD_H = 348
     STRIP_H = 30
-    COVER_H = 168
+    COVER_H = 148  # 280×148 ≈ 16:8.5,接近 2:1 电影画幅
 
     def __init__(self, drama: dict):
         super().__init__()
@@ -263,13 +264,23 @@ class ProjectCard(QFrame):
         cover = QFrame()
         cover.setObjectName("slateCover")
         cover.setFixedHeight(self.COVER_H)
+        # 此前是 KeepAspectRatioByExpanding:竖屏原图(9:16)横铺到 280×148 时只露顶 28%,
+        # 用户看不到完整人物/场景。改 KeepAspectRatio 整图缩进 + 米白底 letterbox,
+        # 视觉上像「片场取景框」看完整构图,而不是「海报裁切」。
+        cover.setStyleSheet(
+            "QFrame#slateCover{background:" + SLATE_BG + ";border:none;"
+            "border-bottom:1px solid " + SLATE_HAIR + ";}")
         cl = QVBoxLayout(cover)
         cl.setContentsMargins(8, 8, 8, 8)
         self._thumb = drama.get("thumbnail") or ""
         if self._thumb:
             img = _CoverLabel()
             img.setAlignment(Qt.AlignCenter)
-            img.setPixmap(W.pixmap_cover_media(self._thumb, self.CARD_W - 16, self.COVER_H - 16))
+            # KeepAspectRatio:整图可见,缩到 (CARD_W-16, COVER_H-16) 合约束之内。
+            # 竖屏图会在左右留出米白 letterbox,横屏图在上下留;背景被 #slateCover 的
+            # 米色盖住,整体视觉一致。
+            img.setStyleSheet("background:transparent; border:none;")
+            img.setPixmap(W.pixmap_from_media(self._thumb, self.CARD_W - 16, self.COVER_H - 16))
             img.setCursor(Qt.PointingHandCursor)
             img.clicked.connect(self._preview_cover)
             cl.addWidget(img)
@@ -296,14 +307,14 @@ class ProjectCard(QFrame):
         body = QWidget()
         body.setStyleSheet("background:transparent; border:none;")
         bl = QVBoxLayout(body)
-        bl.setContentsMargins(14, 10, 14, 12)
-        bl.setSpacing(6)
+        bl.setContentsMargins(14, 9, 14, 10)
+        bl.setSpacing(4)
         # 标题(标题行也用 Inter,故意不用 mono——保持层级)
         title = QLabel(drama["title"])
         title.setObjectName("slateTitle")
         title.setWordWrap(True)
         title.setToolTip(drama["title"])
-        title.setMaximumHeight(40)
+        title.setMaximumHeight(38)
         bl.addWidget(title)
         # chip 行:type (mono) + 可选 imitated + 可选 风格名
         chips = QHBoxLayout()
@@ -351,11 +362,12 @@ class ProjectCard(QFrame):
         tlay.addWidget(self._progress)
         tlay.addStretch(1)
         bl.addWidget(track)
-        bl.addStretch(1)
+        # ★ 关键:此前的 bl.addStretch(1) 把 footer 顶到卡片底部,中间留 80+px 净空白。
+        # 删掉后 body 自然贴合,卡片整体缩到 348 也还能放得下。
         # 底部一行:左状态时间 mono,右 2 个 mini icon(用 SlateIconBtn)
         foot = QHBoxLayout()
         foot.setSpacing(6)
-        foot.setContentsMargins(0, 4, 0, 0)
+        foot.setContentsMargins(0, 2, 0, 0)
         self.status_btn = QPushButton(f"●  {status_label(status)}")
         self.status_btn.setObjectName("slateIconBtn")
         self.status_btn.setCursor(Qt.PointingHandCursor)
