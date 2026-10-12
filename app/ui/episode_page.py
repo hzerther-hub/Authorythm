@@ -289,7 +289,7 @@ class SlateProductionHeader(QFrame):
 
 
 class StepNav(QWidget):
-    """流水线侧栏(对齐原版 episode.vue):三段环节 + 环节状态 + 四段进度 + 折叠/刷新。
+    """流水线侧栏(对齐原版 episode.vue):三段环节 + 环节状态 + 四段进度 + 折叠/刷新 + 快捷菜单。
 
     视觉重写在 theme.SLATE_PIPE_QSS,这里只在 __init__ 末尾局部挂上以免污染其他面板
     """
@@ -346,6 +346,31 @@ class StepNav(QWidget):
                 self._btns[k] = b
                 lay.addWidget(b)
             lay.addSpacing(6)
+
+        # 用户反馈:侧栏下方的红色空白没有任何「资产/分镜/漫画/拼接」相关的菜单,
+        # 加一块「常用」(quick-nav),列 4 个快速跳转按钮,跳到对应主区。
+        qlab = QLabel(tr("common_actions"))
+        qlab.setObjectName("pipeSection")
+        qlab.setStyleSheet(
+            "color:#0E0F12; font-family:ui-monospace,'SF Mono',Consolas,monospace;"
+            "font-size:10px; font-weight:700; letter-spacing:2px;"
+            "padding:6px 4px 2px 4px; background:transparent;"
+            "border-top:1px solid #DCDAD3; margin-top:8px;")
+        lay.addWidget(qlab)
+        quick_items = [
+            ("assets", "📦", "fab_assets"),
+            ("storyboard", "🎬", "fab_storyboard"),
+            ("comic", "📕", "fab_comic"),
+            ("export", "🎞", "fab_export"),
+        ]
+        self._quick_btns: dict[str, QPushButton] = {}
+        for step_key, icn, ikey in quick_items:
+            q = QPushButton(f"  {icn}  {tr(ikey)}")
+            q.setObjectName("pipeItem")
+            q.setCursor(Qt.PointingHandCursor)
+            q.clicked.connect(lambda _=False, s=step_key: self.step_changed.emit(s))
+            self._quick_btns[step_key] = q
+            lay.addWidget(q)
 
         lay.addStretch(1)
 

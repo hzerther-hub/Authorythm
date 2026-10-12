@@ -7,7 +7,7 @@ tr(key) 查当前语言,缺失回退英文,再回退中文。
 from __future__ import annotations
 
 LANGS: list[tuple[str, str]] = [
-    ("zh", "中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
+    ("zh", "中文"), ("zh-Hant", "繁體中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
     ("fr", "Français"), ("de", "Deutsch"), ("it", "Italiano"), ("pt", "Português"),
     ("es", "Español"), ("vi", "Tiếng Việt"), ("tr", "Türkçe"), ("ar", "العربية"),
     ("hi", "हिन्दी"), ("id", "Bahasa Indonesia"), ("th", "ภาษาไทย"),
@@ -15,7 +15,9 @@ LANGS: list[tuple[str, str]] = [
 LANG_NAMES = dict(LANGS)
 # AI 内容语言指令(注入 Agent System Prompt,防止模型漂回英文)
 LANG_OUTPUT_NAME = {
-    "zh": "Simplified Chinese (简体中文)", "en": "English", "ja": "Japanese (日本語)",
+    "zh": "Simplified Chinese (简体中文)",
+    "zh-Hant": "Traditional Chinese (繁體中文)",
+    "en": "English", "ja": "Japanese (日本語)",
     "ko": "Korean (한국어)", "fr": "French", "de": "German", "it": "Italian",
     "pt": "Portuguese", "es": "Spanish", "vi": "Vietnamese", "tr": "Turkish",
     "ar": "Arabic (العربية)", "hi": "Hindi (हिन्दी)", "id": "Indonesian", "th": "Thai",
@@ -194,6 +196,11 @@ Z = {  # 中文(基准)
  "AI 提问": "AI 提问",
  "就本章或项目设定提问,例如:这一章埋了什么伏笔?": "就本章或项目设定提问,例如:这一章埋了什么伏笔?",
  "思考中…": "思考中…",
+ "common_actions": "常用",
+ "fab_assets": "资产",
+ "fab_storyboard": "分镜",
+ "fab_comic": "漫画",
+ "fab_export": "拼接",
  "ai_edit_shortcut_hint": "AI 修改:选中文字按 Ctrl+L · Ctrl+R 查找替换 · Ctrl+Q AI 提问",
  "kbd_help_title": "键盘快捷键",
  "kbd_l_title": "AI 修改 (Ctrl+L)", "kbd_l_desc": "选中一段文字 → AI 改写选区;不选中 → 在光标处插入新内容;不改正文,改写完询问是否替换",
