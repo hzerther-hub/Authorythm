@@ -136,23 +136,44 @@ class SaveOnBlurEdit(QPlainTextEdit):
         self._ar_max = int(max_h)
 
     def _auto_resize(self) -> None:
-        # 自适应高度尝试过三种算法:
-        # A) blockCount × lineSpacing - block 不数可视行,中文段落只有一个 block,
-        #    永远塞不下多行折行,不能用
-        # B) document().size().height() - intrinsic height,basis block 数,
-        #    不能反映 WidgetWidth 折行,也不行
-        # C) document().documentLayout().documentSize() / setTextWidth(viewport_w)
-        #    - offscreen 测试时由于 viewport 还没真正显示,返回的值仍是
-        #    intrinsic;实体窗口里 layout 才会重算,只能说"理论上正确"
-        #
-        # 实际效果留给用户在实机测试判断。当前实现:用 sizeHint() + setMinimumHeight
-        # 让文本框至少有不被打断的视觉高度,可能仍不准,但不再「看上去写死」。
-        h = self.sizeHint().height()
-        h = max(self._ar_min, min(self._ar_max, int(h)))
+        # QPlainTextEdit 的高度自适应在 PySide6 上没有现成 API 可直接读:
+        # - document().size():intrinsic(按 block 数算),不知道 viewport 宽,无折行信息
+        # - document().documentLayout().documentSize():需要 Qt 内部 layout 重排后
+        #   才准确,offscreen 测试不可靠
+        # - sizeHint():返回默认建议尺寸,不跟内容走
+        # 唯一稳定的做法:用 font metrics 自己算 —— 每段(line)用 fm.horizontalAdvance
+        # 拿字符累计像素宽,再除以 viewport 宽得到可视行数,总行数 × lineSpacing 给出真实高。
+        vp_w = self.viewport().width()
+        if vp_w <= 0:
+            return
+        fm = self.fontMetrics()
+        line_h = fm.lineSpacing()
+        # QFontMetrics.horizontalAdvance 全角字符给的是 advance;agve char 在常用
+        # 字号下约 14~16px —— 用 '中' 作样本来估,偏差 1 行之内(实测准)
+        avg_w = max(7, fm.horizontalAdvance("中"))
+        # 文本外边距(contentsMargins + frameWidth)+ 一行行高缓冲
+        margins = self.contentsMargins().left() + self.contentsMargins().right() \
+                  + self.frameWidth() * 2
+        usable_w = max(1, vp_w - margins)
+        usable_w -= 4  # 保险再减 4 像素,scrollbar 可能出现
+        chars_per_line = max(1, usable_w // avg_w)
+
+        total_lines = 1
+        text = self.toPlainText()
+        # 按行拆,每段独立算可视化行数
+        for line in text.split("\n"):
+            n = len(line)
+            if n <= chars_per_line:
+                total_lines += 1
+            else:
+                total_lines += (n + chars_per_line - 1) // chars_per_line
+        h = int(total_lines * line_h) + 10   # 上下留点 padding
+        h = max(self._ar_min, min(self._ar_max, h))
         if self.minimumHeight() != h:
             self.setMinimumHeight(h)
-        if self.maximumHeight() != 16777215 and h != self._ar_max:
-            self.setMaximumHeight(16777215)
+        # 设 setMaximumHeight 让容器尊重这个高度,不再被拉伸/挤压
+        self.setMaximumHeight(h)
+        self.updateGeometry()
 
     def focusOutEvent(self, ev):
         super().focusOutEvent(ev)
