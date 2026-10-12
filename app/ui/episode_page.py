@@ -2580,13 +2580,26 @@ class EpisodePage(QWidget):
         self.sb_narr_count = QLabel("0/200")
         self.sb_narr_count.setObjectName("muted")
         nr_foot.addWidget(self.sb_narr_count)
+        nr_foot.addWidget(QLabel(tr("narration_start")))
+        self.sb_narr_start = QSpinBox()
+        self.sb_narr_start.setRange(0, 60)
+        self.sb_narr_start.setSuffix(" s")
+        self.sb_narr_start.setFixedWidth(64)
+        self.sb_narr_start.valueChanged.connect(self._save_narration_start)
+        nr_foot.addWidget(self.sb_narr_start)
+        nr_foot.addWidget(QLabel("→"))
         nr_foot.addWidget(QLabel(tr("narration_duration")))
         self.sb_narr_dur = QSpinBox()
         self.sb_narr_dur.setRange(1, 60)
         self.sb_narr_dur.setSuffix(" s")
-        self.sb_narr_dur.setFixedWidth(76)
+        self.sb_narr_dur.setFixedWidth(64)
         self.sb_narr_dur.valueChanged.connect(self._save_narration_duration)
         nr_foot.addWidget(self.sb_narr_dur)
+        # 时长超镜长警告条 —— 旁白时长 + 起播点 ≤ 镜长
+        self.sb_narr_warn = QLabel("")
+        self.sb_narr_warn.setObjectName("muted")
+        self.sb_narr_warn.setStyleSheet("color:#A14844;")
+        nr_foot.addWidget(self.sb_narr_warn)
         self.sb_narr_audio = QLabel("")
         self.sb_narr_audio.setObjectName("chip")
         # 关键:empty chip 被父布局垂直拉伸 → 实测 28×85 的"细长方框"
@@ -2596,8 +2609,20 @@ class EpisodePage(QWidget):
         self.sb_narr_audio.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.sb_narr_audio.setMaximumHeight(22)
         nr_foot.addWidget(self.sb_narr_audio)
+        # 删除已合成音频(有 url 才显示)
+        self.sb_narr_del_btn = QPushButton("🗑")
+        self.sb_narr_del_btn.setObjectName("slateIconBtn")
+        self.sb_narr_del_btn.setFixedSize(28, 28)
+        self.sb_narr_del_btn.setCursor(Qt.PointingHandCursor)
+        self.sb_narr_del_btn.setToolTip("删除已合成旁白,可重新合成")
+        self.sb_narr_del_btn.setVisible(False)
+        self.sb_narr_del_btn.clicked.connect(self._delete_narration_audio)
+        nr_foot.addWidget(self.sb_narr_del_btn)
         nr_foot.addStretch(1)
         el.addLayout(nr_foot)
+        # spin 变化时实时警告 + 启用合成按钮
+        self.sb_narr_start.valueChanged.connect(self._check_narration_fit)
+        self.sb_narr_dur.valueChanged.connect(self._check_narration_fit)
 
         # 参考素材:角色 / 场景 / 道具 三个页签 —— 参考项目里它固定在检查器
         # 右列(video-inspector-refs 占 grid-column 2),与左列编辑区并排、各自滚动
@@ -3569,10 +3594,12 @@ class EpisodePage(QWidget):
             is_bound = row["id"] in bound
             state = tr("ref_ok") if (is_bound and has_img) else (
                 tr("ref_no_image") if not has_img else tr("ref_unbound"))
+            # 整卡点击切换绑定状态 —— 用户要求「选中资产用橙框,点击资产可以加入,再点击取消」
             card = C.RefCard(row.get("image_url"), self._ref_placeholder(kind), name,
                              tr(REF_TAB_KEYS[kind]), state,
                              on_generate=(lambda _id=row["id"]: self._goto_assets(_id))
-                             if (is_bound and not has_img) else None)
+                             if (is_bound and not has_img) else None,
+                             on_toggle=(lambda _rid=row["id"], _k=kind: self._toggle_ref_bind(_rid, _k)))
             card.setProperty("bound", "1" if is_bound else "0")
             card.style().unpolish(card)
             card.style().polish(card)
@@ -3581,6 +3608,31 @@ class EpisodePage(QWidget):
         self.sb_ref_count.setText(tr("bound_n", len(bound), len(rows)))
         for k, b in self._ref_tab_btns.items():
             b.setText(f"{tr(REF_TAB_KEYS[k])} {len(self._ref_rows(k))}")
+
+    def _toggle_ref_bind(self, row_id: int, kind: str):
+        """点击资产卡 → 切换与当前分镜的绑定状态(已绑则解,未绑则加)。"""
+        if not self._sb_id:
+            return
+        sb_id = self._sb_id
+        # 不同 kind 走不同的关联表
+        link_table = {"character": ("storyboard_characters", "character_id"),
+                      "scene": None,    # 场景不在 storyboard 上绑,跳过
+                      "prop": ("storyboard_props", "prop_id")}[kind]
+        if link_table is None:
+            return
+        table, ref_col = link_table
+        cur = db.q(f"SELECT * FROM {table} WHERE storyboard_id=? AND {ref_col}=?",
+                   (sb_id, row_id))
+        if cur:
+            db.ex(f"DELETE FROM {table} WHERE storyboard_id=? AND {ref_col}=?",
+                  (sb_id, row_id))
+        else:
+            db.ex(f"INSERT INTO {table}(storyboard_id,{ref_col}) VALUES(?,?)",
+                  (sb_id, row_id))
+        # 刷新卡片视图
+        if self._sb_id:
+            r = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+            self._render_refs(r or {})
 
     def _goto_assets(self, row_id: int):
         self._goto_step("assets")
@@ -4185,19 +4237,49 @@ class EpisodePage(QWidget):
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _one_tts(self, sb_id: int):
+        from PySide6.QtCore import QThread
+        snap_text_cfg = QThread.currentThread() is None  # placeholder
+        snap_text_cfg = self.text_model.currentData() if hasattr(self, "text_model") else None
         def job(tid):
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             text = (sb["narration"] or "").strip() or (sb["content"] or "")[:120]
             if not text:
                 raise RuntimeError(tr("无旁白文本"))
-            p = tts_client.synthesize(text, target_duration=sb["duration"], config_id=None)
+            p = tts_client.synthesize(text, target_duration=sb["duration"],
+                                       config_id=snap_text_cfg)
             db.ex("UPDATE storyboards SET narration_audio_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(p), db.now(), sb_id))
             return str(p)
         def done(tid, result, error):
             if error:
-                err("♪")
+                # 原版只显示 ♪ —— 看不出原因。打印完整 traceback 让用户知道卡哪
+                err("♪ 合成失败:" + str(error)[:280])
+            else:
+                self._reload_storyboard()
+                ok("♪ 合成完成")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
+    def _delete_narration_audio(self):
+        """删除已生成的旁白音频:落库清字段 + 删本地文件。"""
+        if not self._sb_id:
+            return
+        sb = db.q1("SELECT narration_audio_url FROM storyboards WHERE id=?", (self._sb_id,))
+        url = sb and sb["narration_audio_url"]
+        if not url:
+            return
+        # 删本地文件
+        try:
+            p = config.media_url_to_path(url) if url.startswith(("/static/", "static/")) else Path(url)
+            if p.exists():
+                p.unlink()
+        except Exception:  # noqa: BLE001
+            pass
+        # 落库清字段
+        db.ex("UPDATE storyboards SET narration_audio_url=NULL, updated_at=? WHERE id=?",
+              (db.now(), self._sb_id))
+        from .toast import ok
+        ok("已删除旁白音频,可重新合成")
+        self._reload_storyboard()
 
     def _play_video(self, url: str | None):
         if not url:

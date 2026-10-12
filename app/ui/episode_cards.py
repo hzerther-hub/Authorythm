@@ -730,12 +730,19 @@ class VideoTaskRow(QFrame):
 
 
 class RefCard(QFrame):
-    """参考素材卡:缩略(或「角/景/具」占位)+ 名称 + 类型/变体 + 可参考状态。"""
+    """参考素材卡:缩略(或「角/景/具」占位)+ 名称 + 类型/变体 + 绑定状态。
+
+    整卡点击切换绑定(star prop 风格)—— 已绑定态用橙色 2px 描边
+    (用户要求「选中的资产用橙框」,对齐参考项目已绑/未绑的视觉区分)。
+    """
 
     def __init__(self, url: str | None, placeholder: str, name: str, meta: str,
-                 state: str, on_click=None, on_generate=None):
+                 state: str, on_click=None, on_generate=None, on_toggle=None):
         super().__init__()
         self.setObjectName("refCard")
+        if on_toggle:
+            self.setCursor(Qt.PointingHandCursor)
+            self.mousePressEvent = lambda _e: on_toggle()
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(3)

@@ -719,7 +719,8 @@ QPushButton#refTab:checked { color: """ + SLATE_BAR + """;
   border-bottom-color: """ + SLATE_BAR + """; font-weight: 700; }
 QFrame#refCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
   border-radius: 4px; }
-QFrame#refCard[bound="1"] { border-color: """ + SLATE_BAR + """; border-width: 2px; }
+QFrame#refCard[bound="1"] { border-color: """ + """#f97316""" + """; border-width: 2px;
+  background: rgba(249,115,22,0.05); }
 QFrame#videoHistoryCard { background: """ + SLATE_PAPER + """;
   border: 1px solid """ + SLATE_HAIR + """; border-radius: 3px; }
 QFrame#videoHistoryCard:hover { border-color: """ + SLATE_BAR + """; }
