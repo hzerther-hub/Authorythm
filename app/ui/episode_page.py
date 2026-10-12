@@ -1028,17 +1028,19 @@ class EpisodePage(QWidget):
                                       self._open_find)
         self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         # AI 修改不走按钮:Ctrl+L 快捷键触发;这里只放文字提示
-        raw_row = QHBoxLayout()
-        raw_row.setContentsMargins(12, 4, 12, 0)
+        # 此前的 raw_row(QHBoxLayout)夹在 bar 和 raw_edit 之间,在垂直布局里
+        # 强加 30~80px 空白 —— 用户反馈「这一块的说明文字去年 高度的空白去掉」。
+        # 改为:把 ai_edit_hint 直接塞进 bar.bl 的尾部(贴 header 行下沿,无多余 spacing),
+        # raw_status 改成右浮状态标签,默认隐藏需要时再显示。
         self.ai_edit_hint = QLabel("✨ " + tr("ai_edit_shortcut_hint"))
         self.ai_edit_hint.setObjectName("muted")
-        raw_row.addWidget(self.ai_edit_hint)
+        self.ai_edit_hint.setStyleSheet("color:#86909c; font-size:11px; padding:0; background:transparent;")
+        bl.addWidget(self.ai_edit_hint)
         # 生成过程状态条:流式思考/输出进度实时显示在这(不进正文编辑器)
         self.raw_status = QLabel("")
         self.raw_status.setObjectName("muted")
-        raw_row.addWidget(self.raw_status)
-        raw_row.addStretch(1)
-        lay.addLayout(raw_row)
+        self.raw_status.setVisible(False)
+        bl.addWidget(self.raw_status)
         lay.addWidget(self.raw_edit, 1)
 
         # 小说线第二行:审校 / 改稿 / 朗读
@@ -1288,10 +1290,15 @@ class EpisodePage(QWidget):
             self.gate_lab.setVisible(bool(hint))
 
     def _set_raw_status(self, text: str):
-        """更新生成状态条(提示行右侧);页面若已被语言切换重建,静默丢弃。"""
+        """更新生成状态条(贴 ai_edit_hint 行);空文本隐藏,避免占空。"""
         try:
             if getattr(self, "raw_status", None) is not None:
-                self.raw_status.setText(text)
+                if text:
+                    self.raw_status.setText(text)
+                    self.raw_status.setVisible(True)
+                else:
+                    self.raw_status.setVisible(False)
+                    self.raw_status.setText("")
         except RuntimeError:
             pass
 
