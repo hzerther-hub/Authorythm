@@ -4275,6 +4275,12 @@ class EpisodePage(QWidget):
         # 修:TTS 走自己的服务类型 —— 顶栏没有 TTS combo,这里直接 None 用 TTS 默认配置
         # (火山豆包,registry 里按 is_default desc, priority desc 选第一)。
         # 后续若加 top-level TTS combo,改成 snap_tts_cfg = self.tts_model.currentData() 即可。
+
+        # 对齐 E:\xiaoshuo 的 TTS 行为 —— 合成成功落 narration_voice,记录实际用到的音色。
+        # narration_voice 让后续 UI/导出能复现同一音色,db 里的 stale 旧文件不阻塞
+        # 试听(路径已被新 url 覆盖)。
+        snap_old_url = db.q1("SELECT narration_audio_url FROM storyboards WHERE id=?", (sb_id,)) or {}
+        old_url = (snap_old_url or {}).get("narration_audio_url") or ""  # noqa
         def job(tid):
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             text = (sb["narration"] or "").strip() or (sb["content"] or "")[:120]
@@ -4282,8 +4288,10 @@ class EpisodePage(QWidget):
                 raise RuntimeError(tr("无旁白文本"))
             p = tts_client.synthesize(text, target_duration=sb["duration"],
                                        config_id=None)
-            db.ex("UPDATE storyboards SET narration_audio_url=?, updated_at=? WHERE id=?",
-                  (config.path_to_media_url(p), db.now(), sb_id))
+            audio_url = config.path_to_media_url(p)
+            voice_used = tts_client.DEFAULT_VOICE
+            db.ex("UPDATE storyboards SET narration_audio_url=?, narration_voice=?, updated_at=? WHERE id=?",
+                  (audio_url, voice_used, db.now(), sb_id))
             return str(p)
         def done(tid, result, error):
             if error:
@@ -4292,6 +4300,12 @@ class EpisodePage(QWidget):
                 self._reload_storyboard()
                 ok("♪ 合成完成")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
+    def _delete_narration_audio(self):
+        """删除已生成的旁白音频:对齐 xiaoshuo DELETE /storyboards/:id/narration/audio。
+
+        清字段同时删磁盘文件 —— 删旧路径再合成新路径不会撞到旧 uuid 文件名。
+        """
 
     def _delete_narration_audio(self):
         """删除已生成的旁白音频:落库清字段 + 删本地文件。"""

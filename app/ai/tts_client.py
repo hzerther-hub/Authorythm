@@ -26,7 +26,7 @@ from .text_client import AIError
 
 DEFAULT_RESOURCE_ID = "seed-tts-2.0"
 CLONED_RESOURCE_ID = "seed-icl-2.0"
-DEFAULT_VOICE = "zh_female_shuangkuaisisi_uranus_bigtts"
+DEFAULT_VOICE = "BV001_streaming"   # 对齐 E:\xiaoshuo 火山豆包默认女声(原 BV001)
 AUDIO_MODEL = "seed-audio-1.0"
 TTS_MODEL = "seed-tts-2.0-standard"
 
