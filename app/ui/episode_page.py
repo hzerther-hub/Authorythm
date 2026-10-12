@@ -2529,9 +2529,10 @@ class EpisodePage(QWidget):
         el.addLayout(desc_head)
         self.sb_content = C.SaveOnBlurEdit()
         self.sb_content.setPlaceholderText(tr("sb_desc_ph"))
-        # 内容长短悬殊(短一句 / 长 30 行),固定高度或 min 都不合适,
-        # 改成按行数自适应(短不空、长不挤),上限保护不让其撑爆整个工作台
-        self.sb_content.setAutoResizeRange(150, 560)
+        # 内容长短悬殊(短一句 / 长 30 行)。min 调低到 50 让短文本不被夹同,
+        # 实测:用户报告「切换到每个镜头文本框高度都一样」—— 是 min 太高,所有
+        # 短文本都夹到同一值,看上去等于「写死」。
+        self.sb_content.setAutoResizeRange(50, 560)
         self.sb_content.editing_finished.connect(
             lambda: self._save_sb_field("description", self.sb_content))
         el.addWidget(self.sb_content)
@@ -2539,9 +2540,7 @@ class EpisodePage(QWidget):
         el.addLayout(atm_head)
         self.sb_atmosphere = C.SaveOnBlurEdit()
         self.sb_atmosphere.setPlaceholderText(tr("sb_atmosphere_ph"))
-        # 此前 setFixedHeight(56) 让 1~2 行氛围也强制一整行空白;
-        # 改自适应下限 48
-        self.sb_atmosphere.setAutoResizeRange(48, 220)
+        self.sb_atmosphere.setAutoResizeRange(36, 220)
         self.sb_atmosphere.editing_finished.connect(
             lambda: self._save_sb_field("atmosphere", self.sb_atmosphere))
         el.addWidget(self.sb_atmosphere)
@@ -2552,12 +2551,14 @@ class EpisodePage(QWidget):
         el.addLayout(vp_head)
         self.sb_video_prompt = C.SaveOnBlurEdit()
         self.sb_video_prompt.setPlaceholderText(tr("sb_video_prompt_ph"))
-        # 视频提示词按段落密度自适,最常见 10~15 行,前面 setMinimumHeight(140)
-        # 顶死只露 7 行,下半截藏在滚动条 —— 用户反馈「按字的多少进行高度变化」
-        self.sb_video_prompt.setAutoResizeRange(120, 480)
+        self.sb_video_prompt.setAutoResizeRange(60, 480)
         self.sb_video_prompt.editing_finished.connect(
             lambda: self._save_sb_field("video_prompt", self.sb_video_prompt))
-        el.addWidget(self.sb_video_prompt, 1)
+        # 此前 el.addWidget(self.sb_video_prompt, 1) 带 stretch=1,父布局把所有
+        # 剩余空间都均分给这个 widget,实际高度 = 剩余空间,跟内容无关 ——
+        # 用户实测「每一个文本框高度都一样」就是这个原因。
+        # 改为不加 stretch,SaveOnBlurEdit 自行按内容给 min/max,父布局按 content 走。
+        el.addWidget(self.sb_video_prompt)
         nr_head = self._draft_head(tr("sb_narration"), "narration", "inspectorLabel")
         self.sb_tts_btn = WaitingButton("🔊 " + tr("synth_narration"))
         self.sb_tts_btn.clicked.connect(self._one_tts_selected)

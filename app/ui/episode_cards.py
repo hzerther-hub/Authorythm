@@ -124,55 +124,66 @@ class SaveOnBlurEdit(QPlainTextEdit):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        # 默认开 autoresize,上下限保护:短文本不塌、长文本不撑爆。
-        # 上下限可被 setAutoResizeRange 重调。
+        # 关键:sizePolicy 垂直是 Preferred(默认是 Expanding)—— Expanding 会让父
+        # 布局把所有剩余空间塞给它,无视 maxHeight,文本框看上去一样高。
+        # Preferred 让 widget 按 min/max = 内容高走,父布局给多少就是多少。
+        from PySide6.QtWidgets import QSizePolicy
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.setAutoResizeRange(80, 480)
         self.textChanged.connect(self._auto_resize)
 
     def setAutoResizeRange(self, min_h: int, max_h: int) -> None:
-        """设上下限(像素)。此后每次 textChanged 都会按需重设 setMinimumHeight /
-        setMaximumHeight 到 [min_h, max_h] 之间。"""
+        """设上下限(像素)。此后每次 textChanged / showEvent / resizeEvent 都
+        会按需重设 setMinimumHeight / setMaximumHeight 到 [min_h, max_h]。"""
         self._ar_min = int(min_h)
         self._ar_max = int(max_h)
 
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        self._schedule_resize()
+
+    def resizeEvent(self, ev):
+        super().resizeEvent(ev)
+        # viewport 宽改了 → 重新算高
+        self._auto_resize()
+
+    def _schedule_resize(self) -> None:
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._auto_resize)
+
     def _auto_resize(self) -> None:
-        # QPlainTextEdit 的高度自适应在 PySide6 上没有现成 API 可直接读:
-        # - document().size():intrinsic(按 block 数算),不知道 viewport 宽,无折行信息
-        # - document().documentLayout().documentSize():需要 Qt 内部 layout 重排后
-        #   才准确,offscreen 测试不可靠
-        # - sizeHint():返回默认建议尺寸,不跟内容走
-        # 唯一稳定的做法:用 font metrics 自己算 —— 每段(line)用 fm.horizontalAdvance
-        # 拿字符累计像素宽,再除以 viewport 宽得到可视行数,总行数 × lineSpacing 给出真实高。
+        # QPlainTextEdit 高度自适应的唯一稳定做法:用 QFontMetrics 自算
+        # —— 用 vp 宽折算每段占几行,总行数 × lineSpacing + padding。
+        # 关键:同时设 setMin/setMax = h,让容器尊重真实高度而不是被拉伸
         vp_w = self.viewport().width()
         if vp_w <= 0:
+            self._schedule_resize()
             return
         fm = self.fontMetrics()
         line_h = fm.lineSpacing()
-        # QFontMetrics.horizontalAdvance 全角字符给的是 advance;agve char 在常用
-        # 字号下约 14~16px —— 用 '中' 作样本来估,偏差 1 行之内(实测准)
         avg_w = max(7, fm.horizontalAdvance("中"))
-        # 文本外边距(contentsMargins + frameWidth)+ 一行行高缓冲
         margins = self.contentsMargins().left() + self.contentsMargins().right() \
                   + self.frameWidth() * 2
-        usable_w = max(1, vp_w - margins)
-        usable_w -= 4  # 保险再减 4 像素,scrollbar 可能出现
+        usable_w = max(1, vp_w - margins - 4)
         chars_per_line = max(1, usable_w // avg_w)
 
-        total_lines = 1
+        total_lines = 0
         text = self.toPlainText()
-        # 按行拆,每段独立算可视化行数
-        for line in text.split("\n"):
-            n = len(line)
-            if n <= chars_per_line:
-                total_lines += 1
-            else:
-                total_lines += (n + chars_per_line - 1) // chars_per_line
-        h = int(total_lines * line_h) + 10   # 上下留点 padding
+        if not text:
+            total_lines = 1
+        else:
+            for line in text.split("\n"):
+                n = len(line)
+                if n <= chars_per_line:
+                    total_lines += 1
+                else:
+                    total_lines += (n + chars_per_line - 1) // chars_per_line
+        h = int(total_lines * line_h) + 12
         h = max(self._ar_min, min(self._ar_max, h))
         if self.minimumHeight() != h:
             self.setMinimumHeight(h)
-        # 设 setMaximumHeight 让容器尊重这个高度,不再被拉伸/挤压
-        self.setMaximumHeight(h)
+        if self.maximumHeight() != h:
+            self.setMaximumHeight(h)
         self.updateGeometry()
 
     def focusOutEvent(self, ev):
