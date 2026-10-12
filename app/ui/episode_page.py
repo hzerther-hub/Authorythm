@@ -2483,7 +2483,9 @@ class EpisodePage(QWidget):
         el.addLayout(desc_head)
         self.sb_content = C.SaveOnBlurEdit()
         self.sb_content.setPlaceholderText(tr("sb_desc_ph"))
-        self.sb_content.setMinimumHeight(150)
+        # 内容长短悬殊(短一句 / 长 30 行),固定高度或 min 都不合适,
+        # 改成按行数自适应(短不空、长不挤),上限保护不让其撑爆整个工作台
+        self.sb_content.setAutoResizeRange(150, 560)
         self.sb_content.editing_finished.connect(
             lambda: self._save_sb_field("description", self.sb_content))
         el.addWidget(self.sb_content)
@@ -2491,7 +2493,9 @@ class EpisodePage(QWidget):
         el.addLayout(atm_head)
         self.sb_atmosphere = C.SaveOnBlurEdit()
         self.sb_atmosphere.setPlaceholderText(tr("sb_atmosphere_ph"))
-        self.sb_atmosphere.setFixedHeight(56)
+        # 此前 setFixedHeight(56) 让 1~2 行氛围也强制一整行空白;
+        # 改自适应下限 48
+        self.sb_atmosphere.setAutoResizeRange(48, 220)
         self.sb_atmosphere.editing_finished.connect(
             lambda: self._save_sb_field("atmosphere", self.sb_atmosphere))
         el.addWidget(self.sb_atmosphere)
@@ -2502,7 +2506,9 @@ class EpisodePage(QWidget):
         el.addLayout(vp_head)
         self.sb_video_prompt = C.SaveOnBlurEdit()
         self.sb_video_prompt.setPlaceholderText(tr("sb_video_prompt_ph"))
-        self.sb_video_prompt.setMinimumHeight(140)
+        # 视频提示词按段落密度自适,最常见 10~15 行,前面 setMinimumHeight(140)
+        # 顶死只露 7 行,下半截藏在滚动条 —— 用户反馈「按字的多少进行高度变化」
+        self.sb_video_prompt.setAutoResizeRange(120, 480)
         self.sb_video_prompt.editing_finished.connect(
             lambda: self._save_sb_field("video_prompt", self.sb_video_prompt))
         el.addWidget(self.sb_video_prompt, 1)

@@ -113,9 +113,42 @@ def video_camera_icon(color, size: int = 15) -> QIcon:
 
 
 class SaveOnBlurEdit(QPlainTextEdit):
-    """失焦即存的文本框(QPlainTextEdit 没有 editingFinished,这里补一个)。"""
+    """失焦即存的文本框(QPlainTextEdit 没有 editingFinished,这里补一个)。
+
+    默认就是 QPlainTextEdit,内容长短不一(尤其是视频提示词 + 氛围/描述段)
+    时,固定高度让短文空、长文塞不下。所以**按文档行数自适应**,留一个上限免得
+    把整个分镜工作台撑爆。
+    """
 
     editing_finished = Signal()
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # 默认开 autoresize,上下限保护:短文本不塌、长文本不撑爆。
+        # 上下限可被 setAutoResizeRange 重调。
+        self.setAutoResizeRange(80, 480)
+        self.textChanged.connect(self._auto_resize)
+
+    def setAutoResizeRange(self, min_h: int, max_h: int) -> None:
+        """设上下限(像素)。此后每次 textChanged 都会按需重设 setMinimumHeight /
+        setMaximumHeight 到 [min_h, max_h] 之间。"""
+        self._ar_min = int(min_h)
+        self._ar_max = int(max_h)
+
+    def _auto_resize(self) -> None:
+        # 用 document 实际行数 × 行高 + 顶底留白,给出恰好够的最小高度;
+        # 超过 _ar_max 就不动了(让滚动条接管)
+        doc = self.document()
+        block_count = max(1, doc.blockCount())
+        fm = self.fontMetrics()
+        line_h = fm.lineSpacing()
+        h = block_count * line_h + 14   # 上下留一点 padding
+        h = max(self._ar_min, min(self._ar_max, int(h)))
+        if self.minimumHeight() != h:
+            self.setMinimumHeight(h)
+        # max 也设同步,这样在容器里展开时不会只占一个 min,而是撑到 h
+        if self.maximumHeight() != 16777215 and h != self._ar_max:
+            self.setMaximumHeight(16777215)
 
     def focusOutEvent(self, ev):
         super().focusOutEvent(ev)
