@@ -473,6 +473,89 @@ def db_get_setting(key: str, default: str = "") -> str:
         return default
 
 
+# ── Director's Slate:启动台项目卡的视觉 token(QSS 之外的硬编码,只为这块专属) ──
+#
+#  命名约定取自真实场记板的视觉语汇,所有"美化"只在启动台这一面落地,其余页面继续走
+#  ASSET_QSS / LIGHT_QSS 不受影响。这样不会把所有页面带跑偏,场记板的差异点是**单一页面
+#  的标志性元素**,满足"精力花在一个地方"的设计原则。
+SLATE_BG       = "#F5F4EF"   # 米白纸底
+SLATE_PAPER    = "#FFFFFF"   # 卡片白
+SLATE_BAR      = "#0E0F12"   # 拍板黑(主签名色)
+SLATE_MUTED    = "#6B727A"   # 副信息
+SLATE_HAIR     = "#DCDAD3"   # 卡边 1px 细灰
+SLATE_HAIR_HV  = "#0E0F12"   # hover 强化成拍板黑
+SLATE_META     = "#1F2329"   # 标题墨
+SLATE_STRIPE   = "#F5F4EF"   # 斜条白(在黑底上)
+SLATE_GHOST    = "#A8A6A1"   # 灰白(拍板右侧 meta 字色)
+SLATE_TRACK    = "#E4E1D7"   # 进度条空轨(带轻微米色,避免 #FFF 过冷)
+SLATE_BAR_INK  = "#F5F4EF"   # 黑条上的主字色
+SLATE_BAR_DIM  = "#9a9c9f"   # 黑条上的副字色
+
+# 状态色:刻意脱离 SaaS 惯用的"绿/橙/灰"扁平调,改成更有片场感的低饱和度
+SLATE_ST_DONE  = "#6E8C5E"   # 已完成 —— 暗橄榄(像收工打了卡)
+SLATE_ST_PROG  = "#C28F4C"   # 进行中 —— 暗琥珀(像卷片)
+SLATE_ST_PEND  = "#6B727A"   # 待开始 —— 与 SLATE_MUTED 同
+SLATE_ST_FAIL  = "#A14844"   # 失败 —— 砖红
+
+SLATE_CARD_QSS = """
+QFrame#slateCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 4px; }
+QFrame#slateCard:hover { border-color: """ + SLATE_HAIR_HV + """; border-width: 1px; }
+QFrame#slateCover { background: """ + SLATE_BG + """; border: none; border-bottom: 1px solid """ + SLATE_HAIR + """; }
+QLabel#slateTitle { color: """ + SLATE_META + """; font-size: 14px; font-weight: 600;
+  letter-spacing: 0.2px; }
+QLabel#slateMeta { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 11px; letter-spacing: 0.3px; }
+QLabel#slateMetaDim { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; letter-spacing: 0.3px; opacity: 0.72; }
+QLabel#slateStat { color: """ + SLATE_META + """; font-family: """ + MONO_STACK + """;
+  font-size: 10px; font-weight: 600; padding: 0 7px; }
+QLabel#slateStat[done="1"] { color: """ + SLATE_ST_DONE + """; }
+QLabel#slateStat[prog="1"] { color: """ + SLATE_ST_PROG + """; }
+QLabel#slateStat[fail="1"] { color: """ + SLATE_ST_FAIL + """; }
+QLabel#slateStat[pend="1"] { color: """ + SLATE_MUTED + """; }
+QLabel#slateChip { color: """ + SLATE_MUTED + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 1px 6px; font-family: """ + MONO_STACK + """;
+  font-size: 10px; background: transparent; }
+QFrame#slateTrack { background: """ + SLATE_TRACK + """; border: none; border-radius: 1px; }
+QFrame#slateFill { background: """ + SLATE_BAR + """; border: none; border-radius: 1px; }
+QFrame#slateFill[done="1"] { background: """ + SLATE_ST_DONE + """; }
+QFrame#slateFill[prog="1"] { background: """ + SLATE_ST_PROG + """; }
+QFrame#slateFill[fail="1"] { background: """ + SLATE_ST_FAIL + """; }
+QPushButton#slateIconBtn { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; color: """ + SLATE_MUTED + """; font-size: 11px; min-width: 26px;
+  min-height: 24px; padding: 0 6px; }
+QPushButton#slateIconBtn:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+/* 启动台顶栏:大字标题走 tracking 风格,不靠 orange 加成撑场面 */
+QLabel#slatePageTitle { color: """ + SLATE_BAR + """; font-family: """ + MONO_STACK + """;
+  font-size: 13px; font-weight: 700; letter-spacing: 4px; }
+QLabel#slatePageSub { color: """ + SLATE_MUTED + """; font-size: 12px; }
+QLabel#slateStatBig { color: """ + SLATE_META + """; font-family: """ + MONO_STACK + """;
+  font-size: 11px; letter-spacing: 1px; }
+QLabel#slateStatBig b { color: """ + SLATE_BAR + """; font-weight: 700; font-size: 13px; }
+/* 工具条:filterChip 改方形 4px,segment 上加 mono 序号 */
+QPushButton#slateFilter { background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 5px 12px; font-size: 12px; color: """ + SLATE_MUTED + """;
+  font-family: """ + MONO_STACK + """; }
+QPushButton#slateFilter:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QPushButton#slateFilter:checked { background: """ + SLATE_BAR + """; border-color: """ + SLATE_BAR + """;
+  color: """ + SLATE_BAR_INK + """; font-weight: 700; }
+/* 新建项目按钮:拍板黑底,白字,mono letter-spacing,不用 orange */
+QPushButton#slateNew { background: """ + SLATE_BAR + """; border: 1px solid """ + SLATE_BAR + """;
+  border-radius: 3px; color: """ + SLATE_BAR_INK + """; padding: 7px 16px; font-size: 12px;
+  font-weight: 700; font-family: """ + MONO_STACK + """; letter-spacing: 1.5px; }
+QPushButton#slateNew:hover { background: #1F2128; border-color: #1F2128; }
+QLineEdit#slateSearch { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 5px 10px; color: """ + SLATE_META + """; selection-background-color: """ + SLATE_BAR + """;
+  selection-color: """ + SLATE_BAR_INK + """; }
+QLineEdit#slateSearch:focus { border-color: """ + SLATE_BAR + """; }
+QComboBox#slateSort { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 5px 10px; color: """ + SLATE_META + """;
+  font-family: """ + MONO_STACK + """; font-size: 11px; }
+QComboBox#slateSort:focus { border-color: """ + SLATE_BAR + """; }
+"""
+
+
 def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     """应用配色:先设调色板(让未显式设 background 的 QWidget 跟随主题),再挂 QSS。"""
     from PySide6.QtGui import QColor, QPalette
