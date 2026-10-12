@@ -204,7 +204,9 @@ class SlateProductionHeader(QFrame):
         self._take = "TAKE --/--"
         self._scene = ""
         self._status = "pending"
-        # 内部用 absolute layout / paintEvent,简单可靠
+        self._collab = False   # paintEvent 直接读,必须在 __init__ 给默认值,
+                               # 否则 _show_shortcut_help 这种在 update_info 之
+                               # 前的 paint 会抛 AttributeError
         self.setStyleSheet("background:transparent; border:none;")
 
     def update_info(self, *, drama_title: str, drama_id: int, ep_number: int,
@@ -2587,6 +2589,12 @@ class EpisodePage(QWidget):
         nr_foot.addWidget(self.sb_narr_dur)
         self.sb_narr_audio = QLabel("")
         self.sb_narr_audio.setObjectName("chip")
+        # 关键:empty chip 被父布局垂直拉伸 → 实测 28×85 的"细长方框"
+        # 用户问「这框是什么」就是它。把垂直 sizePolicy 改为 Maximum(只缩不伸),
+        # max height 22,文字多了就长到 22,但不会再被拉伸成 85px 的奇怪细条
+        from PySide6.QtWidgets import QSizePolicy
+        self.sb_narr_audio.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        self.sb_narr_audio.setMaximumHeight(22)
         nr_foot.addWidget(self.sb_narr_audio)
         nr_foot.addStretch(1)
         el.addLayout(nr_foot)
