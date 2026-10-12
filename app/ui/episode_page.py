@@ -349,6 +349,9 @@ class StepNav(QWidget):
 
         # 用户反馈:侧栏下方的红色空白没有任何「资产/分镜/漫画/拼接」相关的菜单,
         # 加一块「常用」(quick-nav),列 4 个快速跳转按钮,跳到对应主区。
+        # _set_work_type_visible() 在 work_type 改变时被外层 EpisodePage.load() 调用,
+        # 控制 常用 区按 panel 可见性显示/隐藏 —— 小说类项目根本没生成,
+        # 硬亮这些按钮点了跳到不可见 tab 体验破碎
         qlab = QLabel(tr("common_actions"))
         qlab.setObjectName("pipeSection")
         qlab.setStyleSheet(
@@ -357,6 +360,7 @@ class StepNav(QWidget):
             "padding:6px 4px 2px 4px; background:transparent;"
             "border-top:1px solid #DCDAD3; margin-top:8px;")
         lay.addWidget(qlab)
+        self._common_actions_label = qlab
         quick_items = [
             ("assets", "📦", "fab_assets"),
             ("storyboard", "🎬", "fab_storyboard"),
@@ -429,6 +433,24 @@ class StepNav(QWidget):
         # Director's Slate:本控件只接这一段 QSS,既保留原对象名/信号不破坏其它面板,
         # 又把侧栏视觉拉回拍板黑 + 米白风格
         self.setStyleSheet(SLATE_PIPE_QSS)
+
+    def set_common_actions_visible(self, any_visible: bool, visible_keys: list[str] | None = None):
+        """EpisodePage 在 work_type 决定后调:看 panel 可见性同步「常用」区。
+
+        小说项目 (work_type='novel') production 整段全藏,4 个快捷键点了跳到空 tab,
+        —— 整块「常用」连标题一起藏,视觉上不出空头。
+        promotion 只 assets 一个;部分按钮亮的就部分显示,全黑就全藏。
+        """
+        visible_keys = visible_keys or []
+        if hasattr(self, "_common_actions_label"):
+            self._common_actions_label.setVisible(any_visible)
+        for step_key, btn in self._quick_btns.items():
+            btn.setVisible(step_key in visible_keys)
+        # 折叠态全显(不分类型,点了 system 会再调 _goto_step 兜底)
+        if self._collapsed and any_visible:
+            for step_key, btn in self._quick_btns.items():
+                if step_key in visible_keys:
+                    btn.setVisible(True)
 
     # ── 折叠 ──
     def toggle_collapsed(self):
@@ -668,6 +690,9 @@ class EpisodePage(QWidget):
         for k in ("assets", "storyboard", "export"):
             self.panels[k].setVisible(work != "novel")
         self.panels["comic"].setVisible(work not in ("novel", "promotion", "video_clone"))
+        # 让侧栏「常用」与对应 panel 同步可见/隐藏 —— 小说项目没「制作」面板,
+        # 资产/分镜/漫画/拼接跳过去是空 tab,装「常用」整块藏起来更干净
+        self._sync_quick_nav_to_panels()
         self._reload_models()
         self._reload_raw()
         self._reload_rewrite()
@@ -3950,6 +3975,18 @@ class EpisodePage(QWidget):
         self._sb_split_task = tid
         info(tr("分镜拆解已开始(后台运行,约 5-10 分钟)"))
         self._poll_sb_split(tid, 0)
+
+    def _sync_quick_nav_to_panels(self):
+        """侧栏「常用」按钮与对应主 tab 同步可见性 —— 小说项目隐藏生产侧 tab 时,
+        4 个快捷按钮全藏(「常用」整块),避免点击跳到不可见 tab 体验破碎。
+        复刻项目 「work_type=video_clone」 全 4 块都亮;「promotion」 只资产 亮。
+        """
+        nav = getattr(self, "nav", None)
+        if not nav:
+            return
+        visible_keys = [k for k in ("assets", "storyboard", "comic", "export")
+                       if self.panels.get(k) and self.panels[k].isVisible()]
+        nav.set_common_actions_visible(bool(visible_keys), visible_keys)
 
     def _after_split_chain(self):
         """拆分完成后的自动链:修复轮 → 批量补齐提示词(均串行,不并发)。"""
