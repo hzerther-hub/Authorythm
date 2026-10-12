@@ -3836,7 +3836,7 @@ class EpisodePage(QWidget):
                                                    config_id=self.image_model.currentData())
         def done(tid, result, error):
             if error:
-                err("▣")
+                err("▣ 首帧失败:" + str(error)[:280])
             self._reload_storyboard()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -3850,7 +3850,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             if error:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
-                err("▷")
+                err("▷ i2v合成失败:" + str(error)[:280])
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -3860,7 +3860,7 @@ class EpisodePage(QWidget):
             return shot_tools.burn_subtitle(sb_id)
         def done(tid, result, error):
             if error:
-                err("T")
+                err("T 烧字幕失败:" + str(error)[:280])
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
@@ -4262,7 +4262,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             if error:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
-                err(tr("batch_video"))
+                err("视频生成失败:" + str(error)[:280])
             self._reload_storyboard()
         TASKMGR.submit("video", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
