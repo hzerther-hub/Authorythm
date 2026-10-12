@@ -610,11 +610,11 @@ class ProjectPage(QWidget):
         head = QHBoxLayout(head_card)
         head.setContentsMargins(16, 10, 16, 10)
         head.setSpacing(12)
-        back = QPushButton("←")   # 用户反馈:去掉「返回项目」文字,只留箭头图标
-        back.setFixedSize(32, 32)
+        back = QPushButton("←")   # 用户反馈:32×32 看不清图标 → 改 40×40 让箭头更显眼
+        back.setFixedSize(40, 40)
         back.setStyleSheet(
-            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:16px;"
-            "color:#4e5969;font-weight:700;font-size:16px;}"
+            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:20px;"
+            "color:#4e5969;font-weight:700;font-size:20px;}"
             "QPushButton:hover{background:#e9ebef;border-color:#0E0F12;color:#0E0F12;}")
         back.setCursor(Qt.PointingHandCursor)
         back.setToolTip(tr("back"))   # tooltip 给悬停说明,不影响视觉
