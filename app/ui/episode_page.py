@@ -977,9 +977,14 @@ class EpisodePage(QWidget):
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
-        # ? 帮助按钮:显著放工具条尾 + 文字 "?" 写大一些,白底可见。
-        # 用户报「没看到」是因为 26x26 在工具条尾同列被挤到边缘,改 32x32
-        # + 黑底「?」 + 字号 16px,显眼;工具提示与点击共存帮助两种引导。
+        self.review_badge = QPushButton("")
+        self.review_badge.setToolTip(tr("review_open_hint"))
+        self.review_badge.clicked.connect(self._show_review_detail)
+        self.review_badge.setVisible(False)
+        row.addWidget(self.review_badge)
+        # ? 帮助按钮:用户要求放在「保存」按钮前面 —— raw + rewrite 同款
+        # 放法;工具条末尾两个按钮组放 [review_badge][help(?)] + [save(💾)],
+        # 保存总是尾按钮,help 紧贴其左。
         from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
@@ -992,11 +997,6 @@ class EpisodePage(QWidget):
         help_btn.setToolTip("⌨  " + tr("ai_edit_shortcut_hint"))
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
-        self.review_badge = QPushButton("")
-        self.review_badge.setToolTip(tr("review_open_hint"))
-        self.review_badge.clicked.connect(self._show_review_detail)
-        self.review_badge.setVisible(False)
-        row.addWidget(self.review_badge)
         self.save_btn = W.primary_btn("💾 " + tr("save"))
         self.save_btn.clicked.connect(self._save_raw)
         row.addWidget(self.save_btn)
@@ -1652,12 +1652,8 @@ class EpisodePage(QWidget):
         rewrite_again = QPushButton("↻ " + tr("rewrite"))
         rewrite_again.clicked.connect(self._rewrite)
         row.addWidget(rewrite_again)
-        # 保存:dirty 门控(无改动置灰)+ 落库 + toast —— 该编辑框此前无保存机制,手改会静默丢失
-        self.script_save_btn = W.primary_btn("💾 " + tr("save"))
-        self.script_save_btn.clicked.connect(self._save_script)
-        row.addWidget(self.script_save_btn)
-        # ? 帮助按钮:贴工具条最右,32x32 黑底「?」 + 显著 tooltip,
-        # 不再被挤出视野
+        # ? 帮助按钮:raw 同款 —— 紧贴「保存」前;用户要求 01 原始内容 / 02 AI 改写
+        # 两个面板同款放法。
         from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
@@ -1670,6 +1666,10 @@ class EpisodePage(QWidget):
         help_btn.setToolTip("⌨  " + tr("ai_edit_shortcut_hint"))
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
+        # 保存:dirty 门控(无改动置灰)+ 落库 + toast —— 该编辑框此前无保存机制,手改会静默丢失
+        self.script_save_btn = W.primary_btn("💾 " + tr("save"))
+        self.script_save_btn.clicked.connect(self._save_script)
+        row.addWidget(self.script_save_btn)
         bl.addLayout(row)
         lay.addWidget(bar)
 
