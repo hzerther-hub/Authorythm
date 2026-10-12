@@ -977,6 +977,14 @@ class EpisodePage(QWidget):
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
+        # ? 帮助按钮:弹出 4 个快捷键详细说明
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("slateIconBtn")
+        help_btn.setFixedSize(26, 26)
+        help_btn.setCursor(Qt.PointingHandCursor)
+        help_btn.setToolTip(tr("ai_edit_shortcut_hint"))
+        help_btn.clicked.connect(lambda: self._show_shortcut_help())
+        row.addWidget(help_btn)
         self.review_badge = QPushButton("")
         self.review_badge.setToolTip(tr("review_open_hint"))
         self.review_badge.clicked.connect(self._show_review_detail)
@@ -1071,6 +1079,12 @@ class EpisodePage(QWidget):
         lab.setStyleSheet("font-size:12.5px; font-weight:700;")
         lay.addWidget(lab)
         return box
+
+    def _show_shortcut_help(self) -> None:
+        """弹出 4 个快捷键的说明(Ctrl+L/R/F/Q)。raw + rewrite 两个工具条共用。"""
+        from .shortcut_help import ShortcutHelpDialog
+        d = ShortcutHelpDialog(self)
+        d.exec()
 
     def _update_raw_count(self):
         n = len(self.raw_edit.toPlainText()) if hasattr(self, "raw_edit") else 0
@@ -1630,6 +1644,14 @@ class EpisodePage(QWidget):
         self.script_save_btn = W.primary_btn("💾 " + tr("save"))
         self.script_save_btn.clicked.connect(self._save_script)
         row.addWidget(self.script_save_btn)
+        # ? 帮助按钮:弹出 4 个快捷键详细说明
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("slateIconBtn")
+        help_btn.setFixedSize(26, 26)
+        help_btn.setCursor(Qt.PointingHandCursor)
+        help_btn.setToolTip(tr("ai_edit_shortcut_hint"))
+        help_btn.clicked.connect(lambda: self._show_shortcut_help())
+        row.addWidget(help_btn)
         bl.addLayout(row)
         lay.addWidget(bar)
 
@@ -1849,15 +1871,16 @@ class EpisodePage(QWidget):
             bar.addWidget(b)
         lay.addLayout(bar)
 
-        # 漫画资产工具条(仅 comic 模式可见)
+        # 漫画资产工具条(仅 comic 模式可见)—— 仿分镜工作台 batch_video_btn 的「工具条最右 primary」放法
         self._comic_bar = QWidget()
         cb_lay = QHBoxLayout(self._comic_bar)
         cb_lay.setContentsMargins(0, 0, 0, 0)
         self._comic_batch = W.primary_btn("📕 " + tr("batch_comic_style"))
         self._comic_batch.setToolTip(tr("batch_comic_style_tip"))
         self._comic_batch.clicked.connect(self._batch_comic_assets)
-        cb_lay.addWidget(self._comic_batch)
+        # 推到工具条最右侧(此前居中,跟其它工具条位置不一致)
         cb_lay.addStretch(1)
+        cb_lay.addWidget(self._comic_batch)
         lay.addWidget(self._comic_bar)
 
         self.asset_stack = QStackedWidget()
@@ -1940,7 +1963,10 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_comic_assets(self):
-        """漫画风格批量:链式串行(上一个个完成再提下一个)+ 按钮全程等待态。"""
+        """漫画风格批量:链式串行(上一个个完成再提下一个)+ 按钮全程等待态。
+
+        主线程快照 image_model.currentData() —— 跟 _batch_comic 同一种 Internal C++ 报错。
+        """
         from ..pipeline import comic as comic_pipe
         tasks = [(kind, r["id"])
                  for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props"))
@@ -1953,6 +1979,7 @@ class EpisodePage(QWidget):
         if btn is not None:
             btn.setEnabled(False)
             btn.setText("⠋ " + tr("in_progress"))
+        snap_img = self.image_model.currentData()
 
         def run(i: int):
             if i >= len(tasks):
@@ -1965,7 +1992,7 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                    config_id=self.image_model.currentData())
+                                                    config_id=snap_img)
 
             def done(tid, result, error):
                 if error:
@@ -4360,7 +4387,12 @@ class EpisodePage(QWidget):
 
     def _batch_comic(self):
         """漫画批量配图:逐格**链式串行**(上一格完成再提下一格,不并发踩生图接口),
-        按钮全程等待态,最后一格完成才恢复(对齐其它批量按钮的等待效果)。"""
+        按钮全程等待态,最后一格完成才恢复(对齐其它批量按钮的等待效果)。
+
+        主线程快照:text_model / image_model currentData 不能再在 worker 线程里读,
+        否则语言切换/页面重建时拿 libshiboken "Internal C++ object already deleted",
+        表现是堆栈第一行 taskmgr.py:148,第二行 episode_page.py 的 self.fn —— 正是用户报告的报错。
+        """
         rows = db.q("SELECT id FROM comic_panels WHERE episode_id=? AND image_url IS NULL", (self.episode_id,))
         if not rows:
             info(tr("没有待生成的资产"))
@@ -4372,6 +4404,9 @@ class EpisodePage(QWidget):
         btn = getattr(self, "comic_batch_btn", None)
         if btn:
             btn.busy(tr("in_progress"))
+        # 主线程快照:把两个 QComboBox 的值定下来再交给 worker,避免上述 Internal C++ 报错
+        snap_text = self.text_model.currentData()
+        snap_img = self.image_model.currentData()
 
         def run(i: int):
             if i >= len(ids):
@@ -4383,9 +4418,9 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
-                                                    config_id=self.text_model.currentData())
+                                                    config_id=snap_text)
                 out, _p = image_client.generate_image(
-                    fp, config_id=self.image_model.currentData(),
+                    fp, config_id=snap_img,
                     size="1024x1536",
                     people=comic_pipe.panel_people_count(pid))
                 db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
