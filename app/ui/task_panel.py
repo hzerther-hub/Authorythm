@@ -17,13 +17,18 @@ from datetime import datetime
 
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
+from ..core.theme import (SLATE_ASSET_QSS, SLATE_BAR, SLATE_HAIR, SLATE_MUTED,
+                          SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_FAIL,
+                          SLATE_BG, SLATE_PAPER, MONO_STACK)
 from . import episode_cards as C
 from . import widgets as W
 
 STATE_OF = {"processing": ("pending", "in_progress"), "completed": ("done", "done"),
             "failed": ("failed", "failed"), "blocked": ("failed", "failed"),
             "pending": ("ready", "pending")}
-DOT_COLOR = {"pending": "#e0794b", "done": "#16a34a", "failed": "#dc2626", "ready": "#86909c"}
+# slate 状态点:不用 SaaS 的橘/绿/红三色,走 SLATE_ST_* 低饱和 —— 与启动台/工作台一致
+DOT_COLOR = {"pending": SLATE_ST_PROG, "done": SLATE_ST_DONE,
+             "failed": SLATE_ST_FAIL, "ready": SLATE_MUTED}
 
 
 class ErrorDialog(QDialog):
@@ -83,6 +88,10 @@ class TaskDrawer(QWidget):
     def __init__(self, episode_id: int | None = None, parent=None):
         super().__init__(parent)
         self.episode_id = episode_id
+        # Director's Slate:本抽屉继承 SLATE_ASSET_QSS(#inspector / #taskHead /
+        # #taskTitle / #taskRow / #taskIndex / #taskName / #taskMeta / #taskError /
+        # #statusDot 全部生效),不需逐 widget 设 inline
+        self.setStyleSheet(SLATE_ASSET_QSS)
         # 抽屉本体是「不绘制背景」的普通子控件 —— 主题里没有裸的 QWidget 背景规则,
         # 所以遮罩之外自然透出下层页面(与参考项目一致:当前界面被压暗但仍可见)。
         # 刻意**不要**用 WA_TranslucentBackground:该属性只适用于顶层窗口,用在子控件上
