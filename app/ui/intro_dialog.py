@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QTimer
+from PySide6.QtCore import QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
                                QGraphicsOpacityEffect, QHBoxLayout, QLabel,
@@ -106,9 +106,15 @@ class IntroPreview(QWidget):
         rect = self.stage_rect().toAlignedRect()
         p.fillRect(rect, Qt.black)
         if self.bg_image:                      # 叠加模式:铺分镜真实首帧/合成图当背景
+            # object-fit: cover(对齐参考 IntroEditorDialog):等比放大到铺满画幅框、
+            # 超出部分居中裁掉 —— 此前 drawPixmap(rect, pm, pm.rect()) 是整图拉伸,
+            # 方形首帧铺 9:16 框会横向拉变形
             pm = W.pixmap_from_media(self.bg_image, rect.width(), rect.height())
-            # drawPixmap 目标/源矩形类型必须一致(混用 QRect 与 QRectF 会直接抛签名错)
-            p.drawPixmap(rect, pm, pm.rect())
+            scale = max(rect.width() / pm.width(), rect.height() / pm.height())
+            dw, dh = int(pm.width() * scale), int(pm.height() * scale)
+            dx = rect.x() + (rect.width() - dw) // 2
+            dy = rect.y() + (rect.height() - dh) // 2
+            p.drawPixmap(QRect(dx, dy, dw, dh), pm, pm.rect())
         if self.show_grid:                      # 九宫格辅助线
             p.setPen(QPen(Qt.darkGray, 1, Qt.DotLine))
             for i in (1, 2):
