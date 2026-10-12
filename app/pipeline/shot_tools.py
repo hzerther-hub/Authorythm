@@ -134,11 +134,15 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
         first = sb["first_frame_image"]
     ref_list = collect_reference_images(episode_id, storyboard_id)
     prompt = resolve_prompt(dict(sb))
+    # 项目画幅透传(对齐参考 record.aspectRatio):不传 seedance 默认 1:1,竖屏项目全变方图
+    d_row = db.q1("""SELECT d.aspect_ratio FROM dramas d JOIN episodes e ON e.drama_id=d.id
+                     WHERE e.id=?""", (episode_id,))
     path, _provider = video_client.generate_video(
         prompt[:1500], resolution=resolution,
         duration=int(sb["duration"] or 8),
         first_frame=config.media_url_to_path(first), reference_images=ref_list,
-        config_id=config_id)
+        config_id=config_id,
+        aspect_ratio=(d_row["aspect_ratio"] if d_row else None) or None)
     db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
           (config.path_to_media_url(path), db.now(), storyboard_id))
     return config.path_to_media_url(path)

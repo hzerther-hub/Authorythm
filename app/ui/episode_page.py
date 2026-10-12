@@ -490,6 +490,8 @@ class EpisodePage(QWidget):
         # 英文界面一进中文项目就被劫持回中文(还会误触发一次"语言已切换"重建)。
         from ..core.config import resolve_content_language
         self._drama_lang = resolve_content_language(drama_id)
+        # 项目画幅:视频生成必须显式下发(不传 seedance 默认 1:1,竖屏项目全变方图)
+        self._drama_aspect_ratio = (d["aspect_ratio"] if "aspect_ratio" in d.keys() else "") or "9:16"
         nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (episode_id,))["c"]
         nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
         self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
@@ -3015,13 +3017,19 @@ class EpisodePage(QWidget):
             if self.sb_player.layout() is None:
                 vl = QVBoxLayout(self.sb_player)
                 vl.setContentsMargins(0, 0, 0, 0)
-            self.sb_player.layout().insertWidget(0, self._player_widget)
             # 未播放时用海报帧占位(对齐参考项目 <video poster>):QVideoWidget 在
-            # 没起播前只有一块黑,看不出这个镜头成片长什么样
+            # 没起播前只有一块黑,看不出这个镜头成片长什么样。
+            # 必须放进 QStackedWidget **重叠**占同一格 —— 之前直接 insertWidget 到
+            # 播放器下方会纵向堆叠,把 198px 的画面区劈成「上面一块黑 + 下面海报」,
+            # 看起来就是图片显示不完整。
             self._poster_label = QLabel()
             self._poster_label.setAlignment(Qt.AlignCenter)
             self._poster_label.setStyleSheet("border:none;")
-            self.sb_player.layout().insertWidget(1, self._poster_label)
+            self._player_stack = QStackedWidget()
+            self._player_stack.setMinimumHeight(150)
+            self._player_stack.addWidget(self._poster_label)   # 0 = 海报
+            self._player_stack.addWidget(self._player_widget)  # 1 = 真实画面
+            self.sb_player.layout().insertWidget(0, self._player_stack)
             self._player.positionChanged.connect(self._on_player_pos)
             self._player.durationChanged.connect(self._on_player_dur)
             self._player.playbackStateChanged.connect(self._on_player_state)
@@ -3034,6 +3042,13 @@ class EpisodePage(QWidget):
         self._apply_player_poster(url)
         self._sync_play_btn()
 
+    def _poster_show(self, on: bool):
+        """切 QStackedWidget:True=海报帧,False=真实画面。二者同格,不叠高度。"""
+        stack = getattr(self, "_player_stack", None)
+        if stack is None:
+            return
+        stack.setCurrentIndex(0 if on else 1)
+
     def _apply_player_poster(self, url: str):
         """播放器未起播时显示海报帧;缺海报就后台补抽,抽好再贴上去。"""
         from PySide6.QtMultimedia import QMediaPlayer
@@ -3041,26 +3056,23 @@ class EpisodePage(QWidget):
         poster = video_poster.poster_url(url)
         if not poster:
             self._poster_label.clear()
-            self._poster_label.setVisible(False)
+            self._poster_show(False)      # 没海报就退回真实画面(黑),别留空白
             self._queue_poster_for(getattr(self, "_sb_id", 0), url,
                                    lambda: self._apply_player_poster(url))
             return
         from . import widgets as _W
         self._poster_label.setPixmap(_W.pixmap_from_media(poster, 640, 0))
-        self._poster_label.setVisible(
+        self._poster_show(
             self._player.playbackState() != QMediaPlayer.PlaybackState.PlayingState)
 
     def _on_player_state(self, state):
-        """起播即隐藏海报帧,让位给真实画面(停止/暂停后不再盖回去,避免挡住暂停画面)。"""
+        """起播即切到真实画面;只在还没播过(position=0)时回到海报,避免遮住暂停画面。"""
         from PySide6.QtMultimedia import QMediaPlayer
         self._sync_play_btn()
-        lab = getattr(self, "_poster_label", None)
-        if lab is None:
-            return
         if state == QMediaPlayer.PlaybackState.PlayingState:
-            lab.setVisible(False)
+            self._poster_show(False)
         elif self._player.position() == 0:
-            lab.setVisible(True)
+            self._poster_show(True)
 
     def _toggle_play(self):
         if not hasattr(self, "_player"):
@@ -3098,10 +3110,10 @@ class EpisodePage(QWidget):
     def _clear_player(self):
         if hasattr(self, "_player"):
             self._player.stop()
-            self._player_widget.setVisible(False)
-        lab = getattr(self, "_poster_label", None)
-        if lab is not None:
-            lab.clear()          # 换镜头时别留着上一镜头的海报帧
+            self._player_stack.setVisible(False)   # 换镜头时别留着上一镜头的画面
+            lab = getattr(self, "_poster_label", None)
+            if lab is not None:
+                lab.clear()          # 也清掉海报,避免下个镜头短暂露出上一镜的图
         self.sb_player_ctrl.setVisible(False)
 
     def _update_narration_count(self):
@@ -3773,6 +3785,9 @@ class EpisodePage(QWidget):
                             r.get("composed_video_url") or r.get("video_url"))
             row_w.act_btn.setToolTip(action_tip)
 
+    def _drama_aspect(self) -> str:
+        return getattr(self, "_drama_aspect_ratio", "9:16")
+
     def _gen_one_video(self, sb_id: int) -> str:
         """同步生成本镜视频(批量串行路径逐镜调用);失败置 failed 并抛出。"""
         from ..pipeline import shot_tools
@@ -3793,7 +3808,8 @@ class EpisodePage(QWidget):
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
                 first_frame=first_frame, reference_images=ref_list,
-                config_id=self.video_model.currentData())
+                config_id=self.video_model.currentData(),
+                aspect_ratio=self._drama_aspect())
             # 用户在跑的过程中点了「停止生成」→ 丢弃这次结果,别把已归位的状态再写回去
             if sb_id in self._cancelled_sb:
                 self._cancelled_sb.discard(sb_id)
@@ -4225,24 +4241,23 @@ class EpisodePage(QWidget):
         # 拼接等待态:1s 心跳刷新「已耗时秒数」(对齐原版 mergeElapsedSec + nowTick)
         self._merge_tick = _MergeTick(self)
 
-        # 片头设置行(导出页唯一的合并设置)。
-        # 两个开关分列而非单一「加入片头」:原版 d262ac1 修的就是「叠加开了但卡片被默认值强开」——
-        # 前端必须把 intro_card / intro_overlay 显式透传,否则服务端默认 true 会盖掉用户选择。
+        # 片头行(对齐参考项目 .export-intro-row):「加入片头」单开关 + 片头名 + 编辑键;
+        # 开关是**会话内**状态(参考 introEnabled 不落库),模式(标题卡/叠加)在编辑器里设。
         intro_row = QHBoxLayout()
         intro_row.setSpacing(8)
-        self.intro_check = QCheckBox(tr("intro_card_mode"))
+        self.intro_check = QCheckBox(tr("intro_add"))
         self.intro_check.toggled.connect(self._on_intro_toggle)
         intro_row.addWidget(self.intro_check)
-        self.intro_overlay_check = QCheckBox(tr("intro_overlay_mode"))
-        self.intro_overlay_check.toggled.connect(self._on_intro_toggle)
-        intro_row.addWidget(self.intro_overlay_check)
         self.intro_title = QLineEdit()
         self.intro_title.setMaximumWidth(260)
         self.intro_title.setMaxLength(60)
         self.intro_title.setPlaceholderText(tr("intro_title_ph"))
+        self.intro_title.setVisible(False)
         intro_row.addWidget(self.intro_title)
         intro_btn = QPushButton("⚙ " + tr("edit_intro"))
         intro_btn.clicked.connect(self._open_intro)
+        intro_btn.setVisible(False)
+        self.intro_edit_btn = intro_btn
         intro_row.addWidget(intro_btn)
         intro_row.addStretch(1)
         self.intro_row = intro_row
@@ -4547,37 +4562,29 @@ class EpisodePage(QWidget):
 
     # ── 片头 ──
     def _load_intro_state(self):
-        d = db.q1("SELECT intro_title, intro_card, intro_overlay FROM dramas WHERE id=?",
-                  (self.drama_id,))
+        d = db.q1("SELECT intro_title FROM dramas WHERE id=?", (self.drama_id,))
         if not d:
             return
-        # 两个勾选各自回填(此前把 intro_overlay 并进卡片勾选,重启后叠加开关永远显示未勾)
-        self.intro_check.blockSignals(True)
-        self.intro_check.setChecked(bool(d["intro_card"]))
-        self.intro_check.blockSignals(False)
-        self.intro_overlay_check.blockSignals(True)
-        self.intro_overlay_check.setChecked(bool(d["intro_overlay"]))
-        self.intro_overlay_check.blockSignals(False)
+        # 「加入片头」是会话内开关(对齐参考 introEnabled:每次进页默认关,不落库);
+        # 片头名/字体/位置等持久化字段由编辑器负责
         self.intro_title.blockSignals(True)
         self.intro_title.setText(d["intro_title"] or "")
         self.intro_title.blockSignals(False)
-        self.intro_title.setVisible(self.intro_check.isChecked() or self.intro_overlay_check.isChecked())
+        on = self.intro_check.isChecked()
+        self.intro_title.setVisible(on)
+        self.intro_edit_btn.setVisible(on)
         if not getattr(self, "_intro_title_wired", False):
-            self.intro_title.editingFinished.connect(self._save_intro_state)
+            # 行内片头名只回写标题字段(对齐参考 onExportIntroTitle → 保存 intro_title)
+            self.intro_title.editingFinished.connect(self._save_intro_title)
             self._intro_title_wired = True
 
     def _on_intro_toggle(self, on: bool):
-        self.intro_title.setVisible(self.intro_check.isChecked() or self.intro_overlay_check.isChecked())
-        self._save_intro_state()
+        self.intro_title.setVisible(on)
+        self.intro_edit_btn.setVisible(on)
 
-    def _save_intro_state(self):
-        if not hasattr(self, "intro_check"):
-            return
-        # intro_overlay 此前漏存:勾了叠加、关掉应用,下次打开就回到未勾
-        db.ex("UPDATE dramas SET intro_title=?, intro_card=?, intro_overlay=?, updated_at=? WHERE id=?",
-              (self.intro_title.text().strip(), 1 if self.intro_check.isChecked() else 0,
-               1 if self.intro_overlay_check.isChecked() else 0,
-               db.now(), self.drama_id))
+    def _save_intro_title(self):
+        db.ex("UPDATE dramas SET intro_title=?, updated_at=? WHERE id=?",
+              (self.intro_title.text().strip(), db.now(), self.drama_id))
 
     def _merge_elapsed_sec(self, m: dict) -> str:
         """从成片记录的创建时间算已耗时秒数(心跳里逐秒跳动)。"""
@@ -4618,10 +4625,15 @@ class EpisodePage(QWidget):
         if len(ids) < 2:
             QMessageBox.information(self, tr("export_stage"), tr("merge_needs_two"))
             return
-        intro_title = self.intro_title.text().strip() or None
-        # 显式传两个标志(不给 None),否则服务端 intro_card 默认 true 会把「只叠加」的设置顶开
-        intro_card = self.intro_check.isChecked()
-        intro_overlay = self.intro_overlay_check.isChecked()
+        # 片头参数对齐参考:勾了「加入片头」才带上,标题取行内输入(空则回退剧名),
+        # 模式(标题卡/叠加)与字体字号位置时长全部读 drama 持久化字段(编辑器实时写库)
+        intro_on = self.intro_check.isChecked()
+        d = db.q1("SELECT title, intro_title, intro_card, intro_overlay FROM dramas WHERE id=?",
+                  (self.drama_id,)) or {}
+        intro_title = (self.intro_title.text().strip()
+                       or (d.get("intro_title") or d.get("title") or "")) if intro_on else None
+        intro_card = bool(d.get("intro_card")) if intro_on else False
+        intro_overlay = bool(d.get("intro_overlay")) if intro_on else False
 
         self._merge_in_flight = True
         self.merge_btn.setEnabled(False)
@@ -4630,7 +4642,7 @@ class EpisodePage(QWidget):
         def job(tid):
             return merge_pipe.merge_episode(
                 self.episode_id, ids,
-                intro_title=intro_title if (intro_card or intro_overlay) else None,
+                intro_title=intro_title,
                 intro_card=intro_card, intro_overlay=intro_overlay)
 
         def done(tid, result, error):

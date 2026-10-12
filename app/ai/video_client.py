@@ -30,13 +30,17 @@ def _ext_for(url: str) -> str:
     return Path(low).suffix or ".mp4"
 
 
-def _download(url: str, headers: dict | None = None) -> Path:
+def _download(url: str) -> Path:
+    """下载成片。
+
+    成片地址是上游给的 CDN 直链(通常带签名),**不带任何鉴权头** —— 带上上游
+    API 的 Authorization 会被 CDN 直接挡回 401。对齐参考项目 generation.ts:867
+    的 `downloadFile(videoUrl, 'videos')`:第三个参数 headers 不传,内部裸下,
+    也不做「401 再带鉴权重试」—— 重试只会用同样错误的凭据再失败一次,白白多耗
+    一个 600 秒超时的连接。
+    """
     out = config.STATIC_DIR / "videos" / f"{uuid.uuid4().hex}{_ext_for(url)}"
-    # 成片地址是带签名的 CDN 直链,带上上游 API 的 Authorization 反而会被拒(实测 401);
-    # 先裸下,401/403 再带鉴权头补一次(兼容个别确实要鉴权的 provider)
     resp = requests.get(url, timeout=600)
-    if resp.status_code in (401, 403) and headers:
-        resp = requests.get(url, headers=headers, timeout=600)
     if resp.status_code != 200:
         raise AIError(f"下载生成视频失败 HTTP {resp.status_code}")
     out.write_bytes(resp.content)
@@ -168,10 +172,13 @@ def _poll(fetch_status, interval: int, rounds: int) -> str:
 
 def generate_video(prompt: str, resolution: str = "720p", duration: int | None = None,
                    first_frame: str | None = None, config_id: int | None = None,
-                   reference_images: list[str] | None = None) -> tuple[Path, str]:
+                   reference_images: list[str] | None = None,
+                   aspect_ratio: str | None = None) -> tuple[Path, str]:
     """文生视频 / 图生视频(first_frame 本地路径)。
 
     reference_images:@角色 形象参考图本地路径列表(角色一致性)。
+    aspect_ratio:项目画幅(如 9:16)。对齐参考项目 `ratio: record.aspectRatio || 'adaptive'`
+    —— 不传时 seedance 默认出 1:1 方图,竖屏项目全变方块,必须显式下发。
     agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
     返回 (本地路径, provider)。
 
@@ -194,23 +201,23 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
 
     # 提交 + 轮询整体走重试包装:永久错误立即失败,限流/队列满按长预算退避,
     # 上游给了 retry_at 时间戳就睡到那一刻(最多跟 2 次)。
-    # Agnes 限流预算 30 分钟(对齐参考 RATE_LIMIT_CREATE_BUDGET_MS:实测拥塞可持续
-    # 20 分钟+);其余 provider 维持默认 15 分钟不动。
+    # 限流预算 30 分钟对齐参考 RATE_LIMIT_CREATE_BUDGET_MS(实测 Agnes 拥塞可持续
+    # 20 分钟+),所有 provider 的限流路径同待遇。
     return _generate_with_retry(
         lambda: _dispatch_once(cfg, base, headers, prompt, resolution, duration,
-                               first_frame, refs, config_id, reference_images or []),
-        rate_limit_budget_s=1800.0 if provider == "agnes" else 900.0)
+                               first_frame, refs, config_id, reference_images or [],
+                               aspect_ratio))
 
 
 def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
-                   first_frame, refs, config_id, reference_images):
+                   first_frame, refs, config_id, reference_images, aspect_ratio=None):
     """按 provider 分发一次(不含重试)。"""
     provider = cfg["provider"]
     if provider == "volcengine":
         body: dict = {"model": cfg["model"], "content": [
             {"type": "text", "text": prompt + f" --resolution {resolution}" +
              (f" --duration {duration}" if duration else "") +
-             (" --ratio 16:9" if resolution.lower() not in ("720p", "1080p", "480p") else "")}]}
+             (f" --ratio {aspect_ratio}" if aspect_ratio else "")}]}
         for ref in refs:
             body["content"].append({"type": "image_url", "image_url": {"url": ref},
                                     "role": "reference_image"})
@@ -231,7 +238,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             return ("failed" if status == "failed" else "running"), video, st.get("error")
 
         url = _poll(check, 10, 300)
-        return _download(url, headers), provider
+        return _download(url), provider
 
     if provider == "minimax":
         body = {"model": cfg["model"], "prompt": prompt}
@@ -246,7 +253,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             return ("failed" if status == "Fail" else "running"), file.get("download_url"), st.get("message")
 
         url = _poll(check2, 10, 300)
-        return _download(url, headers), provider
+        return _download(url), provider
 
     if provider == "aliyun":
         body = {"model": cfg["model"], "input": {"prompt": prompt},
@@ -267,7 +274,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             return ("failed" if status in ("FAILED", "CANCELED") else "running"), None, out.get("message")
 
         url = _poll(check3, 10, 300)
-        return _download(url, headers), provider
+        return _download(url), provider
 
     if provider == "agnes":
         # 对齐参考项目 agnes-video.ts(当前版):POST /v1/videos、mode 按 model 版本映射
@@ -276,8 +283,9 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
         from .agnes_video import generate_agnes
         url_v = generate_agnes(cfg, base, headers, prompt=prompt, resolution=resolution,
                                duration=duration, first_frame=first_frame,
-                               reference_images=reference_images)
-        return _download(url_v, headers), provider
+                               reference_images=reference_images,
+                               aspect_ratio=aspect_ratio)
+        return _download(url_v), provider
 
     if provider == "runninghub":
         return _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
@@ -404,7 +412,7 @@ def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
         return "running", None, None
 
     url = _poll(check, 10, 300)
-    return _download(url, headers), "runninghub"
+    return _download(url), "runninghub"
 
 
 # ── 小云雀(剪映 xyq.jianying.com):沉浸式短片 API,计费走小云雀积分(会员折扣价)──
@@ -618,13 +626,16 @@ class VideoRetryExhausted(RuntimeError):
         self.__cause__ = head
 
 
-def _generate_with_retry(fn, *, max_attempts: int = 6,
-                         rate_limit_budget_s: float = 900.0,
+def _generate_with_retry(fn, *, max_attempts: int = 20,
+                         rate_limit_budget_s: float = 1800.0,
                          create_budget_s: float = 180.0) -> tuple[Path, str]:
     """提交 + 轮询的重试包装。
 
     - **永久错误立即失败**:4xx(缺 Key / 参数错 / 模型下线)退避再试也没用,只是烧配额;
-    - **限流 / 队列满**:长预算(默认 15 分钟,实测 Agnes 拥塞会持续 20 分钟+)按 30s→45s→… 退避,封顶 2 分钟;
+    - **限流 / 队列满**:长预算按 30s→45s→… 退避,封顶 2 分钟,把拥塞「等过去」
+      而不是快速失败。对齐参考项目 CREATE_RETRY_MAX_ATTEMPTS=20 / 30 分钟预算
+      (此前这里只试 6 次 ≈ 6 分钟,Agnes 实测 video_queue_full 拥塞 20 分钟+,
+      6 次必然成批早死 —— 今天整批失败全是这个);
     - **retry_at 时间戳**:上游明确给了「X 之后再试」就直接睡到那一刻,最多跟 2 次、单次 ≤24h;
     - **串行门全程持锁**:重试期间不放开,两个任务不会同时踩上游;
     - **失败上报整条尝试链**:抛 VideoRetryExhausted,不再只报最后一次。
@@ -636,6 +647,7 @@ def _generate_with_retry(fn, *, max_attempts: int = 6,
     attempts: list = []          # (轮次, 距开始秒数, 异常类名, 摘要)
     started = _t.time()
     retry_at_follows = 0
+    rate_limited_mode = False
     for attempt in range(max_attempts):
         with gate:
             acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
@@ -647,8 +659,10 @@ def _generate_with_retry(fn, *, max_attempts: int = 6,
                                  type(exc).__name__, str(exc)[:160]))
         if is_permanent_error(last_err):
             raise VideoRetryExhausted(attempts, last_err)   # 4xx 快速失败,不进退避
+        if _is_rate_limited(last_err):
+            rate_limited_mode = True             # 一旦命中限流,预算升到长档且不再回落
+        budget = rate_limit_budget_s if rate_limited_mode else create_budget_s
         elapsed = _t.time() - started
-        budget = rate_limit_budget_s if _is_rate_limited(last_err) else create_budget_s
         wait = retry_at_wait_seconds(str(last_err), retry_at_follows)
         if wait is not None:
             retry_at_follows += 1

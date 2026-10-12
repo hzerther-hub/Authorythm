@@ -85,7 +85,8 @@ class IntroPreview(QWidget):
         p.fillRect(rect, Qt.black)
         if self.bg_image:                      # 叠加模式:铺分镜真实首帧/合成图当背景
             pm = W.pixmap_from_media(self.bg_image, rect.width(), rect.height())
-            p.drawPixmap(rect, pm, QRectF(pm.rect()))
+            # drawPixmap 目标/源矩形类型必须一致(混用 QRect 与 QRectF 会直接抛签名错)
+            p.drawPixmap(rect, pm, pm.rect())
         if self.show_grid:                      # 九宫格辅助线
             p.setPen(QPen(Qt.darkGray, 1, Qt.DotLine))
             for i in (1, 2):
@@ -107,93 +108,126 @@ class IntroPreview(QWidget):
 
 
 class IntroEditorDialog(QDialog):
-    """片头编辑器:显示方式 / 片头名 / 字体 / 字号 / 位置 / 时长,改动即存。"""
+    """片头编辑器(对齐参考 IntroEditorDialog):左预览舞台 + 右控制列,改动即存。
+
+    预览舞台可用鼠标拖拽标题调位置;控制列的字号/位置滑杆带 % 实时数值,
+    模式(黑底标题卡 / 正片文字叠加)也在这里设,导出页只留一个「加入片头」总开关。
+    """
 
     def __init__(self, parent, drama_id: int, aspect: str = "16:9", on_saved=None):
         super().__init__(parent)
         self.drama_id = drama_id
         self._on_saved = on_saved
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
-        self.setWindowTitle(tr("片头设置"))
-        self.resize(680, 620)
+        self.setWindowTitle(tr("edit_intro"))
+        self.resize(880, 520)
         root = QVBoxLayout(self)
 
         self.aspect = aspect or "16:9"
-        self.preview = IntroPreview()
-        self.preview.setMinimumHeight(180)
-        self.preview.setMaximumHeight(260)
-        self._apply_preview_aspect()
-        root.addWidget(self.preview)
 
-        f = QFormLayout()
-        mode_row = QWidget()
-        m_lay = QHBoxLayout(mode_row)
-        m_lay.setContentsMargins(0, 0, 0, 0)
+        # ── 左:预览舞台 + 拖拽提示 + 播放/重置 ──
+        left = QVBoxLayout()
+        self.preview = IntroPreview()
+        self.preview.setMinimumHeight(240)
+        self._apply_preview_aspect()
+        left.addWidget(self.preview, 1)
+        hint = W.muted(tr("intro_drag_hint"))
+        hint.setAlignment(Qt.AlignCenter)
+        left.addWidget(hint)
+        stage_btns = QHBoxLayout()
+        self.play_btn = QPushButton(tr("▶ 播放预览"))
+        self.play_btn.clicked.connect(self._play)
+        reset = QPushButton(tr("intro_reset"))
+        reset.clicked.connect(self._reset)
+        stage_btns.addWidget(self.play_btn)
+        stage_btns.addWidget(reset)
+        stage_btns.addStretch(1)
+        left.addLayout(stage_btns)
+
+        # ── 右:控制列(模式/片头名/字体/字号/位置/时长) ──
+        right = QVBoxLayout()
+        right.setSpacing(8)
+        mode_lab = QLabel(tr("intro_mode"))
+        mode_lab.setObjectName("inspectorLabel")
+        right.addWidget(mode_lab)
         self.card_cb = QCheckBox(tr("黑底标题卡(前置)"))
         self.card_cb.setChecked(bool(d["intro_card"]))
         self.overlay_cb = QCheckBox(tr("文字叠加正片开头"))
         self.overlay_cb.setChecked(bool(d["intro_overlay"]))
-        m_lay.addWidget(self.card_cb)
-        m_lay.addWidget(self.overlay_cb)
-        m_lay.addStretch(1)
-        f.addRow(tr("显示方式"), mode_row)
-        # 叠加模式的预览背景:取本集首个有 first_frame_image / composed_image 的分镜
-        # (storyboards 表没有 image_url 列,用错字段会让预览永远黑底)
+        right.addWidget(self.card_cb)
+        right.addWidget(self.overlay_cb)
         self.overlay_cb.toggled.connect(self._sync_preview_bg)
         self._sync_preview_bg(self.overlay_cb.isChecked())
 
+        def _lab(text: str) -> QLabel:
+            l = QLabel(text)
+            l.setObjectName("inspectorLabel")
+            return l
+
+        right.addWidget(_lab(tr("片头名")))
         self.title_edit = QLineEdit(d["intro_title"] or d["title"] or "")
         self.title_edit.setMaxLength(60)
-        f.addRow(tr("片头名"), self.title_edit)
+        right.addWidget(self.title_edit)
 
+        right.addWidget(_lab(tr("字体")))
         self.font_combo = QComboBox()
         for it in INTRO.list_fonts():
             self.font_combo.addItem(it["name"], it["file"])
         if d["intro_font"]:
             i = self.font_combo.findData(d["intro_font"])
             self.font_combo.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("字体"), self.font_combo)
+        right.addWidget(self.font_combo)
 
+        self.size_lab = _lab(tr("intro_font_size"))
+        right.addWidget(self.size_lab)
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(2, 50)
         self.size_slider.setValue(int((d["intro_font_size"] or 0.09) * 100))
-        f.addRow(tr("字号"), self.size_slider)
+        right.addWidget(self.size_slider)
 
+        self.pos_lab = _lab(tr("intro_pos"))
+        right.addWidget(self.pos_lab)
         self.x_slider = QSlider(Qt.Horizontal)
         self.x_slider.setRange(2, 98)
         self.x_slider.setValue(int((d["intro_pos_x"] if d["intro_pos_x"] is not None else 0.5) * 100))
-        f.addRow(tr("位置X"), self.x_slider)
+        right.addWidget(self.x_slider)
         self.y_slider = QSlider(Qt.Horizontal)
         self.y_slider.setRange(2, 98)
         self.y_slider.setValue(int((d["intro_pos_y"] if d["intro_pos_y"] is not None else 0.5) * 100))
-        f.addRow(tr("位置Y"), self.y_slider)
+        right.addWidget(self.y_slider)
 
+        dur_row = QHBoxLayout()
+        dl = _lab(tr("intro_duration"))
+        dur_row.addWidget(dl)
+        dur_row.addStretch(1)
         self.dur_spin = QSpinBox()
         self.dur_spin.setRange(0, 10)
         self.dur_spin.setSingleStep(1)
         self.dur_spin.setSpecialValueText(tr("自动"))
         self.dur_spin.setValue(int(d["intro_duration"] or 0))
-        f.addRow(tr("时长(秒)"), self.dur_spin)
-        root.addLayout(f)
+        self.dur_spin.setSuffix(" s")
+        dur_row.addWidget(self.dur_spin)
+        right.addLayout(dur_row)
+        right.addStretch(1)
 
-        hint = W.muted(tr("在预览区拖拽文字可调整位置;点「播放」预览淡入淡出效果"))
-        root.addWidget(hint)
+        body = QHBoxLayout()
+        body.addLayout(left, 3)
+        body.addLayout(right, 2)
+        root.addLayout(body, 1)
+        # 预览舞台定尺寸后居中摆放(参考 intro-editor-stage)
+        left.setAlignment(self.preview, Qt.AlignCenter)
 
         btns = QHBoxLayout()
-        self.play_btn = QPushButton(tr("▶ 播放预览"))
-        self.play_btn.clicked.connect(self._play)
-        reset = QPushButton(tr("重置布局"))
-        reset.clicked.connect(self._reset)
-        save = W.primary_btn(tr := tr("保存"))
+        save = W.primary_btn(tr("save"))
         save.clicked.connect(self._save)
-        close = QPushButton(tr("关闭"))
+        close = QPushButton(tr("close"))
         close.clicked.connect(self.accept)
-        for b in (self.play_btn, reset, save, close):
-            btns.addWidget(b)
         btns.addStretch(1)
+        btns.addWidget(save)
+        btns.addWidget(close)
         root.addLayout(btns)
 
-        # 预览联动
+        # 预览联动(滑杆数值同步进 % 标签)
         self.preview.on_moved = lambda: (self.x_slider.setValue(int(self.preview.px * 100)),
                                          self.y_slider.setValue(int(self.preview.py * 100)))
         self._sync_preview()
@@ -211,6 +245,9 @@ class IntroEditorDialog(QDialog):
         p.px = self.x_slider.value() / 100
         p.py = self.y_slider.value() / 100
         p.update()
+        # 滑杆标签带 % 实时数值(对齐参考 introFontSize · 9% / X 50% / Y 50%)
+        self.size_lab.setText(f"{tr('intro_font_size')} · {self.size_slider.value()}%")
+        self.pos_lab.setText(f"{tr('intro_pos')} · X {self.x_slider.value()}% / Y {self.y_slider.value()}%")
 
     def _sync_preview_bg(self, overlay_on: bool):
         if not overlay_on:

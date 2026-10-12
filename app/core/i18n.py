@@ -101,6 +101,8 @@ Z = {  # 中文(基准)
  "shot_stat": "{0}/{1} 已生成 · 已选 {2}",
  "select_all": "全选已生成", "add_intro": "加入片头",
  "intro_card_mode": "片头标题卡", "intro_overlay_mode": "叠加文字", "edit_intro": "编辑片头", "intro_title_ph": "片头名(默认剧名)",
+ "intro_add": "加入片头", "intro_drag_hint": "拖拽标题可调整位置", "intro_reset": "恢复默认",
+ "intro_mode": "片头方式", "intro_font_size": "字号", "intro_pos": "位置", "intro_duration": "时长",
  "merging": "拼接中…", "merge_done": "拼接完成", "merge_failed": "拼接失败", "merge_preview_title": "成片预览",
  "merge_needs_two": "请至少勾选 2 个已有视频的镜头", "download_ok": "已下载",
  # 任务抽屉

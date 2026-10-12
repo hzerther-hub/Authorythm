@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import time
 import uuid
 from pathlib import Path
@@ -219,10 +220,29 @@ def generate_image(prompt: str, out_name: str | None = None,
         base = cfg["base_url"].rstrip("/")
 
         def _bail_size(sz: str | None) -> str:
+            """项目内尺寸 → 百炼档位(对齐 qwen-image.ts normalizeSize):
+            qwen-image 总像素须在 512²~2048² 之间,1920*1080 超上限被服务端
+            归一到 1024*1024(实测三视图变方形);等比缩到上限内才保得住比例。"""
             if not sz:
                 return "1024*1024"
-            w, _, h = sz.replace("x", "*").partition("*")
-            return f"{w or 1024}*{h or w or 1024}"
+            m = re.match(r"^(\d+)\s*[xX*]\s*(\d+)$", sz.strip())
+            if not m:
+                return "1024*1024"
+            w, h = int(m.group(1)), int(m.group(2))
+            if w <= 0 or h <= 0:
+                return "1024*1024"
+            total = w * h
+            if total < 512 * 512:
+                return f"{max(512, w)}*{max(512, h)}"
+            if total > 2048 * 2048:
+                scale = (2048 * 2048 / total) ** 0.5
+                w = max(512, round(w * scale))
+                h = max(512, round(h * scale))
+                # 凑整后可能仍略超上限(1920x1080 → 2731*1536 = 4194816 > 4194304)
+                while w * h > 2048 * 2048:
+                    w = max(512, int(w * 0.98))
+                    h = max(512, int(h * 0.98))
+            return f"{w}*{h}"
 
         url = f"{base}/api/v1/services/aigc/multimodal-generation/generation"
         body: dict = {"model": cfg["model"],
