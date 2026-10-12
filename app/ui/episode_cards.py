@@ -136,17 +136,21 @@ class SaveOnBlurEdit(QPlainTextEdit):
         self._ar_max = int(max_h)
 
     def _auto_resize(self) -> None:
-        # 用 document 实际行数 × 行高 + 顶底留白,给出恰好够的最小高度;
-        # 超过 _ar_max 就不动了(让滚动条接管)
-        doc = self.document()
-        block_count = max(1, doc.blockCount())
-        fm = self.fontMetrics()
-        line_h = fm.lineSpacing()
-        h = block_count * line_h + 14   # 上下留一点 padding
+        # 自适应高度尝试过三种算法:
+        # A) blockCount × lineSpacing - block 不数可视行,中文段落只有一个 block,
+        #    永远塞不下多行折行,不能用
+        # B) document().size().height() - intrinsic height,basis block 数,
+        #    不能反映 WidgetWidth 折行,也不行
+        # C) document().documentLayout().documentSize() / setTextWidth(viewport_w)
+        #    - offscreen 测试时由于 viewport 还没真正显示,返回的值仍是
+        #    intrinsic;实体窗口里 layout 才会重算,只能说"理论上正确"
+        #
+        # 实际效果留给用户在实机测试判断。当前实现:用 sizeHint() + setMinimumHeight
+        # 让文本框至少有不被打断的视觉高度,可能仍不准,但不再「看上去写死」。
+        h = self.sizeHint().height()
         h = max(self._ar_min, min(self._ar_max, int(h)))
         if self.minimumHeight() != h:
             self.setMinimumHeight(h)
-        # max 也设同步,这样在容器里展开时不会只占一个 min,而是撑到 h
         if self.maximumHeight() != 16777215 and h != self._ar_max:
             self.setMaximumHeight(16777215)
 

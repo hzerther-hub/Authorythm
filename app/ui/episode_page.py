@@ -977,12 +977,19 @@ class EpisodePage(QWidget):
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
-        # ? 帮助按钮:弹出 4 个快捷键详细说明
+        # ? 帮助按钮:显著放工具条尾 + 文字 "?" 写大一些,白底可见。
+        # 用户报「没看到」是因为 26x26 在工具条尾同列被挤到边缘,改 32x32
+        # + 黑底「?」 + 字号 16px,显眼;工具提示与点击共存帮助两种引导。
+        from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
-        help_btn.setFixedSize(26, 26)
+        help_btn.setFixedSize(32, 32)
         help_btn.setCursor(Qt.PointingHandCursor)
-        help_btn.setToolTip(tr("ai_edit_shortcut_hint"))
+        f = QFont()
+        f.setBold(True)
+        f.setPointSize(15)
+        help_btn.setFont(f)
+        help_btn.setToolTip("⌨  " + tr("ai_edit_shortcut_hint"))
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
         self.review_badge = QPushButton("")
@@ -1290,6 +1297,9 @@ class EpisodePage(QWidget):
         """单章生成:**流式**——思考过程实时显示在提示行右侧状态条,编辑器只放最终正文。
 
         写完进入审校/修复(写进 sys_task.stage,任务面板可见);按钮 busy + 工具行禁用防误点。
+
+        主线程快照 text_model.currentData():worker 线程读 QComboBox 与之前 _gen_one_video
+        是同一种 Internal C++ 报错模式(语言切换 / 页面重建时 C++ 析构),必须 snap。
         """
         from ..pipeline import novel as novel_pipe
         from ..agents.prompts import load_prompt
@@ -1302,6 +1312,8 @@ class EpisodePage(QWidget):
         if getattr(self, "_novel_in_flight", False):
             return
         self._save_raw_silent()
+        # 主线程一次性抓 text_model.currentData();下面的 job / taskmgr 闭包都用它
+        snap_text_cfg = self.text_model.currentData()
         # 设定未齐:先同步开书规划再写(罕见分支,无流式;规划本身也是一次长调用)
         if not db.q1("SELECT novel_outline FROM dramas WHERE id=?", (self.drama_id,))["novel_outline"]:
             self._novel_in_flight = True
@@ -1310,9 +1322,9 @@ class EpisodePage(QWidget):
             idea = self.raw_edit.toPlainText().strip()[:6000] or self._drama["title"]
 
             def job0(tid):
-                novel_pipe.plan_novel(self.drama_id, idea, config_id=self.text_model.currentData())
+                novel_pipe.plan_novel(self.drama_id, idea, config_id=snap_text_cfg)
                 return novel_pipe.write_chapter_with_review(
-                    self.episode_id, config_id=self.text_model.currentData(), task_id=tid)
+                    self.episode_id, config_id=snap_text_cfg, task_id=tid)
 
             def done0(tid, result, error):
                 self._novel_done(result, error)
@@ -1325,7 +1337,7 @@ class EpisodePage(QWidget):
         lang = get_setting("content_language", "zh")
         worker = StreamWorker(novel_pipe.chapter_prompt(self.episode_id),
                               system=load_prompt("novel_writer", lang),
-                              config_id=self.text_model.currentData(),
+                              config_id=snap_text_cfg,
                               temperature=0.6, max_tokens=None, parent=self)
         self._novel_stream = worker
         stat = {"r": 0, "c": 0}
@@ -1360,7 +1372,7 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 return novel_pipe.write_chapter_with_review(
-                    self.episode_id, config_id=self.text_model.currentData(), task_id=tid,
+                    self.episode_id, config_id=snap_text_cfg, task_id=tid,
                     content=text)
             TASKMGR.submit("novel", job, lambda t, r, e: self._novel_done(r, e),
                            episode_id=self.episode_id, drama_id=self.drama_id)
@@ -1644,12 +1656,18 @@ class EpisodePage(QWidget):
         self.script_save_btn = W.primary_btn("💾 " + tr("save"))
         self.script_save_btn.clicked.connect(self._save_script)
         row.addWidget(self.script_save_btn)
-        # ? 帮助按钮:弹出 4 个快捷键详细说明
+        # ? 帮助按钮:贴工具条最右,32x32 黑底「?」 + 显著 tooltip,
+        # 不再被挤出视野
+        from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
-        help_btn.setFixedSize(26, 26)
+        help_btn.setFixedSize(32, 32)
         help_btn.setCursor(Qt.PointingHandCursor)
-        help_btn.setToolTip(tr("ai_edit_shortcut_hint"))
+        f = QFont()
+        f.setBold(True)
+        f.setPointSize(15)
+        help_btn.setFont(f)
+        help_btn.setToolTip("⌨  " + tr("ai_edit_shortcut_hint"))
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
         bl.addLayout(row)
@@ -1672,7 +1690,8 @@ class EpisodePage(QWidget):
         self.script_edit.setPlaceholderText(tr("script_ph"))
         self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         install_ai_edit_shortcut(self.script_edit, self._open_ai_edit,
-                                      self._open_replace, self._open_qa)
+                                      self._open_replace, self._open_qa,
+                                      self._open_find)
         self.script_edit.textChanged.connect(self._update_script_dirty)
         lay.addWidget(self.script_edit, 1)
         ai_row = QHBoxLayout()
