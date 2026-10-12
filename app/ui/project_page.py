@@ -610,13 +610,14 @@ class ProjectPage(QWidget):
         head = QHBoxLayout(head_card)
         head.setContentsMargins(16, 10, 16, 10)
         head.setSpacing(12)
-        back = QPushButton(f"←  {tr('back')}")  # 用户反馈:光箭头不易识别 → 中英文都有
-        back.setFixedHeight(32)
+        back = QPushButton("←")   # 用户反馈:去掉「返回项目」文字,只留箭头图标
+        back.setFixedSize(32, 32)
         back.setStyleSheet(
-            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:6px;"
-            "color:#4e5969;padding:0 12px;font-weight:600;font-size:13px;}"
+            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:16px;"
+            "color:#4e5969;font-weight:700;font-size:16px;}"
             "QPushButton:hover{background:#e9ebef;border-color:#0E0F12;color:#0E0F12;}")
         back.setCursor(Qt.PointingHandCursor)
+        back.setToolTip(tr("back"))   # tooltip 给悬停说明,不影响视觉
         back.clicked.connect(self._go_back)
         self.title = W.h1("")
         self.title.setStyleSheet("font-size:17px; font-weight:700;")
