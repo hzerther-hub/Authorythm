@@ -22,6 +22,7 @@ from ..ai.tts_client import test_config as tts_test
 from ..ai.video_client import test_config as video_test
 from ..core import config, db
 from ..core.i18n import LANGS, tr
+from ..core.theme import SLATE_FORM_QSS
 from . import widgets as W
 from .braille import WaitingButton
 from .toast import err, ok as ok_toast
@@ -63,6 +64,19 @@ class SettingsDialog(QDialog):
             self.stack.addWidget(p)
         self.tabs_nav.currentRowChanged.connect(self.stack.setCurrentIndex)
         self.tabs_nav.setCurrentRow(0)
+        # Director's Slate: 全局控件表单 slate 化(已在 theme.SLATE_FORM_QSS)。
+        # 这里额外覆盖:left nav 的当前行选中态用 slate 边 + 文字,徽章/数字色保留.
+        # 搜索/过滤/排序等复合控件因 settings 极少用,依赖级联即可。
+        self.setStyleSheet(
+            SLATE_FORM_QSS
+            + "QListWidget#tabsNav { background: " + "transparent; border: none; } "
+            + "QListWidget#tabsNav::item { padding: 9px 14px; color: " + "#4e5969; font-size: 12px; "
+              "border-radius: 3px; margin: 0 6px 1px; } "
+            + "QListWidget#tabsNav::item:hover { background: #f5f4ef; color: #0e0f12; } "
+            + "QListWidget#tabsNav::item:selected { background: #0e0f12; color: #f5f4ef; "
+              "font-weight: 700; }"
+        )
+        self.tabs_nav.setObjectName("tabsNav")
 
     # ── AI 服务 ──
     def _page_ai(self) -> QWidget:
@@ -93,7 +107,13 @@ class SettingsDialog(QDialog):
         chips = QHBoxLayout()
         for st in registry.SERVICE_TYPES:
             b = QPushButton(tr(SVC_LABEL[st]))
-            b.setStyleSheet("QPushButton{border-radius:14px;padding:5px 18px;background:rgba(128,128,128,30);font-weight:600;}")
+            b.setStyleSheet(
+                "QPushButton{border:1px solid #DCDAD3;border-radius:3px;padding:5px 14px;"
+                "background:transparent;color:#1F2329;font-weight:600;letter-spacing:0.5px;"
+                "font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;font-size:11px;}"
+                "QPushButton:hover{border-color:#0E0F12;color:#0E0F12;background:#F5F4EF;}"
+            )
+            b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, s=st: self._add_service(s))
             chips.addWidget(b)
         chips.addStretch(1)
