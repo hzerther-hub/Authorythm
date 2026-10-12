@@ -610,10 +610,13 @@ class ProjectPage(QWidget):
         head = QHBoxLayout(head_card)
         head.setContentsMargins(16, 10, 16, 10)
         head.setSpacing(12)
-        back = QPushButton("← " + tr("back"))
-        back.setFixedSize(30, 30)
-        back.setStyleSheet("QPushButton{background:#f7f8fa;border:none;border-radius:15px;"
-                           "color:#4e5969;}")
+        back = QPushButton(f"←  {tr('back')}")  # 用户反馈:光箭头不易识别 → 中英文都有
+        back.setFixedHeight(32)
+        back.setStyleSheet(
+            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:6px;"
+            "color:#4e5969;padding:0 12px;font-weight:600;font-size:13px;}"
+            "QPushButton:hover{background:#e9ebef;border-color:#0E0F12;color:#0E0F12;}")
+        back.setCursor(Qt.PointingHandCursor)
         back.clicked.connect(self._go_back)
         self.title = W.h1("")
         self.title.setStyleSheet("font-size:17px; font-weight:700;")
@@ -657,10 +660,29 @@ class ProjectPage(QWidget):
         root.addWidget(head_card)
         self.head_card = head_card
 
-        # 项目封面区在 load() 中按 drama_id 构建
+        # 封面 + 前四章节:封面在左,前四章节快速视图在右(用户要求"前四个章节放到右上")。
+        # 后续 5/6/7... 的完整章节仍在 tabs → 「剧集列表」里继续展示,不改。
+        upper = QHBoxLayout()
+        upper.setSpacing(14)
         self.cover_holder = QWidget()
         self.cover_holder.setLayout(QVBoxLayout())
-        root.addWidget(self.cover_holder)
+        upper.addWidget(self.cover_holder, 0)
+        self.recent4_holder = QWidget()
+        recent4_lay = QVBoxLayout(self.recent4_holder)
+        recent4_lay.setContentsMargins(0, 0, 0, 0)
+        recent4_lay.setSpacing(6)
+        self.recent4_label = W.muted("前 4 章")
+        self.recent4_label.setStyleSheet(
+            "color:#0E0F12; font-family:ui-monospace,'SF Mono',Consolas,monospace;"
+            "font-size:11px; font-weight:700; letter-spacing:2px;")
+        recent4_lay.addWidget(self.recent4_label)
+        self.recent4_grid = QGridLayout()
+        self.recent4_grid.setContentsMargins(0, 0, 0, 0)
+        self.recent4_grid.setSpacing(8)
+        recent4_lay.addLayout(self.recent4_grid)
+        recent4_lay.addStretch(1)
+        upper.addWidget(self.recent4_holder, 1)
+        root.addLayout(upper)
 
         self.tabs = QTabWidget()
         ep_holder = QWidget()
@@ -842,6 +864,13 @@ class ProjectPage(QWidget):
             if w:
                 w.setParent(None)
                 w.deleteLater()
+        # 前四章节快速视图(用户要求右上展示前 4 章,后续仍走 tabs)
+        while self.recent4_grid.count():
+            item = self.recent4_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.setParent(None)
+                w.deleteLater()
         rows = db.q("SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
         counts = {r["episode_id"]: r["c"] for r in db.q(
             "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
@@ -861,6 +890,16 @@ class ProjectPage(QWidget):
             grid.addWidget(EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
                                        enter=self._on_enter, rel_needed=self),
                            i // cols, i % cols)
+        # 前四章节:放在右上,2×2 网格,只展示前 4 个 EP 卡(同样 enter/rel_needed 信号)
+        recent = [dict(r) for r in rows[:4]]
+        rcounts = {r["episode_id"]: r["c"] for r in db.q(
+            "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
+        for i, d in enumerate(recent):
+            d["storyboard_count"] = rcounts.get(d["id"], 0)
+            self.recent4_grid.addWidget(
+                EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
+                            enter=self._on_enter, rel_needed=self),
+                i // 2, i % 2)
         self.ep_hint.setText("" if self.can_add_episode() else tr("ep_limit_hint"))
         self.ep_hint.setVisible(not self.can_add_episode())
         while self.lib_grid.count():
