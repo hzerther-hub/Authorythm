@@ -1621,22 +1621,18 @@ class EpisodePage(QWidget):
 
     # ── 阶段② AI 改写 ──
     def _panel_rewrite(self, lay):
-        """AI 改写页:步骤指示器 + 字数 + 文风 + 改写/保存,正文区三态(空/加载/编辑)。"""
+        """AI 改写页:对齐 assets 工具条布局(直接 QHBoxLayout,不用 QFrame 框 —— 同 raw 一起)。
+
+        step + 字数 + 文风 + 改写/再次改写 + ? 帮助 + 保存;
+        save 永远最尾;? 紧贴其左。
+        """
         from . import episode_cards as C
         from .ai_edit_dialog import install_ai_edit_shortcut
-        lay.setContentsMargins(8, 6, 8, 8)
-        lay.setSpacing(0)
-        bar = QFrame()
-        bar.setObjectName("taskHead")
-        # 编辑框隐藏时标题栏会被当成可扩张控件吃掉全部剩余高度(实测撑到 387px,
-        # 页面看着"变形"、中间一大片空白)——固定为内容高度,顺便 maxHeight 兜底
-        bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        bar.setMaximumHeight(120)
-        bl = QVBoxLayout(bar)
-        bl.setContentsMargins(12, 8, 12, 8)
-        bl.setSpacing(6)
+        lay.setContentsMargins(10, 8, 12, 10)
+        lay.setSpacing(8)
+
         row = QHBoxLayout()
-        row.setSpacing(8)
+        row.setSpacing(7)
         row.addWidget(self._step_indicator("02", tr("ai_rewrite")))
         self.script_len_lab = W.muted("")
         row.addWidget(self.script_len_lab)
@@ -1657,8 +1653,6 @@ class EpisodePage(QWidget):
         rewrite_again = QPushButton("↻ " + tr("rewrite"))
         rewrite_again.clicked.connect(self._rewrite)
         row.addWidget(rewrite_again)
-        # ? 帮助按钮:raw 同款 —— 紧贴「保存」前;用户要求 01 原始内容 / 02 AI 改写
-        # 两个面板同款放法。
         from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
@@ -1671,23 +1665,23 @@ class EpisodePage(QWidget):
         help_btn.setToolTip("⌨  " + tr("ai_edit_shortcut_hint"))
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
-        # 保存:dirty 门控(无改动置灰)+ 落库 + toast —— 该编辑框此前无保存机制,手改会静默丢失
         self.script_save_btn = W.primary_btn("💾 " + tr("save"))
         self.script_save_btn.clicked.connect(self._save_script)
         row.addWidget(self.script_save_btn)
-        bl.addLayout(row)
-        lay.addWidget(bar)
+        lay.addLayout(row)
 
+        # 正文区:空态 / 加载中 / 编辑器三态 —— 都直接进 lay,不用 bar 包裹。
         self.rewrite_empty = C.empty_state("→", tr("rewrite_empty_title"), tr("rewrite_empty_desc"))
         start_btn = W.primary_btn(tr("start_rewrite"))
         start_btn.clicked.connect(self._rewrite)
         self.rewrite_empty.layout().addWidget(start_btn, 0, Qt.AlignCenter)
-        # 空态用 sizeHint 尺寸并垂直居中(不被拉伸成一大块)
         lay.addWidget(self.rewrite_empty, 1, Qt.AlignCenter)
 
         self.rewrite_loading = QLabel("⠋ " + tr("rewriting"))
         self.rewrite_loading.setObjectName("muted")
         self.rewrite_loading.setAlignment(Qt.AlignCenter)
+        self.rewrite_loading.setMaximumHeight(0)
+        self.rewrite_loading.setMinimumHeight(0)
         self.rewrite_loading.setVisible(False)
         lay.addWidget(self.rewrite_loading)
 
@@ -1699,8 +1693,10 @@ class EpisodePage(QWidget):
                                       self._open_find)
         self.script_edit.textChanged.connect(self._update_script_dirty)
         lay.addWidget(self.script_edit, 1)
+
+        # ✨ AI 修改 按钮行 —— 不占垂直布局主行,跟 raw 一样紧贴编辑器下方
         ai_row = QHBoxLayout()
-        ai_row.setContentsMargins(12, 4, 12, 0)
+        ai_row.setContentsMargins(0, 0, 0, 0)
         ai_btn2 = QPushButton("✨ " + tr("ai_edit"))
         ai_btn2.setToolTip(tr("ai_edit_tip"))
         ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
