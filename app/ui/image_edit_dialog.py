@@ -163,6 +163,11 @@ class ImageEditDialog(QDialog):
         tools.addWidget(apply_rs)
 
         tools.addWidget(self._section_label(tr("AI")))
+        # 修补(涂抹去文字/水印/路人):与去背景并列,结果重载回编辑器继续编辑
+        self.patch_btn = QPushButton("🩹 " + tr("patch_local"))
+        self.patch_btn.setToolTip(tr("patch_in_editor_tip"))
+        self.patch_btn.clicked.connect(self._open_patch)
+        tools.addWidget(self.patch_btn)
         self.bg_btn = QPushButton("🌫 " + tr("去背景"))
         self.bg_btn.setToolTip(tr("rembg 抠出主体(含未保存修改);首次使用需下载模型,请耐心等待"))
         self.bg_btn.clicked.connect(self._remove_background)
@@ -337,6 +342,30 @@ class ImageEditDialog(QDialog):
         if w <= 0 or h <= 0 or (w, h) == self.current.size:
             return
         self._apply(lambda im: im.resize((w, h), Image.LANCZOS))
+
+    def _open_patch(self):
+        """在当前画面上开修补窗口,完成后把结果载回编辑器(可继续调色/裁剪)。"""
+        import tempfile
+        from .patch_dialog import PatchDialog
+        buf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        try:
+            self.current.convert("RGB").save(buf.name, "PNG")
+            buf.flush()
+            dlg = PatchDialog(self, buf.name, None)
+            dlg.exec()
+            res = getattr(dlg, "_result", None)
+            if res:
+                import io as _io
+                from PIL import Image
+                self._push_history()
+                self.current = Image.open(_io.BytesIO(res)).convert("RGB")
+                self._render()
+        finally:
+            try:
+                buf.close()
+                Path(buf.name).unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _remove_background(self):
         """当前画面(含未保存修改)→ rembg → 结果重载(对齐参考 removeBackground 流程)。"""

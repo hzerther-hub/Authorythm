@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import io
 
-from PySide6.QtCore import Qt, QPoint
+from PySide6.QtCore import Qt, QPoint, QBuffer
 from PySide6.QtGui import (QImage, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
                                QVBoxLayout, QWidget)
@@ -23,7 +23,10 @@ class MaskCanvas(QWidget):
         super().__init__(parent)
         self._base = QImage()
         self._base.loadFromData(image_bytes)
-        self.setFixedSize(self._base.size())
+        # 不要在这里 setFixedSize(原图尺寸):固定尺寸会把父对话框反向撑大
+        # (2334x1472 的图画布曾把 1080x680 的窗口撑到 2334x1178),
+        # 窗口反而看不到全貌。实际显示尺寸交给 fit_to 按可用区域算。
+        self.setFixedSize(320, 240)
         # 蒙版层与显示层分离:显示 = 底图 + 半透明红罩
         self._mask = QImage(self._base.size(), QImage.Format_ARGB32)
         self._mask.fill(Qt.transparent)
@@ -32,6 +35,31 @@ class MaskCanvas(QWidget):
         self._pen_w = 28
         self._erase_mode = False
         self._redo_snapshot: QImage | None = None
+        # 笔迹变化回调(抬笔/清空/撤销时触发):宿主对话框据此刷新实时预览。
+        # 没有它,预览永远停在「空蒙版」的初始结果 —— 用户涂了但右边纹丝不动。
+        self.on_strokes_changed = None
+        # 显示缩放:底图/蒙版始终保持原始分辨率,只把**显示**缩小适配窗口。
+        # 之前 setFixedSize(原图尺寸) 会让 2624x1472 的图画布塞进小窗口,
+        # 用户只能看到左上角一块,压根涂不到别处的文字。
+        self._display_scale = 1.0
+
+    def fit_to(self, avail_w: int, avail_h: int, margin: int = 8) -> None:
+        """等比缩放适配可用区域(不放大),_base / _mask 仍是原图分辨率。"""
+        if self._base.isNull():
+            return
+        w, h = self._base.width(), self._base.height()
+        if w <= 0 or h <= 0:
+            return
+        s = min((avail_w - margin) / w, (avail_h - margin) / h, 1.0)
+        self._display_scale = max(0.02, s)
+        self.setFixedSize(max(1, int(w * self._display_scale)),
+                          max(1, int(h * self._display_scale)))
+        self.update()
+
+    def _to_image(self, pt: QPoint) -> QPoint:
+        """显示坐标 → 原图坐标。"""
+        s = self._display_scale or 1.0
+        return QPoint(int(pt.x() / s), int(pt.y() / s))
 
     # ── 交互 ──
     def mousePressEvent(self, e):
@@ -48,28 +76,39 @@ class MaskCanvas(QWidget):
 
     def mouseReleaseEvent(self, _e):
         self._drawing = False
+        self._notify()
+
+    def _notify(self):
+        if self.on_strokes_changed is not None:
+            try:
+                self.on_strokes_changed()
+            except Exception:  # noqa: BLE001 —— 回调异常不能拖垮画布
+                pass
 
     def _stroke(self, a: QPoint, b: QPoint) -> None:
         p = QPainter(self._mask)
         p.setRenderHint(QPainter.Antialiasing)
+        s = self._display_scale or 1.0
         pen = QPen(Qt.white if not self._erase_mode else Qt.transparent,
-                   self._pen_w, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+                   max(1, self._pen_w / s), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         p.setPen(pen)
         p.setCompositionMode(QPainter.CompositionMode_SourceOver if not self._erase_mode
                              else QPainter.CompositionMode_Clear)
-        p.drawLine(a, b)
+        p.drawLine(self._to_image(a), self._to_image(b))
         p.end()
         self.update()
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.drawImage(0, 0, self._base)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        view = self.size()
+        p.drawImage(self.rect(), self._base, self._base.rect())
         # 半透明红罩显示已涂区域(蒙版 alpha → 红色覆盖层)
         p.setOpacity(0.45)
         red = QImage(self._mask.size(), QImage.Format_ARGB32)
         red.fill(Qt.red)
         red.setAlphaChannel(self._mask.convertToFormat(QImage.Format_Alpha8))
-        p.drawImage(0, 0, red)
+        p.drawImage(self.rect(), red, red.rect())
         p.setOpacity(1.0)
         p.end()
 
@@ -89,6 +128,7 @@ class MaskCanvas(QWidget):
         if self._redo_snapshot is not None:
             self._mask, self._redo_snapshot = self._redo_snapshot, self._mask.copy()
             self.update()
+            self._notify()
 
     def has_strokes(self) -> bool:
         """是否画过(全透明=没画)。"""
@@ -101,9 +141,12 @@ class MaskCanvas(QWidget):
         white.fill(Qt.white)
         white.setAlphaChannel(self._mask.convertToFormat(QImage.Format_Alpha8))
         img = white.scaled(target_w, target_h)
-        buf = io.BytesIO()
+        # QImage.save 只收 QIODevice,不收 Python 的 BytesIO —— 之前传 BytesIO
+        # 会直接 TypeError,涂抹一次都没导出成功过。改用 QBuffer。
+        buf = QBuffer()
+        buf.open(QBuffer.WriteOnly)
         img.save(buf, "PNG")
-        return buf.getvalue()
+        return bytes(buf.data())
 
 
 class MaskEraseDialog(QDialog):

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from datetime import datetime
@@ -605,10 +606,14 @@ def _page_title(drama, ep) -> str:
     # ep 可能是 sqlite3.Row(无 .get),统一转 dict 取值
     ep = dict(ep) if not isinstance(ep, dict) else ep
     name = (ep.get("title") or "").strip()
-    # 章节名常带「第N集 」前缀,避免与集号重复显示
-    head = f"第{ep['episode_number']}集"
-    if name.startswith(head):
-        name = name[len(head):].strip()
+    # 去掉标题里的「第 N 集」前缀,避免与前面已渲染的集号重复。
+    # 新建剧集时 title 就是 tr('episode_n').format(n),**数字两侧带空格**(「第 1 集」),
+    # 而章节名又常写成不带空格的「第1章 标题」——两种都认,否则标题会变成
+    # 「项目 · 第 1 集 · 第 1 集」(用户截图反馈)。用正则而非 startshead 是因为
+    # 固定串比对容不下空格差异,以前正是这里失配导致重复。
+    m = re.match(r"^第\s*%d\s*集[\s　]*" % int(ep["episode_number"]), name)
+    if m:
+        name = name[m.end():].strip()
     if name:
         parts.append(name)
     return " · ".join(parts)

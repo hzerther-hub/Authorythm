@@ -183,13 +183,27 @@ def map_size_to_tier_ratio(size: str | None) -> tuple[str, str]:
     return '2K', '16:9'
 
 
+# 哪些 provider 真正支持"参考图"入参。
+# agnes 走 extra_body.image[] 注入;qwen-image / volcengine 的请求体里根本没有
+# 图像字段,传了也被丢弃 —— 表现为「按参考图重绘」实际变成纯文生图,画面与原图
+# 完全无关。调用改图类功能前必须先过这个检查,否则会白花钱。
+REFERENCE_CAPABLE_PROVIDERS = {"agnes", "local", "comfyui", "sdwebui", "fooocus"}
+
+
+def supports_reference_images(provider: str | None) -> bool:
+    """该 provider 是否真的会把参考图发给模型。"""
+    return (provider or "").strip().lower() in REFERENCE_CAPABLE_PROVIDERS
+
+
 def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None,
-                   people: int = 1, skip_guard: bool = False) -> tuple[Path, str]:
+                   people: int = 1, skip_guard: bool = False,
+                   extra_negative: str | None = None) -> tuple[Path, str]:
     """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。
 
-    仅 agnes 注入(extra_body.image[],≤6 张压缩 data URI);其余 provider 忽略。
+    仅 agnes 注入(extra_body.image[],≤6 张压缩 data URI);qwen-image / volcengine 等
+    **忽略**参考图(见 supports_reference_images)。改图类功能务必先检查。
 
     **平台级质量守卫**:prompt 统一追加画面质量要求(幂等),negative_prompt 统一下发禁用词。
     people = 画面应有的人物数(漫画格=绑定角色数),>1 时守卫措辞切到「恰好 N 人」,
@@ -198,6 +212,10 @@ def generate_image(prompt: str, out_name: str | None = None,
     from .prompt_guards import apply_image_quality_guard, build_image_negative_guard
     prompt = prompt if skip_guard else apply_image_quality_guard(prompt, people)
     negative = build_image_negative_guard(people) if not skip_guard else None
+    if extra_negative:
+        # 追加而非替换:改图场景要额外压制"凭空多出来的人",但不能把全局守卫
+        # 里对正常人物生成有用的约束丢掉。opt-in,不影响其它调用方。
+        negative = f"{negative}, {extra_negative}" if negative else extra_negative
     cfg = registry.check_ready("image", config_id)  # 未配置/缺 Key 直接拦下
     provider = cfg["provider"]
     # 本地生图扩展设置(comfyui_workflow/image_base_size/steps/cfg/sampler…,JSON 列)
