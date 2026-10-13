@@ -57,6 +57,9 @@ def main() -> int:
     db.init_db()
     seed_prompt_files()
     _apply_proxy_preference()
+    # 僵尸任务看门狗:启动清理只跑一次,运行期新生的孤儿无人回收,界面会永远
+    # 停在「生成中」(对齐参考项目 3e1a3f2)
+    db.start_stuck_task_watchdog(db.get_db())
     from .ai.registry import seed_tts_default, seed_faceswap_default, seed_jev_default
     seed_tts_default()
     seed_faceswap_default()

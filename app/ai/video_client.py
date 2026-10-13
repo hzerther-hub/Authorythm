@@ -626,6 +626,13 @@ class VideoRetryExhausted(RuntimeError):
         self.__cause__ = head
 
 
+# 创建请求的总墙钟上限:无论单轮预算怎么升档、Retry-After 跟几次,从首次尝试
+# 起算的总时长不得超过它。max_attempts 只约束**次数**不约束**时长**,上游每次都
+# 返回一个未来的 Retry-After,20 次尝试就能累积出数小时(参考项目实测挂过 6h20m)。
+# 取 2 小时:覆盖限流长预算(30min)之外的所有正常情况。
+CREATE_TOTAL_WALL_CLOCK_S = 2 * 60 * 60
+
+
 def _generate_with_retry(fn, *, max_attempts: int = 20,
                          rate_limit_budget_s: float = 1800.0,
                          create_budget_s: float = 180.0) -> tuple[Path, str]:
@@ -646,9 +653,16 @@ def _generate_with_retry(fn, *, max_attempts: int = 20,
     last_err = None
     attempts: list = []          # (轮次, 距开始秒数, 异常类名, 摘要)
     started = _t.time()
+    # 总墙钟起点用**独立变量**,不复用 started —— started 的语义是「当前预算轮
+    # 起点」,将来若引入预算重置会被污染
+    first_attempt_at = _t.time()
     retry_at_follows = 0
     rate_limited_mode = False
     for attempt in range(max_attempts):
+        if _t.time() - first_attempt_at >= CREATE_TOTAL_WALL_CLOCK_S:
+            raise VideoRetryExhausted(attempts, RuntimeError(
+                f"创建请求累计超过 {int(CREATE_TOTAL_WALL_CLOCK_S // 60)} 分钟仍未成功,"
+                "已按总时长上限失败"))
         with gate:
             acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
             try:

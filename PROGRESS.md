@@ -1135,3 +1135,29 @@ STAGE_CN(写正文/审校中…)、REF_PLACEHOLDER(角/景/具)整批漏网。
   image_url / comic_image_url(新文件不覆盖原图),独立模式保存即下载。
 - 实测:滤镜/旋转/撤销逐像素还原/水印/裁剪 9:16 比例精确;去背景降级路径可读;
   431 机翻槽 + 3 重试,15 语言零空槽。
+
+## 第 51 轮(2026-10-13): 僵尸生成任务自愈 —— 待办(对齐参考 3e1a3f2)
+
+**任务书:[docs/孤儿生成任务自愈-任务书.md](docs/孤儿生成任务自愈-任务书.md)**
+
+用户在参考项目(TS 版)遇到分镜视频生成「一直生成中」6 小时不结束,定位到根因并已修复,
+本轮把同一修复移植到 pydrama。pydrama 代码结构与参考项目几乎一一对应,**存在同样缺口**。
+
+现象与根因(三条详见任务书):
+1. `sys_task.task_id` 为空 = 提交 AI 厂商请求时就失败,从未拿到句柄 → 无轮询、无回调,
+   状态永久冻结在 `processing`;
+2. `settle_interrupted_tasks()` 仅在 `init_db()` 执行一次,运行期新生的孤儿无人回收;
+3. `_generate_with_retry()` 的 `max_attempts=20` 只约束次数不约束时长,缺总墙钟闸门。
+
+待办三处:
+- `app/ai/video_client.py` `_generate_with_retry()`:加 `CREATE_TOTAL_WALL_CLOCK_S`(2h),
+  起点用独立 `first_attempt_at`,不复用语义为「当前预算轮起点」的 `started`;
+- `app/core/db.py`:`settle_interrupted_tasks()` 加 `reason` 参数;启动调用延迟 10s
+  (或改为跳过新建 10 分钟内的任务);新增 `start_stuck_task_watchdog()` 每 45 分钟巡检,
+  线程 `daemon=True`;错误文案「服务重启」→「任务已失去回执」;
+- 补对等测试,锁住「巡检间隔 ≥30 分钟」这类易被改坏的约束。
+
+**两个必须遵守的约束**(任务书里有详述):
+- 巡检口径必须是**全部 `processing`**,不能只查 `task_id IS NULL` ——
+  参考项目里 1092/1095/1096 等是句柄已拿到却因重启僵死的;
+- 巡检间隔 45 分钟不可压到 30 分钟以下,否则误杀正常生成中的视频任务(最久 ~30min)。

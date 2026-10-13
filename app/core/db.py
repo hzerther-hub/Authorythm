@@ -535,11 +535,26 @@ def jload(text: str | None, default=None):
         return default
 
 
-def settle_interrupted_tasks(conn, ts: str) -> tuple[int, int, int]:
-    """启动时收尾 processing 任务:有产出 → completed(只是收尾没跑完),否则 failed。"""
-    rows = conn.execute(
-        "SELECT id, type, episode_id, local_path, result_url FROM sys_task WHERE status='processing'"
-    ).fetchall()
+def settle_interrupted_tasks(conn, ts: str, reason: str = "启动清理",
+                             min_age_s: float = 0.0) -> tuple[int, int, int]:
+    """收尾 processing 任务:有产出 → completed(只是收尾没跑完),否则 failed。
+
+    reason 仅用于日志区分「启动清理」与「运行期巡检」。
+    min_age_s:只收尾已「静默」至少这么多秒的任务。启动清理传 0(此刻所有
+    processing 都来自已退出的进程,全是孤儿);运行期巡检要传 REAP_INTERVAL_S,
+    否则会把本进程正在正常生成的任务误杀 —— 这是本改动最大的回归风险。
+    """
+    if min_age_s > 0:
+        rows = conn.execute(
+            "SELECT id, type, episode_id, local_path, result_url, created_at FROM sys_task "
+            "WHERE status='processing' "
+            "AND (julianday('now') - julianday(created_at)) * 86400.0 >= ?",
+            (float(min_age_s),)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, type, episode_id, local_path, result_url, created_at FROM sys_task "
+            "WHERE status='processing'"
+        ).fetchall()
     done = failed = 0
     for r in rows:
         has_output = bool(r["local_path"])
@@ -550,16 +565,23 @@ def settle_interrupted_tasks(conn, ts: str) -> tuple[int, int, int]:
             conn.execute("UPDATE sys_task SET status='completed', updated_at=? WHERE id=?", (ts, r["id"]))
             done += 1
         else:
+            # 措辞不能再写「服务重启」——运行期巡检也会触发,那不是重启
             conn.execute("UPDATE sys_task SET status='failed', error_msg=?, updated_at=? WHERE id=?",
-                         ("服务重启，生成任务中断，请重试", ts, r["id"]))
+                         (ORPHAN_TASK_ERROR, ts, r["id"]))
             failed += 1
     if rows:
-        print(f"[init] 已收尾 {len(rows)} 个中断任务(已完成 {done} / 失败 {failed})")
-    _settle_storyboard_status(conn, ts)
+        print(f"[reap] {reason}:已收尾 {len(rows)} 个中断任务"
+              f"(已完成 {done} / 失败 {failed})")
+    sb_rows = _settle_storyboard_status(conn, ts, min_age_s=min_age_s)
+    # 必须在函数内自己提交:启动路径后面还有 init_db 兜底 commit,但运行期巡检
+    # 没有调用方,不提交的话 UPDATE 只活在本连接的事务里 —— 巡检日志照打,
+    # 界面上的「生成中」永远不变。
+    if rows or sb_rows:
+        conn.commit()
     return len(rows), done, failed
 
 
-def _settle_storyboard_status(conn, ts: str) -> int:
+def _settle_storyboard_status(conn, ts: str, min_age_s: float = 0.0) -> int:
     """收尾卡在 processing 的分镜。
 
     界面上的「生成中」读的是 storyboards.status(见 EpisodePage._sb_state),而
@@ -569,13 +591,62 @@ def _settle_storyboard_status(conn, ts: str) -> int:
 
     已出片的按 completed 归位(可能只是收尾没跑完),其余退回 failed 让用户能重试。
     """
-    rows = conn.execute(
-        "SELECT id, video_url, composed_video_url FROM storyboards WHERE status='processing'"
-    ).fetchall()
+    if min_age_s > 0:
+        rows = conn.execute(
+            "SELECT id, video_url, composed_video_url, updated_at FROM storyboards "
+            "WHERE status='processing' "
+            "AND (julianday('now') - julianday(updated_at)) * 86400.0 >= ?",
+            (float(min_age_s),)).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT id, video_url, composed_video_url, updated_at FROM storyboards "
+            "WHERE status='processing'"
+        ).fetchall()
     for r in rows:
         has_output = bool(r["video_url"] or r["composed_video_url"])
         conn.execute("UPDATE storyboards SET status=?, updated_at=? WHERE id=?",
                      ("completed" if has_output else "failed", ts, r["id"]))
     if rows:
-        print(f"[init] 已收尾 {len(rows)} 个中断分镜(状态从 processing 归位)")
+        print(f"[reap] 已收尾 {len(rows)} 个中断分镜(状态从 processing 归位)")
     return len(rows)
+
+
+# 巡检间隔:必须大于单次生成的正常时长(视频最久约 30 分钟),否则会把正在正常
+# 生成的任务误杀。**不要压到 30 分钟以下。**
+REAP_INTERVAL_S = 45 * 60
+
+ORPHAN_TASK_ERROR = "任务已失去回执(服务重启或提交中断),请重试"
+
+
+def start_stuck_task_watchdog(conn=None, interval_s: float = REAP_INTERVAL_S):
+    """周期巡检僵尸生成任务(对齐参考项目 3e1a3f2)。
+
+    settle_interrupted_tasks 只在启动时跑一次,而孤儿任务常产生于**运行期**
+    (提交上游阶段崩溃、超时判定丢失),届时无人回收,界面永远显示「生成中」。
+    参考项目实测有任务挂了 6 小时 20 分钟。
+
+    巡检时只收尾「静默超过一个间隔」的任务(min_age_s=interval_s),本进程正在
+    生成的任务自然被排除 —— 这是本改动最大的回归风险点。
+
+    conn 只作兼容参数,实际不使用:连接是 thread-local 的(见 get_db),主线程
+    的连接在巡检线程里一碰就抛 "SQLite objects created in a thread can only
+    be used in that same thread",看门狗会静默失效。这里在 tick 里现取,让
+    巡检线程拿到属于自己那份连接。
+    """
+    import threading
+
+    def _tick():
+        try:
+            settle_interrupted_tasks(get_db(), now(), reason="运行期巡检",
+                                     min_age_s=interval_s)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[reap] 巡检失败: {exc}")
+        finally:
+            t = threading.Timer(interval_s, _tick)
+            t.daemon = True
+            t.start()
+
+    t = threading.Timer(interval_s, _tick)
+    t.daemon = True          # 否则程序退不出
+    t.start()
+    return t
