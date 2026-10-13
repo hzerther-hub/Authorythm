@@ -277,13 +277,26 @@ class QaDialog(QDialog):
         self.editor = editor
         self.drama_id = drama_id
         self.setWindowTitle(tr("AI 提问"))
-        self.resize(720, 640)
+        self.resize(720, 320)
+        self.setMinimumWidth(560)
         lay = QVBoxLayout(self)
         self.q_edit = QLineEdit()
         self.q_edit.setPlaceholderText(tr("就本章或项目设定提问,例如:这一章埋了什么伏笔?"))
         lay.addWidget(self.q_edit)
+
+        # 复选框决定「回答要不要落到一个可滚动的文本框里」。不勾时**整个文本框不
+        # 存在**(setVisible(False) + 不占布局位,对话框随之收窄),避免留一大块空白
+        # 让人以为程序没响应;勾上才出现,长回答可以在里面滚动、选中复制。
+        self._last_answer = ""
+        self.to_box = QCheckBox(tr("把回答写入下方文本框(可滚动复制)"))
+        self.to_box.setToolTip(tr("勾选后回答会写进下方文本框,长回答可滚动查看与复制;不勾则不显示文本框。"))
+        self.to_box.toggled.connect(self._on_to_box)
+        lay.addWidget(self.to_box)
+
         self.answer = QPlainTextEdit()
         self.answer.setReadOnly(True)
+        self.answer.setVisible(False)          # 默认未勾选 → 文本框不存在
+        self.answer.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
         lay.addWidget(self.answer, 1)
         row = QHBoxLayout()
         row.addStretch(1)
@@ -295,6 +308,25 @@ class QaDialog(QDialog):
         row.addWidget(self.send_btn)
         lay.addLayout(row)
 
+    def _on_to_box(self, on: bool):
+        """勾上 → 文本框出现并回填最近一次回答;取消 → 文本框消失(内容仍留着)。"""
+        self.answer.setVisible(on)
+        if on and self.answer.toPlainText() != self._last_answer:
+            self.answer.setPlainText(self._last_answer)
+        self._apply_height(on)
+
+    def _apply_height(self, on: bool):
+        """按勾选状态给对话框定高。
+
+        不用 sizeHint():实测它在这个布局下算出来的值不可靠(勾上回答框反而比
+        不勾还矮)。直接用两个经验值 —— 收起时只留标题+提问+复选框+按钮,展开时
+        给回答框留出可滚动的空间。
+
+        高度由参数 on 决定,不回读 to_box.isChecked():两者一旦不同步(比如代码里
+        直接调 _on_to_box 而没真的勾选)就会出现「勾上了反而是收起高度」。
+        """
+        self.resize(max(self.width(), 720), 520 if on else 190)
+
     def _ask(self):
         q = self.q_edit.text().strip()
         if not q:
@@ -302,7 +334,8 @@ class QaDialog(QDialog):
         from ..pipeline import novel as novel_pipe
         from ..agents import runner
         self.send_btn.setEnabled(False)
-        self.answer.setPlainText(tr("思考中…"))
+        self._last_answer = tr("思考中…")
+        self.answer.setPlainText(self._last_answer)
 
         def job(tid):
             ctx = novel_pipe._novel_settings_ctx(self.drama_id)
@@ -314,10 +347,8 @@ class QaDialog(QDialog):
 
         def done(tid, result, error):
             self.send_btn.setEnabled(True)
-            if error:
-                self.answer.setPlainText(str(error)[:200])
-                return
-            self.answer.setPlainText(result or "")
+            self._last_answer = str(error)[:200] if error else (result or "")
+            self.answer.setPlainText(self._last_answer)
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
 
