@@ -246,6 +246,10 @@ class TaskManager(QObject):
         "prompt": "text", "comic": "text", "promo": "text", "sb_repair": "text",
         "cover": "image", "image": "image", "face_swap": "faceswap", "face_swap_batch": "faceswap",
         "video": "video", "tts": "tts",
+        # 同款复刻整段直传:走多模态文本模型读 base64 视频。对齐参考项目
+        # auto-generate.ts 里 clone_understand 的 taskType;不注册的话 submit 会跳过
+        # 就绪校验,缺配置也得等模型把请求打回来才失败。
+        "clone_understand": "text",
     }
 
     def _run_done_cb(self, cb, result, error):

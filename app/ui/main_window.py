@@ -162,6 +162,7 @@ class MainWindow(QMainWindow):
         self.project_page.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
         self.episode_page.back_requested.connect(self._back_to_project)
         self.clone_page.back_requested.connect(self._back_to_projects)
+        self.clone_page.open_workbench_requested.connect(self._enter_episode)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
         # 任务抽屉是浮在 central 上的,切页时必须收掉,否则会跟着飘到别的页面
@@ -487,6 +488,9 @@ def QApplication_instance():
 class ClonePage(QWidget):
     """同款复刻工作台:参考视频分析 → 素材 → 逐镜重拍 → 拼接。"""
     back_requested = Signal()
+    # 整段直传拆解的产物落在 storyboards 表(分镜工作台那套),不像抽帧分析写
+    # metadata —— 需要跳到工作台时用这个信号,请 MainWindow 接 _enter_episode。
+    open_workbench_requested = Signal(int, int)
 
     def __init__(self):
         super().__init__()
@@ -508,15 +512,29 @@ class ClonePage(QWidget):
         bar = QHBoxLayout()
         analyze_btn = W.primary_btn("1️⃣ " + tr("detect") + " · AI " + tr("storyboard"))
         analyze_btn.clicked.connect(self._analyze)
+        # 第二条拆解路径:整段视频 base64 直传多模态模型(不抽帧,保留完整时序),
+        # 产物写 storyboards 表 → 交给分镜工作台逐镜重拍。
+        understand_btn = QPushButton("1️⃣' " + tr("整段直传拆解") + " → " + tr("storyboard"))
+        understand_btn.setToolTip(
+            tr("整段视频直接交给多模态模型拆成分镜(不抽帧,保留完整时序)。\n"
+               "结果写入分镜表,需到分镜工作台逐镜重拍;抽帧分析的结果则在本页直接重拍。\n"
+               "会清空本集已有分镜。"))
+        understand_btn.clicked.connect(self._understand)
         presenter_btn = QPushButton("2️⃣ AI " + tr("生成出镜模特"))
         presenter_btn.clicked.connect(self._presenter)
         merge_btn = W.primary_btn("4️⃣ " + tr("merge_now"))
         merge_btn.clicked.connect(self._merge)
         bar.addWidget(analyze_btn)
+        bar.addWidget(understand_btn)
         bar.addWidget(presenter_btn)
         bar.addWidget(merge_btn)
         bar.addStretch(1)
         root.addLayout(bar)
+        # 直传产物落在 storyboards 表,本页列表(读 metadata)看不到它 —— 单独一行
+        # 显示条数并给跳转入口,否则用户点了按钮像什么都没发生。
+        self.board_note = W.muted("")
+        self.board_note.setVisible(False)
+        root.addWidget(self.board_note)
         self.board_list = QVBoxLayout()
         root.addLayout(self.board_list)
         root.addStretch(1)
@@ -535,6 +553,7 @@ class ClonePage(QWidget):
                 w.deleteLater()
         from ..pipeline import video_clone
         boards = video_clone._clone_storyboards(self.drama_id)
+        self._refresh_board_note()
         for b in boards:
             box = W.make_card()
             lay = QHBoxLayout(box)
@@ -577,6 +596,74 @@ class ClonePage(QWidget):
                 err("AI")
             self.reload()
         TASKMGR.submit("clone_analyze", job, done, drama_id=self.drama_id)
+
+    def _refresh_board_note(self):
+        """直传产物(storyboards 表)与本页列表(metadata)不同源,单独提示条显式区分。
+
+        不这么做的话:用户直传完看到列表还是空的,会以为按钮没生效再点一次,
+        而每次点击都是替换式重写,白烧一次模型调用。
+        """
+        ep_id = self._clone_episode_id()
+        n = 0 if not ep_id else len(
+            db.q("SELECT id FROM storyboards WHERE episode_id=?", (ep_id,)))
+        self.board_note.setVisible(bool(n))
+        if n:
+            self.board_note.setText(
+                tr("分镜表已有 {n} 个分镜(整段直传写入)。本页 3️⃣ 逐镜重拍读的是抽帧分析"
+                   "的结果,要重拍这 {n} 个分镜请到分镜工作台。").format(n=n))
+
+    def _clone_episode_id(self) -> int:
+        """同款复刻项目在新建时就会建第 1 集当分镜挂载点(对齐参考项目
+        「各类型都建首集容器,clone 也需要」),直传拆解写入的就是它。"""
+        row = db.q1("SELECT id FROM episodes WHERE drama_id=? "
+                    "ORDER BY episode_number LIMIT 1", (self.drama_id,))
+        return row["id"] if row else 0
+
+    def _understand(self):
+        """整段视频直传多模态模型 → 替换式写回本集分镜表。
+
+        与 _analyze(抽帧)不是同一条路的两个按钮:抽帧结果写 metadata.clone.storyboards,
+        本页的 3️⃣ 逐镜重拍读它;直传结果写 storyboards 表,只有分镜工作台读得到。
+        所以成功后必须给跳转入口,否则用户点了像什么都没发生。
+        """
+        from ..pipeline import video_clone
+        from .confirm import ask
+        if not self.drama_id:
+            return
+        ref = video_clone._resolve_local(
+            (video_clone._meta(self.drama_id).get("clone") or {}).get("reference"))
+        if not ref:
+            err(tr("找不到参考视频,请先导入"))
+            return
+        ep_id = self._clone_episode_id()
+        if not ep_id:
+            err(tr("本项目没有可用剧集,无法写入分镜"))
+            return
+        # replace_storyboards_from_shots 是替换式写入(先删本集全部分镜再逐条插),
+        # 这里已有分镜就必须先确认,否则一次误点把重做过的全丢了
+        old = db.q("SELECT id FROM storyboards WHERE episode_id=?", (ep_id,))
+        if old and not ask(
+                self, tr("整段直传拆解"),
+                tr("本集已有 {n} 个分镜。\n\n整段直传会先清空本集全部分镜再按新结果重写,"
+                   "已生成的图/视频不受影响,但分镜上的备注与素材关联会丢。\n\n确定继续?")
+                .format(n=len(old)), danger=True):
+            return
+
+        def job(tid):
+            return video_clone.understand_video(ep_id, str(ref))
+
+        def done(tid, result, error):
+            if error:
+                err(str(error)[:220])
+                return
+            self.reload()
+            ok(tr("整段直传拆解完成,写入 {n} 个分镜").format(n=int(result or 0)))
+            if ask(self, tr("整段直传拆解"),
+                   tr("分镜已写入本集分镜表。\n\n现在去分镜工作台逐镜重拍?")):
+                self.open_workbench_requested.emit(self.drama_id, ep_id)
+
+        TASKMGR.submit("clone_understand", job, done,
+                       drama_id=self.drama_id, episode_id=ep_id)
 
     def _presenter(self):
         from ..pipeline import video_clone
