@@ -1184,9 +1184,12 @@ class EpisodePage(QWidget):
         self.style_edit.setVisible(False)
         lay.addWidget(self.style_edit)
 
-        self.raw_edit = C.SaveOnBlurEdit()
+        self.raw_edit = C.chapter_editor()
         self.raw_edit.setPlaceholderText(tr("paste_hint"))
         self.raw_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        # 撑满:与资产页同一套骨架 —— 工具条贴顶、正文吃满剩余高度、底部条贴底。
+        # 不撑满的话 480px 上限会把剩余空间均摊到内容块上下,上下各多一条空带。
+        self.raw_edit.setFillHeight(True)
         install_ai_edit_shortcut(self.raw_edit, self._open_ai_edit,
                                       self._open_replace, self._open_qa,
                                       self._open_find)
@@ -1863,9 +1866,10 @@ class EpisodePage(QWidget):
         self.rewrite_loading.setVisible(False)
         lay.addWidget(self.rewrite_loading)
 
-        self.script_edit = C.SaveOnBlurEdit()
+        self.script_edit = C.chapter_editor()
         self.script_edit.setPlaceholderText(tr("script_ph"))
         self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.script_edit.setFillHeight(True)   # 同 raw:撑满,不留上下空带
         install_ai_edit_shortcut(self.script_edit, self._open_ai_edit,
                                       self._open_replace, self._open_qa,
                                       self._open_find)

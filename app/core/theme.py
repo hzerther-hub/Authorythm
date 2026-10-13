@@ -29,6 +29,9 @@ QLabel#monoTag { background: #f2f3f5; border-radius: 4px; padding: 1px 7px;
   color: #4e5969; font-family: monospace; font-size: 11px; }
 QFrame#assetCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
 QFrame#assetCard:hover { border-color: #f97316; }
+QPlainTextEdit#chapterEdit { background: #ffffff; border: 1px solid #e4e7ec;
+  border-radius: 10px; }
+QPlainTextEdit#chapterEdit:focus { border-color: #f97316; }
 QLabel#coverBadge { background: rgba(0,0,0,0.55); color: #ffffff; border-radius: 4px;
   padding: 1px 6px; font-size: 10px; }
 QLabel#coverBadge[state="ready"] { background: #16a34acc; }
@@ -136,6 +139,9 @@ QLabel#monoTag { background: #2a2c33; border-radius: 4px; padding: 1px 7px;
   color: #b8bcc4; font-family: monospace; font-size: 11px; }
 QFrame#assetCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
 QFrame#assetCard:hover { border-color: #fb923c; }
+QPlainTextEdit#chapterEdit { background: #202126; border: 1px solid #2c2e35;
+  border-radius: 10px; }
+QPlainTextEdit#chapterEdit:focus { border-color: #fb923c; }
 QLabel#coverBadge { background: rgba(0,0,0,0.55); color: #ffffff; border-radius: 4px;
   padding: 1px 6px; font-size: 10px; }
 QLabel#coverBadge[state="ready"] { background: #16a34acc; }
@@ -626,6 +632,9 @@ QLabel#monoTag { background: transparent; border: 1px solid """ + SLATE_HAIR + "
 QFrame#assetCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
   border-radius: 4px; }
 QFrame#assetCard:hover { border-color: """ + SLATE_BAR + """; }
+QPlainTextEdit#chapterEdit { background: """ + SLATE_PAPER + """;
+  border: 1px solid """ + SLATE_HAIR + """; border-radius: 4px; }
+QPlainTextEdit#chapterEdit:focus { border-color: """ + SLATE_BAR + """; }
 QLabel#coverBadge { background: rgba(14,15,18,0.85); color: """ + SLATE_BAR_INK + """;
   border-radius: 2px; padding: 1px 6px; font-family: """ + MONO_STACK + """;
   font-size: 9px; font-weight: 700; letter-spacing: 1px; }

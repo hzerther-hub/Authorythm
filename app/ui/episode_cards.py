@@ -91,6 +91,26 @@ def scroll_host(inner: QWidget) -> QScrollArea:
     return sc
 
 
+def chapter_editor(cls=None):
+    """整章页(原始内容 / AI 改写)的正文编辑器 —— 与资产页 #assetCard 同款外观。
+
+    资产页的内容是「白卡浮在 #f5f6f8 页底上」,整章页原先是一整块 #f2f3f5 的
+    平铺区,两个页面并排看就是"一个做了卡片、一个没做"。
+
+    卡片画在编辑器**自己**身上而不是外面再套一层框:编辑器本就带 1px 边框和
+    圆角(见 theme.py 的 QPlainTextEdit 规则),外套框会变成"白卡里嵌一个灰块",
+    多一圈描边还多 2px 内缩。
+
+    cls 默认在调用时才解析 —— SaveOnBlurEdit 定义在本文件 scroll_host 之后,
+    写成默认参数会在模块导入时就 NameError。
+    """
+    if cls is None:
+        cls = SaveOnBlurEdit
+    ed = cls()
+    ed.setObjectName("chapterEdit")
+    return ed
+
+
 def video_camera_icon(color, size: int = 15) -> QIcon:
     """单色「摄像机」图标:🎬 emoji 在 Windows 部分字体下渲染为空框,改用 QPainter 画。
 
@@ -124,6 +144,8 @@ class SaveOnBlurEdit(QPlainTextEdit):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # 撑满模式开关:默认关,行为与以前完全一致(按内容自适应 + 封顶)。
+        self._fill = False
         # 关键:sizePolicy 垂直是 Preferred(默认是 Expanding)—— Expanding 会让父
         # 布局把所有剩余空间塞给它,无视 maxHeight,文本框看上去一样高。
         # Preferred 让 widget 按 min/max = 内容高走,父布局给多少就是多少。
@@ -137,6 +159,24 @@ class SaveOnBlurEdit(QPlainTextEdit):
         会按需重设 setMinimumHeight / setMaximumHeight 到 [min_h, max_h]。"""
         self._ar_min = int(min_h)
         self._ar_max = int(max_h)
+
+    def setFillHeight(self, on: bool = True) -> None:
+        """撑满模式:不吃 autoResizeRange 的高度封顶,始终吃掉父布局给的全部剩余
+        高度;文本更长时用编辑器自身的滚动条,而不是把页面撑长。
+
+        为什么整章页需要它:raw / rewrite 的编辑器原来按内容自适应、最多 480px。
+        窗口比这高时剩余空间没处去,QVBoxLayout 会把它**均摊到内容块的上下**
+        —— 工具条被顶下 41px、底部条下面又压一条 41px 空带(实测工具条 y=49,
+        资产页同一位置 y=8)。资产页内容是撑满的,所以整章页看着比资产页
+        "缩进去一截",上下各留一条空白带。
+        """
+        from PySide6.QtWidgets import QSizePolicy
+        self._fill = bool(on)
+        if self._fill:
+            self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            self.setMinimumHeight(0)
+            self.setMaximumHeight(16777215)
+            self.updateGeometry()
 
     def showEvent(self, ev):
         super().showEvent(ev)
@@ -163,13 +203,15 @@ class SaveOnBlurEdit(QPlainTextEdit):
 
     def _schedule_resize(self) -> None:
         from PySide6.QtCore import QTimer
+        if getattr(self, "_fill", False):
+            return          # 撑满模式高度由父布局给,再自适应会把它按回内容高
         QTimer.singleShot(0, self._auto_resize)
 
     def _auto_resize(self) -> None:
         # QPlainTextEdit 高度自适应的唯一稳定做法:用 QFontMetrics 自算
         # —— 用 vp 宽折算每段占几行,总行数 × lineSpacing + padding。
         # 关键:同时设 setMin/setMax = h,让容器尊重真实高度而不是被拉伸
-        if getattr(self, "_resizing", False):
+        if getattr(self, "_resizing", False) or getattr(self, "_fill", False):
             return
         vp_w = self.viewport().width()
         if vp_w <= 0:
