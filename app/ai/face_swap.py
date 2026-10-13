@@ -20,6 +20,15 @@ import requests
 from ..core import config
 from . import registry
 
+
+def _utf8_text(resp, limit: int = 400) -> str:
+    """错误文案按 utf-8 显式解码(requests 无 charset 时会猜,中文常被猜错成乱码)。"""
+    try:
+        return resp.content.decode("utf-8", errors="replace")[:limit]
+    except Exception:  # noqa: BLE001
+        return str(getattr(resp, "text", "") or "")[:limit]
+
+
 DEFAULT_BASE = "http://127.0.0.1:5678"
 
 
@@ -57,7 +66,7 @@ def health(base: str | None = None, config_id: int | None = None) -> tuple[bool,
                 ok_flag = str(data.get("status", "")).lower() == "ok"
             model = (data.get("model") or (data.get("local") or {}).get("model") or "")
             return bool(ok_flag), f"{data.get('status', 'ok')} · {model}"
-        return False, resp.text[:200]
+        return False, _utf8_text(resp, 200)
     except Exception as e:  # noqa: BLE001
         return False, f"服务不可达({_base}):{e}"
 

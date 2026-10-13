@@ -2,6 +2,18 @@
 """图片生成客户端:openai / gemini / volcengine / agnes / qwen-image 适配(提交+轮询+落盘)。"""
 from __future__ import annotations
 
+def _utf8_text(resp, limit: int = 400) -> str:
+    """错误文案按 utf-8 显式解码。
+
+    requests 在缺 Content-Type charset 时会走 apparent_encoding(charset_normalizer 猜),
+    中文报错常被猜成 GBK/Big5 → 报错本身变乱码,排障时满屏鬼画符。
+    """
+    try:
+        t = resp.content.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        t = str(getattr(resp, "text", "") or "")
+    return t[:limit]
+
 import base64
 import re
 import time
@@ -71,7 +83,7 @@ def _strip_negative(body: dict) -> bool:
 def _neg_unsupported(resp) -> bool:
     """上游是否以「不支持 negative_prompt」为由拒绝了请求。"""
     try:
-        text = resp.text[:500].lower()
+        text = _utf8_text(resp, 500).lower()
     except Exception:  # noqa: BLE001
         return False
     return any(m in text for m in _NEG_UNSUPPORTED)
@@ -90,7 +102,7 @@ def _post_with_negative(url: str, body: dict, headers: dict, *, timeout: int,
             resp = requests.post(url, json=body, headers=headers, timeout=timeout, **post_kw)
             if resp.status_code < 400:
                 return resp
-            text = resp.text[:400]
+            text = _utf8_text(resp, 400)
             raise AIError(f"{prefix} HTTP {resp.status_code}(已去掉负面词仍失败): {text}")
         text = resp.text[:400]
         raise AIError(f"{prefix} HTTP {resp.status_code}: {text}")
@@ -272,7 +284,7 @@ def generate_image(prompt: str, out_name: str | None = None,
             body["parameters"]["negative_prompt"] = negative[:500]
         resp = _post_with_negative(url, body, headers, timeout=300, prefix="百炼生图失败")
         if resp.status_code != 200:
-            raise AIError(f"百炼生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"百炼生图失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         data = resp.json()
         img = _qwen_image_url(data)
         if not img:
@@ -315,7 +327,7 @@ def generate_image(prompt: str, out_name: str | None = None,
             body["negative_prompt"] = negative
         resp = _post_with_negative(url, body, headers, timeout=300, prefix="生图失败")
         if resp.status_code != 200:
-            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"生图失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -332,7 +344,7 @@ def generate_image(prompt: str, out_name: str | None = None,
             body["negative_prompt"] = negative
         resp = _post_with_negative(url, body, headers, timeout=300, prefix="生图失败")
         if resp.status_code != 200:
-            raise AIError(f"生图失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"生图失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         data = resp.json()["data"][0]
         if data.get("b64_json"):
             _b64_save(data["b64_json"], out)
@@ -355,7 +367,7 @@ def generate_image(prompt: str, out_name: str | None = None,
                 "size": tier, "ratio": ratio, "extra_body": extra}
         resp = _post_with_negative(submit, body, headers, timeout=120, prefix="Agnes 提交失败")
         if resp.status_code not in (200, 201):
-            raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         data = resp.json()
         # 兼容同步返回与异步任务两种形态
         if isinstance(data.get("data"), list) and data["data"] and (data["data"][0].get("url") or data["data"][0].get("b64_json")):

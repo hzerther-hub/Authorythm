@@ -2,6 +2,18 @@
 """视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes / runninghub / xiaoyunque(小云雀),提交+轮询+下载。"""
 from __future__ import annotations
 
+def _utf8_text(resp, limit: int = 400) -> str:
+    """错误文案按 utf-8 显式解码。
+
+    requests 在缺 Content-Type charset 时会走 apparent_encoding(charset_normalizer 猜),
+    中文报错常被猜成 GBK/Big5 → 报错本身变乱码,排障时满屏鬼画符。
+    """
+    try:
+        t = resp.content.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        t = str(getattr(resp, "text", "") or "")
+    return t[:limit]
+
 import re
 import time
 import uuid
@@ -225,10 +237,10 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame)}})
         resp = requests.post(_ark_url(base, "/contents/generations/tasks"), json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
-            raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         task_id = resp.json().get("id")
         if not task_id:
-            raise AIError(f"Seedance 响应缺少 id: {resp.text[:300]}")
+            raise AIError(f"Seedance 响应缺少 id: {_utf8_text(resp)[:300]}")
 
         def check():
             st = requests.get(_ark_url(base, f"/contents/generations/tasks/{task_id}"),
@@ -261,7 +273,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
         resp = requests.post(f"{base}/api/v1/services/aigc/video-generation/video-synthesis",
                              json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
-            raise AIError(f"Wan 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+            raise AIError(f"Wan 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
         task_id = resp.json().get("output", {}).get("task_id")
 
         def check3():
@@ -431,7 +443,7 @@ def xiaoyunque_credit_balance(cfg: dict) -> str:
     except requests.RequestException as e:
         raise AIError(f"小云雀积分查询失败: {e}") from e
     if resp.status_code != 200:
-        raise AIError(f"小云雀积分查询失败 HTTP {resp.status_code}: {resp.text[:200]}")
+        raise AIError(f"小云雀积分查询失败 HTTP {resp.status_code}: {_utf8_text(resp)[:200]}")
     r = resp.json()
     if str(r.get("ret")) != "0":
         raise AIError(f"小云雀积分查询失败: {r.get('errmsg') or str(r)[:200]}")
@@ -455,7 +467,7 @@ def _xy_upload_asset(base: str, headers: dict, path: str | Path) -> str:
         resp = requests.post(f"{base}/api/biz/v1/skill/upload_file", headers=up,
                              files={"file": (p.name, f)}, timeout=120)
     if resp.status_code not in (200, 201):
-        raise AIError(f"小云雀上传失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        raise AIError(f"小云雀上传失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
     r = resp.json()
     if str(r.get("ret")) != "0":
         raise AIError(f"小云雀上传失败: {r.get('errmsg') or str(r)[:200]}")
@@ -515,7 +527,7 @@ def _generate_xiaoyunque(cfg, base, headers, prompt, resolution, duration,
         body["asset_ids"] = asset_ids
     resp = requests.post(f"{base}/api/biz/v1/skill/submit_run", json=body, headers=headers, timeout=120)
     if resp.status_code not in (200, 201):
-        raise AIError(f"小云雀提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        raise AIError(f"小云雀提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
     r = resp.json()
     if str(r.get("ret")) != "0":
         raise AIError(f"小云雀提交失败: {r.get('errmsg') or str(r)[:200]}")
@@ -560,7 +572,7 @@ def test_config(cfg: dict) -> tuple[bool, str]:
                 "model": cfg["model"], "content": [{"type": "text", "text": "ping --resolution 480p"}]},
                 headers=headers, timeout=30)
             ok = resp.status_code in (200, 201)
-            return ok, "OK" if ok else f"HTTP {resp.status_code}: {resp.text[:200]}"
+            return ok, "OK" if ok else f"HTTP {resp.status_code}: {_utf8_text(resp)[:200]}"
         if cfg["provider"] == "xiaoyunque":
             # 积分余额接口免费,正好用作真实连通性测试
             return True, f"OK,积分余额 {xiaoyunque_credit_balance(cfg)}"

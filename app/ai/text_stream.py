@@ -82,14 +82,18 @@ def _fallback_once(url: str, body: dict, headers: dict, timeout: int, json_mode:
     body = {k: v for k, v in body.items() if k not in ("stream", "stream_options")}
     resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     if resp.status_code != 200:
-        raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {resp.content.decode('utf-8', 'replace')[:300]}")
     try:
         content = resp.json()["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as exc:
-        raise AIError(f"文本模型响应格式异常: {resp.text[:200]}") from exc
+        raise AIError(f"文本模型响应格式异常: {resp.content.decode('utf-8', 'replace')[:200]}") from exc
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
+    from ..core.encoding import MojibakeError, ensure_text
+    try:
+        return ensure_text(content or "", where="文本模型返回内容")
+    except MojibakeError as e:
+        raise AIError(str(e)) from e
 
 
 def _delta_text(data: dict) -> tuple[str, str] | None:

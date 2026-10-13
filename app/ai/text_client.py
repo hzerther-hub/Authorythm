@@ -61,6 +61,28 @@ def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
     return body
 
 
+def _err_text(resp) -> str:
+    """错误文案一律按 utf-8 显式解码。
+
+    原来用 resp.text —— requests 在没有 Content-Type charset 时会走
+    apparent_encoding(charset_normalizer 猜),中文报错常被猜成 GBK/Big5,
+    于是**报错本身就是乱码**,排障时看到的全是鬼画符,反而看不出问题在哪。
+    """
+    try:
+        return resp.content.decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001
+        return str(resp.text or "")
+
+
+def _guarded(text: str) -> str:
+    """模型产出过乱码闸门:能还原就还原,还原不了直接抛 —— 绝不把乱码传下去。"""
+    from ..core.encoding import MojibakeError, ensure_text
+    try:
+        return ensure_text(text, where="文本模型返回内容")
+    except MojibakeError as e:
+        raise AIError(str(e)) from e
+
+
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          temperature: float = 0.7, max_tokens: int | None = None,
          json_mode: bool = False, timeout: int = 300,
@@ -78,7 +100,7 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
         body.pop("response_format", None)
         resp = requests.post(url, json=body, headers=headers, timeout=timeout)
     if resp.status_code != 200:
-        raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {resp.text[:400]}")
+        raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {_err_text(resp)[:400]}")
     data = resp.json()
     try:
         content = data["choices"][0]["message"]["content"]
@@ -87,7 +109,7 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     # 兼容部分中转站返回 reasoning + content 结构
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return content or ""
+    return _guarded(content or "")
 
 
 def test_config(cfg: dict) -> tuple[bool, str]:

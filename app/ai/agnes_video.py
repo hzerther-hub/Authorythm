@@ -15,6 +15,18 @@
     - v2.0: 统一映射 ti2vid(multi_reference 实测恒 400;ti2vid 接受
       first_frame/image_url/images 任意一种,audios/videos 无语义 → 忽略)
 """
+
+
+def _utf8_text(resp, limit: int = 400) -> str:
+    """错误文案按 utf-8 显式解码。
+
+    requests 在缺 Content-Type charset 时会走 apparent_encoding(charset_normalizer 猜),
+    中文报错常被猜成 GBK/Big5 → 报错本身变乱码,排障时满屏鬼画符,看不出问题在哪。
+    """
+    try:
+        return resp.content.decode("utf-8", errors="replace")[:limit]
+    except Exception:  # noqa: BLE001
+        return str(getattr(resp, "text", "") or "")[:limit]
 from __future__ import annotations
 
 import json
@@ -273,7 +285,7 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
 
     resp = requests.post(create_endpoint(base), json=body, headers=headers, timeout=120)
     if resp.status_code not in (200, 201):
-        raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {resp.text[:300]}")
+        raise AIError(f"Agnes 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
     task_id = parse_create_response(resp.json())
     video_id, _, poll_model = task_id.partition(TASK_ID_SEPARATOR)
     poll_url = poll_endpoint(base, cfg.get("api_key") or "", video_id, poll_model or None)

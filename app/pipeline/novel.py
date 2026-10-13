@@ -621,10 +621,27 @@ def _strip_think(content: str) -> str:
     return text.strip()
 
 
+def _gate_content(text: str, where: str) -> str:
+    """AI 产出的正文落库前的乱码闸门(能还原就还原,还原不了抛错中止)。"""
+    from ..core.encoding import ensure_text
+    return ensure_text(_strip_think(text or ""), where=where)
+
+
 def _save_with_title(episode_id: int, content: str) -> str:
-    """保存正文;若首行是 `# 章节名`,顺带写回 episodes.title(对齐原版 save_episode_content.chapter_title)。"""
+    """保存正文;若首行是 `# 章节名`,顺带写回 episodes.title(对齐原版 save_episode_content.chapter_title)。
+
+    落库前过一道乱码闸门:能还原就还原,还原不了**中止这次生成**。
+    这是最后一道防线 —— 上游网关把 UTF-8 按 latin-1/GBK 解一遍就会产出
+    ``æ□®e□³□`` 这种正文,一旦静默存下去,界面上看不出任何异常,用户只会
+    反复重抽浪费配额,而且**已经落库的数据不会被自动修回来**。
+    """
     import re as _re
+    from ..core.encoding import MojibakeError, ensure_text
     text = _strip_think(content)
+    try:
+        text = ensure_text(text, where="章节正文")
+    except MojibakeError:
+        raise
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         return content
@@ -684,6 +701,7 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
                           + f"\n\n本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}(修复时必须保持不变)"
                           + f"\n\n原正文:\n{content[:14000]}")
             fixed = _strip_think(runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id))
+            fixed = _gate_content(fixed, "审校修复正文")
             db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
             return {"content": fixed, "review": review, "fixed": True}
     return {"content": content, "review": review, "fixed": False}
@@ -828,7 +846,7 @@ def edit_chapter(episode_id: int, instruction: str, config_id: int | None = None
     prompt = (f"修改指令: {instruction}\n"
               f"本项目叙事人称(必须保持不变): {pov_rule(get_novel_pov(ep['drama_id']))}"
               f"\n\n正文:\n{ep['content'][:15000]}")
-    content = runner.run_agent("novel_editor", prompt, config_id=config_id)
+    content = _gate_content(runner.run_agent("novel_editor", prompt, config_id=config_id), "改稿正文")
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (content, db.now(), episode_id))
     return content
 

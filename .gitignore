@@ -10,3 +10,8 @@ dist/
 build/
 *.spec
 .DS_Store
+# Agent skills(工具无关约定:实体在 .agents/skills,各工具目录做 junction)
+.agents/
+.claude/
+.zcode/skills/
+skills-lock.json
