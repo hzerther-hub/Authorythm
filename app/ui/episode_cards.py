@@ -1000,10 +1000,11 @@ class NarrationBox(QFrame):
 
 
 class ComicPanelCard(QFrame):
-    """漫画格卡:3:4 缩略 + 序号 + 描述/台词/构图 + 旁白说明框 + 错误 + 出图提示词。"""
+    """漫画格卡:3:4 缩略 + 序号 + 描述/台词/构图 + 旁白说明框 + 错误 + 出图提示词 + 绑定资产缩略。"""
 
     def __init__(self, row: dict, labels: dict, *, busy: bool = False, failed: str = "",
-                 on_draw=None, on_open=None, on_narration_save=None, on_erase=None):
+                 on_draw=None, on_open=None, on_narration_save=None, on_erase=None,
+                 on_bind=None, bound_assets: list[dict] | None = None):
         super().__init__()
         self.setObjectName("comicCard")
         self.setProperty("state", "failed" if failed else "")
@@ -1086,6 +1087,27 @@ class ComicPanelCard(QFrame):
             cp.setObjectName("muted")
             cp.setWordWrap(True)
             bl.addWidget(cp)
+        # 绑定资产缩略 + 「+资产」按钮(便于用户手动改自动绑定的结果)
+        if on_bind:
+            br = QHBoxLayout()
+            br.setSpacing(4)
+            br.setContentsMargins(0, 0, 0, 0)
+            for a in (bound_assets or []):
+                chip = QLabel()
+                chip.setFixedSize(28, 28)
+                chip.setToolTip(f"{a.get('kind','?')} · {a.get('name') or ''}")
+                u = (a.get("comic_image_url") or a.get("image_url") or "").strip()
+                if u:
+                    chip.setPixmap(W.pixmap_from_media(u, 56, 56))
+                chip.setStyleSheet("border:1px solid #d4d2cb; border-radius:4px; background:#fff;")
+                br.addWidget(chip)
+            br.addStretch(1)
+            bb = QPushButton("+ " + tr("bind_panel_assets"))
+            bb.setObjectName("bindBtn")
+            bb.setCursor(Qt.PointingHandCursor)
+            bb.clicked.connect(lambda _=False: on_bind())
+            br.addWidget(bb)
+            bl.addLayout(br)
         self.narration = NarrationBox(row.get("narration") or "", labels, on_narration_save)
         self.narration.set_hint(labels["narration_hint"])
         bl.addWidget(self.narration)

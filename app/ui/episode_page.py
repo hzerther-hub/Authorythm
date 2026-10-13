@@ -48,7 +48,7 @@ STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "product
 # 侧栏步骤的图标:值是 iconfont 的可读名(app/ui/icons.py 有别名表)。
 # 早先这里是一串几何符号 ▤ ✎ ☺ ▦ ▩ ⤓,和按钮里的 emoji 是两套字形,风格不统一。
 STEP_ICONS = {"raw": "doc", "rewrite": "edit", "assets": "folder",
-              "storyboard": "video", "comic": "book", "export": "download"}
+              "storyboard": "camera", "comic": "book", "export": "download"}
 # 三段环节 → 步骤(对齐原版 sidebarSections)
 NAV_SECTIONS = [("script", "step_script", ["raw", "rewrite"]),
                 ("production", "step_production", ["assets", "storyboard", "comic"]),
@@ -1125,9 +1125,36 @@ class EpisodePage(QWidget):
         self.words_spin.setFixedWidth(96)
         self.words_spin.setSpecialValueText(tr("no_limit"))
         self.words_spin.setToolTip(tr("target_words"))
+        # 默认值在 _reload_raw 中按 ep.target_words → project.word_count → 2500 兜底。
+        # _panel_raw 构造时 drama_id 还未设置,只能放个 0 (回退到「不限」special 文本),
+        # 紧接着 _reload_raw 会立刻覆盖。
+        self.words_spin.setValue(0)
         self.words_spin.valueChanged.connect(lambda _v: self._update_raw_count())
         row.addWidget(self.words_spin)
-        row.addStretch(1)
+        # 「每章字数 X」chip:显示项目级 novel_meta.word_count,让用户看到
+        # 当前项目规划的章节长度基准;_reload_raw 同步刷新。
+        self.chapter_words_chip = QLabel("")
+        self.chapter_words_chip.setObjectName("chapterWordsChip")
+        self.chapter_words_chip.setStyleSheet(
+            "color:#6b7280; font-size:12px; padding:0 6px;"
+            "background:rgba(0,0,0,0.04); border-radius:4px;")
+        self.chapter_words_chip.setText(tr("chapter_words_chip", "未设置"))
+        row.addWidget(self.chapter_words_chip)
+        # 红框位置:紧贴「不限」右边 → 思考过程/写作流文字从此处开始,左对齐,
+        # 文字超出宽度时整段自动 elide,无须固定 maxWidth。空时不占行高。
+        from PySide6.QtWidgets import QSizePolicy as _QSP
+        self.thinking_label = QLabel("")
+        self.thinking_label.setObjectName("thinkingLabel")
+        self.thinking_label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.thinking_label.setStyleSheet(
+            "color:#6b7280; font-style:italic; font-size:12px;"
+            "padding:0 8px;")
+        self.thinking_label.setMinimumWidth(120)
+        self.thinking_label.setSizePolicy(_QSP.Expanding, _QSP.Preferred)
+        self.thinking_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.thinking_label.setVisible(False)
+        row.addWidget(self.thinking_label)
+        row.addStretch(1)        # 文风及之后按钮统统贴右
 
         # 文风:6 预设 + 自定义
         from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
@@ -1303,8 +1330,20 @@ class EpisodePage(QWidget):
         if hasattr(self, "review_btn"):
             self.review_btn.setEnabled(bool((ep["content"] or "").strip()))
         self.words_spin.blockSignals(True)
-        self.words_spin.setValue(ep["target_words"] or 0)
+        # 字数优先级:本 ep.target_words(用户已调整) → 项目 novel_meta.word_count
+        # (用户在小说策划页设的「每章字数」) → 兜底 0 「不限」。
+        # 用户明确反馈默认应跟随「不限」的特殊语义,而不是写死 2500。
+        d = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (self.drama_id,))
+        meta = db.jload(d["novel_meta"] if d else "", {}) or {}
+        proj_wc = int(meta.get("word_count") or 0)
+        target = ep["target_words"] or proj_wc or 0
+        self.words_spin.setValue(target)
         self.words_spin.blockSignals(False)
+        # 「每章字数 X」chip:永远展示项目级 novel_meta.word_count,
+        # 0/未设时显示「未设置」(与 spin 的兜底 2500 解耦 —— chip 是规划口径、spin 是生成口径)。
+        chip = getattr(self, "chapter_words_chip", None)
+        if chip is not None:
+            chip.setText(tr("chapter_words_chip", f"{proj_wc} 字" if proj_wc else "未设置"))
         cur = novel_pipe.get_novel_style(self.drama_id)
         idx = self.style_combo.findData(cur)
         if idx < 0 and cur:
@@ -1487,7 +1526,15 @@ class EpisodePage(QWidget):
             self.gate_lab.setVisible(bool(hint))
 
     def _set_raw_status(self, text: str):
-        """更新生成状态条(在正文上方顶到 toolbar 边);空文本隐藏,避免占空。"""
+        """更新生成状态条:同时写两份 ——
+
+        1) raw_status 在正文编辑框上方一行(`_set_raw_row_enabled` 控可见性)。
+        2) thinking_label 在原始内容工具行右侧「文风」左边的留白位置
+           (替代原本的 addStretch(1) 空隙),空文本不占行高。
+
+        同步两路可以让用户从任何区域都能看到 LLM 思考进度,不再需要等到
+        写完才滚到正文上方看。
+        """
         try:
             if getattr(self, "raw_status", None) is not None:
                 if text:
@@ -1497,6 +1544,24 @@ class EpisodePage(QWidget):
                     self.raw_status.setVisible(False)
                     self.raw_status.setText("")
         except RuntimeError:
+            pass
+        try:
+            tl = getattr(self, "thinking_label", None)
+            if tl is not None:
+                tl.setText(text or "")
+                tl.setVisible(bool(text))
+                # 长文自动 elide:取 layout 实际分配到的宽度(thinking_label 是
+                # Expanding policy),超过就让 Qt 在右侧加省略号。
+                # 不再依赖 maximumWidth(已取消,默认 INT_MAX)。
+                w = tl.width()
+                if text and len(text) > 80 and w > 80:
+                    fm = tl.fontMetrics()
+                    elided = fm.elidedText(text, Qt.ElideRight, max(40, w - 12))
+                    tl.setText(elided)
+                    tl.setToolTip(text)
+                else:
+                    tl.setToolTip("")
+        except (RuntimeError, AttributeError):
             pass
 
     def _ai_novel(self):
@@ -1546,16 +1611,41 @@ class EpisodePage(QWidget):
                               config_id=snap_text_cfg,
                               temperature=0.6, max_tokens=None, parent=self)
         self._novel_stream = worker
-        stat = {"r": 0, "c": 0}
+        # 流式缓冲:分别累积 reasoning / content 的最近文本片段 + 字数统计;
+        # 单次 chunk 只 [-48:] 截尾会丢掉前面屏幕外的内容,用户感受不到「正在写什么」。
+        # 改为持续滚动 ~200 字 buffer,每次 delta 重排成一行:
+        #   💭 <reasoning tail> · 思考 R 字 · ✍️ <content tail> · 已写 C 字
+        # 同一行始终变化,且无论模型当前在 reasoning 还是 content 阶段,两路都可见。
+        stat = {"r": 0, "c": 0, "r_buf": "", "c_buf": ""}
+        THINK_TAIL = 90    # reasoning 文字预览长度(屏幕宽度允许再多 ~30 字)
+        WRITE_TAIL = 60    # writing 文字预览长度(更短)
 
         def on_delta(kind, chunk):
             if kind == "reasoning":
                 stat["r"] += len(chunk)
-                tail = chunk.strip().replace("\n", " ")[-48:]
-                self._set_raw_status(f"💭 {tail}  ·  思考 {stat['r']} 字")
+                # buffer 滚动:合并 + 截尾,反正尾部才是用户关心的最新片段
+                merged = (stat["r_buf"] + chunk).replace("\n", " ")
+                stat["r_buf"] = merged[-200:]
             else:
                 stat["c"] += len(chunk)
-                self._set_raw_status(f"✍️ AI 写作中… 已生成 {stat['c']} 字,完成后自动填入")
+                merged = (stat["c_buf"] + chunk).replace("\n", " ")
+                stat["c_buf"] = merged[-200:]
+            # 拼接:空段自动折叠。如果模型压根没吐 reasoning(走纯写作流),
+            # 就只显示 ✍️ 段;反过来没写作也只显示 💭 段。
+            # 都空时给一句静态占位,告诉用户「正在请求 LLM」。
+            parts = []
+            r_has = bool(stat["r_buf"].strip()) or stat["r"] > 0
+            c_has = bool(stat["c_buf"].strip()) or stat["c"] > 0
+            if r_has:
+                r_tail = stat["r_buf"].strip()[-THINK_TAIL:]
+                parts.append(f"💭 {r_tail} · 思考 {stat['r']} 字")
+            if c_has:
+                c_tail = stat["c_buf"].strip()[-WRITE_TAIL:]
+                parts.append(f"✍️ {c_tail} · 已写 {stat['c']} 字")
+            if not parts:
+                parts.append("⏳ 等待模型响应…")
+            text = "  ".join(parts)
+            self._set_raw_status(text)
 
         def on_finish(text):
             self._novel_stream = None
@@ -1590,6 +1680,8 @@ class EpisodePage(QWidget):
         worker.delta.connect(on_delta)
         worker.finished.connect(on_finish)
         worker.failed.connect(on_failed)
+        # 启动前先在红框里给个静态占位,流一来就被 on_delta 覆盖
+        self._set_raw_status("⏳ 等待模型响应…")
         worker.start()
 
     def _novel_done(self, result, error):
@@ -1613,6 +1705,11 @@ class EpisodePage(QWidget):
                   getattr(self, "rewrite_btn", None)):
             if b is not None:
                 b.setEnabled(on)
+        # 字数 spinbox 也属于工具行:生成过程中锁定(改字数是破坏上下文的事),
+        # 写完恢复可改以便「重写本章」时调整目标长度。
+        ws = getattr(self, "words_spin", None)
+        if ws is not None:
+            ws.setEnabled(on)
 
     def _cfg_for(self, service_type: str):
         """该类型服务当前下拉选中的配置 id(ensure_ready 用;未选返回 None=默认最高优先级)。"""
@@ -2223,7 +2320,7 @@ class EpisodePage(QWidget):
         """
         from ..pipeline import comic as comic_pipe
         snap_img = self.image_model.currentData()   # 工作线程里读 combo 会 Internal C++ object already deleted
-        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
+        # 画风统一走项目级「温画画风」(dramas.comic_style),其它入口不再下拉覆盖。
         if force:
             kind_table = {"character": "characters", "scene": "scenes", "prop": "props"}.get(kind)
             if kind_table:
@@ -2231,8 +2328,7 @@ class EpisodePage(QWidget):
                       (db.now(), row_id))
         def job(tid):
             return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                config_id=snap_img,
-                                                style_value=snap_style)
+                                                config_id=snap_img)
         def done(tid, result, error):
             if error:
                 err(error)
@@ -2269,7 +2365,6 @@ class EpisodePage(QWidget):
             btn.setEnabled(False)
             btn.setText("⠋ " + tr("in_progress"))
         snap_img = self.image_model.currentData()
-        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
 
         def run(i: int):
             if i >= len(tasks):
@@ -2282,8 +2377,7 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                    config_id=snap_img,
-                                                    style_value=snap_style)
+                                                    config_id=snap_img)
 
             def done(tid, result, error):
                 if error:
@@ -4945,15 +5039,6 @@ class EpisodePage(QWidget):
         self.comic_done_tag = C.mono_tag("")
         bar.addWidget(self.comic_done_tag)
         bar.addStretch(1)
-        bar.addWidget(QLabel(tr("comic_style") + ":"))
-        self.comic_style = QComboBox()
-        self.comic_style.setFixedWidth(150)
-        self.comic_style.addItem(tr("follow_project"), "")
-        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
-            self.comic_style.addItem(tr(r["name"]), r["value"])   # 预设名随语言,自建预设原样回退
-        self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
-        self.comic_style.currentIndexChanged.connect(self._on_comic_style)
-        bar.addWidget(self.comic_style)
         re_panel = W.primary_btn(tr("gen_panels"))
         re_panel.setToolTip(tr("gen_panels_tip"))
         re_panel.clicked.connect(self._split_panels)
@@ -4965,13 +5050,6 @@ class EpisodePage(QWidget):
         stitch_btn.clicked.connect(self._stitch)
         bar.addWidget(stitch_btn)
         lay.addLayout(bar)
-
-        self.comic_style_edit = C.SaveOnBlurEdit()
-        self.comic_style_edit.setPlaceholderText(tr("comic_style"))
-        self.comic_style_edit.setFixedHeight(52)
-        self.comic_style_edit.editing_finished.connect(self._save_comic_style)
-        self.comic_style_edit.setVisible(False)
-        lay.addWidget(self.comic_style_edit)
 
         # 整话长条图(拼接后出现)
         self.comic_stitch_box = QFrame()
@@ -5002,22 +5080,6 @@ class EpisodePage(QWidget):
         self.comic_grid.setVerticalSpacing(12)
         lay.addWidget(self.comic_host, 1)
 
-    def _on_comic_style(self, _idx):
-        data = self.comic_style.currentData()
-        self.comic_style_edit.setVisible(data == "__custom__")
-        if data and data != "__custom__":
-            self.comic_style_edit.setPlainText(data)
-            self._save_comic_style()
-
-    def _save_comic_style(self):
-        if not hasattr(self, "comic_style_edit") or not self.comic_style_edit.isVisible():
-            return
-        text = self.comic_style_edit.toPlainText().strip()
-        if not text:
-            return
-        db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
-              (text, db.now(), self.drama_id))
-
     def _reload_comic(self):
         if not getattr(self, "comic_grid", None):
             return
@@ -5043,6 +5105,22 @@ class EpisodePage(QWidget):
             "narration_hint": tr("comic_narration_hint"),
             "redraw": tr("redraw"),
         }
+        # 每格的绑定资产(角色+场景+道具),一次 join 取出,避免 N+1
+        bound_by_panel: dict[int, list[dict]] = {r["id"]: [] for r in rows}
+        if rows:
+            ids = tuple(r["id"] for r in rows)
+            ph = ",".join("?" * len(ids))
+            for kind, link, table, id_col in (
+                ("character", "comic_panel_characters", "characters", "character_id"),
+                ("scene",     "comic_panel_scenes",     "scenes",     "scene_id"),
+                ("prop",      "comic_panel_props",      "props",      "prop_id"),
+            ):
+                for x in db.q(
+                    f"SELECT pc.panel_id pid, t.* FROM {link} pc "
+                    f"JOIN {table} t ON t.id = pc.{id_col} "
+                    f"WHERE pc.panel_id IN ({ph}) ORDER BY t.id", ids):
+                    x["kind"] = kind
+                    bound_by_panel.setdefault(x["pid"], []).append(dict(x))
         busy_ids = getattr(self, "_comic_busy", set())
         for i, r in enumerate(rows):
             card = C.ComicPanelCard(
@@ -5050,10 +5128,19 @@ class EpisodePage(QWidget):
                 on_draw=lambda _=False, i=r["id"]: self._one_panel_image(i),
                 on_open=lambda _=False, u=r["image_url"]: self._open_image(u),
                 on_narration_save=lambda t, i=r["id"]: self._save_panel_narration(i, t),
-                on_erase=lambda _=False, i=r["id"], u=r["image_url"]: self._erase_panel(i, u))
+                on_erase=lambda _=False, i=r["id"], u=r["image_url"]: self._erase_panel(i, u),
+                on_bind=lambda _=False, i=r["id"]: self._open_bind_dialog(i),
+                bound_assets=bound_by_panel.get(r["id"], []))
             grid.addWidget(card, i // 3, i % 3)
         grid.setRowStretch((len(rows) + 2) // 3, 1)
         self._reload_comic_stitch()
+
+    def _open_bind_dialog(self, panel_id: int):
+        """点 +资产 → 弹出 ComicPanelBindDialog。保存后立即 reload 刷新卡片缩略。"""
+        from .asset_dialogs import ComicPanelBindDialog
+        dlg = ComicPanelBindDialog(self, self.drama_id, panel_id,
+                                   on_saved=lambda: self._reload_comic())
+        dlg.exec()
 
     def _save_panel_narration(self, panel_id: int, text: str):
         db.ex("UPDATE comic_panels SET narration=?, updated_at=? WHERE id=?",
@@ -5125,14 +5212,19 @@ class EpisodePage(QWidget):
         # libshibken "Internal C++ object already deleted"
         snap_text = self.text_model.currentData()
         snap_img = self.image_model.currentData()
-        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
+        # 画风统一走项目级(dramas.comic_style),不再有 snap_style。
         def job(tid):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id,
-                                                config_id=snap_text,
-                                                style_value=snap_style)
+                                                config_id=snap_text)
+            # 绑定资产(comic_panel_characters/scenes/props)的镜像图作为参考图;
+            # 仅 provider 真的支持才走这条路(agnes/local/comfyui/sdwebui/fooocus),
+            # qwen-image / volcengine 等会丢参考图,直接走纯文生图避免误导预期
+            refs = comic_pipe.panel_reference_images(panel_id) if image_client.supports_reference_images(
+                (registry.check_ready("image", snap_img) or {}).get("provider")) else []
             out, _p = image_client.generate_image(
                 fp, config_id=snap_img,
                 size="1024x1536",
+                reference_images=refs or None,
                 people=comic_pipe.panel_people_count(panel_id))
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), panel_id))
@@ -5166,7 +5258,7 @@ class EpisodePage(QWidget):
         # 主线程快照:把两个 QComboBox 的值定下来再交给 worker,避免上述 Internal C++ 报错
         snap_text = self.text_model.currentData()
         snap_img = self.image_model.currentData()
-        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
+        # 画风统一走项目级(dramas.comic_style),不再有 snap_style。
 
         def run(i: int):
             if i >= len(ids):
@@ -5178,11 +5270,14 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
-                                                    config_id=snap_text,
-                                                    style_value=snap_style)
+                                                    config_id=snap_text)
+                # 见 _one_panel_image 的注释:仅在 provider 真支持时传参考图
+                refs = comic_pipe.panel_reference_images(pid) if image_client.supports_reference_images(
+                    (registry.check_ready("image", snap_img) or {}).get("provider")) else []
                 out, _p = image_client.generate_image(
                     fp, config_id=snap_img,
                     size="1024x1536",
+                    reference_images=refs or None,
                     people=comic_pipe.panel_people_count(pid))
                 db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                       (config.path_to_media_url(out), db.now(), pid))
@@ -5192,6 +5287,10 @@ class EpisodePage(QWidget):
                 self._comic_busy.discard(pid)
                 if error:
                     err(error)
+                # 逐格刷新:刚完成的格子立即显示成图。此前只在整个链结束时 reload,
+                # 15 格 × 每格约 1 分钟的全过程里网格纹丝不动(全部转圈),
+                # 看着就是"批量没有结果"—— 其实图一直在落库,只是界面不更新
+                self._reload_comic()
                 run(i + 1)          # done 在主线程回调,链式提交下一格
 
             TASKMGR.submit("image", job, done, episode_id=self.episode_id)

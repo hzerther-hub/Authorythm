@@ -5,9 +5,10 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
+                               QVBoxLayout, QWidget)
 
 from .confirm import ask
 from ..core import config, db
@@ -74,7 +75,7 @@ class ProjectSettingsDialog(QDialog):
         mr = QHBoxLayout(meta_row)
         mr.setContentsMargins(0, 0, 0, 0)
         self.meta_btn = WaitingButton(tr("✨ AI 起草简介 / 题材"))
-        W.set_icon(meta_btn, "magic")
+        W.set_icon(self.meta_btn, "magic")
         self.meta_btn.setToolTip(tr("按「首章正文 → 创意描述 → 项目名称」的优先级取材,自动填简介与题材"))
         self.meta_btn.clicked.connect(self._draft_meta)
         mr.addWidget(self.meta_btn)
@@ -123,6 +124,39 @@ class ProjectSettingsDialog(QDialog):
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("visual_style"), self.style)
+        # 项目级"温画画风":漫画资产 / 漫画格生成的统一出口(从这里集中改,
+        # 其它漫化页面不再重复下拉)。
+        cs_row = QWidget()
+        csr = QVBoxLayout(cs_row)
+        csr.setContentsMargins(0, 0, 0, 0)
+        csr.setSpacing(4)
+        csr1 = QHBoxLayout()
+        self.comic_style = QComboBox()
+        self.comic_style.addItem(tr("未选(跟随默认)"), "")
+        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
+            self.comic_style.addItem(tr(r["name"]), r["value"])
+        self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
+        csr1.addWidget(self.comic_style, 1)
+        csr.addLayout(csr1)
+        self.comic_style_edit = QPlainTextEdit(d["comic_style"] or "")
+        self.comic_style_edit.setPlaceholderText(tr("自定义画风:写清笔触、线条、色调、氛围"))
+        self.comic_style_edit.setMaximumHeight(64)
+        csr.addWidget(self.comic_style_edit)
+        f.addRow(tr("u_comic_style"), cs_row)
+        f.addRow("", _muted(tr("本项目的所有漫画资产图与漫画格共用此画风;选自定义可自由描述")))
+        # 实时切换信号:控件已建好,才挂监听。
+        # 选预设 → 自动写回 self.comic_style_edit + 写入 DB;
+        # 选自定义 → 展开编辑框;编辑框内容脱离当前预设时 → 下拉拨回「自定义…」。
+        self.comic_style.currentIndexChanged.connect(self._on_comic_style_pick)
+        self.comic_style_edit.textChanged.connect(self._on_comic_style_text)
+        # 初始态:文本已存在、若能对上预设 → 选中那一项;否则按"自定义"显示。
+        _init_cs = (d["comic_style"] or "").strip()
+        _cs_idx = self.comic_style.findData(_init_cs) if _init_cs else 0
+        if _cs_idx < 0:
+            _cs_idx = self.comic_style.findData("__custom__")
+        self.comic_style.setCurrentIndex(_cs_idx if _cs_idx >= 0 else 0)
+        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
+        # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
         # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
         self.language = QComboBox()
         self.language.addItem(tr("跟随全局设置"), "auto")
@@ -205,6 +239,35 @@ class ProjectSettingsDialog(QDialog):
                 self.novel_style.setCurrentIndex(i)
                 self.novel_style.blockSignals(False)
         self.novel_style_edit.setVisible(True)
+
+    def _on_comic_style_pick(self, _idx=0):
+        """温画画风下拉切换:预设 → 实时回填、即时落库;自定义 → 展开编辑框。"""
+        data = self.comic_style.currentData()
+        custom = data == "__custom__"
+        self.comic_style_edit.setVisible(custom)
+        if data and not custom:
+            # 预设选中 → 把 value 同步到编辑框,立刻写入 DB
+            self.comic_style_edit.blockSignals(True)
+            self.comic_style_edit.setPlainText(data)
+            self.comic_style_edit.blockSignals(False)
+            db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
+                  (data, db.now(), self.drama_id))
+        elif custom and not self.comic_style_edit.toPlainText().strip():
+            self.comic_style_edit.setFocus()
+
+    def _on_comic_style_text(self):
+        """温画画风自由编辑:文本脱离当前预设时把下拉拨回「自定义…」,内容实时落库。"""
+        text = self.comic_style_edit.toPlainText().strip()
+        # 只有 text 不与任何预设吻合时才把下拉拨回「自定义」
+        if self.comic_style.findData(text) < 0:
+            i = self.comic_style.findData("__custom__")
+            if i >= 0 and self.comic_style.currentIndex() != i:
+                self.comic_style.blockSignals(True)
+                self.comic_style.setCurrentIndex(i)
+                self.comic_style.blockSignals(False)
+                self.comic_style_edit.setVisible(True)
+        db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
+              (text, db.now(), self.drama_id))
 
     def _draft_meta(self):
         """AI 起草简介与题材(不直接落库,填进输入框由用户确认后保存)。"""
@@ -664,3 +727,235 @@ class AssetDetailDialog(QDialog):
             VariantsDialog(self, dict(c)).exec()
             if self._on_changed:
                 self._on_changed()
+
+
+class _BindCard(QFrame):
+    """单条可选资产卡:缩略/占位 + 名称 + 复选框。
+
+    整卡可点切换勾选(对齐 RefCard 的 star-prop 风格),复选框只是显式标记。
+    """
+
+    def __init__(self, row: dict, kind: str, checked: bool, on_toggle=None):
+        super().__init__()
+        self.setObjectName("bindCard")
+        self._checked = checked
+        self._on_toggle = on_toggle
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(3)
+        url = (row.get("comic_image_url") or row.get("image_url") or "").strip()
+        if url:
+            im = QLabel()
+            im.setAlignment(Qt.AlignCenter)
+            im.setMinimumHeight(70)
+            im.setPixmap(W.pixmap_from_media(url, 240, 70))
+            im.setScaledContents(True)
+            from PySide6.QtWidgets import QSizePolicy
+            sp = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            sp.setHeightForWidth(True)
+            im.setSizePolicy(sp)
+            lay.addWidget(im)
+        else:
+            ph = QLabel({"character": "👤", "scene": "🏞", "prop": "📦"}.get(kind, "▣"))
+            ph.setAlignment(Qt.AlignCenter)
+            ph.setFixedHeight(80)
+            ph.setObjectName("bindThumb")
+            lay.addWidget(ph)
+        nm = QLabel(str(row.get("name") or ""))
+        f = nm.font()
+        f.setBold(True)
+        nm.setFont(f)
+        nm.setWordWrap(True)
+        lay.addWidget(nm)
+        self.box = QCheckBox()
+        self.box.setChecked(bool(checked))
+        self.box.setText(tr("bind_to_panel"))
+        self.box.toggled.connect(self._emit)
+        lay.addWidget(self.box)
+        self.setProperty("bound", "1" if checked else "0")
+        self.setCursor(Qt.PointingHandCursor)
+        self.mousePressEvent = lambda _e: self._toggle()
+        # 复选框自己点也会冒泡到卡片,这里拦一下
+        self.box.mousePressEvent = lambda e: QCheckBox.mousePressEvent(self.box, e)
+
+    def _toggle(self):
+        self.box.setChecked(not self.box.isChecked())
+
+    def _emit(self, v: bool):
+        self.setProperty("bound", "1" if v else "0")
+        self.style().unpolish(self)
+        self.style().polish(self)
+        if self._on_toggle:
+            self._on_toggle(v)
+
+
+class ComicPanelBindDialog(QDialog):
+    """漫画格手动绑资产:角色(多选)/场景(单选)/道具(多选)。
+
+    来自 split_panels 的自动绑定写入 comic_panel_characters/scenes/props;
+    本对话框是手动覆写通道 —— 用户能再勾选/取消,确认后整集替换语义写入
+    (「整格重绑」),与 _toggle_ref_bind 风格一致。
+    """
+
+    def __init__(self, parent, drama_id: int, panel_id: int, on_saved=None):
+        super().__init__(parent)
+        self.drama_id = drama_id
+        self.panel_id = panel_id
+        self._on_saved = on_saved
+        self.setWindowTitle(tr("bind_panel_assets"))
+        self.resize(820, 540)
+        # 三段资产先一次性读出
+        self._chars = [dict(r) for r in db.q(
+            "SELECT id, name, appearance, styling, image_url, comic_image_url "
+            "FROM characters WHERE drama_id=? ORDER BY id", (drama_id,))]
+        self._scenes = [dict(r) for r in db.q(
+            "SELECT id, name, prompt, lighting, image_url, comic_image_url "
+            "FROM scenes WHERE drama_id=? ORDER BY id", (drama_id,))]
+        self._props = [dict(r) for r in db.q(
+            "SELECT id, name, description, image_url, comic_image_url "
+            "FROM props WHERE drama_id=? ORDER BY id", (drama_id,))]
+        # 当前已绑
+        bound_chars = {r["character_id"] for r in db.q(
+            "SELECT character_id FROM comic_panel_characters WHERE panel_id=?",
+            (panel_id,))}
+        bound_scenes = {r["scene_id"] for r in db.q(
+            "SELECT scene_id FROM comic_panel_scenes WHERE panel_id=?",
+            (panel_id,))}
+        bound_props = {r["prop_id"] for r in db.q(
+            "SELECT prop_id FROM comic_panel_props WHERE panel_id=?",
+            (panel_id,))}
+        self._bound_chars = bound_chars
+        self._bound_scenes = bound_scenes
+        self._bound_props = bound_props
+
+        root = QVBoxLayout(self)
+        tip = QLabel(tr("bind_panel_tip"))
+        tip.setObjectName("muted")
+        tip.setWordWrap(True)
+        root.addWidget(tip)
+
+        # 场景段(单选语义:每格至多一个主场景;不勾=无主场景)
+        self._scene_chosen = bound_scenes.copy()
+        if len(self._scene_chosen) > 1:
+            # 模型一次给了多个 scene_id 时只保留第一个,其它视为错误残留
+            only = next(iter(self._scene_chosen))
+            self._scene_chosen = {only}
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        body = QWidget()
+        grid = QVBoxLayout(body)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setSpacing(10)
+        grid.addWidget(self._section_label(tr("chars"), f"{len(self._chars)}"))
+        grid.addWidget(self._build_char_grid())
+        grid.addWidget(self._section_label(tr("scenes"), f"{len(self._scenes)}"))
+        grid.addWidget(self._build_scene_grid())
+        grid.addWidget(self._section_label(tr("props"), f"{len(self._props)}"))
+        grid.addWidget(self._build_prop_grid())
+        grid.addStretch(1)
+        scroll.setWidget(body)
+        root.addWidget(scroll, 1)
+
+        row = QHBoxLayout()
+        cancel = QPushButton(tr("cancel"))
+        cancel.clicked.connect(self.reject)
+        save = W.primary_btn(tr("save"))
+        save.clicked.connect(self._save)
+        row.addStretch(1)
+        row.addWidget(cancel)
+        row.addWidget(save)
+        root.addLayout(row)
+
+    def _section_label(self, name: str, count: str) -> QLabel:
+        lb = QLabel(f"{name} · {count}")
+        lb.setObjectName("bindSection")
+        return lb
+
+    def _build_char_grid(self) -> QWidget:
+        wrap = QWidget()
+        g = QGridLayout(wrap)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        if not self._chars:
+            g.addWidget(QLabel(tr("no_assets_yet")), 0, 0)
+            return wrap
+        cols = 3
+        for i, r in enumerate(self._chars):
+            checked = r["id"] in self._bound_chars
+            card = _BindCard(r, "character", checked,
+                             on_toggle=lambda v, rid=r["id"]: self._toggle_char(rid, v))
+            g.addWidget(card, i // cols, i % cols)
+        return wrap
+
+    def _build_scene_grid(self) -> QWidget:
+        wrap = QWidget()
+        g = QGridLayout(wrap)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        if not self._scenes:
+            g.addWidget(QLabel(tr("no_assets_yet")), 0, 0)
+            return wrap
+        cols = 3
+        for i, r in enumerate(self._scenes):
+            checked = r["id"] in self._scene_chosen
+            card = _BindCard(r, "scene", checked,
+                             on_toggle=lambda v, rid=r["id"]: self._toggle_scene(rid, v))
+            g.addWidget(card, i // cols, i % cols)
+        return wrap
+
+    def _build_prop_grid(self) -> QWidget:
+        wrap = QWidget()
+        g = QGridLayout(wrap)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setHorizontalSpacing(8)
+        g.setVerticalSpacing(8)
+        if not self._props:
+            g.addWidget(QLabel(tr("no_assets_yet")), 0, 0)
+            return wrap
+        cols = 3
+        for i, r in enumerate(self._props):
+            checked = r["id"] in self._bound_props
+            card = _BindCard(r, "prop", checked,
+                             on_toggle=lambda v, rid=r["id"]: self._toggle_prop(rid, v))
+            g.addWidget(card, i // cols, i % cols)
+        return wrap
+
+    def _toggle_char(self, rid: int, on: bool):
+        if on:
+            self._bound_chars.add(rid)
+        else:
+            self._bound_chars.discard(rid)
+
+    def _toggle_scene(self, rid: int, on: bool):
+        # 单选语义:勾了新场景就清掉旧的
+        self._scene_chosen = {rid} if on else set()
+
+    def _toggle_prop(self, rid: int, on: bool):
+        if on:
+            self._bound_props.add(rid)
+        else:
+            self._bound_props.discard(rid)
+
+    def _save(self):
+        # 写库前再加一道「场景单选」收口:防御 _toggle_scene 状态被外部绕过
+        if len(self._scene_chosen) > 1:
+            only = next(iter(self._scene_chosen))
+            self._scene_chosen = {only}
+        db.ex("DELETE FROM comic_panel_characters WHERE panel_id=?", (self.panel_id,))
+        db.ex("DELETE FROM comic_panel_scenes WHERE panel_id=?", (self.panel_id,))
+        db.ex("DELETE FROM comic_panel_props WHERE panel_id=?", (self.panel_id,))
+        for cid in self._bound_chars:
+            db.ex("INSERT OR IGNORE INTO comic_panel_characters(panel_id,character_id) VALUES(?,?)",
+                  (self.panel_id, int(cid)))
+        for sid in self._scene_chosen:
+            db.ex("INSERT OR IGNORE INTO comic_panel_scenes(panel_id,scene_id) VALUES(?,?)",
+                  (self.panel_id, int(sid)))
+        for pid in self._bound_props:
+            db.ex("INSERT OR IGNORE INTO comic_panel_props(panel_id,prop_id) VALUES(?,?)",
+                  (self.panel_id, int(pid)))
+        if self._on_saved:
+            self._on_saved()
+        self.accept()

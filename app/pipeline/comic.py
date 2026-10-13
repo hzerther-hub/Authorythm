@@ -20,23 +20,35 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
     # 另一模型返回 {"name":…,"parameters":…} 函数信封)。这里把资产**直接内联**进提示词。
     d_id = ep["drama_id"]
     assets = ["【本集可用的视觉资产(已全部给出,不要再调用任何工具读取)】"]
-    for label, table, cols in (
-        ("角色", "characters", ("name", "appearance", "styling")),
-        ("场景", "scenes", ("name", "prompt", "lighting")),
-        ("道具", "props", ("name", "description")),
+    # 资产行同时记 id:模型读完上面这段要把每格用到的 character_ids / scene_id /
+    # prop_ids 抄进 JSON,出图端 panel_image_prompt 会按这些 id 找参考图,跨格
+    # 一致性才有锚点。下面建一份 name→id 的对照表,模型漏写 id 但写了 name 时
+    # 也能兜底回查。
+    name2id: dict[str, dict[str, int]] = {"character": {}, "scene": {}, "prop": {}}
+    for label, key, table, cols in (
+        ("角色", "character", "characters", ("name", "appearance", "styling")),
+        ("场景", "scene", "scenes", ("name", "prompt", "lighting")),
+        ("道具", "prop", "props", ("name", "description")),
     ):
-        rows = db.q(f"SELECT {','.join(cols)} FROM {table} WHERE drama_id=? LIMIT 12", (d_id,))
+        rows = db.q(f"SELECT id,{','.join(cols)} FROM {table} WHERE drama_id=? LIMIT 12", (d_id,))
         if not rows:
             continue
         assets.append(f"— {label} —")
         for r in rows:
             bits = " / ".join(str(r[c] or "")[:90] for c in cols[1:])
-            assets.append(f"  {r[cols[0]]}: {bits}")
-    assets.append("以上即全部可用资产;某镜所需资产不在表中时,按剧本文字描述作画。")
+            assets.append(f"  [id={r['id']}] {r[cols[0]]}: {bits}")
+            name2id[key][str(r[cols[0]]).strip()] = int(r["id"])
+    assets.append("以上即全部可用资产;某镜所需资产不在表中时,按剧本文字描述作画,"
+                  "character_ids / scene_id / prop_ids 留空即可。")
     prompt = ("\n".join(assets) + "\n\n"
               + f"剧本(第 {ep['episode_number']} 集):\n{script[:14000]}\n\n"
               + "你现在**没有任何工具**,资产已在上方直接给全。禁止输出 <think>、"
-                "[Tool: ...]、函数调用或任何解释,只输出一个 JSON 对象。")
+                "[Tool: ...]、函数调用或任何解释,只输出一个 JSON 对象。\n"
+              + "每个 panel 必须额外带上 asset 引用(供出图端作参考图锚点):\n"
+              + "  character_ids: [int,...]  本格出现角色的 id 列表(无人物则空数组)\n"
+              + "  scene_id: int 或 null      本格主场景的 id(无明确场景则 null)\n"
+              + "  prop_ids: [int,...]        本格出现的道具 id 列表(无道具则空数组)\n"
+              + "没有的字段就当 null / 空数组,缺字段的格子仍会被保留(不会丢掉)。")
     data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=config_id)
     # 兼容函数调用信封:部分模型会把内容包在 {"name":…,"parameters":{"panels":[…]}}
     if isinstance(data, dict) and not data.get("panels") and isinstance(data.get("parameters"), dict):
@@ -46,20 +58,91 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
         raise RuntimeError("漫画分镜结果为空")
     ts = db.now()
     db.ex("DELETE FROM comic_panels WHERE episode_id=?", (episode_id,))
+    # 先删旧绑定(整集替换语义),panel id 在 INSERT 后才能拿到 → 暂存到 list
+    pending_links: list[tuple[int, list[int], int | None, list[int]]] = []
     for i, p in enumerate(panels, start=1):
-        db.ex(
+        panel_id = db.ex(
             "INSERT INTO comic_panels(episode_id,panel_number,description,dialogue,composition,narration,image_prompt,created_at,updated_at)"
             " VALUES(?,?,?,?,?,?,?,?,?)",
             (episode_id, int(p.get("number") or i), p.get("description", ""), p.get("dialogue", "无"),
              p.get("composition", ""), p.get("narration", ""), "", ts, ts))
+        if not panel_id:
+            continue
+        char_ids = _coerce_ids(p.get("character_ids") or p.get("characters") or [], int)
+        scene_id = _coerce_one_id(p.get("scene_id"), int)
+        prop_ids = _coerce_ids(p.get("prop_ids") or p.get("props") or [], int)
+        # 兜底:模型只写了 name 时按 name2id 反查
+        char_ids = [name2id["character"].get(_coerce_str(n), n) for n in (p.get("character_names") or [])] if not char_ids and p.get("character_names") else char_ids
+        sn = _coerce_str(p.get("scene_name"))
+        if scene_id is None and sn and sn in name2id["scene"]:
+            scene_id = name2id["scene"][sn]
+        prop_ids = [name2id["prop"].get(_coerce_str(n), n) for n in (p.get("prop_names") or [])] if not prop_ids and p.get("prop_names") else prop_ids
+        pending_links.append((panel_id, char_ids, scene_id, prop_ids))
+    # 统一入库链接表
+    for panel_id, char_ids, scene_id, prop_ids in pending_links:
+        for cid in char_ids:
+            if cid:
+                db.ex("INSERT OR IGNORE INTO comic_panel_characters(panel_id,character_id) VALUES(?,?)",
+                      (panel_id, int(cid)))
+        if scene_id:
+            db.ex("INSERT OR IGNORE INTO comic_panel_scenes(panel_id,scene_id) VALUES(?,?)",
+                  (panel_id, int(scene_id)))
+        for pid in prop_ids:
+            if pid:
+                db.ex("INSERT OR IGNORE INTO comic_panel_props(panel_id,prop_id) VALUES(?,?)",
+                      (panel_id, int(pid)))
     db.touch("episodes", episode_id)
     return len(panels)
 
 
+def _coerce_ids(val, caster) -> list[int]:
+    """从 list / 单值 / 字符串里抽出整数列表,丢弃空值与非数值。"""
+    if val is None:
+        return []
+    if isinstance(val, (list, tuple)):
+        out = []
+        for v in val:
+            try:
+                out.append(int(v))
+            except (TypeError, ValueError):
+                continue
+        return [x for x in out if x]
+    try:
+        return [int(val)]
+    except (TypeError, ValueError):
+        return []
+
+
+def _coerce_one_id(val, caster):
+    if val is None:
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_str(val) -> str:
+    return str(val).strip() if val is not None else ""
+
+
 def _style_for(drama_id: int, style_value: str = "") -> str:
-    """项目风格串 + 人物面孔文化片段(角色级覆盖由 prompts_gen 处理)。"""
-    d = db.q1("SELECT style, ethnicity, language FROM dramas WHERE id=?", (drama_id,))
-    value = style_value or (d["style"] if d else "3d")
+    """项目风格串 + 人物面孔文化片段(角色级覆盖由 prompts_gen 处理)。
+
+    优先级:style_value > dramas.comic_style(项目级"温画画风")> dramas.style > "3d"。
+    调用方传 style_value 时就以它为准;否则一律落回项目级 comic_style,
+    不要再让 dramas.style 的常规视觉风格污染漫画格/漫画资产。
+    """
+    d = db.q1("SELECT style, comic_style, ethnicity, language FROM dramas WHERE id=?",
+              (drama_id,))
+    if style_value:
+        value = style_value
+    elif d and (d["comic_style"] or "").strip():
+        value = d["comic_style"]
+    elif d and (d["style"] or "").strip():
+        value = d["style"]
+    else:
+        value = "3d"
     return db.style_prompt(value or "3d",
                            ethnicity=(d["ethnicity"] if d else "") or "",
                            content_lang=(d["language"] if d else "") or "")
@@ -71,20 +154,90 @@ def panel_people_count(panel_id: int) -> int:
     return max(1, int(n or 0))
 
 
+def _panel_bound_assets(panel_id: int) -> tuple[list[dict], list[dict], list[dict]]:
+    """读出该 panel 绑定的角色/场景/道具(各自全集,不去重;后续按出现次序拼)。
+
+    返回 [(chars...), (scenes...), (props...)]。每条记录至少有 id/name。
+    优先拿 comic_image_url(漫画风格镜像);没有则退回 image_url,都没有就忽略。
+    """
+    chars = [dict(r) for r in db.q(
+        "SELECT c.id, c.name, c.appearance, c.styling, c.comic_image_url, c.image_url "
+        "FROM comic_panel_characters pc JOIN characters c ON c.id = pc.character_id "
+        "WHERE pc.panel_id=? ORDER BY c.id", (panel_id,))]
+    scenes = [dict(r) for r in db.q(
+        "SELECT s.id, s.name, s.prompt, s.lighting, s.comic_image_url, s.image_url "
+        "FROM comic_panel_scenes ps JOIN scenes s ON s.id = ps.scene_id "
+        "WHERE ps.panel_id=? ORDER BY s.id", (panel_id,))]
+    props = [dict(r) for r in db.q(
+        "SELECT p.id, p.name, p.description, p.comic_image_url, p.image_url "
+        "FROM comic_panel_props pp JOIN props p ON p.id = pp.prop_id "
+        "WHERE pp.panel_id=? ORDER BY p.id", (panel_id,))]
+    return chars, scenes, props
+
+
+def panel_reference_images(panel_id: int) -> list[str]:
+    """把绑定资产的镜像/原图转成本地路径,作为生图端的 reference_images。
+
+    没绑定任何资产 / 资产都没图时返回空列表(出图端会直接走纯文生图)。
+    """
+    chars, scenes, props = _panel_bound_assets(panel_id)
+    out: list[str] = []
+    for r in chars + scenes + props:
+        url = (r.get("comic_image_url") or r.get("image_url") or "").strip()
+        if not url:
+            continue
+        if url.startswith(("/static/", "static/")):
+            lp = config.media_url_to_path(url)
+        elif url.startswith(("file://", "/", "\\")):
+            from pathlib import Path
+            lp = Path(url.replace("file:///", "").replace("file://", ""))
+        else:
+            from pathlib import Path
+            lp = Path(url)
+        if lp.exists():
+            out.append(str(lp))
+    # 参考图上限:防止绑定过多撑爆生图 payload。≤6 是 agnes 的硬上限。
+    return out[:6]
+
+
 def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None,
                        style_value: str = "") -> str:
     """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀 + 人数硬前缀。
 
     style_value 不为空时,优先于 dramas.comic_style 和 dramas.style —— 让界面上
     的「画风」下拉框真正影响图像;否则一律落回 _style_for 的默认拼装。
+
+    绑定的角色/场景/道具会拼成「参考资产视觉」段落进提示词,出图端另由
+    panel_reference_images() 把它们的镜像作为 reference_images 传入,跨格
+    一致性靠这两层锚点同时锁。
     """
+    from pathlib import Path
     p = db.q1("SELECT * FROM comic_panels WHERE id=?", (panel_id,))
     if not p:
+        # 调试:把收到的 id 与此刻所有 panel id 范围打出来
+        try:
+            r = db.q1("SELECT MIN(id) lo, MAX(id) hi, COUNT(*) c FROM comic_panels")
+            print(f"[comic] panel_id={panel_id!r} not found; table has {r['c']} rows, ids {r['lo']}..{r['hi']}", flush=True)
+        except Exception as e:
+            print(f"[comic] panel_id={panel_id!r} not found; re-probe failed: {e}", flush=True)
         raise RuntimeError("漫画格不存在")
     style = _style_for(drama_id, style_value=style_value)
+    chars, scenes, props = _panel_bound_assets(panel_id)
+    bound_block = ""
+    if chars or scenes or props:
+        parts = []
+        for c in chars:
+            bits = " / ".join(s for s in (c.get("appearance"), c.get("styling")) if s)[:200]
+            parts.append(f"角色[{c['name']}]: {bits}")
+        for s in scenes:
+            bits = " / ".join(v for v in (s.get("prompt"), s.get("lighting")) if v)[:200]
+            parts.append(f"场景[{s['name']}]: {bits}")
+        for p2 in props:
+            parts.append(f"道具[{p2['name']}]: {p2.get('description') or ''}"[:200])
+        bound_block = "\n\n参考资产视觉(必须与下方参考图保持一致):\n" + "\n".join(parts)
     prompt = f"""目标类型:comic_panel(条漫单格画面,画幅竖版)
 视觉风格前缀: {style}
-
+{bound_block}
 画面: {p['description']}
 构图: {p['composition']}
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
@@ -145,8 +298,8 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
                       style_value: str = "") -> str:
     """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。
 
-    style_value 优先:不空时用它覆盖 dramas.comic_style/style,让界面上「画风」
-    下拉框对资产重生也生效。
+    style_value 留空时一律走项目级"温画画风"(dramas.comic_style),由 _style_for 收口,
+    避免上游 UI 再重复提供下拉。
     """
     from ..ai import image_client
     # 调用方有的传单数("character"),有的直接传表名("characters"),统一归一,
@@ -157,8 +310,7 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     row = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))
     if not row:
         raise RuntimeError("资产不存在")
-    d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
-    style = _style_for(drama_id, style_value=style_value or d["comic_style"] or d["style"] or "3d")
+    style = _style_for(drama_id, style_value=style_value)
     if kind == "character":
         # 直接复用「常规资产」已经生成好的 final_prompt 正文 —— 那条路(prompts_gen)
         # 的三视图构图是对的,用户实测常规资产明显更好。漫画版原先自己另拼了一条

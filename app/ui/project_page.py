@@ -17,8 +17,12 @@ from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
 from .toast import err, ok
-from .cover_dialog import CoverPanel, EpisodeCoverButton
+from .cover_dialog import CoverPanel, EpisodeCoverButton  # noqa: F401  (封面入口后续可能复用)
 
+# 封面右侧"前 N 集"快速视图:N=6 张,3 列;超出 N 的 EP 走下方 tabs 「剧集列表」。
+# 改这里只需一处 —— reload() 与 _ep_cols 列表分隔都会按它走。
+RECENT_EP_COUNT = 6
+RECENT_EP_COLS = 3
 EP_STAGES = ["novel", "script", "assets", "storyboard", "video"]
 _EP_STAGE_LABEL_KEY = {"novel": "正文", "script": "剧本", "assets": "资产",
                        "storyboard": "分镜", "video": "成片"}
@@ -669,28 +673,28 @@ class ProjectPage(QWidget):
         root.addWidget(head_card)
         self.head_card = head_card
 
-        # 封面 + 前四章节:封面在左,前四章节快速视图在右(用户要求"前四个章节放到右上")。
-        # 后续 5/6/7... 的完整章节仍在 tabs → 「剧集列表」里继续展示,不改。
+        # 封面在左、右侧"前 6 集"3 列网格:超过 6 张的集(EP07+)继续往下,
+        # 放在 tabs 的「剧集列表」完整列表里(用户原始诉求)。
         upper = QHBoxLayout()
         upper.setSpacing(14)
         self.cover_holder = QWidget()
         self.cover_holder.setLayout(QVBoxLayout())
         upper.addWidget(self.cover_holder, 0)
-        self.recent4_holder = QWidget()
-        recent4_lay = QVBoxLayout(self.recent4_holder)
-        recent4_lay.setContentsMargins(0, 0, 0, 0)
-        recent4_lay.setSpacing(6)
-        self.recent4_label = W.muted("前 4 章")
-        self.recent4_label.setStyleSheet(
+        self.recent_holder = QWidget()
+        recent_lay = QVBoxLayout(self.recent_holder)
+        recent_lay.setContentsMargins(0, 0, 0, 0)
+        recent_lay.setSpacing(6)
+        self.recent_label = W.muted(tr("recent_n_label", 6))
+        self.recent_label.setStyleSheet(
             "color:#0E0F12; font-family:ui-monospace,'SF Mono',Consolas,monospace;"
             "font-size:11px; font-weight:700; letter-spacing:2px;")
-        recent4_lay.addWidget(self.recent4_label)
-        self.recent4_grid = QGridLayout()
-        self.recent4_grid.setContentsMargins(0, 0, 0, 0)
-        self.recent4_grid.setSpacing(8)
-        recent4_lay.addLayout(self.recent4_grid)
-        recent4_lay.addStretch(1)
-        upper.addWidget(self.recent4_holder, 1)
+        recent_lay.addWidget(self.recent_label)
+        self.recent_grid = QGridLayout()
+        self.recent_grid.setContentsMargins(0, 0, 0, 0)
+        self.recent_grid.setSpacing(10)
+        recent_lay.addLayout(self.recent_grid)
+        recent_lay.addStretch(1)
+        upper.addWidget(self.recent_holder, 1)
         root.addLayout(upper)
 
         self.tabs = QTabWidget()
@@ -702,7 +706,7 @@ class ProjectPage(QWidget):
         # (若每次 reload 新建嵌套 QGridLayout 再塞进 ep_lay,ep_lay.takeAt() 取不到嵌套布局里的
         #  卡片——它们已被重新挂到父控件上,旧卡片会留在界面上,表现为重复的「添加第 N 集」)
         # 操作提示:让"章节名可改"一眼可见
-        self.ep_tip = W.muted("✎ " + tr("点铅笔图标可改章节名"))
+        self.ep_tip = W.muted("✎ " + tr("双击章节名可直接改名"))
         self.ep_lay.addWidget(self.ep_tip)
         self.ep_grid = QGridLayout()
         self.ep_grid.setContentsMargins(0, 0, 0, 0)
@@ -791,9 +795,8 @@ class ProjectPage(QWidget):
         self.imit_tag.setVisible(bool(src.get("drama_id")))
         if src.get("source_title"):
             self.imit_tag.setText(tr("source_book", src["source_title"]))
-        self.sub.setText(f"👤 {tr('characters_n', nc)}   🖼 {tr('scenes_n', ns)}   "
-                          f"🎞 {tr('episodes_n', ne)}")
-        # 项目封面区(3:4 竖版 + 提示词 + 生成 + 放大预览)
+        self.sub.setText(f"{tr('characters_n', nc)}  ·  {tr('scenes_n', ns)}  ·  {tr('episodes_n', ne)}")
+        # 项目封面区(3:4 竖版 + 提示词 + 生成 + 放大预览)放在左上
         ch = self.cover_holder.layout()
         while ch.count():
             item = ch.takeAt(0)
@@ -818,7 +821,6 @@ class ProjectPage(QWidget):
         meta = db.jload(d["novel_meta"], {}) or {}
         chapters = db.jload(d["novel_chapters"], []) or []
         # 小说项目一律显示;非小说类型但已有小说设定/章节计划的也显示
-        # (实测有 work_type=drama 的项目实际按小说在跑)
         if (d["work_type"] or "") != "novel" and not (meta or chapters
                                                       or (d["novel_style"] or "").strip()):
             return box
@@ -855,9 +857,16 @@ class ProjectPage(QWidget):
         return current < int(target)
 
     def _ep_cols(self) -> int:
-        """集卡列数:按实际可用宽度算(窗口窄时先建一列,resize 后重排)。"""
+        """集卡列数:tabs「剧集列表」固定 4 列布局(与目标样式一致),
+        视口窄到放不下时才降级到 3 / 2 / 1 列,resize 触发 reload 重排。"""
         avail = max(self.ep_scroll.viewport().width(), self.width() - 120)
-        return max(1, avail // 380)
+        if avail >= 1080:
+            return 4
+        if avail >= 760:
+            return 3
+        if avail >= 480:
+            return 2
+        return 1
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -873,9 +882,9 @@ class ProjectPage(QWidget):
             if w:
                 w.setParent(None)
                 w.deleteLater()
-        # 前四章节快速视图(用户要求右上展示前 4 章,后续仍走 tabs)
-        while self.recent4_grid.count():
-            item = self.recent4_grid.takeAt(0)
+        # 封面右上的"前 N 集"快速视图(默认 6 张,3 列);超过 N 的 EP 走下方 tabs
+        while self.recent_grid.count():
+            item = self.recent_grid.takeAt(0)
             w = item.widget()
             if w:
                 w.setParent(None)
@@ -884,6 +893,16 @@ class ProjectPage(QWidget):
         counts = {r["episode_id"]: r["c"] for r in db.q(
             "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
         is_novel = self._drama["work_type"] == "novel" if self._drama else False
+        # 上半区:前 N 张(默认 6),3 列布局
+        recent = [dict(r) for r in rows[:RECENT_EP_COUNT]]
+        rcounts = {r["episode_id"]: r["c"] for r in db.q(
+            "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
+        for i, d in enumerate(recent):
+            d["storyboard_count"] = rcounts.get(d["id"], 0)
+            self.recent_grid.addWidget(
+                EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
+                            enter=self._on_enter, rel_needed=self),
+                i // RECENT_EP_COLS, i % RECENT_EP_COLS)
         cells = list(rows)
         if self.can_add_episode():
             cells = list(rows) + [None]           # 末尾放「添加第 N 集」占位卡
@@ -899,16 +918,6 @@ class ProjectPage(QWidget):
             grid.addWidget(EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
                                        enter=self._on_enter, rel_needed=self),
                            i // cols, i % cols)
-        # 前四章节:放在右上,2×2 网格,只展示前 4 个 EP 卡(同样 enter/rel_needed 信号)
-        recent = [dict(r) for r in rows[:4]]
-        rcounts = {r["episode_id"]: r["c"] for r in db.q(
-            "SELECT episode_id, COUNT(*) c FROM storyboards GROUP BY episode_id")}
-        for i, d in enumerate(recent):
-            d["storyboard_count"] = rcounts.get(d["id"], 0)
-            self.recent4_grid.addWidget(
-                EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
-                            enter=self._on_enter, rel_needed=self),
-                i // 2, i % 2)
         self.ep_hint.setText("" if self.can_add_episode() else tr("ep_limit_hint"))
         self.ep_hint.setVisible(not self.can_add_episode())
         while self.lib_grid.count():
