@@ -610,7 +610,7 @@ class ComicAssetRow(QFrame):
     """漫画资产行:44px 缩略 + 名称 + 状态 + 生成漫画风按钮(对齐 .asset-comic-row)。"""
 
     def __init__(self, thumb_url: str, name: str, ready: bool, pending: bool,
-                 button_tip: str, on_gen, on_open=None):
+                 button_tip: str, on_gen, on_open=None, on_redo=None):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QHBoxLayout(self)
@@ -637,6 +637,14 @@ class ComicAssetRow(QFrame):
         lay.addWidget(nm, 1)
         text = tr("生成中") if pending else (tr("已生成") if ready else tr("待生成"))
         lay.addWidget(status_pill("pending" if pending else ("ready" if ready else "todo"), text))
+        # 已生成的图:左边 ⟳(强制重画,沿用当前画风),右边 🔖(初始生成 / 待生成)
+        # 两个都调 on_gen —— on_gen 自己判断:有图就重画、没有就生。
+        if ready and on_redo:
+            from PySide6.QtWidgets import QStyle
+            redo = W.icon_btn(QStyle.StandardPixmap.SP_BrowserReload, tr("redraw"),
+                              size=26, fallback="⟳")
+            redo.clicked.connect(lambda _=False: on_redo())
+            lay.addWidget(redo)
         btn = W.svg_icon_btn("book", button_tip, size=26)
         if on_gen:
             btn.clicked.connect(lambda _=False: on_gen())

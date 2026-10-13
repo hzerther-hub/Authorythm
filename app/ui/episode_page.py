@@ -2135,9 +2135,14 @@ class EpisodePage(QWidget):
         self._comic_batch = W.primary_btn("📕 " + tr("batch_comic_style"))
         W.set_icon(self._comic_batch, "book")
         self._comic_batch.setToolTip(tr("batch_comic_style_tip"))
-        self._comic_batch.clicked.connect(self._batch_comic_assets)
+        self._comic_batch.clicked.connect(lambda: self._batch_comic_assets(force=False))
+        # 「重画全部」:覆盖已有图,让画风切换立刻生效
+        self._comic_redo_all = W.primary_btn("⟳ " + tr("redraw_all"))
+        self._comic_redo_all.setToolTip(tr("redraw_all_tip"))
+        self._comic_redo_all.clicked.connect(lambda: self._batch_comic_assets(force=True))
         # 推到工具条最右侧(此前居中,跟其它工具条位置不一致)
         cb_lay.addStretch(1)
+        cb_lay.addWidget(self._comic_redo_all)
         cb_lay.addWidget(self._comic_batch)
         lay.addWidget(self._comic_bar)
 
@@ -2209,12 +2214,25 @@ class EpisodePage(QWidget):
         self._comic_bar.setVisible(mode == "comic")
         self._reload_assets()
 
-    def _gen_comic_asset(self, kind: str, row_id: int):
+    def _gen_comic_asset(self, kind: str, row_id: int, force: bool = False):
+        """重画单张漫画资产图。
+
+        force=True 时先把 comic_image_url 置空,这样生图过程会直接覆盖原图(否则
+        UI 上的「⟳ 重画」按钮会被 on_gen 当成「已有图、不重画」的语义跳过,
+        调画风切换也看不到效果)。
+        """
         from ..pipeline import comic as comic_pipe
         snap_img = self.image_model.currentData()   # 工作线程里读 combo 会 Internal C++ object already deleted
+        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
+        if force:
+            kind_table = {"character": "characters", "scene": "scenes", "prop": "props"}.get(kind)
+            if kind_table:
+                db.ex(f"UPDATE {kind_table} SET comic_image_url=NULL, updated_at=? WHERE id=?",
+                      (db.now(), row_id))
         def job(tid):
             return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                config_id=snap_img)
+                                                config_id=snap_img,
+                                                style_value=snap_style)
         def done(tid, result, error):
             if error:
                 err(error)
@@ -2222,12 +2240,23 @@ class EpisodePage(QWidget):
             self._reload_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
-    def _batch_comic_assets(self):
+    def _batch_comic_assets(self, force: bool = False):
         """漫画风格批量:链式串行(上一个个完成再提下一个)+ 按钮全程等待态。
 
         主线程快照 image_model.currentData() —— 跟 _batch_comic 同一种 Internal C++ 报错。
+
+        force=True 时不清空已生成的图(默认只挑 comic_image_url IS NULL 的);
+        此时需要调用方先把所有目标行的 comic_image_url 置空,这里只对
+        comic_image_url IS NULL 的行再生成 —— 但「重生全部」要求画风变化生效
+        到已存在的图,所以这里在 force 模式下先把所有目标行的 URL 清空。
         """
         from ..pipeline import comic as comic_pipe
+        if force:
+            # 把所有资产行的 comic_image_url 一次性置空,让下一轮批量重画
+            for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+                db.ex(f"UPDATE {table} SET comic_image_url=NULL, updated_at=? WHERE drama_id=?",
+                      (db.now(), self.drama_id))
+            self._reload_comic_assets()
         tasks = [(kind, r["id"])
                  for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props"))
                  for r in db.q(f"SELECT id FROM {table} WHERE drama_id=? AND comic_image_url IS NULL",
@@ -2240,6 +2269,7 @@ class EpisodePage(QWidget):
             btn.setEnabled(False)
             btn.setText("⠋ " + tr("in_progress"))
         snap_img = self.image_model.currentData()
+        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
 
         def run(i: int):
             if i >= len(tasks):
@@ -2252,7 +2282,8 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                    config_id=snap_img)
+                                                    config_id=snap_img,
+                                                    style_value=snap_style)
 
             def done(tid, result, error):
                 if error:
@@ -2293,7 +2324,7 @@ class EpisodePage(QWidget):
                     lay.addWidget(W.tag(tr("generated")))
                 lay.addStretch(1)
                 btn = QPushButton(tr("redraw"))
-                btn.clicked.connect(lambda _=False, k=kind, i=r["id"]: self._gen_comic_asset(k, i))
+                btn.clicked.connect(lambda _=False, k=kind, i=r["id"]: self._gen_comic_asset(k, i, force=True))
                 lay.addWidget(btn)
                 self.comic_asset_list.addWidget(box)
 
@@ -2425,7 +2456,8 @@ class EpisodePage(QWidget):
                                        bool(r.get("comic_image_url")), False,
                                        tr("comic_gen_tip"),
                                        lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c),
-                                       on_open=self._preview_image)
+                                       on_open=self._preview_image,
+                                       on_redo=lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c, force=True))
                 cgrid.addWidget(roww, cn // 2, cn % 2)
                 cn += 1
             csec["host"].setVisible(cn > 0)
@@ -5089,10 +5121,17 @@ class EpisodePage(QWidget):
             self._comic_busy = set()
         self._comic_busy.add(panel_id)
         self._reload_comic()
+        # 主线程快照 3 个 combo:语言切换 / 页面销毁时,worker 里再读会
+        # libshibken "Internal C++ object already deleted"
+        snap_text = self.text_model.currentData()
+        snap_img = self.image_model.currentData()
+        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
         def job(tid):
-            fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id, config_id=self.text_model.currentData())
+            fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id,
+                                                config_id=snap_text,
+                                                style_value=snap_style)
             out, _p = image_client.generate_image(
-                fp, config_id=self.image_model.currentData(),
+                fp, config_id=snap_img,
                 size="1024x1536",
                 people=comic_pipe.panel_people_count(panel_id))
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
@@ -5127,6 +5166,7 @@ class EpisodePage(QWidget):
         # 主线程快照:把两个 QComboBox 的值定下来再交给 worker,避免上述 Internal C++ 报错
         snap_text = self.text_model.currentData()
         snap_img = self.image_model.currentData()
+        snap_style = self.comic_style.currentData() if hasattr(self, "comic_style") else ""
 
         def run(i: int):
             if i >= len(ids):
@@ -5138,7 +5178,8 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
-                                                    config_id=snap_text)
+                                                    config_id=snap_text,
+                                                    style_value=snap_style)
                 out, _p = image_client.generate_image(
                     fp, config_id=snap_img,
                     size="1024x1536",

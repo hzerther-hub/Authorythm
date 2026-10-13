@@ -71,12 +71,17 @@ def panel_people_count(panel_id: int) -> int:
     return max(1, int(n or 0))
 
 
-def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None) -> str:
-    """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀 + 人数硬前缀。"""
+def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None,
+                       style_value: str = "") -> str:
+    """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀 + 人数硬前缀。
+
+    style_value 不为空时,优先于 dramas.comic_style 和 dramas.style —— 让界面上
+    的「画风」下拉框真正影响图像;否则一律落回 _style_for 的默认拼装。
+    """
     p = db.q1("SELECT * FROM comic_panels WHERE id=?", (panel_id,))
     if not p:
         raise RuntimeError("漫画格不存在")
-    style = _style_for(drama_id)
+    style = _style_for(drama_id, style_value=style_value)
     prompt = f"""目标类型:comic_panel(条漫单格画面,画幅竖版)
 视觉风格前缀: {style}
 
@@ -136,8 +141,13 @@ _EMPTY_SCENE_BLOCK = (
     "just the location itself, atmospheric and undisturbed")
 
 
-def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None) -> str:
-    """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。"""
+def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None,
+                      style_value: str = "") -> str:
+    """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。
+
+    style_value 优先:不空时用它覆盖 dramas.comic_style/style,让界面上「画风」
+    下拉框对资产重生也生效。
+    """
     from ..ai import image_client
     # 调用方有的传单数("character"),有的直接传表名("characters"),统一归一,
     # 否则单张「重画」会 KeyError: 'characters'
@@ -148,7 +158,7 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     if not row:
         raise RuntimeError("资产不存在")
     d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
-    style = _style_for(drama_id, style_value=d["comic_style"] or d["style"] or "3d")
+    style = _style_for(drama_id, style_value=style_value or d["comic_style"] or d["style"] or "3d")
     if kind == "character":
         # 直接复用「常规资产」已经生成好的 final_prompt 正文 —— 那条路(prompts_gen)
         # 的三视图构图是对的,用户实测常规资产明显更好。漫画版原先自己另拼了一条
