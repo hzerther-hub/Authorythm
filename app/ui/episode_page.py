@@ -5009,6 +5009,7 @@ class EpisodePage(QWidget):
             "draw": tr("draw"), "prompt_label": tr("out_prompt"),
             "narration_label": tr("narration_note"), "narration_ph": tr("comic_narration_ph"),
             "narration_hint": tr("comic_narration_hint"),
+            "redraw": tr("redraw"),
         }
         busy_ids = getattr(self, "_comic_busy", set())
         for i, r in enumerate(rows):
