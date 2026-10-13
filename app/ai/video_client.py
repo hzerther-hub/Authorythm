@@ -237,7 +237,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             video = (st.get("content") or {}).get("video_url") if isinstance(st.get("content"), dict) else None
             return ("failed" if status == "failed" else "running"), video, st.get("error")
 
-        url = _poll(check, 10, 300)
+        url = _poll(check, POLL_INTERVAL_S, POLL_MAX_ROUNDS)
         return _download(url), provider
 
     if provider == "minimax":
@@ -252,7 +252,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             file = (st.get("file") or {}) if isinstance(st.get("file"), dict) else {}
             return ("failed" if status == "Fail" else "running"), file.get("download_url"), st.get("message")
 
-        url = _poll(check2, 10, 300)
+        url = _poll(check2, POLL_INTERVAL_S, POLL_MAX_ROUNDS)
         return _download(url), provider
 
     if provider == "aliyun":
@@ -273,7 +273,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                 return "running", url_v + ("?Expires=" + str(int(time.time()) + 86400)), None
             return ("failed" if status in ("FAILED", "CANCELED") else "running"), None, out.get("message")
 
-        url = _poll(check3, 10, 300)
+        url = _poll(check3, POLL_INTERVAL_S, POLL_MAX_ROUNDS)
         return _download(url), provider
 
     if provider == "agnes":
@@ -411,7 +411,7 @@ def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
                                     or payload.get("failMsg") or payload.get("fail_msg"))
         return "running", None, None
 
-    url = _poll(check, 10, 300)
+    url = _poll(check, POLL_INTERVAL_S, POLL_MAX_ROUNDS)
     return _download(url), "runninghub"
 
 
@@ -543,7 +543,7 @@ def _generate_xiaoyunque(cfg, base, headers, prompt, resolution, duration,
             return "failed", None, str(msg or "任务失败")[:200]
         return "running", None, None
 
-    url = _poll(check, 10, 300)
+    url = _poll(check, POLL_INTERVAL_S, POLL_MAX_ROUNDS)
     # video_urls 是服务端解析好的可直接下载链接,不带鉴权头下载,避免泄露 Access Key
     return _download(url), "xiaoyunque"
 
@@ -632,9 +632,30 @@ class VideoRetryExhausted(RuntimeError):
 # 取 2 小时:覆盖限流长预算(30min)之外的所有正常情况。
 CREATE_TOTAL_WALL_CLOCK_S = 2 * 60 * 60
 
+# 单次 _dispatch_once 内部的轮询上限。原先 5 处调用点各写死字面量 _poll(..., 10, 300),
+# 想确认「一个视频任务最多能 processing 多久」只能靠人肉数 —— 而这正是巡检间隔被
+# 定成 45 分钟(小于真实上界 50 分钟)的根因。提成常量后上界可由 max_task_processing_s()
+# 推导,tests/test_stuck_task_watchdog.py 会拿它跟 db.REAP_INTERVAL_S 对质。
+POLL_INTERVAL_S = 10
+POLL_MAX_ROUNDS = 300
+
+# 限流档的尝试间预算(秒)。同样从函数签名默认值提成常量,理由同上。
+CREATE_RATE_LIMIT_BUDGET_S = 1800.0
+
+
+def max_task_processing_s() -> float:
+    """一个视频任务从提交到落定,**最长**可能停留在 processing 的秒数 —— 巡检间隔
+    必须大于它,否则会把正在正常生成的任务判成僵尸。
+
+    推导:重试循环的尝试间预算用 `elapsed + wait > budget` 卡,而 elapsed 从循环外
+    的 `started` 起算、**从不重置**,所以最后一次尝试最晚在累计 30 分钟时进入;
+    而单次尝试内部还要跑满整轮轮询(10s × 300 = 50 分钟)。两者相加得 ~80 分钟。
+    """
+    return CREATE_RATE_LIMIT_BUDGET_S + POLL_INTERVAL_S * POLL_MAX_ROUNDS
+
 
 def _generate_with_retry(fn, *, max_attempts: int = 20,
-                         rate_limit_budget_s: float = 1800.0,
+                         rate_limit_budget_s: float = CREATE_RATE_LIMIT_BUDGET_S,
                          create_budget_s: float = 180.0) -> tuple[Path, str]:
     """提交 + 轮询的重试包装。
 
@@ -660,9 +681,12 @@ def _generate_with_retry(fn, *, max_attempts: int = 20,
     rate_limited_mode = False
     for attempt in range(max_attempts):
         if _t.time() - first_attempt_at >= CREATE_TOTAL_WALL_CLOCK_S:
+            # 用真除法而不是 //:常量被调小做验证时(比如压到 1s),
+            # `1 // 60` 会显示成「累计超过 0 分钟」
+            mins = CREATE_TOTAL_WALL_CLOCK_S / 60
+            shown = int(mins) if mins >= 1 else round(mins, 1)
             raise VideoRetryExhausted(attempts, RuntimeError(
-                f"创建请求累计超过 {int(CREATE_TOTAL_WALL_CLOCK_S // 60)} 分钟仍未成功,"
-                "已按总时长上限失败"))
+                f"创建请求累计超过 {shown} 分钟仍未成功,已按总时长上限失败"))
         with gate:
             acquire_video_create_gate()          # 距上次提交不足 15s 就排队等
             try:

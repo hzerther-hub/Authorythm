@@ -611,9 +611,20 @@ def _settle_storyboard_status(conn, ts: str, min_age_s: float = 0.0) -> int:
     return len(rows)
 
 
-# 巡检间隔:必须大于单次生成的正常时长(视频最久约 30 分钟),否则会把正在正常
-# 生成的任务误杀。**不要压到 30 分钟以下。**
-REAP_INTERVAL_S = 45 * 60
+# 巡检间隔:**必须大于单个任务可能停留在 processing 的最长时间**,否则会把正在正常
+# 生成的任务判成僵尸(用户看到「失败」+ 重试按钮,点下去就是重复计费的双份生成)。
+#
+# 曾经按任务书的说法取 45 分钟,理由是「视频生成约 30 分钟」—— 那个 30 分钟是从
+# 参考项目继承的,没对照 pydrama 推导。实际 video_client._poll(…, 10, 300) = 50 分钟
+# 跑满单次尝试,叠加限流档 30 分钟尝试间预算,真实上界约 80 分钟。45 < 50,于是跑满
+# 轮询的任务有约 11% 概率在还在正常生成时被误杀,重试烧完预算的则高达 78%。
+#
+# 现取 2 小时:高于 video_client.max_task_processing_s()(~80min),而原始 bug 是
+# 挂了 6h20m,仍然修得住(快 3 倍多)。
+#
+# **改这个值前先看 max_task_processing_s()**,tests/test_stuck_task_watchdog.py 会
+# 拿两者对质,别只按"感觉够大"拍。
+REAP_INTERVAL_S = 2 * 60 * 60
 
 ORPHAN_TASK_ERROR = "任务已失去回执(服务重启或提交中断),请重试"
 
