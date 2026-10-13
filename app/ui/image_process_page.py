@@ -99,7 +99,7 @@ class ImageProcessPage(QWidget):
         src_scroll = QScrollArea()
         src_scroll.setWidgetResizable(True)
         src_scroll.setFrameShape(QFrame.NoFrame)
-        src_scroll.setFixedHeight(150)
+        src_scroll.setFixedHeight(320)
         src_scroll.setWidget(self.src_host)
         sl.addWidget(src_scroll)
         self.src_empty = W.muted(tr("no_source"))
@@ -222,29 +222,40 @@ class ImageProcessPage(QWidget):
         for i, s in enumerate(self._sources[:200]):
             row = QFrame()
             rl = QHBoxLayout(row)
-            rl.setContentsMargins(6, 3, 6, 3)
+            rl.setContentsMargins(4, 4, 4, 4)
             rl.setSpacing(8)
+            # 缩略图做大一些:原来 40x30 几乎认不出画面内容。点击放大看大图。
             thumb = QLabel()
-            thumb.setFixedSize(40, 30)
+            thumb.setFixedSize(150, 112)
             thumb.setAlignment(Qt.AlignCenter)
+            thumb.setStyleSheet("border:1px solid rgba(128,128,128,60); border-radius:6px;"
+                                "background:#f7f8fa;")
             if not str(s).startswith("http"):
-                thumb.setPixmap(W.pixmap_from_media(s, 40, 30))
+                thumb.setPixmap(W.pixmap_from_media(s, 150, 112))
             else:
                 thumb.setText("🌐")
+            thumb.setToolTip(tr("u_view_large"))
+            thumb.setCursor(Qt.PointingHandCursor)
+            thumb.mousePressEvent = lambda _e, x=str(s): self._view_large(x)
             rl.addWidget(thumb)
-            name = QLabel(Path(str(s)).name if not str(s).startswith("http") else str(s))
-            name.setObjectName("muted")
-            name.setToolTip(str(s))
-            rl.addWidget(name, 1)
+            # 只放缩略图 + 删除键,不再显示冗长文件名(路径挂 tooltip 上)
+            rl.addStretch(1)
             rm = QPushButton("✕")
             rm.setObjectName("slateIconBtn")
             rm.setFixedSize(24, 24)
             rm.setCursor(Qt.PointingHandCursor)
+            rm.setToolTip(tr("u_delete"))
             rm.clicked.connect(lambda _=False, x=str(s): self._remove_one(x))
             rl.addWidget(rm)
+            row.setToolTip(str(s))
             self.src_lay.addWidget(row)
         if len(self._sources) > 200:
             self.src_lay.addWidget(W.muted(tr("sources_truncated", 200, len(self._sources))))
+
+    def _view_large(self, path: str):
+        """点击缩略图放大预览(复用素材详情的大图查看器)。"""
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, path, Path(path).name).exec()
 
     def _remove_one(self, path: str):
         if path in self._sources:
