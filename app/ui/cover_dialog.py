@@ -6,11 +6,16 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QVBoxLayout, QWidget)
+import time
+from pathlib import Path as _PPath
 
-from ..core import db
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QPixmap
+from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QHBoxLayout,
+                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
+                               QPushButton, QSlider, QVBoxLayout, QWidget)
+
+from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
@@ -20,8 +25,10 @@ from .toast import err, ok
 
 class CoverPreviewDialog(QDialog):
     """封面放大预览。"""
-    def __init__(self, parent, url: str | None, title: str = ""):
+    def __init__(self, parent, url: str | None, title: str = "", drama_id: int = 0):
         super().__init__(parent)
+        self.url = url
+        self.drama_id = drama_id
         self.setWindowTitle(tr("封面预览") + (f" · {title}" if title else ""))
         self.resize(560, 760)
         root = QVBoxLayout(self)
@@ -31,12 +38,27 @@ class CoverPreviewDialog(QDialog):
         pm = W.pixmap_from_media(url, 520, 694)
         img.setPixmap(pm)
         root.addWidget(img, 1)
-        close = W.primary_btn(tr("close"))
-        close.clicked.connect(self.accept)
         row = QHBoxLayout()
         row.addStretch(1)
+        add_text = QPushButton(tr("cover_add_text"))
+        add_text.setToolTip(tr("cover_add_text_tip"))
+        add_text.clicked.connect(lambda: self._open_text_editor())
+        close = W.primary_btn(tr("close"))
+        close.clicked.connect(self.accept)
+        row.addWidget(add_text)
         row.addWidget(close)
         root.addLayout(row)
+
+    def _open_text_editor(self):
+        from .cover_text_dialog import CoverTextDialog
+        CoverTextDialog(self, self.url, self.drama_id or 0).exec()
+        self._refresh()
+
+    def _refresh(self):
+        """加字后把新封面刷进预览(文件名带时间戳,不能只靠 url 比对)。"""
+        w = self.findChild(QLabel)
+        if w is not None:
+            w.setPixmap(W.pixmap_from_media(self.url, 520, 694))
 
 
 class CoverPanel(QWidget):
@@ -69,7 +91,8 @@ class CoverPanel(QWidget):
         self.img.setAlignment(Qt.AlignCenter)
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;background:#f7f8fa;")
         self.img.setPixmap(W.pixmap_from_media(d["thumbnail"] if d else None, 146, 196))
-        self.img.mousePressEvent = lambda _e: CoverPreviewDialog(self, self._url, d["title"] if d else "").exec()
+        self.img.mousePressEvent = lambda _e: CoverPreviewDialog(self, self._url, d["title"] if d else "",
+                                        self.drama_id).exec()
         self.img.setToolTip(tr("点击查看大图"))
         row.addWidget(self.img)
         right = QVBoxLayout()
@@ -78,12 +101,34 @@ class CoverPanel(QWidget):
         gen = WaitingButton(tr("⟳ 生成封面"), primary=True)
         gen.clicked.connect(self._generate)
         self.gen_btn = gen
+        add_text = QPushButton(tr("T " + tr("cover_add_text")))
+        add_text.setToolTip(tr("cover_add_text_tip"))
+        add_text.clicked.connect(self._add_text)
+        self.add_text_btn = add_text
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(6)
+        btn_row.addWidget(gen)
+        btn_row.addWidget(add_text)
+        btn_row.addStretch(1)
         right.addWidget(self.prompt)
-        right.addWidget(gen, 0, Qt.AlignLeft)
+        right.addLayout(btn_row)
         right.addStretch(1)
         row.addLayout(right, 1)
         root.addLayout(row)
         self._url = d["thumbnail"] if d else None
+
+    def _add_text(self):
+        """给当前封面加字(标题/副标题),应用后回写 dramas.thumbnail。"""
+        from .cover_text_dialog import CoverTextDialog
+
+        def _after(url):
+            self.img.setPixmap(W.pixmap_from_media(url, 146, 196))
+            self._url = url
+            if self._on_changed:
+                self._on_changed()
+
+        dlg = CoverTextDialog(self, self._url, self.drama_id, on_saved=_after)
+        dlg.exec()
 
     def _generate(self):
         if self._busy:

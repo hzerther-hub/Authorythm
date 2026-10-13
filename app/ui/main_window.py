@@ -72,7 +72,9 @@ class MainWindow(QMainWindow):
         nav_lay.setSpacing(2)
         self.nav_btns: dict[str, QPushButton] = {}
         # 换脸/合并不再放顶部导航:换脸收进角色资产卡(图片处),合并收进制作台导出面板
-        self._nav_defs = [("projects", "▦", "nav_projects")]
+        # 「图片处理」排在「项目」之后:AI 改图是独立工具,不依赖具体项目
+        self._nav_defs = [("projects", "▦", "nav_projects"),
+                          ("imageproc", "◑", "nav_image_process")]
         for key, icon, label_key in self._nav_defs:
             b = QPushButton(f"{icon}  {tr(label_key)}")
             b.setObjectName("navSeg")
@@ -137,8 +139,10 @@ class MainWindow(QMainWindow):
         from .merger_tool_page import MergerToolPage
         self.face_swap_page = FaceSwapPage()
         self.merger_page = MergerToolPage()
+        from .image_process_page import ImageProcessPage
+        self.image_process_page = ImageProcessPage()
         for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
-                  self.face_swap_page, self.merger_page):
+                  self.face_swap_page, self.merger_page, self.image_process_page):
             self.stack.addWidget(p)
         root.addWidget(self.stack, 1)
 
@@ -336,6 +340,7 @@ class MainWindow(QMainWindow):
         """切换:项目列表(导航胶囊)/ 换脸·合并工具(资产卡与导出面板的入口)。"""
         self._ensure_fresh(key)
         page = {"projects": self.projects_page,
+                "imageproc": self.image_process_page,
                 "face_swap": getattr(self, "face_swap_page", None),
                 "merger": getattr(self, "merger_page", None)}.get(key)
         if page is None:
