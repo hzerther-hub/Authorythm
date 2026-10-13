@@ -594,11 +594,23 @@ class AssetCard(QFrame):
         apply_asset_busy(self, cover, gen_btns, busy)
 
 
+def _click_to(widget, fn):
+    """给 QLabel 挂左键点击(QLabel 默认不收鼠标事件)。"""
+    orig = widget.mousePressEvent
+
+    def handler(event):
+        if event.button() == Qt.LeftButton:
+            fn()
+            return
+        orig(event)
+    return handler
+
+
 class ComicAssetRow(QFrame):
     """漫画资产行:44px 缩略 + 名称 + 状态 + 生成漫画风按钮(对齐 .asset-comic-row)。"""
 
     def __init__(self, thumb_url: str, name: str, ready: bool, pending: bool,
-                 button_tip: str, on_gen):
+                 button_tip: str, on_gen, on_open=None):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QHBoxLayout(self)
@@ -609,6 +621,10 @@ class ComicAssetRow(QFrame):
             th.setFixedSize(44, 44)
             th.setPixmap(W.pixmap_from_media(thumb_url, 44, 44))
             th.setStyleSheet("border-radius:6px;")
+            if on_open:
+                th.setCursor(Qt.PointingHandCursor)
+                th.setToolTip(tr("preview"))
+                th.mousePressEvent = _click_to(th, lambda: on_open(thumb_url))
         else:
             th = QLabel("⠋" if pending else "+")
             th.setFixedSize(44, 44)

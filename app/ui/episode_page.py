@@ -2424,7 +2424,8 @@ class EpisodePage(QWidget):
                 roww = C.ComicAssetRow(r.get("comic_image_url"), name,
                                        bool(r.get("comic_image_url")), False,
                                        tr("comic_gen_tip"),
-                                       lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c))
+                                       lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c),
+                                       on_open=self._preview_image)
                 cgrid.addWidget(roww, cn // 2, cn % 2)
                 cn += 1
             csec["host"].setVisible(cn > 0)
@@ -5545,6 +5546,10 @@ class EpisodePage(QWidget):
     def _preview_shot(self, url: str):
         from .asset_dialogs import VideoPreviewDialog
         VideoPreviewDialog(self, url, tr("preview")).exec()
+
+    def _preview_image(self, url: str):
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, url, tr("preview")).exec()
 
     def _on_shot_checked(self, sid: int, on: bool):
         if on:

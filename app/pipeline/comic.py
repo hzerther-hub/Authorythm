@@ -84,14 +84,41 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
 构图: {p['composition']}
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
     data = runner.run_agent_json("prompt_generator", prompt, config_id=config_id)
-    fp = (data or {}).get("final_prompt", "")
+    fp = _pick_prompt_text(data)
+    if not fp:
+        # 模型没给出可用字段(键名随模型自由发挥,见过 final_prompt / panel_prompt / prompt)
+        # 就地兜底用原文拼,绝不能把空串送去生图接口 —— 那边只会回 prompt is required
+        fp = prompt
     # 人数硬前缀放在最前:模型先读到「恰好 N 人」,比只在末尾写约束更稳
-    if fp:
-        from ..ai.prompt_guards import comic_people_prefix
-        fp = comic_people_prefix(panel_people_count(panel_id)) + "\n" + fp
-    if fp:
-        db.ex("UPDATE comic_panels SET image_prompt=?, updated_at=? WHERE id=?", (fp, db.now(), panel_id))
+    from ..ai.prompt_guards import comic_people_prefix
+    fp = comic_people_prefix(panel_people_count(panel_id)) + "\n" + fp
+    db.ex("UPDATE comic_panels SET image_prompt=?, updated_at=? WHERE id=?", (fp, db.now(), panel_id))
     return fp
+
+
+def _pick_prompt_text(data: object) -> str:
+    """从 agent 返回里取出提示词正文。
+
+    prompt_generator 模板没有钉死输出键名,同一模板在不同模型上出现过
+    final_prompt / panel_prompt / prompt / image_prompt 各种写法,只认一个键
+    就会静默取到空串。这里按优先级逐个找,兼容嵌套一层。
+    """
+    if isinstance(data, str):
+        return data.strip()
+    if not isinstance(data, dict):
+        return ""
+    for key in ("final_prompt", "panel_prompt", "comic_prompt", "image_prompt", "prompt"):
+        v = data.get(key)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    for v in data.values():          # 嵌一层,例如 {"panel": {"prompt": ...}}
+        if isinstance(v, dict):
+            got = _pick_prompt_text(v)
+            if got:
+                return got
+        elif isinstance(v, str) and len(v.strip()) > 40:
+            return v.strip()
+    return ""
 
 
 def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None) -> str:
