@@ -532,7 +532,7 @@ class AssetDetailDialog(QDialog):
             ok(tr("已还原原图"))
             self._reload_after_edit()
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:200])
+            err(e)
 
     def _reload_after_edit(self):
         """擦除/还原后刷新详情弹窗里的预览图。"""
@@ -556,7 +556,7 @@ class AssetDetailDialog(QDialog):
             ok(tr("去背景完成"))
             self._reload_after_edit()
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:200])
+            err(e)
 
     def _collect(self) -> dict:
         d = {"name": self.name.text().strip() or self.row["name"]}

@@ -97,6 +97,10 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
 def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None) -> str:
     """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。"""
     from ..ai import image_client
+    # 调用方有的传单数("character"),有的直接传表名("characters"),统一归一,
+    # 否则单张「重画」会 KeyError: 'characters'
+    kind = {"characters": "character", "scenes": "scene",
+            "props": "prop"}.get(kind, kind)
     table = {"character": "characters", "scene": "scenes", "prop": "props"}[kind]
     row = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))
     if not row:

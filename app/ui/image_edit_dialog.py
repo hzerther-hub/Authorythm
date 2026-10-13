@@ -292,7 +292,7 @@ class ImageEditDialog(QDialog):
         try:
             self.current = fn(self.current).convert("RGBA")
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:180])
+            err(e)
             self._history.pop()
         self._adjust_base = self.current.copy()
         for s_ in (getattr(self, "brightness", None), getattr(self, "contrast", None),
@@ -590,7 +590,7 @@ class ImageEditDialog(QDialog):
             self.bg_btn.setEnabled(True)
             self.bg_btn.setText("🌫 " + tr("去背景"))
             if error:
-                err(str(error)[:200])
+                err(error)
                 return
             self._push_history()
             self.current = Image.open(io.BytesIO(result)).convert("RGBA")

@@ -655,7 +655,7 @@ class ClonePage(QWidget):
 
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
                 return
             self.reload()
             ok(tr("整段直传拆解完成,写入 {n} 个分镜").format(n=int(result or 0)))

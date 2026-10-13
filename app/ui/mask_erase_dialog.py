@@ -212,7 +212,7 @@ def open_erase_dialog(parent, image_url: str, ertype: str, asset_id: int,
         p = config.media_url_to_path(image_url)
         img_bytes = p.read_bytes()
     except Exception as e:  # noqa: BLE001
-        err(str(e)[:160])
+        err(e)
         return
     dlg = MaskEraseDialog(parent, img_bytes, title)
     if dlg.exec() != MaskEraseDialog.Accepted:
@@ -226,4 +226,4 @@ def open_erase_dialog(parent, image_url: str, ertype: str, asset_id: int,
             from .asset_dialogs import ImageViewerDialog
             ImageViewerDialog(parent, config.path_to_media_url(new_path), title or tr("擦除完成")).exec()
     except Exception as e:  # noqa: BLE001
-        err(str(e)[:200])
+        err(e)

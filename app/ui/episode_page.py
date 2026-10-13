@@ -1599,7 +1599,7 @@ class EpisodePage(QWidget):
         self._set_raw_row_enabled(True)
         self._set_raw_status("")
         if error:
-            err(str(error)[:200])
+            err(error)
         else:
             self._reload_raw()
             r = (result or {})
@@ -1805,7 +1805,7 @@ class EpisodePage(QWidget):
             if hasattr(self, "review_btn"):
                 self.review_btn.setEnabled(True)
             if error:
-                err(str(error)[:220])
+                err(error)
             else:
                 ReviewDialog(self, result or {}, self._ep["episode_number"]).exec()
         TASKMGR.submit("review", job, done, episode_id=self.episode_id)
@@ -1821,7 +1821,7 @@ class EpisodePage(QWidget):
             return novel_pipe.edit_chapter(self.episode_id, instr, config_id=self.text_model.currentData())
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
             else:
                 self._reload_raw()
                 self.edit_instr.clear()
@@ -2211,13 +2211,15 @@ class EpisodePage(QWidget):
 
     def _gen_comic_asset(self, kind: str, row_id: int):
         from ..pipeline import comic as comic_pipe
+        snap_img = self.image_model.currentData()   # 工作线程里读 combo 会 Internal C++ object already deleted
         def job(tid):
             return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
-                                                config_id=self.image_model.currentData())
+                                                config_id=snap_img)
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
             self._reload_comic_assets()
+            self._reload_assets()
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_comic_assets(self):
@@ -2254,7 +2256,11 @@ class EpisodePage(QWidget):
 
             def done(tid, result, error):
                 if error:
-                    err(str(error)[:220])
+                    err(error)
+                # 每张都刷新:整批可能跑十几分钟,只在末尾刷会一直空白
+                if btn is not None:
+                    btn.setText(f"⠋ {i + 1}/{len(tasks)}")
+                self._reload_comic_assets()
                 run(i + 1)
 
             TASKMGR.submit("image", job, done, drama_id=self.drama_id)
@@ -2321,7 +2327,7 @@ class EpisodePage(QWidget):
                 except RuntimeError:
                     pass
             if error:
-                err(str(error)[:220])
+                err(error)
                 return
             self._reload_assets()
             st = result or {}
@@ -2475,7 +2481,7 @@ class EpisodePage(QWidget):
             return fn(row_id, config_id=self.text_model.currentData())
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
             self._reload_assets()
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id, character_id=row_id if kind == "character" else None)
 
@@ -2544,7 +2550,7 @@ class EpisodePage(QWidget):
 
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
             self._asset_busy.discard(_key)
             self._reload_assets()
         self._asset_busy.add(_key)
@@ -2640,7 +2646,7 @@ class EpisodePage(QWidget):
                 self._asset_busy.discard(k)
             self._reload_assets()
             if error:
-                err(str(error)[:200])
+                err(error)
             else:
                 ok(tr("批量文绘完成:{}/{} 成功").format(result["done"], result["total"]))
 
@@ -3603,7 +3609,7 @@ class EpisodePage(QWidget):
             if p:
                 ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:200])
+            err(e)
 
     def _delete_history(self, r: dict):
         """删历史视频:先停播放释放文件句柄(Windows 占用时删不掉),确认后级联。"""
@@ -4149,7 +4155,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             btn.idle()
             if error:
-                err(str(error)[:220])
+                err(error)
                 return
             # 模型把思维链混进正文通道时,整段 <think> 会被原样存进 video_prompt
             text = _strip_model_think(result)
@@ -4226,7 +4232,7 @@ class EpisodePage(QWidget):
             if error:
                 db.ex("UPDATE storyboards SET image_status='failed', updated_at=? WHERE id=?",
                       (db.now(), sb_id))
-                err(str(error)[:200])
+                err(error)
             else:
                 db.ex("UPDATE storyboards SET image_status='pending_review', updated_at=? WHERE id=?",
                       (db.now(), sb_id))
@@ -4347,7 +4353,7 @@ class EpisodePage(QWidget):
                 config_id=self.text_model.currentData(),
                 lang=getattr(self, "_drama_lang", None))
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:200]); return
+            err(e); return
         self._sb_split_running = True
         self._sb_split_task = tid
         info(tr("分镜拆解已开始(后台运行,约 5-10 分钟)"))
@@ -4377,7 +4383,7 @@ class EpisodePage(QWidget):
         def repair_done(tid, result, error):
             st = (result or {})
             if error:
-                err(str(error)[:160])
+                err(error)
             else:
                 ok(tr("分镜修复完成:{}/{} 成功").format(st.get("completed", 0), st.get("total", 0)))
             self._reload_storyboard()
@@ -4395,7 +4401,7 @@ class EpisodePage(QWidget):
             if sb:
                 sb.idle()
             if error:
-                err(str(error)[:160])
+                err(error)
             else:
                 ok(tr("批量补齐提示词完成:{}"))
             self._reload_storyboard()
@@ -4444,7 +4450,7 @@ class EpisodePage(QWidget):
             if btn:
                 btn.idle()
             if error:
-                err(str(error)[:220])
+                err(error)
             else:
                 QMessageBox.information(self, tr("batch_prompts"), f"OK: {result}")
         if btn:
@@ -4470,7 +4476,7 @@ class EpisodePage(QWidget):
             if btn:
                 btn.idle()
             if error:
-                err(str(error)[:220])
+                err(error)
             else:
                 ok(tr("氛围补齐完成:{}/{}").format(result, rows))
             self._reload_storyboard()
@@ -4602,7 +4608,7 @@ class EpisodePage(QWidget):
             if tick is not None:
                 tick.stop()
             if error:
-                err(str(error)[:200])
+                err(error)
             elif result.get("fails"):
                 ok(tr("批量视频完成:{}/{} 成功").format(result["done"], result["total"])
                    + "\n" + "\n".join(result["fails"][:6]))
@@ -5065,14 +5071,14 @@ class EpisodePage(QWidget):
             ok(tr("已还原原图"))
             self._reload_comic()
         except Exception as e:  # noqa: BLE001
-            err(str(e)[:200])
+            err(e)
 
     def _split_panels(self):
         def job(tid):
             return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
         def done(tid, result, error):
             if error:
-                err(str(error)[:220])
+                err(error)
             self._reload_comic()
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
 
@@ -5093,7 +5099,7 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             self._comic_busy.discard(panel_id)
             if error:
-                err(str(error)[:220])
+                err(error)
             self._reload_comic()
         TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 
@@ -5142,7 +5148,7 @@ class EpisodePage(QWidget):
             def done(tid, result, error):
                 self._comic_busy.discard(pid)
                 if error:
-                    err(str(error)[:220])
+                    err(error)
                 run(i + 1)          # done 在主线程回调,链式提交下一格
 
             TASKMGR.submit("image", job, done, episode_id=self.episode_id)

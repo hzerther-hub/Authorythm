@@ -555,7 +555,7 @@ class ImageProcessPage(QWidget):
         try:
             out_dir.mkdir(parents=True, exist_ok=True)
         except OSError as e:
-            err(str(e)[:160])
+            err(e)
             return
 
         self._busy = True
@@ -593,7 +593,7 @@ class ImageProcessPage(QWidget):
             self._set_source_enabled(True)
             if error:
                 self.status_lab.setText("")
-                err(str(error)[:220])
+                err(error)
                 return
             r = result or {}
             ok(tr("process_done").format(r.get("done", 0), r.get("total", 0)))

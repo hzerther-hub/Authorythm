@@ -32,6 +32,14 @@ def map_error(err: object) -> str:
     那些串永远是中文;翻了针就永远匹配不上,分支直接失效。所以只有 return 的那半句走 tr()。
     """
     s = str(err) if err is not None else ""
+    # 后台任务传进来的是整段 traceback,真正的原因在最后一行;
+    # 不先取出来的话,弹窗只会显示 "Traceback (most recent call last): ...",
+    # 头几行永远占满窗口,报错内容反而看不见,后面所有分支也都匹配不上。
+    if s.lstrip().startswith("Traceback"):
+        tail = next((l.strip() for l in reversed(s.splitlines())
+                     if l[:1] not in (" ", "\t") and l.strip()), "")
+        if tail:
+            s = tail
     low = s.lower()
     # AI 服务未就绪(未配置/停用/缺 Key/缺模型)——最高优先级,直接透传并给出去处
     if "未就绪" in s or "未配置" in s and "服务" in s:

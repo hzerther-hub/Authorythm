@@ -15,7 +15,20 @@ from . import prompts
 
 
 def extract_json(text: str) -> dict | list | None:
-    """从模型输出中稳健提取 JSON(容忍 ```json 围栏与前后杂文)。"""
+    """从模型输出中稳健提取 JSON(容忍 ```json 围栏、<think> 推理块与前后杂文)。
+
+    **必须先剥 <think> 再找 JSON**:推理型模型(glm-5.3 / MiniMax-M3 等)会先吐一整段
+    带花括号的思维链,「首个 { 到最后一个 }」会把推理连同正文一起框进来,必然解析失败。
+    实测 comic_board 正是栽在这里。
+    """
+    if not text:
+        return None
+    # 1) 先剥成对 <think>...</think>
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    # 2) 未闭合的尾巴:正文在思考之后,取最后一个 <think> 之后的全部内容
+    if "<think>" in text:
+        text = text.rsplit("<think>", 1)[-1]
+    text = text.strip()
     if not text:
         return None
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)

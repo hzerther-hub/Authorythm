@@ -197,7 +197,7 @@ class _BatchProgressDialog(QDialog):
         except Exception as e:  # noqa: BLE001
             item["closed"] = was           # 失败回滚
             self._render_ledger()
-            err(str(e)[:120])
+            err(e)
 
 
 class ReviewPanelDialog(QDialog):

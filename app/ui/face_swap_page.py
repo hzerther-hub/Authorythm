@@ -565,7 +565,7 @@ class FaceSwapPage(QWidget):
             self.go_btn.idle()
             self.prog.setVisible(False)
             if error:
-                err(str(error)[:200])
+                err(error)
                 return
             ok_n = 0
             for card, out, msg in (result or []):
