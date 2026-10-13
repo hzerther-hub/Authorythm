@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
-from .toast import err, ok
+from .toast import err, ok, warn
 
 RULES = {
     "selection": "只输出修改后的片段文本(不要输出整章,不要解释)。",
@@ -139,8 +139,9 @@ class AiEditDialog(QDialog):
             parts.append(f"【选中片段】\n{sel}")
         elif mode == "insert":
             parts.append(f"【光标位置前文】\n{chapter[max(0, self.start - 120):self.start]}")
-        parts.append(tr('【修改要求】{}').format(instruction), RULES[mode],
-                     "注意:只输出结果文本,绝对不要输出解释或前后缀。")
+        parts.append(tr('【修改要求】{}').format(instruction))
+        parts.append(RULES[mode])
+        parts.append("注意:只输出结果文本,绝对不要输出解释或前后缀。")
         prompt = "\n".join(parts)
         self.run_btn.setEnabled(False)
         self.run_btn.setText(tr("处理中…"))
@@ -155,10 +156,21 @@ class AiEditDialog(QDialog):
             if e:
                 err(e)
                 return
-            text = (result or "").strip()
+            from ..pipeline.novel import _strip_think
+            text = _strip_think((result or "").strip())
             if not text:
                 err(tr("AI 未返回内容"))
                 return
+            # 片段模式超长保护:要求改 56 字却返回 8807 字(实测 glm 会无视
+            # 「只输出片段」把整章重写一遍),直接拼接会把整章塞进选区槽位,
+            # 正文三倍膨胀直接毁掉 —— 宁可拒绝并复制到剪贴板让用户走整章处理。
+            if mode == "selection":
+                sel_len = max(1, self.end - self.start)
+                if len(text) > max(400, sel_len * 6):
+                    from PySide6.QtWidgets import QApplication
+                    QApplication.clipboard().setText(text)
+                    warn(tr("ai_edit_oversize").format(len(text), sel_len))
+                    return
             if mode == "chapter":
                 new_text = text
             elif mode == "selection":

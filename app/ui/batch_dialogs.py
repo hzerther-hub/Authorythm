@@ -84,7 +84,7 @@ class _BatchProgressDialog(QDialog):
         self.rows = QVBoxLayout()
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea{border:1px solid rgba(128,128,128,40);border-radius:8px;")
+        scroll.setStyleSheet("QScrollArea{border:1px solid rgba(128,128,128,40);border-radius:8px;}")
         inner = QWidget()
         inner.setLayout(self.rows)
         scroll.setWidget(inner)

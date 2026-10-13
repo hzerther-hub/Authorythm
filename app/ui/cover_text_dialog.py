@@ -94,11 +94,25 @@ class CoverTextDialog(QDialog):
         self.pos_combo.setCurrentIndex(2)
         self.pos_combo.currentIndexChanged.connect(self._render)
         row2.addWidget(self.pos_combo)
+        # 竖排:逐字向下排(书名/古装标题风)
+        from PySide6.QtWidgets import QCheckBox as _QChk
+        self.vertical_chk = _QChk(tr("wm_vertical"))
+        self.vertical_chk.setToolTip(tr("wm_vertical_tip"))
+        self.vertical_chk.toggled.connect(self._render)
+        row2.addWidget(self.vertical_chk)
         row2.addStretch(1)
         root.addLayout(row2)
 
         act = QHBoxLayout()
         act.addStretch(1)
+        add_item = QPushButton(tr("add_watermark_item"))
+        add_item.setToolTip(tr("add_text_item_tip"))
+        add_item.clicked.connect(self._add_item)
+        clear_item = QPushButton(tr("clear_watermarks"))
+        clear_item.setToolTip(tr("clear_items_tip"))
+        clear_item.clicked.connect(self._clear_items)
+        act.addWidget(add_item)
+        act.addWidget(clear_item)
         cancel = QPushButton(tr("close"))
         cancel.clicked.connect(self.reject)
         self.apply_btn = W.primary_btn(tr("cover_text_apply"))
@@ -106,6 +120,8 @@ class CoverTextDialog(QDialog):
         act.addWidget(cancel)
         act.addWidget(self.apply_btn)
         root.addLayout(act)
+        # 已加入的文字条目:支持封面上的标题+副标题+书名号等多组文字共存
+        self.items: list[dict] = []
 
         self._set_color_btn()
         self._on_size(self._size_pct)
@@ -133,10 +149,13 @@ class CoverTextDialog(QDialog):
             "border-radius:5px;")
 
     # ── 渲染 ──
-    def _load_font(self, px: int):
+    def _load_font(self, px: int, file: str = ""):
+        """file 参数与 _draw_item 的 font_of 约定对齐;缺省用正在编辑的字体。"""
+        if not file:
+            file = self._font_file
         from PIL import ImageFont
         fonts = config.ROOT_DIR / "app" / "assets" / "fonts"
-        cands = ([fonts / self._font_file] if self._font_file else []) + [fonts / "msyh.ttc"]
+        cands = ([fonts / file] if file else []) + [fonts / "msyh.ttc"]
         for fp in cands:
             if fp and fp.exists():
                 try:
@@ -145,35 +164,75 @@ class CoverTextDialog(QDialog):
                     continue
         return ImageFont.load_default()
 
+    def _snapshot(self) -> dict:
+        """当前控件状态 → 一个文字条目。"""
+        return {"text": self.text.toPlainText().strip(),
+                "color": self._color,
+                "font_file": self._font_file,
+                "size_pct": self._size_pct,
+                "pos": self.pos_combo.currentData(),
+                "vertical": self.vertical_chk.isChecked()}
+
+    def _draw_item(self, base_size, draw, it, font_of):
+        """画一个文字条目;竖排 = 逐字向下排,横排 = 多行居中。"""
+        px = max(10, int(base_size[1] * it["size_pct"] / 100.0))
+        font = font_of(px, it["font_file"])
+        r, g, b, _a = it["color"].getRgb()
+        stroke = max(1, int(px / 18))
+        lines = [ln for ln in it["text"].splitlines() if ln.strip()]
+        if it.get("vertical"):
+            text = "".join(lines)                      # 多行合一后竖排
+            line_h = int(px * 1.18)
+            y0 = {"top": int(base_size[1] * 0.08),
+                  "center": (base_size[1] - line_h * len(text)) // 2,
+                  "bottom": int(base_size[1] * 0.86) - line_h * len(text)}[it["pos"]]
+            for i, ch in enumerate(text):
+                draw.text((base_size[0] / 2, y0 + i * line_h + line_h / 2), ch,
+                          font=font, anchor="mm", fill=(r, g, b, 255),
+                          stroke_width=stroke, stroke_fill=(0, 0, 0, 200))
+        else:
+            line_h = int(px * 1.35)
+            total = line_h * len(lines)
+            y0 = {"top": int(base_size[1] * 0.08),
+                  "center": (base_size[1] - total) // 2,
+                  "bottom": int(base_size[1] * 0.86) - total}[it["pos"]]
+            for i, ln in enumerate(lines):
+                bbox = draw.textbbox((0, 0), ln, font=font, stroke_width=stroke)
+                tw = bbox[2] - bbox[0]
+                draw.text(((base_size[0] - tw) // 2, y0 + i * line_h), ln, font=font,
+                          fill=(r, g, b, 255), stroke_width=stroke, stroke_fill=(0, 0, 0, 200))
+
     def _compose(self, im):
         from PIL import Image, ImageDraw
-        text = self.text.toPlainText().strip()
-        if not text:
+        live = self.text.toPlainText().strip()
+        if not live and not self.items:
             return im
         base = im.convert("RGBA")
         layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
-        px = max(10, int(base.size[1] * self._size_pct / 100.0))
-        font = self._load_font(px)
-        r, g, b, _a = self._color.getRgb()
-        stroke = max(1, int(px / 18))
-        lines = text.splitlines() or [text]
-        line_h = int(px * 1.35)
-        total = line_h * len(lines)
-        y0 = {"top": int(base.size[1] * 0.08),
-              "center": (base.size[1] - total) // 2,
-              "bottom": int(base.size[1] * 0.86) - total}[self.pos_combo.currentData()]
-        for i, ln in enumerate(lines):
-            if not ln.strip():
-                continue
-            bbox = draw.textbbox((0, 0), ln, font=font, stroke_width=stroke)
-            tw = bbox[2] - bbox[0]
-            x = (base.size[0] - tw) // 2
-            draw.text((x, y0 + i * line_h), ln, font=font, fill=(r, g, b, 255),
-                      stroke_width=stroke, stroke_fill=(0, 0, 0, 200))
+        for it in self.items:
+            self._draw_item(base.size, draw, it, self._load_font)
+        # 正在编辑的这条实时叠加(提交后由 items 渲染,防画两遍)
+        if live:
+            self._draw_item(base.size, draw, self._snapshot(), self._load_font)
         out = base.copy()
         out.alpha_composite(layer)
         return out.convert("RGB")
+
+    def _add_item(self):
+        """把当前参数存为一个文字条目(改文字/颜色/位置后可再加下一组)。"""
+        text = self.text.toPlainText().strip()
+        if not text:
+            err(tr("cover_text_required"))
+            return
+        self.items.append(self._snapshot())
+        self.text.clear()
+        ok(tr("watermark_added", len(self.items)))
+        self._render()
+
+    def _clear_items(self):
+        self.items.clear()
+        self._render()
 
     def _base_image(self):
         if not self.url:
@@ -208,13 +267,17 @@ class CoverTextDialog(QDialog):
                                         Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
     def _apply(self):
-        if not self.text.toPlainText().strip():
+        live = self.text.toPlainText().strip()
+        if not live and not self.items:
             err(tr("cover_text_required"))
             return
         src = self._base_image()
         if src is None:
             err(tr("cover_text_no_base"))
             return
+        if live:
+            self.items.append(self._snapshot())   # 正在编辑的也一并提交
+        self.text.clear()
         try:
             out = self._compose(src)
         except Exception as exc:  # noqa: BLE001
@@ -229,6 +292,7 @@ class CoverTextDialog(QDialog):
             db.ex("UPDATE dramas SET thumbnail=?, updated_at=? WHERE id=?",
                   (url, db.now(), self.drama_id))
         self.url = url
+        self.items.clear()          # 文字已烘焙进新封面;留着会导致下次应用重复叠画
         self._render()
         ok(tr("cover_text_done"))
         if self._on_saved:

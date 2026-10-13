@@ -71,9 +71,18 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     #   实测只写中文「三视图布局」会被无视,出单人立绘);②内容比风格前缀长不出 80 字的
     # 判为模型偷懒只回了前缀。不合格一律拦下重试
     prefix = _style_prefix(c["drama_id"])
-    has_layout_token = any(k in fp for k in ("turnaround", "reference sheet", "multi-view", "orthographic"))
-    if not has_layout_token or len(fp) <= len(prefix) + 80:
-        raise RuntimeError("提示词不合格:缺少三视图英文构图 token(turnaround/reference sheet 等),请重试")
+    if len(fp) <= len(prefix) + 80:
+        raise RuntimeError("提示词不合格:内容与风格前缀几乎等长,模型偷懒,请重试")
+    # 三视图布局保证:英文 token 权重最高,但 glm 等模型常只写中文甚至漏写布局。
+    # 中文等价词(三视图/正脸特写/三张全身)也算数;仍缺就**确定性补上**标准英文
+    # 布局块 —— 此前直接 raise,任务失败、final_prompt 留空,生图只能走兜底
+    # 单行提示词,出的全是单人立绘(灰袍散修实测)。补块幂等,不重复添加。
+    # 判据只看**英文 token 在不在**,不能因为写了中文「三视图」就放过 ——
+    # 图像模型不认中文布局词(实测中文三视图照样出单人立绘),放过等于没补。
+    if not any(k in fp for k in ("turnaround", "reference sheet", "multi-view", "orthographic")):
+        fp += (", character turnaround sheet, front-face close-up on the left, "
+               "three equal-height full-body views on the right (front / 90-degree side / back), "
+               "orthographic views, no perspective distortion")
     # 只落库正向提示词。质量守卫与负向词由 app/ai/prompt_guards.py 在**生图时统一追加**
     # (positive 走 apply_image_quality_guard、负面走 negative_prompt),不再拼接进资产
     # 提示词正文 —— 否则每个角色的 final_prompt 都拖着一段重复的守卫文本,详情页难以编辑,

@@ -55,6 +55,9 @@ QLabel#statusDot[state="failed"] { background: #fdecec; color: #dc2626; }
 QFrame#propsEmpty { border: 1px dashed #d5d9e0; border-radius: 10px; }
 QFrame#svcCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
 QFrame#svcCard:hover { border-color: #f97316; }
+/* 启用开关勾选态用绿色(「开」的语义),不再沿用全局的拍板黑 */
+QFrame#svcCard QCheckBox::indicator:checked {
+  background: #16a34a; border-color: #16a34a; }
 QFrame#emptyState { background: transparent; border: none; }
 /* ── 分镜工作台 ── */
 QFrame#taskList { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
@@ -164,6 +167,8 @@ QLabel#statusDot[state="pending"] { background: #3a2a1c; color: #fbbf24; }
 QLabel#statusDot[state="failed"] { background: #3d1f22; color: #ff8b8f; }
 QFrame#propsEmpty { border: 1px dashed #3a3d46; border-radius: 10px; }
 QFrame#svcCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#svcCard QCheckBox::indicator:checked {
+  background: #16a34a; border-color: #16a34a; }
 QFrame#svcCard:hover { border-color: #fb923c; }
 QFrame#emptyState { background: transparent; border: none; }
 QFrame#taskList { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
@@ -836,6 +841,9 @@ QCheckBox::indicator { width: 14px; height: 14px;
 QCheckBox::indicator:hover { border-color: """ + SLATE_BAR + """; }
 QCheckBox::indicator:checked { background: """ + SLATE_BAR + """;
   border-color: """ + SLATE_BAR + """; }
+/* 服务卡片的启用开关:勾选态用绿色(「开」的语义) */
+QFrame#svcCard QCheckBox::indicator:checked { background: #16a34a;
+  border-color: #16a34a; }
 QPushButton { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
   border-radius: 3px; color: """ + SLATE_META + """; padding: 6px 14px;
   font-size: 12px; font-weight: 600; }

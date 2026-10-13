@@ -1299,6 +1299,9 @@ class EpisodePage(QWidget):
         self.raw_edit.blockSignals(True)
         self.raw_edit.setPlainText(ep["content"] or "")
         self.raw_edit.blockSignals(False)
+        # 空章禁用审校(此前点了才在任务里报「本章还没有正文」, toast 一闪而过)
+        if hasattr(self, "review_btn"):
+            self.review_btn.setEnabled(bool((ep["content"] or "").strip()))
         self.words_spin.blockSignals(True)
         self.words_spin.setValue(ep["target_words"] or 0)
         self.words_spin.blockSignals(False)
@@ -1782,12 +1785,25 @@ class EpisodePage(QWidget):
         NovelPlanDialog(self, self.drama_id).exec()
 
     def _review_chapter(self):
+        # 空章先拦:无正文时审校必然「本章还没有正文」,等任务跑完才报错是浪费
+        if not (self.raw_edit.toPlainText() or "").strip():
+            warn(tr("review_empty_chapter"))
+            return
+        if getattr(self, "_review_running", False):
+            warn(tr("review_running"))
+            return
+        self._review_running = True
+        if hasattr(self, "review_btn"):
+            self.review_btn.setEnabled(False)
         self._save_raw_silent()
         from .novel_dialogs import ReviewDialog
         from ..pipeline import novel as novel_pipe
         def job(tid):
             return novel_pipe.review_chapter(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, error):
+            self._review_running = False
+            if hasattr(self, "review_btn"):
+                self.review_btn.setEnabled(True)
             if error:
                 err(str(error)[:220])
             else:
@@ -1872,17 +1888,20 @@ class EpisodePage(QWidget):
         lay.addLayout(row)
 
         # 正文区:空态 / 加载中 / 编辑器三态 —— 都直接进 lay,不用 bar 包裹。
+        # 空态不再进布局(对齐 raw):编辑器常驻,空内容靠占位提示,
+        # 否则无内容时整个面板是一片白,连「从哪开始」都看不出
         self.rewrite_empty = C.empty_state("→", tr("rewrite_empty_title"), tr("rewrite_empty_desc"))
         start_btn = W.primary_btn(tr("start_rewrite"))
         start_btn.clicked.connect(self._rewrite)
         self.rewrite_empty.layout().addWidget(start_btn, 0, Qt.AlignCenter)
-        lay.addWidget(self.rewrite_empty, 1, Qt.AlignCenter)
+        self.rewrite_empty.setVisible(False)
 
         self.rewrite_loading = QLabel("⠋ " + tr("rewriting"))
         self.rewrite_loading.setObjectName("muted")
         self.rewrite_loading.setAlignment(Qt.AlignCenter)
-        self.rewrite_loading.setMaximumHeight(0)
-        self.rewrite_loading.setMinimumHeight(0)
+        # 转剧本是流式长任务,等待指示必须有可见高度 —— 之前 maxHeight(0),
+        # setVisible(True) 也显示不出来,转写几分钟界面纹丝不动像死了
+        self.rewrite_loading.setFixedHeight(26)
         self.rewrite_loading.setVisible(False)
         lay.addWidget(self.rewrite_loading)
 
@@ -1896,16 +1915,24 @@ class EpisodePage(QWidget):
         self.script_edit.textChanged.connect(self._update_script_dirty)
         lay.addWidget(self.script_edit, 1)
 
-        # ✨ AI 修改 按钮行 —— 不占垂直布局主行,跟 raw 一样紧贴编辑器下方
-        ai_row = QHBoxLayout()
-        ai_row.setContentsMargins(0, 0, 0, 0)
+        # 底部工具栏:与 raw 的 bar2 同款(taskHead 卡 + 56px 上限),不再是一条
+        # 裸按钮横在白板上 —— 两个页面视觉不一致就是从这开始的
+        bar = QFrame()
+        bar.setObjectName("taskHead")
+        bar.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+        bar.setMaximumHeight(56)
+        b2 = QHBoxLayout(bar)
+        b2.setContentsMargins(12, 6, 12, 6)
+        b2.setSpacing(8)
         ai_btn2 = QPushButton("✨ " + tr("ai_edit"))
         W.set_icon(ai_btn2, "magic")
         ai_btn2.setToolTip(tr("ai_edit_tip"))
         ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
-        ai_row.addWidget(ai_btn2)
-        ai_row.addStretch(1)
-        lay.addLayout(ai_row)
+        b2.addWidget(ai_btn2)
+        b2.addStretch(1)
+        self.script_len_lab2 = W.muted("")
+        b2.addWidget(self.script_len_lab2)
+        lay.addWidget(bar)
 
     def style_combo_items(self):
         from ..pipeline.novel import NOVEL_STYLES
@@ -1937,9 +1964,10 @@ class EpisodePage(QWidget):
         self.script_edit.blockSignals(False)
         self._update_script_dirty()
         self.script_len_lab.setText(tr("chars_n", len(text)) if text else "")
-        has = bool(text)
-        self.rewrite_empty.setVisible(not has)
-        self.script_edit.setVisible(has)
+        # 编辑器常驻(对齐 raw):空内容显示占位提示,不再把整个编辑器藏成白板
+        self.rewrite_empty.setVisible(False)
+        self.script_edit.setVisible(True)
+        self.script_len_lab2.setText(tr("chars_n", len(text)) if text else "")
         cur = novel_pipe.get_novel_style(self.drama_id)
         idx = self.style_combo2.findData(cur)
         if idx < 0 and cur:
@@ -2265,12 +2293,33 @@ class EpisodePage(QWidget):
 
     def _extract(self, scope: str):
         """提取资产。提取只新增、不覆盖已有同名资产,所以「已存在」时新增为 0 是正常的 ——
-        必须把结果明确说出来,否则界面毫无变化会让人以为没跑。"""
+        必须把结果明确说出来,否则界面毫无变化会让人以为没跑。
+
+        防多点:提取进行中再点会重复提交同样的任务(实测连续点会同时跑两份,
+        结果互相覆盖)—— 用 flag 挡掉并把同类按钮一起禁用,完成后再恢复。
+        """
+        if getattr(self, "_extract_running", False):
+            warn(tr("extract_running"))
+            return
+        self._extract_running = True
+        btns = [b for b in self.findChildren(QPushButton)
+                if b.text() in (tr("extract_assets"), tr("re_extract_chars"),
+                                tr("re_extract_scenes"), tr("re_extract_props"))]
+        for b in btns:
+            b.setEnabled(False)
+
         def job(tid):
             return extract_pipe.extract_assets(self.episode_id,
                                                 config_id=self.text_model.currentData(),
                                                 lang=self._drama_lang)
+
         def done(tid, result, error):
+            self._extract_running = False
+            for b in btns:
+                try:
+                    b.setEnabled(True)
+                except RuntimeError:
+                    pass
             if error:
                 err(str(error)[:220])
                 return

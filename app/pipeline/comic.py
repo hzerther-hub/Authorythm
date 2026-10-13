@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 
 
 def split_panels(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
@@ -14,8 +14,33 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
     script = ep["script_content"] or ep["content"] or ""
     if not script.strip():
         raise RuntimeError("请先完成剧本")
-    prompt = f"剧本(第 {ep['episode_number']} 集):\n{script[:14000]}"
+    # 关键:comic_board 的系统提示词让模型「调用 read_drama_assets 取资产」,
+    # 而 run_agent_json 是**单次无工具**调用 —— 模型照着提示词发工具调用,
+    # 我们给不了,就永远吐不出 JSON(实测返回 <think>…</think> + [Tool: read_drama_assets];
+    # 另一模型返回 {"name":…,"parameters":…} 函数信封)。这里把资产**直接内联**进提示词。
+    d_id = ep["drama_id"]
+    assets = ["【本集可用的视觉资产(已全部给出,不要再调用任何工具读取)】"]
+    for label, table, cols in (
+        ("角色", "characters", ("name", "appearance", "styling")),
+        ("场景", "scenes", ("name", "prompt", "lighting")),
+        ("道具", "props", ("name", "description")),
+    ):
+        rows = db.q(f"SELECT {','.join(cols)} FROM {table} WHERE drama_id=? LIMIT 12", (d_id,))
+        if not rows:
+            continue
+        assets.append(f"— {label} —")
+        for r in rows:
+            bits = " / ".join(str(r[c] or "")[:90] for c in cols[1:])
+            assets.append(f"  {r[cols[0]]}: {bits}")
+    assets.append("以上即全部可用资产;某镜所需资产不在表中时,按剧本文字描述作画。")
+    prompt = ("\n".join(assets) + "\n\n"
+              + f"剧本(第 {ep['episode_number']} 集):\n{script[:14000]}\n\n"
+              + "你现在**没有任何工具**,资产已在上方直接给全。禁止输出 <think>、"
+                "[Tool: ...]、函数调用或任何解释,只输出一个 JSON 对象。")
     data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=config_id)
+    # 兼容函数调用信封:部分模型会把内容包在 {"name":…,"parameters":{"panels":[…]}}
+    if isinstance(data, dict) and not data.get("panels") and isinstance(data.get("parameters"), dict):
+        data = data["parameters"]
     panels = data.get("panels") or (data if isinstance(data, list) else [])
     if not panels:
         raise RuntimeError("漫画分镜结果为空")

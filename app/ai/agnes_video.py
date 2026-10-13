@@ -16,7 +16,7 @@
       first_frame/image_url/images 任意一种,audios/videos 无语义 → 忽略)
 """
 
-
+from __future__ import annotations
 def _utf8_text(resp, limit: int = 400) -> str:
     """错误文案按 utf-8 显式解码。
 
@@ -27,8 +27,6 @@ def _utf8_text(resp, limit: int = 400) -> str:
         return resp.content.decode("utf-8", errors="replace")[:limit]
     except Exception:  # noqa: BLE001
         return str(getattr(resp, "text", "") or "")[:limit]
-from __future__ import annotations
-
 import json
 import re
 from pathlib import Path
