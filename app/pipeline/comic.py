@@ -370,31 +370,39 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
                     f"服装: {row['styling'] or ''}。" + _TURNAROUND_BLOCK)
         spec = base + " 所有视图表情平静自然、双唇闭合、眼神放松,不做任何夸张情绪。纯白无缝背景,柔和均匀漫射光线"
     elif kind == "scene":
-        # 同上:复用常规资产的 final_prompt(它自带 "Empty scene, no human figures,
-        # no silhouettes, no reflections of people")。原先自拼的中文 spec 没有这句,
-        # 空镜约束完全靠平台守卫 —— 而守卫当时把 people=0 抬成了 1,反向命令模型放人。
+        # 复用常规资产 final_prompt(其 prompt_generator prompt 写明「目标类型:scene
+        # 场景空镜建立图」,agent 给的就是「空会议室」之类的描述),**不**再追加「电影
+        # 质感」「画面里只有场景本身」之类的中文后缀 —— 实测这些中文会干扰漫画风
+        # 格的画面构图,反而把人物塞回场景(用户反馈:常规场景无人物,漫画版冒人)。
+        # 不传 reference_images:常规图也是空镜,但漫画风格本身就有把人画进来的
+        # 倾向,塞参考图等于把任何残留的人物痕迹放大。走纯文生图 + people=0
+        # 负向守卫(禁一切人 / silhouette / 反射)与常规资产生成完全一致。
         base = (row["final_prompt"] or "").strip()
         if not base:
             base = (f"场景: {row['name']}, 环境: {row['prompt'] or ''}, "
                     f"光照: {row['lighting'] or ''}。" + _EMPTY_SCENE_BLOCK)
-        spec = base + " 画面里只有场景本身,空无一人"
+        spec = base
     else:
         base = (row["final_prompt"] or "").strip()
         if not base:
             base = f"道具: {row['name']}, 描述: {row['description'] or ''}。纯白无缝背景单品图"
-        spec = base + " 画面里只有道具本身,空无一人"
-    prompt = f"{style}, {spec}, 电影质感"
+        spec = base
+    prompt = f"{style}, {spec}"
     # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720),
     # 主形象图作为参考图传入(否则 AI 看 appearance 文字自己想象,镜像不像主形象),
-    # 负面守卫:场景/道具禁止出现人物
+    # **但场景/道具不传** —— 这两类资产是空镜/单品,常规图作为参考会带偏漫画风
+    # 的画面构成(用户实测:漫画场景会把常规图里没有的人也画进来,坑在参考图
+    # 把"无人的构图"重新打散成"有人物的构图"上)。
     size = "1024x1024" if kind == "character" else "1280x720"
     refs = []
-    cur = (row["image_url"] or "").strip()
-    if cur:
-        lp = (config.media_url_to_path(cur) if cur.startswith(("/static/", "static/"))
-              else Path(cur))
-        if lp.exists():
-            refs = [str(lp)]
+    if kind == "character":
+        from pathlib import Path
+        cur = (row["image_url"] or "").strip()
+        if cur:
+            lp = (config.media_url_to_path(cur) if cur.startswith(("/static/", "static/"))
+                  else Path(cur))
+            if lp.exists():
+                refs = [str(lp)]
     # 三视图的"特写格"是模型最爱加戏的位置:默认给一张张嘴嘶吼的脸。
     # 通用守卫里只有一句 no wide-open screaming mouth,权重不够,这里再加一层。
     extra_neg = ("open mouth, screaming, shouting, yelling, gasp, aghast, terrified expression, "

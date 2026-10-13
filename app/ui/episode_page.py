@@ -1265,10 +1265,10 @@ class EpisodePage(QWidget):
         W.set_icon(self.summary_btn, "check_circle")
         self.summary_btn.clicked.connect(self._open_review_summary)
         b2.addWidget(self.summary_btn)
-        read_btn = QPushButton("🔊 " + tr("read_aloud"))
-        W.set_icon(read_btn, "volume")
-        read_btn.clicked.connect(self._read_aloud)
-        b2.addWidget(read_btn)
+        self.read_btn = WaitingButton("🔊 " + tr("read_aloud"))
+        W.set_icon(self.read_btn, "volume")
+        self.read_btn.clicked.connect(self._read_aloud)
+        b2.addWidget(self.read_btn)
         self.ledger_btn = WaitingButton("🧾 " + tr("state_ledger"))
         W.set_icon(self.ledger_btn, "ledger")
         self.ledger_btn.setToolTip(tr("state_ledger_tip"))
@@ -1862,10 +1862,23 @@ class EpisodePage(QWidget):
         from ..core.preflight import ensure_ready
         if not ensure_ready("tts", None):
             return
+        # 重复点击保护:task 已经在飞就直接返回,避免叠 spinner
+        if getattr(self, "_read_aloud_in_flight", False):
+            return
         from ..pipeline import novel as N
+        # 立即进入等待态:按钮文字换成盲文 spinner + 禁用 → 用户能看到反馈
+        self._read_aloud_in_flight = True
+        self.read_btn.busy(tr("read_aloud_busy"))
+        # 在工具行 raw_status 也同步反馈,让用户知道进行到哪一步
+        if hasattr(self, "_set_raw_status"):
+            self._set_raw_status("🔊 正在合成朗读音频(Edge TTS,每段约 25 秒)…")
         def job(tid):
             return N.read_aloud(self.episode_id)
         def done(tid, result, error):
+            self._read_aloud_in_flight = False
+            self.read_btn.idle()
+            if hasattr(self, "_set_raw_status"):
+                self._set_raw_status("")          # 工具行清掉进度提示
             if error:
                 err(error); return
             import os
@@ -2385,7 +2398,9 @@ class EpisodePage(QWidget):
                 # 每张都刷新:整批可能跑十几分钟,只在末尾刷会一直空白
                 if btn is not None:
                     btn.setText(f"⠋ {i + 1}/{len(tasks)}")
-                self._reload_comic_assets()
+                # 只更新刚完成的那一格(避免 _reload_comic_assets 重建整张表
+                # 导致 1.5s+ 的 UI 卡顿,看起来像"按下批量 → 30 秒内纹丝不动 → 突然全亮")
+                self._update_comic_asset_card(kind, row_id)
                 run(i + 1)
 
             TASKMGR.submit("image", job, done, drama_id=self.drama_id)
@@ -2400,6 +2415,9 @@ class EpisodePage(QWidget):
             w = item.widget()
             if w:
                 w.deleteLater()
+        # 缓存:每张卡的"图"+"状态"标签,让单格完成时只更新自己那行,
+        # 而不是每次都 deleteLater + 重查库 + 重渲所有 15 张图(全表重建 1.5s+)
+        self._comic_asset_cards: dict[tuple[str, int], dict] = {}
         for kind, table, label in (("character", "characters", tr("chars")),
                                    ("scene", "scenes", tr("scenes")),
                                    ("prop", "props", tr("props"))):
@@ -2413,14 +2431,39 @@ class EpisodePage(QWidget):
                 lay.addWidget(img)
                 name = W.h2(r["name"])
                 lay.addWidget(name)
-                lay.addWidget(W.tag(label))
-                if r["comic_image_url"]:
-                    lay.addWidget(W.tag(tr("generated")))
+                kind_tag = W.tag(label)
+                lay.addWidget(kind_tag)
+                status_tag = W.tag(tr("generated")) if r["comic_image_url"] else W.tag(tr("待生成"))
+                lay.addWidget(status_tag)
                 lay.addStretch(1)
                 btn = QPushButton(tr("redraw"))
                 btn.clicked.connect(lambda _=False, k=kind, i=r["id"]: self._gen_comic_asset(k, i, force=True))
                 lay.addWidget(btn)
                 self.comic_asset_list.addWidget(box)
+                self._comic_asset_cards[(kind, int(r["id"]))] = {
+                    "img": img, "status": status_tag, "row": r,
+                }
+
+    def _update_comic_asset_card(self, kind: str, row_id: int):
+        """单格完成 → 只刷新这一行(图 + 状态),不重建整张表。
+
+        之前 _reload_comic_assets() 每次都全表重建,15 行 × 每行 ~100ms = 1.5s 的
+        UI 卡顿,加上 QPixmap 同步缩放,用户看到的是「按下批量 → 整个面板纹丝
+        不动 30 秒 → 突然全部亮」。改这里之后,每完成一格就只动那一格。
+        """
+        cards = getattr(self, "_comic_asset_cards", None) or {}
+        key = (kind, int(row_id))
+        info = cards.get(key)
+        if not info:
+            return
+        table = {"character": "characters", "scene": "scenes", "prop": "props"}[kind]
+        r = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))
+        if not r:
+            return
+        info["row"] = r
+        info["img"].setPixmap(W.pixmap_from_media(r["comic_image_url"], 72))
+        # 状态 tag 文本变化时直接换文字(同 QLabel 实例,免一次 layout 抖动)
+        info["status"].setText(tr("generated") if r["comic_image_url"] else tr("待生成"))
 
     def _extract(self, scope: str):
         """提取资产。提取只新增、不覆盖已有同名资产,所以「已存在」时新增为 0 是正常的 ——
@@ -3064,16 +3107,21 @@ class EpisodePage(QWidget):
         ff_grid.addLayout(ff_right, 1)
         ff_lay.addLayout(ff_grid)
         ff_act = QHBoxLayout()
+        ff_act.setSpacing(6)
+        ff_act.setContentsMargins(0, 2, 0, 0)
         self.sb_ff_gen_btn = QPushButton("▣ " + tr("gen_first_frame"))
-        self.sb_ff_gen_btn.setObjectName("refTab")
+        # 之前错挂 refTab(那是页签下划线样式),按出来的按钮又大又空。
+        # 改成 ffAction(次级) + ffAction[primary] 主行动,体积小一档。
+        self.sb_ff_gen_btn.setObjectName("ffAction")
         self.sb_ff_gen_btn.setCursor(Qt.PointingHandCursor)
         self.sb_ff_gen_btn.clicked.connect(lambda _=False: self._gen_first_frame(self._sb_id))
+        ff_act.addWidget(self.sb_ff_gen_btn)
         self.sb_ff_approve_btn = QPushButton("✓ " + tr("approve_first_frame"))
         W.set_icon(self.sb_ff_approve_btn, "check")
-        self.sb_ff_approve_btn.setObjectName("refTab")
+        self.sb_ff_approve_btn.setObjectName("ffAction")
+        self.sb_ff_approve_btn.setProperty("primary", "1")
         self.sb_ff_approve_btn.setCursor(Qt.PointingHandCursor)
         self.sb_ff_approve_btn.clicked.connect(lambda _=False: self._approve_first_frame(self._sb_id))
-        ff_act.addWidget(self.sb_ff_gen_btn)
         ff_act.addWidget(self.sb_ff_approve_btn)
         ff_act.addStretch(1)
         ff_lay.addLayout(ff_act)

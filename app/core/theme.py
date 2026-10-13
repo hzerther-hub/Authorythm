@@ -91,6 +91,13 @@ QLabel#effective { background: #ffffff; border: 1px solid #f97316; border-radius
 QPushButton#refTab { background: transparent; border: none; border-bottom: 2px solid transparent;
   padding: 5px 10px 7px; font-size: 12px; font-weight: 600; color: #86909c; }
 QPushButton#refTab:checked { color: #1f2329; border-bottom-color: #f97316; }
+QPushButton#ffAction { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 4px;
+  padding: 3px 10px; font-size: 11px; font-weight: 600; color: #4e5969; min-height: 22px; }
+QPushButton#ffAction:hover { background: #fef3e8; border-color: #f3c9a4; color: #1f2329; }
+QPushButton#ffAction:disabled { color: #c0c6cf; background: #f7f8fa; }
+QPushButton#ffAction[primary="1"] { background: #f97316; border-color: #f97316; color: #ffffff; }
+QPushButton#ffAction[primary="1"]:hover { background: #ea580c; border-color: #ea580c; }
+QPushButton#ffAction[primary="1"]:disabled { background: #fde0c8; border-color: #fde0c8; color: #ffffff; }
 QFrame#refCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 8px; }
 QFrame#refCard[bound="1"] { border-color: #f97316; }
 QFrame#videoHistoryCard { background: #ffffff; border: 1.5px solid #e4e7ec; border-radius: 6px; }
@@ -202,6 +209,13 @@ QLabel#effective { background: #202126; border: 1px solid #fb923c; border-radius
 QPushButton#refTab { background: transparent; border: none; border-bottom: 2px solid transparent;
   padding: 5px 10px 7px; font-size: 12px; font-weight: 600; color: #8b909a; }
 QPushButton#refTab:checked { color: #f2f3f5; border-bottom-color: #fb923c; }
+QPushButton#ffAction { background: #202126; border: 1px solid #2c2e35; border-radius: 4px;
+  padding: 3px 10px; font-size: 11px; font-weight: 600; color: #b8bcc4; min-height: 22px; }
+QPushButton#ffAction:hover { background: #2a2c33; border-color: #fb923c; color: #f2f3f5; }
+QPushButton#ffAction:disabled { color: #4e5969; background: #1a1c1f; }
+QPushButton#ffAction[primary="1"] { background: #fb923c; border-color: #fb923c; color: #14161a; }
+QPushButton#ffAction[primary="1"]:hover { background: #f97316; border-color: #f97316; }
+QPushButton#ffAction[primary="1"]:disabled { background: #4a2f1a; border-color: #4a2f1a; color: #8b909a; }
 QFrame#refCard { background: #202126; border: 1px solid #2c2e35; border-radius: 8px; }
 QFrame#refCard[bound="1"] { border-color: #fb923c; }
 QFrame#videoHistoryCard { background: #202126; border: 1.5px solid #2c2e35; border-radius: 6px; }
@@ -739,6 +753,18 @@ QPushButton#refTab { background: transparent; border: none;
   color: """ + SLATE_MUTED + """; letter-spacing: 0.5px; }
 QPushButton#refTab:checked { color: """ + SLATE_BAR + """;
   border-bottom-color: """ + SLATE_BAR + """; font-weight: 700; }
+QPushButton#ffAction { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; padding: 3px 10px;
+  font-family: """ + MONO_STACK + """; font-size: 11px; font-weight: 600;
+  color: """ + SLATE_BAR + """; letter-spacing: 0.5px; min-height: 22px; }
+QPushButton#ffAction:hover { background: #fff; border-color: """ + SLATE_BAR + """;
+  color: #14161a; }
+QPushButton#ffAction:disabled { color: """ + SLATE_HAIR + """; background: """ + SLATE_PAPER + """; }
+QPushButton#ffAction[primary="1"] { background: """ + SLATE_BAR + """; border-color: """ + SLATE_BAR + """;
+  color: #fff; }
+QPushButton#ffAction[primary="1"]:hover { background: #14161a; border-color: #14161a; }
+QPushButton#ffAction[primary="1"]:disabled { background: """ + SLATE_HAIR + """;
+  border-color: """ + SLATE_HAIR + """; color: #fff; }
 QFrame#refCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE_HAIR + """;
   border-radius: 4px; }
 QFrame#refCard[bound="1"] { border-color: """ + """#f97316""" + """; border-width: 2px;
