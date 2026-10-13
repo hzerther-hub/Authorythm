@@ -129,6 +129,12 @@ _TURNAROUND_BLOCK = (
     "双手自然下垂。四个视图必须是同一位角色实例,脸型、发型、服装、配色、比例完全一致,"
     "只允许视角不同;角色实例总数恰为 4 个(1 个特写 + 3 个全身),禁止更多。")
 
+# 空镜硬约束:中英双语都要,英文 token 权重更高
+_EMPTY_SCENE_BLOCK = (
+    "场景空镜,画面里只有场景本身。Empty scene, no human figures, no silhouettes, "
+    "no reflections of people, no crowd in background, no hands, no body parts, "
+    "just the location itself, atmospheric and undisturbed")
+
 
 def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None) -> str:
     """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。"""
@@ -154,9 +160,19 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
                     f"服装: {row['styling'] or ''}。" + _TURNAROUND_BLOCK)
         spec = base + " 所有视图表情平静自然、双唇闭合、眼神放松,不做任何夸张情绪。纯白无缝背景,柔和均匀漫射光线"
     elif kind == "scene":
-        spec = f"场景空镜建立图(三层构图,无人物), 场景: {row['name']}, 环境: {row['prompt'] or ''}, 光照: {row['lighting'] or ''}"
+        # 同上:复用常规资产的 final_prompt(它自带 "Empty scene, no human figures,
+        # no silhouettes, no reflections of people")。原先自拼的中文 spec 没有这句,
+        # 空镜约束完全靠平台守卫 —— 而守卫当时把 people=0 抬成了 1,反向命令模型放人。
+        base = (row["final_prompt"] or "").strip()
+        if not base:
+            base = (f"场景: {row['name']}, 环境: {row['prompt'] or ''}, "
+                    f"光照: {row['lighting'] or ''}。" + _EMPTY_SCENE_BLOCK)
+        spec = base + " 画面里只有场景本身,空无一人"
     else:
-        spec = f"道具单品图(纯白背景), 道具: {row['name']}, 描述: {row['description'] or ''}"
+        base = (row["final_prompt"] or "").strip()
+        if not base:
+            base = f"道具: {row['name']}, 描述: {row['description'] or ''}。纯白无缝背景单品图"
+        spec = base + " 画面里只有道具本身,空无一人"
     prompt = f"{style}, {spec}, 电影质感"
     # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720),
     # 主形象图作为参考图传入(否则 AI 看 appearance 文字自己想象,镜像不像主形象),

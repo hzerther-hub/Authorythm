@@ -80,10 +80,28 @@ def _append_guard(prompt: str, guard: str, marker: str) -> str:
     return f"{trimmed}，\n{guard}"
 
 
+def _n_people(people: int | None) -> int:
+    """人物数归一。**0 必须原样保留** —— 场景空镜/道具单品传的就是 0。
+
+    早期写的是 max(1, int(people or 1)),把 0 抬成 1,于是空镜提示词里追加的
+    变成「画面中只有 1 个人」,等于命令模型往会议室里塞一个人。
+    """
+    try:
+        return max(0, int(people))
+    except (TypeError, ValueError):
+        return 1
+
+
 def build_image_quality_guard(people: int = 1) -> str:
     """图片质量守卫:肢体完整性 + 表情克制 + 画面纯净 + 按人数自适应的构图约束。"""
-    people = max(1, int(people or 1))
-    if people > 1:
+    people = _n_people(people)
+    if people == 0:
+        figure_cn = ("画面中不出现任何人物,也没有人物的手、身体、影子或倒影,"
+                     "画面里只有场景或道具本身")
+        figure_en = ("Empty scene: no people at all in frame, no human figures, no silhouettes, "
+                     "no reflections of people, no crowd in background, no hands, no body parts, "
+                     "just the location or the object itself, atmospheric and undisturbed")
+    elif people > 1:
         figure_cn = (f"画面人物恰好 {people} 人,不得多于或少于 {people} 人,"
                      "没有围观群众或复制人,没有重影、分身")
         figure_en = (f"Exactly {people} people in frame, no onlookers, no extras, no bystanders, "
@@ -107,8 +125,19 @@ def build_image_quality_guard(people: int = 1) -> str:
 
 
 def build_image_negative_guard(people: int = 1) -> str:
-    """图片负面词。多人物时必须去掉 second person / multiple people,否则会把剧情需要的第二个角色禁掉。"""
-    people = max(1, int(people or 1))
+    """图片负面词。多人物时必须去掉 second person / multiple people,否则会把剧情需要的第二个角色禁掉。
+
+    people=0 是空镜/道具:必须换成「禁一切人」的词表,不能沿用单人物那一档 ——
+    单人物那档只禁「多余的人」,把人放进来反而是合规的。
+    """
+    people = _n_people(people)
+    if people == 0:
+        return (
+            "people, person, men, women, man, woman, human, human figure, face, portrait, head, "
+            "child, worker, employee, staff, passerby, crowd, audience, bystander, onlooker, "
+            "silhouette of a person, shadow of a person, reflections of people, people in background, "
+            "hands, arms, body parts, mannequin, human statue, group photo"
+        )
     if people > 1:
         return (
             f"person beyond the {people} characters, extra figure, onlooker, bystander, crowd, audience, "

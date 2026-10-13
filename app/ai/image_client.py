@@ -126,45 +126,11 @@ def _qwen_image_url(data: dict) -> str:
 
 
 # ── 平台级提示词守卫 + 尺寸映射(对齐参考项目 prompt-guards.ts / agnes-image.ts)──
-IMAGE_NEGATIVE_GUARD = (
-    'multiple people, second person, extra person, bystander, onlooker, crowd, audience, '
-    'duplicate character, copy of subject, second copy, doppelganger, ghostly double, '
-    'transparent figure in background, blurred person watching, mannequin, silhouette in mist, '
-    'extra heads, crowd in background, friends standing behind, coworkers watching')
-
-
-def build_image_negative_guard(people: int = 1) -> str:
-    """负面提示:people=0 禁止出现任何人物(场景空镜/道具);>=1 只禁额外人物。"""
-    if people > 1:
-        return (f'person beyond the {people} characters, extra figure, onlooker, bystander, '
-                'crowd, audience, duplicate character, copy of subject, doppelganger, '
-                'ghostly double, transparent figure in background, blurred person watching, '
-                'mannequin, silhouette in mist, extra heads, crowd in background, '
-                'friends standing behind, coworkers watching')
-    return IMAGE_NEGATIVE_GUARD
-
-
-def build_image_quality_guard(people: int = 1) -> str:
-    """图片质量守卫(positive):肢体完整 + 表情克制 + 画面纯净 + 人物数量约束。"""
-    if people > 1:
-        figure_cn = (f'画面人物恰好 {people} 人，不得多于或少于 {people} 人，'
-                     '没有围观群众或复制人，没有重影、分身')
-        figure_en = (f'Exactly {people} people in frame, no onlookers, no extras, '
-                     f'no additional figures beyond the {people} characters')
-    elif people == 1:
-        figure_cn = ('画面中自始至终只有 1 个人（主角本人），背景、远景、雾气和倒影里'
-                     '都没有任何其他人')
-        figure_en = ('Single-figure composition: exactly one person in frame, no onlookers, '
-                     'no ghostly doppelganger in mist, no duplicate character')
-    else:
-        figure_cn = '画面中不出现任何人物，也没有人物的手、影子或倒影'
-        figure_en = 'No people at all in frame, no hands, no shadows or reflections of people'
-    return ('画面质量要求：手部五指、脚部五趾，没有六指、并指、缺指或融合畸形；'
-            '两臂两腿，没有三只手三条腿、多余肢体、复制或扭曲；'
-            f'{figure_cn}，五官稳定不畸变、不融化；表情自然克制；'
-            '画面纯净，没有字幕、文字、标题、水印、字母，没有真实品牌标志与真人明星脸。'
-            f'{figure_en}, no wide-open screaming mouth, '
-            'no exaggerated distorted facial expression')
+# 守卫只有 prompt_guards 一份实现。这里转发而不是复制:之前这里另抄了一份,
+# 且那份的 build_image_negative_guard 没处理 people=0(空镜/道具),
+# people=0 会落回「禁额外人物」那一档,等于完全不禁人。
+from .prompt_guards import (  # noqa: E402,F401  (re-export,保持既有调用点可用)
+    IMAGE_NEGATIVE_GUARD, build_image_negative_guard, build_image_quality_guard)
 
 
 _RATIO_CANDIDATES: list[tuple[int, int]] = [
