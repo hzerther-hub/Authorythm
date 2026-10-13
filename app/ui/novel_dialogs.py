@@ -119,6 +119,7 @@ class NovelPlanDialog(QDialog):
             edit.setMinimumHeight(260)
             self.edits[key] = edit
             btn = WaitingButton(tr("✨ AI 起草") + (tr('第 {} 步').format(i + 1) if i else ""))
+            W.set_icon(btn, "magic")
             btn.clicked.connect(lambda _=False, k=key, n=name: self._draft_section(k, n))
             self._draft_btns[key] = btn
             save_btn = QPushButton(tr("保存"))
@@ -176,8 +177,10 @@ class NovelPlanDialog(QDialog):
 
         row = QHBoxLayout()
         self.chapters_btn = WaitingButton(tr("✨ AI 生成章节计划"))
+        W.set_icon(self.chapters_btn, "magic")
         self.chapters_btn.clicked.connect(self._ai_chapters)
         self.chars_btn = WaitingButton(tr("✨ AI 生成主要角色"))
+        W.set_icon(self.chars_btn, "magic")
         self.chars_btn.clicked.connect(self._ai_characters)
         save_btn = QPushButton(tr("保存本章节与角色"))
         save_btn.clicked.connect(self._save_plan_tab)

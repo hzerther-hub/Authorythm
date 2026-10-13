@@ -134,6 +134,7 @@ class CharacterFaceSwapDialog(QDialog):
         cancel = QPushButton(tr("cancel"))
         cancel.clicked.connect(self.reject)
         self.apply_btn = W.primary_btn(tr("✅ 应用替换形象"))
+        W.set_icon(self.apply_btn, "check_circle")
         self.apply_btn.setEnabled(False)
         self.apply_btn.clicked.connect(self._apply)
         bottom.addWidget(cancel)

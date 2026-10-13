@@ -122,8 +122,7 @@ class EpisodeCard(QFrame):
         self.title_edit.setMinimumHeight(28)   # 容得下 2px 边框 + 13px 粗体文字
         title_row.addWidget(self.title_edit, 1)
         # 铅笔按钮:点一下进入改名,编辑态标题变明显文本框
-        pen = QPushButton("✎")
-        pen.setFixedSize(20, 20)
+        pen = W.svg_icon_btn("edit", "", size=20)
         pen.setCursor(Qt.PointingHandCursor)
         pen.setToolTip(tr("点击改名"))
         pen.setStyleSheet(
@@ -138,6 +137,7 @@ class EpisodeCard(QFrame):
         if _chapter_name_missing(dict(ep)) and (ep.get("content") or "").strip():
             name_row = QHBoxLayout()
             self.name_btn = QPushButton("✨ " + tr("ai_gen_title"))
+            W.set_icon(self.name_btn, "magic")
             self.name_btn.setToolTip(tr("gen_title_tip"))
             self.name_btn.setStyleSheet(
                 "QPushButton{border:1px dashed #f97316;color:#f97316;border-radius:10px;"
@@ -178,7 +178,7 @@ class EpisodeCard(QFrame):
         tw = ep.get("target_words") or 0
         if wc:
             warn = bool(tw) and wc < int(tw * 0.8)
-            wl = QLabel(f"✎ {wc}" + (f" / {tw}" if tw else "") + tr(" 字"))
+            wl = QLabel(f"{wc}" + (f" / {tw}" if tw else "") + tr(" 字"))
             wl.setStyleSheet(("color:#e0794b;" if warn else "color:#86909c;")
                              + " font-size:11px;")
         else:
@@ -186,15 +186,15 @@ class EpisodeCard(QFrame):
             wl.setObjectName("muted")
         meta_row.addWidget(wl)
         if ep.get("duration"):
-            dl = QLabel(f"🕘 {int(ep['duration'])}s")
+            dl = QLabel(f"{int(ep['duration'])}s")
             dl.setObjectName("muted")
             meta_row.addWidget(dl)
         if ep.get("script_content"):
-            sl = QLabel("📄 " + tr("script_entered"))
+            sl = QLabel(tr("script_entered"))
             sl.setStyleSheet("color:#16a34a; font-size:11px;")
             meta_row.addWidget(sl)
         if ep.get("video_url"):
-            vl = QLabel("🎬 " + tr("merged_tag"))
+            vl = QLabel(tr("merged_tag"))
             vl.setStyleSheet("color:#16a34a; font-size:11px;")
             meta_row.addWidget(vl)
         meta_row.addStretch(1)
@@ -553,6 +553,7 @@ class PromoDialog(QDialog):
         f.addRow(tr("补充"), self.extra)
         root.addLayout(f)
         self.gen_btn = W.primary_btn(tr("✨ 生成文案"))
+        W.set_icon(self.gen_btn, "magic")
         self.gen_btn.clicked.connect(self._gen)
         root.addWidget(self.gen_btn)
         self.result = QLineEdit()
@@ -644,6 +645,7 @@ class ProjectPage(QWidget):
         head.addWidget(back)
         head.addLayout(head_info, 1)
         self.settings_btn = QPushButton("⚙ " + tr("project_settings"))
+        W.set_icon(self.settings_btn, "settings")
         self.settings_btn.clicked.connect(self._open_settings)
         head.addWidget(self.settings_btn)
         self.promo_btn = QPushButton("◈ " + tr("promo_copy"))
@@ -651,6 +653,7 @@ class ProjectPage(QWidget):
         head.addWidget(self.promo_btn)
         # 策划与设定入口(从制作台原文页移到这里,策划是项目级的事,不该藏在单集页里)
         self.novel_btn = QPushButton("⚙ " + tr("novel_settings"))
+        W.set_icon(self.novel_btn, "settings")
         self.novel_btn.setToolTip(tr("novel_settings_tip"))
         self.novel_btn.clicked.connect(self._open_novel_settings)
         head.addWidget(self.novel_btn)

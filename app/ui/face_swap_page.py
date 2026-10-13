@@ -195,8 +195,10 @@ class FaceSwapPage(QWidget):
         # ① 源人脸
         p1 = _StepPanel("①", tr("step1_source"))
         pick = QPushButton("📁 " + tr("pick_source_file"))
+        W.set_icon(pick, "upload")
         pick.clicked.connect(self._pick_source)
         paste = QPushButton("📋 " + tr("paste_from_clipboard"))
+        W.set_icon(paste, "list")
         paste.clicked.connect(self._paste_source)
         row1 = QHBoxLayout()
         row1.addWidget(pick)

@@ -2,6 +2,7 @@
 """通用 UI 组件:卡片/标签/头像/图片按钮等。"""
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
@@ -110,6 +111,48 @@ def svg_icon_btn(name: str, tooltip: str = "", size: int = 24,
     b.setToolTip(tooltip)
     b.setFixedSize(size, size)
     return b
+
+
+
+# 前导 emoji / 变体选择符 / 空白:渲染前剥掉。
+# 为什么不直接改 i18n 词典:这些 emoji 是**印在 key 里的**(如 tr("✨ AI 起草简介")),
+# ui_strings.py 里 15 种语言各有一份,动它等于 15 处翻译同时改,风险远大于收益。
+# 文本在渲染时剥前缀、图标另挂,词典一个字都不用动。
+_LEAD_EMOJI = re.compile(r"^[🌀-🫿☀-➿⬀-⯿️‍\s]+")
+
+
+def strip_emoji(text: str) -> str:
+    """去掉文本开头的 emoji 与空白 —— 让「💾 保存」变成「保存」。"""
+    return _LEAD_EMOJI.sub("", text or "").strip()
+
+
+def set_icon(btn, name: str, text: str | None = None, size: int = 16) -> None:
+    """给已有按钮挂 iconfont 图标,并顺手把文本里的前导 emoji 剥掉。
+
+    用于两类地方:
+      1. 文本来自 tr()、emoji 印在词典 key 里的按钮(primary_btn("💾 " + tr("save")));
+      2. 运行期改过 setText 的按钮(WaitingButton.busy()/idle() 会重设文本)。
+    图标缺失时静默跳过、只留文字 —— 换错图标名不该把按钮变成空白。
+    """
+    if btn is None:
+        return
+    ic = svg_icon(name, size=size)
+    if not ic.isNull():
+        from PySide6.QtCore import QSize as _QSize
+        btn.setIcon(ic)
+        btn.setIconSize(_QSize(size, size))
+    btn.setText(strip_emoji(text if text is not None else btn.text()))
+
+
+def icon_label(name: str, size: int = 20, color: str = "") -> QLabel:
+    """图标占位标签 —— 替代 QLabel("🎬") / QLabel("🌐") 这类纯 emoji 占位。"""
+    lab = QLabel()
+    lab.setAlignment(Qt.AlignCenter)
+    lab.setFixedSize(size + 6, size + 6)
+    ic = svg_icon(name, size=size, color=color)
+    if not ic.isNull():
+        lab.setPixmap(ic.pixmap(size, size))
+    return lab
 
 
 AVATAR_COLORS = ["#f97316", "#e0794b", "#3aa675", "#6366f1", "#c94b62", "#4b9cc9"]

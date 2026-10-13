@@ -162,10 +162,12 @@ class NewProjectDialog(QDialog):
         elif wt == "video_clone":
             lay = QFormLayout()
             self.ref_btn = QPushButton(tr("📹 选择参考视频…"))
+            W.set_icon(self.ref_btn, "video")
             self.ref_btn.clicked.connect(self._pick_video)
             self.product_btn = QPushButton(tr("▣ 选择产品照片…"))
             self.product_btn.clicked.connect(self._pick_product)
             self.presenter_btn = QPushButton(tr("👤 选择出镜照片(可选)…"))
+            W.set_icon(self.presenter_btn, "user")
             self.presenter_btn.clicked.connect(self._pick_presenter)
             lay.addRow(tr("参考视频 *"), self.ref_btn)
             lay.addRow(tr("产品照片 *"), self.product_btn)

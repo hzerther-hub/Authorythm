@@ -627,6 +627,7 @@ class SettingsDialog(QDialog):
         self.notes_lab.setVisible(False)
         b_lay.addWidget(self.notes_lab)
         self.upd_btn = W.primary_btn(tr("⬇ 立即下载并更新"))
+        W.set_icon(self.upd_btn, "download")
         self.upd_btn.setVisible(False)
         self.upd_btn.clicked.connect(self._do_update)
         b_lay.addWidget(self.upd_btn)
@@ -950,6 +951,7 @@ class ServiceCard(QFrame):
             for i, m in enumerate(models):
                 is_default = (i == 0)
                 chip = QPushButton(("★ " if is_default else "") + m)
+                W.set_icon(chip, "star") if is_default else None
                 chip.setToolTip(tr("click_set_default_model") if not is_default
                                 else tr("is_default_model"))
                 # 单个选择器(拼接两个 QPushButton{} 规则会让 Qt 报解析失败)
@@ -982,10 +984,12 @@ class ServiceCard(QFrame):
         actions.addWidget(self.test_btn)
         actions.addStretch(1)
         edit = QPushButton("✎ " + tr("edit"))
+        W.set_icon(edit, "edit")
         edit.setFixedHeight(26)
         edit.clicked.connect(lambda: on_edit(cfg) if on_edit else None)
         actions.addWidget(edit)
         delete = QPushButton("🗑 " + tr("delete"))
+        W.set_icon(delete, "delete")
         delete.setObjectName("danger")
         delete.setFixedHeight(26)
         delete.clicked.connect(lambda: on_delete(cfg) if on_delete else None)

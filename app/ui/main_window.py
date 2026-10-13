@@ -92,13 +92,14 @@ class MainWindow(QMainWindow):
         theme_btn.setStyleSheet(icon_font)
         theme_btn.setToolTip(tr("theme"))
         theme_btn.clicked.connect(self._toggle_theme)
-        settings_btn = QPushButton("⚙")
+        settings_btn = W.svg_icon_btn("settings", "", size=30)
         settings_btn.setObjectName("headerIconBtn")
         settings_btn.setFixedSize(32, 32)
         settings_btn.setStyleSheet(icon_font)
         settings_btn.setToolTip(tr("nav_settings"))
         settings_btn.clicked.connect(self._open_settings)
-        lang_btn = QPushButton("🌐")          # 地球图标:各语言用户都认识
+        # 地球图标:各语言用户都认识
+        lang_btn = W.svg_icon_btn("globe", "", size=30)
         lang_btn.setObjectName("headerIconBtn")
         lang_btn.setFixedSize(32, 32)
         lang_btn.setStyleSheet(icon_font)
@@ -573,7 +574,7 @@ class ClonePage(QWidget):
             desc.setWordWrap(True)
             info.addWidget(desc)
             if b.get("line"):
-                line = QLabel("💬 " + b["line"])
+                line = QLabel(b["line"])
                 line.setObjectName("muted")
                 info.addWidget(line)
             lay.addLayout(info, 1)

@@ -37,6 +37,7 @@ class MergerToolPage(QWidget):
         import_files = QPushButton("▦ " + tr("import_files"))
         import_files.clicked.connect(self._import_files)
         import_folder = QPushButton("📂 " + tr("import_folder"))
+        W.set_icon(import_folder, "folder")
         import_folder.clicked.connect(self._import_folder)
         detect_btn = QPushButton("◇ " + tr("detect"))
         detect_btn.clicked.connect(self._detect)

@@ -124,7 +124,7 @@ class TaskDrawer(QWidget):
         refresh = QPushButton("⟳ " + tr("refresh"))
         refresh.clicked.connect(self.reload)
         top.addWidget(refresh)
-        close = QPushButton("✕")
+        close = W.svg_icon_btn("close", "", size=28)
         close.setFixedWidth(28)
         close.setStyleSheet("border:none; background:transparent;")
         close.clicked.connect(lambda: self.closed.emit(self))

@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
 
 from ..core import config, db
 from ..core.i18n import tr
+from . import widgets as W
 from .toast import err, ok
 
 try:
@@ -83,6 +84,18 @@ class ImageEditDialog(QDialog):
         self.preview.setMinimumSize(560, 520)
         self.preview.setStyleSheet("background:#14161a; border-radius:8px;")
         root.addWidget(self.preview, 1)
+        # 水印拖动定位:在预览图上按住拖动,松手即位置生效。
+        # 位置以归一化坐标存储(相对当前画面),换尺寸/裁剪后仍相对正确。
+        self.wm_pos = (0.86, 0.92)
+        from PySide6.QtGui import QColor
+        self.wm_color = QColor(Qt.white)
+        # 多水印:「加水印」把当前参数存为一个条目,支持多个共存;竖排逐字竖着排
+        self.wm_items: list[dict] = []
+        self.preview.mousePressEvent = self._wm_press
+        self.preview.mouseMoveEvent = self._wm_move
+        self.preview.mouseReleaseEvent = self._wm_release
+        self._wm_dragging = False
+        self._wm_editing_live = True   # 预览时叠加"正在编辑"的这条;提交时关掉防画两遍
 
         # ── 右:工具列 ──
         tools = QVBoxLayout()
@@ -127,6 +140,9 @@ class ImageEditDialog(QDialog):
         tools.addWidget(self._section_label(tr("滤镜")))
         self.filter_combo = QComboBox()
         self.filter_combo.addItems([tr(f) for f in FILTERS])
+        tools.addWidget(self.filter_combo)      # 此前下拉框从未加进布局——
+        # 界面上只有「应用滤镜」按钮,用户既选不了滤镜,也不知道按钮会把
+        # 一个看不见的选项(黑白)套到画面上
         apply_f = QPushButton(tr("应用滤镜"))
         apply_f.clicked.connect(self._apply_filter)
         tools.addWidget(apply_f)
@@ -138,12 +154,58 @@ class ImageEditDialog(QDialog):
         from PySide6.QtWidgets import QLineEdit as _QLE
         self.wm_input = _QLE()
         self.wm_input.setPlaceholderText(tr("水印文字"))
+        self.wm_input.textChanged.connect(lambda: self._render())
         wl.addWidget(self.wm_input)
+        # 颜色 / 字体 / 字号:此前只有白色+固定字号+固定右下角,白字压亮背景几乎隐形
+        crow = QHBoxLayout()
+        crow.setSpacing(6)
+        crow.addWidget(QLabel(tr("cover_text_color")))
+        self.wm_color_btn = QPushButton()
+        self.wm_color_btn.setFixedSize(40, 24)
+        self.wm_color_btn.setCursor(Qt.PointingHandCursor)
+        self.wm_color_btn.clicked.connect(self._pick_wm_color)
+        crow.addWidget(self.wm_color_btn)
+        crow.addSpacing(8)
+        crow.addWidget(QLabel(tr("cover_text_font")))
+        self.wm_font = QComboBox()
+        self.wm_font.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        from ..pipeline import intro as _INTRO
+        for _it in _INTRO.list_fonts():
+            self.wm_font.addItem(_it["name"], _it["file"])
+        crow.addWidget(self.wm_font, 1)
+        tools.addLayout(crow)
+
+        srow = QHBoxLayout()
+        srow.setSpacing(6)
+        srow.addWidget(QLabel(tr("cover_text_size")))
+        self.wm_size = self._slider(srow, "", 3, 20, 8, compact=True)
+        from PySide6.QtWidgets import QLabel as _QLab
+        self.wm_size_lab = _QLab("")
+        self.wm_size_lab.setObjectName("muted")
+        self.wm_size_lab.setFixedWidth(40)
+        srow.addWidget(self.wm_size_lab)
+        from PySide6.QtWidgets import QCheckBox as _QChk
+        self.wm_vertical = _QChk(tr("wm_vertical"))
+        self.wm_vertical.setToolTip(tr("wm_vertical_tip"))
+        self.wm_vertical.toggled.connect(lambda: self._render())
+        srow.addWidget(self.wm_vertical)
+        srow.addStretch(1)
+        tools.addLayout(srow)
+        # 这些接线依赖水印控件,必须在其创建之后(预览块在第 81 行就存在了)
+        self.wm_font.currentIndexChanged.connect(lambda: self._render())
+        self.wm_size.valueChanged.connect(self._on_wm_size)
+        self._sync_wm_color_btn()
+
         wrow = QHBoxLayout()
-        self.wm_opacity = self._slider(wrow, tr("透明度"), 10, 100, 45, compact=True)
-        apply_wm = QPushButton(tr("加水印"))
-        apply_wm.clicked.connect(self._apply_watermark)
-        wrow.addWidget(apply_wm)
+        self.wm_opacity = self._slider(wrow, tr("透明度"), 10, 100, 80, compact=True)
+        add_wm = QPushButton(tr("add_watermark_item"))
+        add_wm.setToolTip(tr("add_watermark_item_tip"))
+        add_wm.clicked.connect(self._add_watermark_item)
+        wrow.addWidget(add_wm)
+        clear_wm = QPushButton(tr("clear_watermarks"))
+        clear_wm.setToolTip(tr("clear_watermarks_tip"))
+        clear_wm.clicked.connect(self._clear_watermarks)
+        wrow.addWidget(clear_wm)
         tools.addLayout(wrow)
         tools.addWidget(self.wm_text)
 
@@ -165,10 +227,12 @@ class ImageEditDialog(QDialog):
         tools.addWidget(self._section_label(tr("AI")))
         # 修补(涂抹去文字/水印/路人):与去背景并列,结果重载回编辑器继续编辑
         self.patch_btn = QPushButton("🩹 " + tr("patch_local"))
+        W.set_icon(self.patch_btn, "edit")
         self.patch_btn.setToolTip(tr("patch_in_editor_tip"))
         self.patch_btn.clicked.connect(self._open_patch)
         tools.addWidget(self.patch_btn)
         self.bg_btn = QPushButton("🌫 " + tr("去背景"))
+        W.set_icon(self.bg_btn, "image")
         self.bg_btn.setToolTip(tr("rembg 抠出主体(含未保存修改);首次使用需下载模型,请耐心等待"))
         self.bg_btn.clicked.connect(self._remove_background)
         tools.addWidget(self.bg_btn)
@@ -310,28 +374,158 @@ class ImageEditDialog(QDialog):
             return rgb
         self._apply(fn)
 
-    def _apply_watermark(self):
+    def _on_wm_size(self, v: int):
+        self.wm_size_lab.setText(f"{v}%")
+        self._render()
+
+    def _wm_font_of(self, px: int):
+        from PIL import ImageFont
+        fonts = config.ROOT_DIR / "app" / "assets" / "fonts"
+        file = self.wm_font.currentData() if hasattr(self, "wm_font") else ""
+        cands = ([fonts / file] if file else []) + [fonts / "msyh.ttc"]
+        for fp in cands:
+            if fp and fp.exists():
+                try:
+                    return ImageFont.truetype(str(fp), max(8, int(px)))
+                except Exception:  # noqa: BLE001
+                    continue
+        return ImageFont.load_default()
+
+    def _wm_snapshot(self) -> dict:
+        """当前控件状态 → 一个水印条目。"""
+        return {"text": self.wm_input.text().strip(),
+                "color": self.wm_color,
+                "font_file": self.wm_font.currentData() or "",
+                "size_pct": self.wm_size.value(),
+                "opacity": self.wm_opacity.value() / 100.0,
+                "pos": self.wm_pos,
+                "vertical": self.wm_vertical.isChecked()}
+
+    def _draw_one_wm(self, layer_draw, im_size, it, font_of):
+        """在 layer 上画一个水印;竖排 = 逐字向下排。中心对齐 pos。"""
+        text = it["text"]
+        px = max(10, int(im_size[1] * it["size_pct"] / 100.0))
+        font = font_of(it["font_file"], px)
+        opacity = it["opacity"]
+        c = it["color"]
+        stroke = max(1, int(px / 18))
+        cx, cy = im_size[0] * it["pos"][0], im_size[1] * it["pos"][1]
+        fill = (c.red(), c.green(), c.blue(), int(255 * opacity))
+        sf = (0, 0, 0, int(200 * opacity))
+        if it.get("vertical"):
+            line_h = int(px * 1.18)
+            y0 = cy - line_h * (len(text) - 1) / 2
+            for i, ch in enumerate(text):
+                layer_draw.text((cx, y0 + i * line_h), ch, font=font, anchor="mm",
+                                fill=fill, stroke_width=stroke, stroke_fill=sf)
+        else:
+            layer_draw.text((cx, cy), text, font=font, anchor="mm",
+                            fill=fill, stroke_width=stroke, stroke_fill=sf)
+
+    def _draw_wm(self, im):
+        """画**全部**已加入的水印条目 + 正在编辑的这条(实时预览)。"""
+        layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
+        draw = ImageDraw.Draw(layer)
+        for it in self.wm_items:
+            self._draw_one_wm(draw, im.size, it, self._wm_font_of_file)
+        # 正在编辑的这条只在预览时叠加;提交后由 wm_items 渲染,避免画两遍
+        if self.wm_input.text().strip() and self._wm_editing_live:
+            self._draw_one_wm(draw, im.size, self._wm_snapshot(), self._wm_font_of_file)
+        out = im.convert("RGBA")
+        out.alpha_composite(layer)
+        return out
+
+    def _wm_font_of_file(self, file: str, px: int):
+        from PIL import ImageFont
+        fonts = config.ROOT_DIR / "app" / "assets" / "fonts"
+        for fp in ([fonts / file] if file else []) + [fonts / "msyh.ttc"]:
+            if fp.exists():
+                try:
+                    return ImageFont.truetype(str(fp), max(8, int(px)))
+                except Exception:  # noqa: BLE001
+                    continue
+        return ImageFont.load_default()
+
+    def _add_watermark_item(self):
+        """把当前参数存为一个水印条目(加入后可改参数再加下一个)。"""
         text = self.wm_input.text().strip()
         if not text:
+            err(tr("cover_text_required"))
             return
-        opacity = self.wm_opacity.value() / 100.0
+        self.wm_items.append(self._wm_snapshot())
+        ok(tr("watermark_added", len(self.wm_items)))
+        self._render()
+
+    def _clear_watermarks(self):
+        self.wm_items.clear()
+        self._render()
+
+    def _apply_watermark(self):
+        """提交:已加入的条目 + 正在编辑的这条,一次画定。"""
+        self.wm_dragging = False
+        items = list(self.wm_items)
+        if self.wm_input.text().strip():
+            items.append(self._wm_snapshot())
+        if not items:
+            err(tr("cover_text_required"))
+            return
 
         def fn(im):
             layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(layer)
-            fs = max(14, im.size[1] // 22)
-            try:
-                font = ImageFont.truetype(str(config.ROOT_DIR / "app" / "assets" / "fonts" / "msyh.ttc"), fs)
-            except Exception:  # noqa: BLE001
-                font = ImageFont.load_default()
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x, y = im.size[0] - tw - fs, im.size[1] - th - fs     # 右下角
-            draw.text((x, y), text, font=font, fill=(255, 255, 255, int(255 * opacity)))
+            for it in items:
+                self._draw_one_wm(draw, im.size, it, self._wm_font_of_file)
             out = im.convert("RGBA")
             out.alpha_composite(layer)
             return out
+        self.wm_items.clear()          # 已画定,条目清空;文字框留着可继续加新的
         self._apply(fn)
+
+    # ── 水印拖动定位 ──
+    def _wm_pos_from_event(self, e):
+        """预览控件坐标 → 归一化画面坐标(考虑 pixmap 在 label 内居中的偏移)。"""
+        pm = self.preview.pixmap()
+        if pm is None or pm.isNull():
+            return None
+        lw, lh = self.preview.width(), self.preview.height()
+        pw, ph = pm.width(), pm.height()
+        ox, oy = (lw - pw) // 2, (lh - ph) // 2
+        x, y = e.position().x() - ox, e.position().y() - oy
+        if x < 0 or y < 0 or x > pw or y > ph:
+            return None
+        return (max(0.02, min(0.98, x / pw)), max(0.02, min(0.98, y / ph)))
+
+    def _wm_press(self, e):
+        pos = self._wm_pos_from_event(e)
+        if pos is None:
+            return
+        self.wm_pos = pos
+        self._wm_dragging = True
+        self._render()
+
+    def _wm_move(self, e):
+        if not self._wm_dragging:
+            return
+        pos = self._wm_pos_from_event(e)
+        if pos is not None:
+            self.wm_pos = pos
+            self._render()
+
+    def _wm_release(self, _e):
+        self._wm_dragging = False
+
+    def _pick_wm_color(self):
+        from PySide6.QtWidgets import QColorDialog
+        c = QColorDialog.getColor(self.wm_color, self, tr("cover_text_color"))
+        if c.isValid():
+            self.wm_color = c
+            self._sync_wm_color_btn()
+            self._render()
+
+    def _sync_wm_color_btn(self):
+        self.wm_color_btn.setStyleSheet(
+            f"background:{self.wm_color.name()}; border:1px solid rgba(128,128,128,120);"
+            "border-radius:4px;")
 
     def _apply_resize(self):
         try:
@@ -461,6 +655,13 @@ class ImageEditDialog(QDialog):
     def _render(self):
         im = self.current.convert("RGB")
         im.thumbnail((680, 620), Image.LANCZOS)
+        # 水印实时预览:输入有文字就叠加显示(未提交),拖动位置/换色/换字体即时可见。
+        # preview_scale = 缩略图高 / 实际高,把字号比例换算到缩略图坐标系。
+        if self.wm_input.text().strip():
+            try:
+                im = self._draw_wm(im).convert("RGB")
+            except Exception:  # noqa: BLE001 —— 预览叠加失败不拖垮正常渲染
+                pass
         data = im.tobytes("raw", "RGB")
         qimg = QImage(data, im.size[0], im.size[1], im.size[0] * 3, QImage.Format_RGB888)
         self.preview.setPixmap(QPixmap.fromImage(qimg))

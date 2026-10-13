@@ -478,9 +478,7 @@ class CharacterAssetCard(QFrame):
                 gen_btns.append((b, text))
             btns.addWidget(b, 1)
         if on_delete:                      # 单个删除:删掉不对的资产后重新提取
-            db = QPushButton("🗑")
-            db.setToolTip(tr("删除该资产"))
-            db.setCursor(Qt.PointingHandCursor)
+            db = W.svg_icon_btn("delete", tr("删除该资产"))
             db.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
             db.setFixedWidth(22)
             db.setStyleSheet(
@@ -584,9 +582,7 @@ class AssetCard(QFrame):
             up.clicked.connect(lambda _=False: on_upload())
         flay.addWidget(up)
         if on_delete:
-            dp = QPushButton("🗑")
-            dp.setToolTip(tr("删除该资产"))
-            dp.setCursor(Qt.PointingHandCursor)
+            dp = W.svg_icon_btn("delete", tr("删除该资产"))
             dp.setStyleSheet(
                 "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
                 "background:#fff5f5;font-size:12px;padding:2px 8px;}"
@@ -625,10 +621,7 @@ class ComicAssetRow(QFrame):
         lay.addWidget(nm, 1)
         text = tr("生成中") if pending else (tr("已生成") if ready else tr("待生成"))
         lay.addWidget(status_pill("pending" if pending else ("ready" if ready else "todo"), text))
-        btn = QPushButton("📕")
-        btn.setToolTip(button_tip)
-        btn.setFixedSize(26, 26)
-        btn.setCursor(Qt.PointingHandCursor)
+        btn = W.svg_icon_btn("book", button_tip, size=26)
         if on_gen:
             btn.clicked.connect(lambda _=False: on_gen())
         lay.addWidget(btn)
@@ -682,8 +675,7 @@ class VideoTaskRow(QFrame):
             pl.addWidget(im)
             self._thumb_label = im
         else:
-            ph = QLabel("🎬")
-            ph.setAlignment(Qt.AlignCenter)
+            ph = W.icon_label("video", size=22)
             ph.setObjectName("videoThumbIcon")
             pl.addWidget(ph)
             self._thumb_label = ph
@@ -741,10 +733,7 @@ class VideoTaskRow(QFrame):
             rg.clicked.connect(lambda _=False: on_regen())
             lay.addWidget(rg)
         if on_approve and image_status == "pending_review":
-            ap = QPushButton("✓")
-            ap.setFixedSize(22, 22)
-            ap.setToolTip(tr("确认出视频"))
-            ap.setCursor(Qt.PointingHandCursor)
+            ap = W.svg_icon_btn("check", tr("确认出视频"), size=22)
             ap.setStyleSheet(
                 "QPushButton{background:#16a34a;color:#fff;border:none;"
                 "border-radius:5px;font-weight:700;font-size:12px;padding:0;}")
@@ -883,7 +872,9 @@ class VideoHistoryCard(QFrame):
         if thumb_path and Path(thumb_path).exists():
             im.setPixmap(W.pixmap_cover_media(thumb_path, 96, 54))
         else:
-            im.setText("🎬")
+            _ic = W.svg_icon("video", size=22)
+            if not _ic.isNull():
+                im.setPixmap(_ic.pixmap(22, 22))
             im.setObjectName("videoThumbIcon")
         lay.addWidget(im)
         foot = QHBoxLayout()

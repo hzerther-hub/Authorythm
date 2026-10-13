@@ -335,7 +335,8 @@ class ImageProcessPage(QWidget):
             holder_img.setGeometry(1, 1, 148, 110)
             holder_img.setAlignment(Qt.AlignCenter)
             if str(s).startswith("http"):
-                holder_img.setText("🌐")
+                _ic = W.svg_icon("globe", size=22)
+                holder_img.setPixmap(_ic.pixmap(22, 22)) if not _ic.isNull() else holder_img.setText("")
             else:
                 holder_img.setPixmap(W.pixmap_from_media(s, 148, 110))
             holder_img.setToolTip(tr("u_view_large"))
@@ -360,8 +361,7 @@ class ImageProcessPage(QWidget):
                     "QPushButton:hover{background:#f97316;color:#ffffff;}")
                 b.clicked.connect(lambda _=False, x=str(s), f=cb: f(x))
                 bar.addWidget(b)
-            rm = QPushButton("✕")
-            rm.setFixedSize(24, 22)
+            rm = W.svg_icon_btn("close", "", size=22)
             rm.setCursor(Qt.PointingHandCursor)
             rm.setToolTip(tr("u_delete"))
             rm.setStyleSheet(

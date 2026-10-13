@@ -45,8 +45,10 @@ from .project_page import _chapter_name_missing
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
                "storyboard": "storyboard", "comic": "comic", "export": "export_stage"}
-STEP_ICONS = {"raw": "▤", "rewrite": "✎", "assets": "☺",
-              "storyboard": "▦", "comic": "▩", "export": "⤓"}
+# 侧栏步骤的图标:值是 iconfont 的可读名(app/ui/icons.py 有别名表)。
+# 早先这里是一串几何符号 ▤ ✎ ☺ ▦ ▩ ⤓,和按钮里的 emoji 是两套字形,风格不统一。
+STEP_ICONS = {"raw": "doc", "rewrite": "edit", "assets": "folder",
+              "storyboard": "video", "comic": "book", "export": "download"}
 # 三段环节 → 步骤(对齐原版 sidebarSections)
 NAV_SECTIONS = [("script", "step_script", ["raw", "rewrite"]),
                 ("production", "step_production", ["assets", "storyboard", "comic"]),
@@ -390,7 +392,8 @@ class StepNav(QWidget):
             self._section_head[sid] = head
             lay.addWidget(head)
             for k in keys:
-                b = QPushButton("   " + STEP_ICONS[k] + "  " + tr(STEP_LABELS[k]))
+                b = QPushButton(tr(STEP_LABELS[k]))
+                W.set_icon(b, STEP_ICONS[k])
                 b.setObjectName("pipeItem")
                 b.setCheckable(True)
                 b.setCursor(Qt.PointingHandCursor)
@@ -415,14 +418,15 @@ class StepNav(QWidget):
         lay.addWidget(qlab)
         self._common_actions_label = qlab
         quick_items = [
-            ("assets", "📦", "fab_assets"),
-            ("storyboard", "🎬", "fab_storyboard"),
-            ("comic", "📕", "fab_comic"),
-            ("export", "🎞", "fab_export"),
+            ("assets", "folder", "fab_assets"),
+            ("storyboard", "video", "fab_storyboard"),
+            ("comic", "book", "fab_comic"),
+            ("export", "download", "fab_export"),
         ]
         self._quick_btns: dict[str, QPushButton] = {}
         for step_key, icn, ikey in quick_items:
-            q = QPushButton(f"  {icn}  {tr(ikey)}")
+            q = QPushButton(tr(ikey))
+            W.set_icon(q, icn)
             q.setObjectName("pipeItem")
             q.setCursor(Qt.PointingHandCursor)
             q.clicked.connect(lambda _=False, s=step_key: self.step_changed.emit(s))
@@ -523,8 +527,8 @@ class StepNav(QWidget):
         self._collapsed = not self._collapsed
         self.setFixedWidth(44 if self._collapsed else 196)
         for k, b in self._btns.items():
-            b.setText(f"   {STEP_ICONS[k]}" if self._collapsed
-                      else f"   {STEP_ICONS[k]}  {tr(STEP_LABELS[k])}")
+            b.setText("" if self._collapsed else tr(STEP_LABELS[k]))
+            W.set_icon(b, STEP_ICONS[k])
             b.setToolTip(tr(STEP_LABELS[k]) if self._collapsed else "")
         self.collapse_btn.setText("›" if self._collapsed else "‹  " + tr("collapse_sidebar"))
         self.refresh_btn.setText("⟳" if self._collapsed else "⟳  " + tr("refresh_data"))
@@ -1138,13 +1142,16 @@ class EpisodePage(QWidget):
         row.addWidget(self.style_combo)
 
         self.chapter_name_btn = QPushButton("✎ " + tr("gen_title"))
+        W.set_icon(self.chapter_name_btn, "edit")
         self.chapter_name_btn.setToolTip(tr("gen_title_tip"))
         self.chapter_name_btn.clicked.connect(lambda: self._gen_chapter_title())
         row.addWidget(self.chapter_name_btn)
         self.novel_btn = WaitingButton("📕 " + tr("ai_novel"), primary=True)
+        W.set_icon(self.novel_btn, "book")
         self.novel_btn.clicked.connect(self._ai_novel)
         row.addWidget(self.novel_btn)
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
+        W.set_icon(self.batch_btn, "list")
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
         self.review_badge = QPushButton("")
@@ -1166,6 +1173,7 @@ class EpisodePage(QWidget):
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
         self.save_btn = W.primary_btn("💾 " + tr("save"))
+        W.set_icon(self.save_btn, "save")
         self.save_btn.clicked.connect(self._save_raw)
         row.addWidget(self.save_btn)
         lay.addLayout(row)
@@ -1222,22 +1230,27 @@ class EpisodePage(QWidget):
         b2.setContentsMargins(12, 6, 12, 6)
         b2.setSpacing(8)
         self.review_btn = QPushButton("🔎 " + tr("ai_review"))
+        W.set_icon(self.review_btn, "search")
         self.review_btn.setToolTip(tr("ai_review_tip"))
         self.review_btn.clicked.connect(self._review_chapter)
         b2.addWidget(self.review_btn)
         self.summary_btn = QPushButton("✅ " + tr("review_summary"))
+        W.set_icon(self.summary_btn, "check_circle")
         self.summary_btn.clicked.connect(self._open_review_summary)
         b2.addWidget(self.summary_btn)
         read_btn = QPushButton("🔊 " + tr("read_aloud"))
+        W.set_icon(read_btn, "volume")
         read_btn.clicked.connect(self._read_aloud)
         b2.addWidget(read_btn)
         self.ledger_btn = WaitingButton("🧾 " + tr("state_ledger"))
+        W.set_icon(self.ledger_btn, "ledger")
         self.ledger_btn.setToolTip(tr("state_ledger_tip"))
         self.ledger_btn.clicked.connect(self._update_ledger)
         b2.addWidget(self.ledger_btn)
         self.edit_instr = QLineEdit()
         self.edit_instr.setPlaceholderText(tr("edit_instr_ph"))
         edit_btn = QPushButton("✏ " + tr("edit_chapter"))
+        W.set_icon(edit_btn, "edit")
         edit_btn.clicked.connect(self._edit_chapter)
         b2.addWidget(self.edit_instr, 1)
         b2.addWidget(edit_btn)
@@ -1833,6 +1846,7 @@ class EpisodePage(QWidget):
         self.style_combo2.currentIndexChanged.connect(self._on_style_pick2)
         row.addWidget(self.style_combo2)
         self.rewrite_btn = W.primary_btn("⚡ " + tr("ai_to_script"))
+        W.set_icon(self.rewrite_btn, "bolt")
         self.rewrite_btn.setToolTip(tr("ai_to_script_tip"))
         self.rewrite_btn.clicked.connect(self._rewrite)
         row.addWidget(self.rewrite_btn)
@@ -1852,6 +1866,7 @@ class EpisodePage(QWidget):
         help_btn.clicked.connect(lambda: self._show_shortcut_help())
         row.addWidget(help_btn)
         self.script_save_btn = W.primary_btn("💾 " + tr("save"))
+        W.set_icon(self.script_save_btn, "save")
         self.script_save_btn.clicked.connect(self._save_script)
         row.addWidget(self.script_save_btn)
         lay.addLayout(row)
@@ -1885,6 +1900,7 @@ class EpisodePage(QWidget):
         ai_row = QHBoxLayout()
         ai_row.setContentsMargins(0, 0, 0, 0)
         ai_btn2 = QPushButton("✨ " + tr("ai_edit"))
+        W.set_icon(ai_btn2, "magic")
         ai_btn2.setToolTip(tr("ai_edit_tip"))
         ai_btn2.clicked.connect(lambda: self._open_ai_edit(self.script_edit))
         ai_row.addWidget(ai_btn2)
@@ -2089,6 +2105,7 @@ class EpisodePage(QWidget):
         cb_lay = QHBoxLayout(self._comic_bar)
         cb_lay.setContentsMargins(0, 0, 0, 0)
         self._comic_batch = W.primary_btn("📕 " + tr("batch_comic_style"))
+        W.set_icon(self._comic_batch, "book")
         self._comic_batch.setToolTip(tr("batch_comic_style_tip"))
         self._comic_batch.clicked.connect(self._batch_comic_assets)
         # 推到工具条最右侧(此前居中,跟其它工具条位置不一致)
@@ -2198,7 +2215,7 @@ class EpisodePage(QWidget):
             if i >= len(tasks):
                 if btn is not None:
                     btn.setEnabled(True)
-                    btn.setText("📕 " + tr("batch_comic_style"))
+                    btn.setText(tr("batch_comic_style"))
                 self._reload_comic_assets()
                 return
             kind, row_id = tasks[i]
@@ -2755,6 +2772,7 @@ class EpisodePage(QWidget):
         el.addWidget(self.sb_video_prompt)
         nr_head = self._draft_head(tr("sb_narration"), "narration", "inspectorLabel")
         self.sb_tts_btn = WaitingButton("🔊 " + tr("synth_narration"))
+        W.set_icon(self.sb_tts_btn, "volume")
         self.sb_tts_btn.clicked.connect(self._one_tts_selected)
         nr_head.insertWidget(nr_head.count() - 1, self.sb_tts_btn)
         el.addLayout(nr_head)
@@ -2869,6 +2887,7 @@ class EpisodePage(QWidget):
         self.sb_ff_gen_btn.setCursor(Qt.PointingHandCursor)
         self.sb_ff_gen_btn.clicked.connect(lambda _=False: self._gen_first_frame(self._sb_id))
         self.sb_ff_approve_btn = QPushButton("✓ " + tr("approve_first_frame"))
+        W.set_icon(self.sb_ff_approve_btn, "check")
         self.sb_ff_approve_btn.setObjectName("refTab")
         self.sb_ff_approve_btn.setCursor(Qt.PointingHandCursor)
         self.sb_ff_approve_btn.clicked.connect(lambda _=False: self._approve_first_frame(self._sb_id))
@@ -3704,6 +3723,7 @@ class EpisodePage(QWidget):
         row.addWidget(lab)
         row.addStretch(1)
         btn = QPushButton("💾 " + tr("save"))
+        W.set_icon(btn, "save")
         btn.setObjectName("draftSaveBtn")
         btn.setVisible(False)
         btn.clicked.connect(lambda _=False, c=col: self._commit_draft(c))
@@ -5126,6 +5146,7 @@ class EpisodePage(QWidget):
         head1.addWidget(self.export_count)
         head1.addStretch(1)
         self.export_done_btn = QPushButton("✓ " + tr("mark_done"))
+        W.set_icon(self.export_done_btn, "check")
         self.export_done_btn.clicked.connect(self._mark_done)
         head1.addWidget(self.export_done_btn)
         refresh = QPushButton("⟳ " + tr("refresh"))
@@ -5184,6 +5205,7 @@ class EpisodePage(QWidget):
         self.intro_title.setVisible(False)
         intro_row.addWidget(self.intro_title)
         intro_btn = QPushButton("⚙ " + tr("edit_intro"))
+        W.set_icon(intro_btn, "settings")
         intro_btn.clicked.connect(self._open_intro)
         intro_btn.setVisible(False)
         self.intro_edit_btn = intro_btn
@@ -5228,7 +5250,7 @@ class EpisodePage(QWidget):
         self.export_body.setVisible(ready > 0)
         self.export_count.setText(tr("items_n", len(rows)) if rows else "")
         ep = db.q1("SELECT status FROM episodes WHERE id=?", (self.episode_id,))
-        self.export_done_btn.setText("✓ " + (tr("done") if ep["status"] == "done" else tr("mark_done")))
+        self.export_done_btn.setText((tr("done") if ep["status"] == "done" else tr("mark_done")))
         while self.merge_strip.count():
             it = self.merge_strip.takeAt(0)
             w = it.widget()
@@ -5370,7 +5392,7 @@ class EpisodePage(QWidget):
             im.setPixmap(W.pixmap_from_media(self._shot_thumb_url(r) or vid, 184, 112))
             tl.addWidget(im, 1)
         else:
-            ph = QLabel("🎬")
+            ph = W.icon_label("video", size=22)
             ph.setAlignment(Qt.AlignCenter)
             ph.setStyleSheet("color:#8b909a;")
             tl.addWidget(ph, 1)
