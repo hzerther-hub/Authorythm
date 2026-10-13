@@ -121,6 +121,15 @@ def _pick_prompt_text(data: object) -> str:
     return ""
 
 
+_TURNAROUND_BLOCK = (
+    "Character turnaround sheet / character reference sheet / multi-view concept art "
+    "layout, orthographic views, no perspective distortion: "
+    "左侧为该角色的正脸特写,右侧为正面、90度侧面、背面三张等高全身视图水平并排,"
+    "evenly spaced panels(等距分栏),头顶与脚底严格对齐,全身入镜,中性A字站姿(A-pose),"
+    "双手自然下垂。四个视图必须是同一位角色实例,脸型、发型、服装、配色、比例完全一致,"
+    "只允许视角不同;角色实例总数恰为 4 个(1 个特写 + 3 个全身),禁止更多。")
+
+
 def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | None = None) -> str:
     """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。"""
     from ..ai import image_client
@@ -135,7 +144,15 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
     style = _style_for(drama_id, style_value=d["comic_style"] or d["style"] or "3d")
     if kind == "character":
-        spec = f"角色三视图参考图(左正脸特写+正/侧/背三张全身), 角色: {row['name']}, 样貌: {row['appearance'] or ''}, 服装: {row['styling'] or ''}"
+        # 直接复用「常规资产」已经生成好的 final_prompt 正文 —— 那条路(prompts_gen)
+        # 的三视图构图是对的,用户实测常规资产明显更好。漫画版原先自己另拼了一条
+        # 只有中文的 spec,模型就自由发挥成张嘴嘶吼的特写 + 背景多出几个鬼影。
+        # 风格前缀仍然换成漫画风格,构图/表情约束原样沿用。
+        base = (row["final_prompt"] or "").strip()
+        if not base:
+            base = (f"角色: {row['name']}, 样貌: {row['appearance'] or ''}, "
+                    f"服装: {row['styling'] or ''}。" + _TURNAROUND_BLOCK)
+        spec = base + " 所有视图表情平静自然、双唇闭合、眼神放松,不做任何夸张情绪。纯白无缝背景,柔和均匀漫射光线"
     elif kind == "scene":
         spec = f"场景空镜建立图(三层构图,无人物), 场景: {row['name']}, 环境: {row['prompt'] or ''}, 光照: {row['lighting'] or ''}"
     else:
@@ -152,11 +169,15 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
               else Path(cur))
         if lp.exists():
             refs = [str(lp)]
-    negative = (image_client.build_image_negative_guard(1) if kind == "character"
-                else image_client.build_image_negative_guard(0))
+    # 三视图的"特写格"是模型最爱加戏的位置:默认给一张张嘴嘶吼的脸。
+    # 通用守卫里只有一句 no wide-open screaming mouth,权重不够,这里再加一层。
+    extra_neg = ("open mouth, screaming, shouting, yelling, gasp, aghast, terrified expression, "
+                 "horror face, exaggerated emotion, background figures, faded silhouettes, "
+                 "reflections of people") if kind == "character" else None
     out, _p = image_client.generate_image(prompt, config_id=config_id, size=size,
                                          reference_images=refs or None,
-                                         people=(1 if kind == "character" else 0))
+                                         people=(1 if kind == "character" else 0),
+                                         extra_negative=extra_neg)
     url = config.path_to_media_url(out)
     db.ex(f"UPDATE {table} SET comic_image_url=?, updated_at=? WHERE id=?", (url, db.now(), row_id))
     return url
