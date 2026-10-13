@@ -1499,7 +1499,12 @@ def split_for_tts(text: str, limit: int = 600) -> list[str]:
 
 
 def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
-    """整章正文合成 MP3 供播放(MP3 帧自包含,顺序拼接可连续播放)。"""
+    """整章正文合成 MP3 供播放(MP3 帧自包含,顺序拼接可连续播放)。
+
+    朗读音色取本剧项目设置:ProjectSettingsDialog 里的「朗读音色」女/男单选 →
+    dramas.metadata.tts_gender。文本语言变化时,Edge TTS 自动挑 16 语种 × 男女 = 32
+    个预设 voice 中的对应项(无需 API Key 与语言包,云端微软神经)。
+    """
     import uuid as _uuid
     from ..ai import tts_client
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
@@ -1510,12 +1515,17 @@ def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
     text = text.strip()
     if len(text) < 50:
         raise RuntimeError("本章正文太短,无法朗读")
+    # 项目级朗读音色:ProjectSettingsDialog 写入 dramas.metadata.tts_gender
+    drama = db.q1("SELECT metadata FROM dramas WHERE id=?", (ep["drama_id"],))
+    meta = db.jload(drama["metadata"] if drama else "", {}) or {}
+    gender = meta.get("tts_gender") or "female"
     chunks = split_for_tts(text, 600)
     out_dir = config.STATIC_DIR / "narration" / "novel-read"
     out_dir.mkdir(parents=True, exist_ok=True)
     parts = []
     for i, c in enumerate(chunks):
-        p = tts_client.synthesize(c, config_id=config_id)
+        # 把 voice 选定权下放到 synthesize():tts_client 检测 Edge voice / volc engine 自动降级
+        p = tts_client.synthesize(c, config_id=config_id, gender=gender)
         parts.append(p.read_bytes())
         p.unlink(missing_ok=True)
     out = out_dir / f"ep-{episode_id}-{_uuid.uuid4().hex[:8]}.mp3"

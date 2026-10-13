@@ -3012,14 +3012,14 @@ class EpisodePage(QWidget):
         from PySide6.QtWidgets import QStyle
         self.sb_narr_play_btn = W.icon_btn(
             QStyle.StandardPixmap.SP_MediaPlay, tr("play_narration"),
-            size=28, fallback="▶")
+            size=22, fallback="▶")
         self.sb_narr_play_btn.setVisible(False)
         self.sb_narr_play_btn.clicked.connect(self._toggle_narration_audio)
         nr_foot.addWidget(self.sb_narr_play_btn)
         # 删除已合成音频(有 url 才显示)
         self.sb_narr_del_btn = W.icon_btn(
             QStyle.StandardPixmap.SP_TrashIcon, "删除已合成旁白,可重新合成",
-            size=28, fallback="×")
+            size=22, fallback="×")
         self.sb_narr_del_btn.setVisible(False)
         self.sb_narr_del_btn.clicked.connect(self._delete_narration_audio)
         nr_foot.addWidget(self.sb_narr_del_btn)
@@ -5107,6 +5107,7 @@ class EpisodePage(QWidget):
         }
         # 每格的绑定资产(角色+场景+道具),一次 join 取出,避免 N+1
         bound_by_panel: dict[int, list[dict]] = {r["id"]: [] for r in rows}
+        similar_by_panel: dict[int, list[dict]] = {}
         if rows:
             ids = tuple(r["id"] for r in rows)
             ph = ",".join("?" * len(ids))
@@ -5121,6 +5122,13 @@ class EpisodePage(QWidget):
                     f"WHERE pc.panel_id IN ({ph}) ORDER BY t.id", ids):
                     x["kind"] = kind
                     bound_by_panel.setdefault(x["pid"], []).append(dict(x))
+            # 描述雷同检测:纯算 description+composition 的字符级相似度,
+            # 命中阈值就在后出现的格上挂警告(避免和前序雷同 → 出图撞)
+            try:
+                similar_by_panel = comic_pipe.panel_similar_pairs(self.episode_id)
+            except Exception as e:  # noqa: BLE001
+                print(f"[comic] panel_similar_pairs 失败(忽略警告):{e}", flush=True)
+                similar_by_panel = {}
         busy_ids = getattr(self, "_comic_busy", set())
         for i, r in enumerate(rows):
             card = C.ComicPanelCard(
@@ -5130,10 +5138,23 @@ class EpisodePage(QWidget):
                 on_narration_save=lambda t, i=r["id"]: self._save_panel_narration(i, t),
                 on_erase=lambda _=False, i=r["id"], u=r["image_url"]: self._erase_panel(i, u),
                 on_bind=lambda _=False, i=r["id"]: self._open_bind_dialog(i),
-                bound_assets=bound_by_panel.get(r["id"], []))
+                on_jump=lambda _=False, i=r["id"]: self._scroll_to_panel(i),
+                bound_assets=bound_by_panel.get(r["id"], []),
+                similar_to=similar_by_panel.get(r["id"], []))
             grid.addWidget(card, i // 3, i % 3)
         grid.setRowStretch((len(rows) + 2) // 3, 1)
         self._reload_comic_stitch()
+
+    def _scroll_to_panel(self, panel_id: int):
+        """点警告里的「跳到重复格」→ 滚动到对面那格,顺手 highlight 一下。"""
+        for w in self.comic_host.findChildren(C.ComicPanelCard):
+            if getattr(w, "_panel_id", None) == panel_id:
+                self.comic_host.ensureWidgetVisible(w)
+                prev = w.styleSheet()
+                w.setStyleSheet(prev + "QFrame#comicCard{border:2px solid #f59e0b;}")
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(1600, lambda w=w, p=prev: w.setStyleSheet(p))
+                return
 
     def _open_bind_dialog(self, panel_id: int):
         """点 +资产 → 弹出 ComicPanelBindDialog。保存后立即 reload 刷新卡片缩略。"""

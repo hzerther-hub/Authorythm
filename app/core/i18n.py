@@ -140,6 +140,8 @@ Z = {  # 中文(基准)
  "edit_chapter": "改稿", "read_aloud": "朗读本章", "ai_review": "AI 六维审校",
  "ai_review_tip": "六维审校(连贯性/人设/设定/物件/文风/节奏)·点击查看问题明细",
  "review_summary": "全书审校清单", "review_open_hint": "查看本集审校问题明细", "review_n": "审校 {0} 项",
+ "tts_gender": "朗读音色", "tts_gender_female": "女声", "tts_gender_male": "男声",
+ "tts_gender_hint": "Edge TTS 免费神经语音,语种跟随文本自动切换;不需下载语言包,只要联网就有声",
  "gen_title_tip": "正文已有标题行就直接取,否则 AI 参考前文摘要与总纲自动起名",
  "script_ph": "格式化剧本内容...", "script_saved": "剧本已保存",
  "save_dirty_hint": "有未保存的改动", "chars_n": "{0} 字", "rewriting": "正在改写剧本...",

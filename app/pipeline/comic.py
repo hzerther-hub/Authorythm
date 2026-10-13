@@ -254,6 +254,54 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
     return fp
 
 
+# 描述雷同阈值:SequenceMatcher.ratio() ≥ 此值即视为高重复,UI 挂警告。
+# 0.7 是经验值 —— 中文短描述里允许少量同义改写,但「同镜换人名/换站位」这种
+# 模型偷懒改写会稳定触发。低于 0.5 基本是不同画面。
+_PANEL_SIMILAR_THRESHOLD = 0.7
+
+
+def panel_similar_pairs(episode_id: int, threshold: float = _PANEL_SIMILAR_THRESHOLD
+                        ) -> dict[int, list[dict]]:
+    """检测同集内漫画格描述的雷同对。
+
+    返回 {panel_id: [{"other_id": int, "other_number": int, "score": float}, ...]}
+    ——「我与谁雷同」的反向索引。每个 panel 只列出比它 panel_number 小的对端,
+    避免 A↔B 重复两次。空字典表示该集无雷同。
+
+    计算量:difflib SequenceMatcher O(N²) 但 description < 200 字符,N 通常 12-20,
+    单集耗时 < 50ms,可放 UI reload 路径里无负担。
+    """
+    import difflib
+    rows = db.q("SELECT id, panel_number, description, dialogue, composition "
+                "FROM comic_panels WHERE episode_id=? ORDER BY panel_number",
+                (episode_id,))
+    if len(rows) < 2:
+        return {}
+    # 把 description + composition 一起算,跳过纯对白(对白可以重复但不重复画面)
+    sigs: list[tuple[int, int, str]] = []
+    for r in rows:
+        text = " ".join(filter(None, [r["description"] or "", r["composition"] or ""])).strip()
+        sigs.append((int(r["id"]), int(r["panel_number"]), text))
+    out: dict[int, list[dict]] = {}
+    for i in range(len(sigs)):
+        id_i, num_i, txt_i = sigs[i]
+        if not txt_i:
+            continue
+        for j in range(i + 1, len(sigs)):
+            id_j, num_j, txt_j = sigs[j]
+            if not txt_j:
+                continue
+            score = difflib.SequenceMatcher(None, txt_i, txt_j).ratio()
+            if score >= threshold:
+                # i < j:把这条记在 j 头上(它的「问题」:和前面的 i 太像)
+                out.setdefault(id_j, []).append({
+                    "other_id": id_i,
+                    "other_number": num_i,
+                    "score": round(score, 2),
+                })
+    return out
+
+
 def _pick_prompt_text(data: object) -> str:
     """从 agent 返回里取出提示词正文。
 

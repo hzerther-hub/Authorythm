@@ -172,6 +172,17 @@ class ProjectSettingsDialog(QDialog):
         i = self.ethnicity.findData(d["ethnicity"])
         self.ethnicity.setCurrentIndex(i if i >= 0 else 0)
         f.addRow(tr("ethnicity"), self.ethnicity)
+        # 「朗读音色」—— Edge TTS(免费微软神经语音,无需 API key,云端流式合成)。
+        # 性别二选一,实际 voice 走 tts_client.pick_edge_voice(text, gender) 从 16 语种
+        # × 男女 = 32 个预设里自动挑;朗读文本语言变化时,Edge 自动换 voice,
+        # 整套不用下载本地语言包,只要联网就有声。
+        self.tts_gender = QComboBox()
+        self.tts_gender.addItem("👩 " + tr("tts_gender_female"), "female")
+        self.tts_gender.addItem("👨 " + tr("tts_gender_male"), "male")
+        i = self.tts_gender.findData(meta.get("tts_gender", "female"))
+        self.tts_gender.setCurrentIndex(i if i >= 0 else 0)
+        f.addRow(tr("tts_gender"), self.tts_gender)
+        f.addRow("", _muted(tr("tts_gender_hint")))
 
         # ── 创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
         # 锁定条件是「**已经按这份创意生成出真实文字**」,不是「项目里存在第 1 集」——
@@ -307,6 +318,7 @@ class ProjectSettingsDialog(QDialog):
         meta = db.jload(d["metadata"], {}) if d else {}
         meta["intro"] = self.intro.text().strip()
         meta["genre"] = self.genre.text().strip()
+        meta["tts_gender"] = self.tts_gender.currentData() or "female"
         style_data = self.novel_style.currentData()
         novel_style = (self.novel_style_edit.toPlainText().strip()
                        if style_data == NOVEL_STYLE_CUSTOM else (style_data or ""))

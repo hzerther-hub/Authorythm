@@ -1004,9 +1004,11 @@ class ComicPanelCard(QFrame):
 
     def __init__(self, row: dict, labels: dict, *, busy: bool = False, failed: str = "",
                  on_draw=None, on_open=None, on_narration_save=None, on_erase=None,
-                 on_bind=None, bound_assets: list[dict] | None = None):
+                 on_bind=None, on_jump=None, bound_assets: list[dict] | None = None,
+                 similar_to: list[dict] | None = None):
         super().__init__()
         self.setObjectName("comicCard")
+        self._panel_id = int(row.get("id") or 0)
         self.setProperty("state", "failed" if failed else "")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1108,6 +1110,35 @@ class ComicPanelCard(QFrame):
             bb.clicked.connect(lambda _=False: on_bind())
             br.addWidget(bb)
             bl.addLayout(br)
+        # 描述雷同警告:和前序某格相似度 ≥ 阈值时,出图容易撞脸,提示用户
+        # 处理。可点 chip 跳过去比对,或者点 ↻ 重抽只这一格。
+        if similar_to:
+            for s in similar_to:
+                wr = QHBoxLayout()
+                wr.setSpacing(4)
+                wr.setContentsMargins(0, 0, 0, 0)
+                warn = QLabel(f"⚠ 与 #{int(s['other_number']):02d} 描述相似度 {int(round(float(s['score']) * 100))}%")
+                warn.setObjectName("dupWarn")
+                warn.setStyleSheet(
+                    "color:#b45309; background:#fef3c7; border:1px solid #fcd34d;"
+                    "border-radius:3px; padding:3px 6px; font-size:11px;")
+                warn.setToolTip("画面/构图高度雷同,直接出图会撞。点下面跳转对比,或重抽只这一格。")
+                wr.addWidget(warn, 1)
+                if on_jump:
+                    jb = QPushButton("↗ 跳转")
+                    jb.setObjectName("dupJump")
+                    jb.setStyleSheet("color:#b45309; background:transparent; border:none; font-size:11px;")
+                    jb.setCursor(Qt.PointingHandCursor)
+                    jb.clicked.connect(lambda _=False, oid=s["other_id"]: on_jump(oid))
+                    wr.addWidget(jb)
+                if on_draw:
+                    reroll = QPushButton("↻ 重抽")
+                    reroll.setObjectName("dupReroll")
+                    reroll.setStyleSheet("color:#b45309; background:transparent; border:none; font-size:11px;")
+                    reroll.setCursor(Qt.PointingHandCursor)
+                    reroll.clicked.connect(lambda _=False: on_draw())
+                    wr.addWidget(reroll)
+                bl.addLayout(wr)
         self.narration = NarrationBox(row.get("narration") or "", labels, on_narration_save)
         self.narration.set_hint(labels["narration_hint"])
         bl.addWidget(self.narration)
