@@ -5251,7 +5251,14 @@ class EpisodePage(QWidget):
             # 否则卡片永远是黑块,看不出拼接出了什么(对齐参考项目 video poster)
             from ..pipeline import video_poster
             poster = video_poster.poster_url(m["merged_url"])
-            im.setPixmap(W.pixmap_from_media(poster or m["merged_url"], 244, 146))
+            if poster:
+                im.setPixmap(W.pixmap_from_media(poster, 244, 146))
+            else:
+                # 海报帧还没抽出来(拼接刚完成/抽帧失败)。不能拿 mp4 路径喂
+                # pixmap_from_media —— Qt 渲染不了视频,只会得到一块灰。
+                im.setText("▶")
+                im.setStyleSheet("color:rgba(255,255,255,0.5); font-size:26px;"
+                                 "background:transparent; border:none;")
             im.setCursor(Qt.PointingHandCursor)
             im.mousePressEvent = lambda _e, mm=m: self._play_merge(mm)
             tl.addWidget(im, 1)
@@ -5558,10 +5565,21 @@ class EpisodePage(QWidget):
         self.merge_btn.setText("⠋ " + tr("merging"))
 
         def job(tid):
-            return merge_pipe.merge_episode(
+            out = merge_pipe.merge_episode(
                 self.episode_id, ids,
                 intro_title=intro_title,
                 intro_card=intro_card, intro_overlay=intro_overlay)
+            # 拼接完立刻抽海报帧。少了这一步成片卡永远拿不到缩略图 ——
+            # poster_url() 返回 None 后又回退去把 mp4 当图片喂 pixmap_from_media,
+            # 读不出来就是一块灰。分镜视频那条路径本来就有抽帧,合并这条漏了。
+            try:
+                # merge_episode 返回的是**合并后文件的本地路径**(Path),不是 dict
+                from ..pipeline import video_poster
+                if isinstance(out, (str, Path)) and Path(out).exists():
+                    video_poster.extract_video_poster(Path(out))
+            except Exception:  # noqa: BLE001 —— 抽帧失败不该让一次成功的拼接变失败
+                pass
+            return out
 
         def done(tid, result, error):
             self._merge_in_flight = False

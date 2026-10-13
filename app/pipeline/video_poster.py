@@ -30,7 +30,12 @@ def poster_path_for(video_path: str | Path) -> Path:
 
 def extract_video_poster(video_path: str | Path,
                          at_seconds: float = DEFAULT_AT_SECONDS) -> Path | None:
-    """抽指定时间点画面存成海报帧;已存在则直接复用。失败返回 None。"""
+    """抽指定时间点画面存成海报帧;已存在则直接复用。失败返回 None。
+
+    会**探测**:默认 0.5s 若是黑帧就往后试(见 _FALLBACK_SECONDS)。带片头
+    黑底标题卡的成片,开头往往有 3~4 秒纯黑 —— 固定抽 0.5s 只会得到一张纯黑
+    缩略图,等于没抽。
+    """
     src = Path(video_path)
     if not src.exists():
         return None
@@ -44,19 +49,43 @@ def extract_video_poster(video_path: str | Path,
     exe = config.find_ffmpeg()
     if not exe:
         return None
+
+    def _grab(sec: float) -> bool:
+        try:
+            proc = subprocess.run(
+                [exe, "-hide_banner", "-loglevel", "error", "-y",
+                 "-ss", f"{max(0.0, sec):.3f}", "-i", str(src),
+                 "-frames:v", "1", "-vf", f"scale={POSTER_WIDTH}:-1",
+                 "-q:v", "3", str(out)],
+                capture_output=True, timeout=60)
+        except (subprocess.SubprocessError, OSError):
+            return False
+        if proc.returncode != 0 or not out.exists():
+            out.unlink(missing_ok=True)      # 别留下半截文件
+            return False
+        return not _is_black_frame(out)
+
+    for sec in (at_seconds, *_FALLBACK_SECONDS):
+        if _grab(sec):
+            return out
+    out.unlink(missing_ok=True)
+    return None
+
+
+# 0.5s 抽到黑帧时依次尝试的时间点(带片头黑场的成片开头常有 3~4 秒纯黑)
+_FALLBACK_SECONDS = (2.0, 4.0, 6.0, 10.0)
+_BLACK_MEAN = 12.0        # 灰度均值低于此视为黑帧
+
+
+def _is_black_frame(path: Path) -> bool:
+    """判断抽到的帧是不是近乎全黑。"""
     try:
-        proc = subprocess.run(
-            [exe, "-hide_banner", "-loglevel", "error", "-y",
-             "-ss", f"{max(0.0, at_seconds):.3f}", "-i", str(src),
-             "-frames:v", "1", "-vf", f"scale={POSTER_WIDTH}:-1",
-             "-q:v", "3", str(out)],
-            capture_output=True, timeout=60)
-    except (subprocess.SubprocessError, OSError):
-        return None
-    if proc.returncode != 0 or not out.exists():
-        out.unlink(missing_ok=True)      # 别留下半截文件
-        return None
-    return out
+        from PIL import Image, ImageStat
+        with Image.open(path) as im:
+            mean = ImageStat.Stat(im.convert("L")).mean[0]
+        return mean < _BLACK_MEAN
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def poster_url(video_url: str | None) -> str | None:

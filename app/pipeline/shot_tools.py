@@ -46,6 +46,21 @@ def resolve_prompt(sb: dict, limit: int | None = None) -> str:
     return refs_mod.resolve_video_prompt_refs(sb.get("video_prompt") or sb.get("content") or "", sb, limit)
 
 
+_ASPECT_SIZE = {"9:16": "1080x1920", "16:9": "1920x1080", "1:1": "1024x1024",
+               "3:4": "1080x1440", "4:3": "1440x1080", "21:9": "2560x1080"}
+
+
+def _aspect_to_size(aspect: str | None) -> str:
+    """项目画幅 → 生图像素尺寸;未知画幅回退 16:9。"""
+    return _ASPECT_SIZE.get((aspect or "16:9").strip(), _ASPECT_SIZE["16:9"])
+
+
+def _drama_aspect_of(episode_id: int) -> str:
+    row = db.q1("SELECT d.aspect_ratio FROM dramas d JOIN episodes e ON e.drama_id=d.id "
+                "WHERE e.id=?", (episode_id,))
+    return ((row or {}).get("aspect_ratio") or "16:9") if row else "16:9"
+
+
 def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | None = None) -> str:
     """生成首帧图并写 storyboards.first_frame_image;返回 /static URL。
 
@@ -75,9 +90,15 @@ def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | N
               f"完整画面 —— 人物全部入画、按描述站位,景别与运镜起点一致,不许空镜、背影、剪影或黑帧。\n"
               f"{opening}\n电影质感,构图完整")
     ref_list = collect_reference_images(episode_id, storyboard_id)
+    # 首帧必须按项目画幅出图 —— 这是竖屏能不能落地的**决定性一环**:
+    # 视频侧只要带了 first_frame 就走 keyframe 模式(优先级高于 reference),
+    # 而 Agnes 在 keyframe 模式下按首帧画幅出片,首帧是横的成片就一定是横的。
+    # 之前这里从不传 size,用的是 provider 默认 16:9(实测首帧全是 2624x1472),
+    # 于是 aspect_ratio=9:16 被完全架空,17 个分镜视频全成了 1280x704 横屏。
+    size = _aspect_to_size(_drama_aspect_of(episode_id))
     out, _p = image_client.generate_image(prompt, out_name=f"ff_{storyboard_id}.png",
                                           config_id=config_id, reference_images=ref_list,
-                                          people=people)
+                                          people=people, size=size)
     url = config.path_to_media_url(out)
     db.ex("UPDATE storyboards SET first_frame_image=?, updated_at=? WHERE id=?", (url, db.now(), storyboard_id))
     return url
