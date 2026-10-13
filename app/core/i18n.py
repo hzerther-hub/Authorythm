@@ -75,6 +75,9 @@ Z = {  # 中文(基准)
  "sb_video_prompt_ph": "用 @角色名 / @场景名 引用参考素材,生成时自动映射为参考图片;再按时间段描述画面运动与镜头…",
  "sb_narration": "旁白(视频解说)", "sb_narration_ph": "本镜的解说词,≤200 字",
  "synth_narration": "合成配音", "narration_duration": "旁白时长", "narration_start": "开始时间", "tts_done": "已合成配音",
+ # 试听/删除旁白两颗按钮的 tooltip —— 之前 key 没进词典,tr() 原样吐 key,
+ # tooltip 直接显示 "play_narration"(用户看得见的英文标识符)
+ "play_narration": "试听旁白配音", "narration_file_missing": "旁白音频文件已丢失,可重新合成",
  "sb_duration": "分镜时长", "gen_audio": "生成音频",
  "gen_audio_tip": "关闭后不生成语音/音效轨,可压住人物大喊大叫等过度表演",
  "setting_tags": "场景标签", "tags_ph": "回车添加标签",

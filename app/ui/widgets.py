@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QVBoxLayout, QWidget)
 
@@ -56,6 +56,59 @@ def danger_btn(text: str) -> QPushButton:
     b = QPushButton(text)
     b.setObjectName("danger")
     b.setCursor(Qt.PointingHandCursor)
+    return b
+
+
+def icon_btn(icon, tooltip: str = "", size: int = 20,
+             fallback: str = "") -> QPushButton:
+    """纯图标小按钮(文字挪到 tooltip),用 Qt 原生图标而不是 Unicode 符号。
+
+    为什么不用 '↓' / '🗑' 这类字符当图标(同 main_window 任务键、project_page 删集卡):
+      1. 部分 Windows 字体渲染成方块 / 糊块,用户反馈「没有图标」;
+      2. 更致命的是**小尺寸 + 全局 padding** —— QSS 里 QPushButton 是 padding:6px 14px,
+         塞进 16×16 的固定尺寸按钮后垂直只剩 4px,字形直接无处可画,整颗按钮是空白
+         (实测改前渲染只有 1 种颜色=纯背景,改后原生图标 34/80 种颜色)。
+
+    fallback 仅在平台缺该标准图标时兜底;优先用图标。
+    """
+    from PySide6.QtCore import QSize
+    from PySide6.QtWidgets import QStyle
+    b = QPushButton(fallback if isinstance(icon, str) else "")
+    b.setObjectName("iconBtn")
+    b.setCursor(Qt.PointingHandCursor)
+    if not isinstance(icon, str) and icon is not None:
+        ico = b.style().standardIcon(icon)
+        if not ico.isNull():
+            b.setIcon(ico)
+    if tooltip:
+        b.setToolTip(tooltip)
+    px = max(10, size - 6)
+    b.setIconSize(QSize(px, px))
+    b.setFixedSize(size, size)
+    return b
+
+
+def svg_icon(name: str, size: int = 16, color: str = "") -> QIcon:
+    """iconfont 扁平线性图标(见 app/ui/icons.py 的说明与取舍)。
+
+    color 留空则跟随控件调色板,这样切主题时图标跟着变,不会在深色主题下
+    变成看不见的黑图。
+    """
+    from . import icons
+    if not color:
+        color = icons.theme_color()
+    return icons.icon(name, size=size, color=color)
+
+
+def svg_icon_btn(name: str, tooltip: str = "", size: int = 24,
+                 color: str = "") -> QPushButton:
+    """iconfont 图标按钮 —— icon_btn 的 iconfont 版(纯图标 + tooltip)。"""
+    b = QPushButton("")
+    b.setObjectName("iconBtn")
+    b.setCursor(Qt.PointingHandCursor)
+    b.setIcon(svg_icon(name, size=size - 6, color=color))
+    b.setToolTip(tooltip)
+    b.setFixedSize(size, size)
     return b
 
 

@@ -351,6 +351,11 @@ QPushButton#blackAction:disabled { background: #c9cdd4; color: #f5f6f8; }
 QPushButton#danger { color: #dc2626; border: none;
   background: rgba(220,38,38,0.10); font-weight: 600; }
 QPushButton#danger:hover { color: #b91c1c; background: rgba(220,38,38,0.16); }
+/* 纯图标小按钮:padding 必须压到 0 —— 继承 QPushButton 的 6px 14px 会把 16~20px
+   的按钮内容区挤没,图标一个字都画不出来(历史视频卡的下载/删除键就是空白的)。*/
+QPushButton#iconBtn { padding: 0; background: transparent; border: 1px solid #e4e7ec;
+  border-radius: 4px; }
+QPushButton#iconBtn:hover { background: #eef0f3; border-color: #c0c6cf; }
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {
   background: #f2f3f5; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; color: #1f2329; selection-background-color: #f97316;
 }
@@ -423,6 +428,9 @@ QPushButton#blackAction:hover { background: #1f2126; }
 QPushButton#blackAction:disabled { background: #17181c; color: #6a6d76; }
 QPushButton#danger { color: #dc2626; border: none; background: rgba(220,38,38,0.16); }
 QPushButton#danger:hover { background: rgba(220,38,38,0.26); }
+QPushButton#iconBtn { padding: 0; background: transparent; border: 1px solid #2c2e35;
+  border-radius: 4px; }
+QPushButton#iconBtn:hover { background: #2a2c33; border-color: #3d4048; }
 QLineEdit, QPlainTextEdit, QTextEdit, QSpinBox, QComboBox {
   background: #26282e; border: 1px solid transparent; border-radius: 6px; padding: 5px 8px; color: #e8eaed; selection-background-color: #f97316;
 }
@@ -832,6 +840,9 @@ QPushButton { background: """ + SLATE_PAPER + """; border: 1px solid """ + SLATE
   border-radius: 3px; color: """ + SLATE_META + """; padding: 6px 14px;
   font-size: 12px; font-weight: 600; }
 QPushButton:hover { border-color: """ + SLATE_BAR + """; color: """ + SLATE_BAR + """; }
+QPushButton#iconBtn { padding: 0; background: transparent; border: 1px solid """ + SLATE_HAIR + """;
+  border-radius: 3px; }
+QPushButton#iconBtn:hover { background: """ + SLATE_PAPER + """; border-color: """ + SLATE_BAR + """; }
 QPushButton:pressed { background: """ + SLATE_BG + """; }
 QPushButton:disabled { color: #c8c7c2; border-color: """ + SLATE_HAIR + """; background: transparent; }
 QPushButton#slatePrimary { background: """ + SLATE_BAR + """; border: 1px solid """ + SLATE_BAR + """;

@@ -2804,20 +2804,22 @@ class EpisodePage(QWidget):
         nr_foot.addWidget(self.sb_narr_audio)
         # 试听已合成的旁白(有 url 才显示)。之前这里只有一句静态文字,
         # 想确认音色/语速只能导出去用别的播放器听。
-        self.sb_narr_play_btn = QPushButton("▶")
-        self.sb_narr_play_btn.setObjectName("slateIconBtn")
-        self.sb_narr_play_btn.setFixedSize(28, 28)
-        self.sb_narr_play_btn.setCursor(Qt.PointingHandCursor)
-        self.sb_narr_play_btn.setToolTip(tr("play_narration"))
+        #
+        # 用 Qt 原生图标而不是 '▶' / '🗑' 字符:这两个码位(U+25B6 / U+1F5D1)在
+        # 应用字体里没有字形,按钮渲染出来是**纯空白**(实测颜色数=1,同纯背景),
+        # 用户反馈「合成配音没有办法播放 删除」——代码在、数据在、mp3 也在,
+        # 就是那颗按钮看不见也点不着。#iconBtn 另把 padding 压到 0。
+        from PySide6.QtWidgets import QStyle
+        self.sb_narr_play_btn = W.icon_btn(
+            QStyle.StandardPixmap.SP_MediaPlay, tr("play_narration"),
+            size=28, fallback="▶")
         self.sb_narr_play_btn.setVisible(False)
         self.sb_narr_play_btn.clicked.connect(self._toggle_narration_audio)
         nr_foot.addWidget(self.sb_narr_play_btn)
         # 删除已合成音频(有 url 才显示)
-        self.sb_narr_del_btn = QPushButton("🗑")
-        self.sb_narr_del_btn.setObjectName("slateIconBtn")
-        self.sb_narr_del_btn.setFixedSize(28, 28)
-        self.sb_narr_del_btn.setCursor(Qt.PointingHandCursor)
-        self.sb_narr_del_btn.setToolTip("删除已合成旁白,可重新合成")
+        self.sb_narr_del_btn = W.icon_btn(
+            QStyle.StandardPixmap.SP_TrashIcon, "删除已合成旁白,可重新合成",
+            size=28, fallback="×")
         self.sb_narr_del_btn.setVisible(False)
         self.sb_narr_del_btn.clicked.connect(self._delete_narration_audio)
         nr_foot.addWidget(self.sb_narr_del_btn)
@@ -4769,17 +4771,26 @@ class EpisodePage(QWidget):
             pl.setSource(QUrl.fromLocalFile(str(p)))
         pl.play()
 
+    def _set_narr_play_icon(self, playing: bool):
+        """播放/暂停图标换切 —— 换图标而不是 setText:'▶'/'⏸' 字符没有字形,
+        换了也画不出来(见构造处注释)。"""
+        from PySide6.QtWidgets import QStyle
+        sp = (QStyle.StandardPixmap.SP_MediaPause if playing
+              else QStyle.StandardPixmap.SP_MediaPlay)
+        ico = self.sb_narr_play_btn.style().standardIcon(sp)
+        if not ico.isNull():
+            self.sb_narr_play_btn.setIcon(ico)
+
     def _sync_narr_play_btn(self, state):
         from PySide6.QtMultimedia import QMediaPlayer
-        self.sb_narr_play_btn.setText(
-            "⏸" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
+        self._set_narr_play_icon(state == QMediaPlayer.PlaybackState.PlayingState)
 
     def _on_narr_status(self, status):
-        """播完把按钮拨回 ▶,否则会一直停在暂停图标。"""
+        """播完把按钮拨回播放图标,否则会一直停在暂停图标。"""
         from PySide6.QtMultimedia import QMediaPlayer
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
             self._narr_player.setPosition(0)
-            self.sb_narr_play_btn.setText("▶")
+            self._set_narr_play_icon(False)
 
     def _delete_narration_audio(self):
         """删除已生成的旁白音频:落库清字段 + 删本地文件。"""

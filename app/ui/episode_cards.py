@@ -305,14 +305,12 @@ class CoverBox(QFrame):
             ph.setObjectName("placeholderIcon")
             ph.setAlignment(Qt.AlignCenter)
             g.addWidget(ph, 0, 0)
-        # 预览图右上角下载钮(对齐参考项目 asset-cover 的 ⬇)
-        self._dl_btn = QPushButton("⬇", self)
-        self._dl_btn.setFixedSize(24, 24)
-        self._dl_btn.setCursor(Qt.PointingHandCursor)
-        self._dl_btn.setStyleSheet(
-            "QPushButton{background:rgba(255,255,255,0.86);border:none;border-radius:12px;"
-            "font-size:13px;color:#4e5969;}"
-            "QPushButton:hover{background:#ffffff;color:#f97316;}")
+        # 预览图右上角下载钮(对齐参考项目 asset-cover 的 ⬇)。
+        # 原先用 '⬇' 字符 + 24×24:该码位没字形,且撞上全局 padding,渲染成纯空白
+        # (实测颜色数=1)。改用 Qt 原生下箭头,跨字体稳定。
+        from PySide6.QtWidgets import QStyle
+        self._dl_btn = W.icon_btn(QStyle.StandardPixmap.SP_ArrowDown,
+                                  tr("download"), size=24, fallback="⬇")
         if on_download:
             self._dl_btn.clicked.connect(on_download)
         g.addWidget(self._dl_btn, 0, 0, Qt.AlignRight | Qt.AlignTop)
@@ -899,15 +897,17 @@ class VideoHistoryCard(QFrame):
             badge.setText(f"{time_label} · ◉")
         foot.addWidget(badge)
         foot.addStretch(1)
-        dl = QPushButton("↓")
-        dl.setFixedSize(16, 16)
-        dl.setToolTip(tr("download"))
+        # 纯图标(文字挪 tooltip):原先用 '↓' / '×' 字符,16×16 固定尺寸撞上全局
+        # QPushButton 的 padding:6px 14px,内容区被挤没,按钮渲染成一片空白
+        # (实测改前只有 1 种颜色=纯背景)。改用 Qt 原生图标,同 main_window 任务键。
+        from PySide6.QtWidgets import QStyle
+        dl = W.icon_btn(QStyle.StandardPixmap.SP_ArrowDown, tr("download"),
+                        fallback="↓")
         if on_download:
             dl.clicked.connect(lambda _=False: on_download())
         foot.addWidget(dl)
-        de = QPushButton("×")
-        de.setFixedSize(16, 16)
-        de.setToolTip(tr("delete"))
+        de = W.icon_btn(QStyle.StandardPixmap.SP_TrashIcon, tr("delete"),
+                        fallback="×")
         if on_delete:
             de.clicked.connect(lambda _=False: on_delete())
         foot.addWidget(de)
@@ -1035,17 +1035,14 @@ class ComicPanelCard(QFrame):
             # 右上双角标:⟳ 重绘 / 🩹 擦除(局部重绘,对齐参考 ecda917)
             corner = QHBoxLayout()
             corner.setSpacing(4)
-            redo = QPushButton("⟳")
-            redo.setFixedSize(24, 24)
-            redo.setToolTip(labels["redraw"])
-            redo.setCursor(Qt.PointingHandCursor)
+            from PySide6.QtWidgets import QStyle
+            redo = W.icon_btn(QStyle.StandardPixmap.SP_BrowserReload, labels["redraw"],
+                            size=24, fallback="⟳")
             redo.clicked.connect(lambda _=False: on_draw() if on_draw else None)
             corner.addWidget(redo)
             if on_erase:
-                er = QPushButton("🩹")
-                er.setFixedSize(24, 24)
-                er.setToolTip(tr("擦除漫画格"))
-                er.setCursor(Qt.PointingHandCursor)
+                er = W.icon_btn(QStyle.StandardPixmap.SP_DialogResetButton,
+                                tr("擦除漫画格"), size=24, fallback="🩹")
                 er.clicked.connect(lambda _=False: on_erase())
                 corner.addWidget(er)
             corner_wrap = QWidget()
