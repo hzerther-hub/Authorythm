@@ -14,6 +14,7 @@ from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout,
                                QLabel, QPushButton, QVBoxLayout, QWidget)
 
+from . import widgets as W
 from ..core.i18n import tr
 
 COLORS = {

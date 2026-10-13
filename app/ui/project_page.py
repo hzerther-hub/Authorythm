@@ -611,12 +611,17 @@ class ProjectPage(QWidget):
         head = QHBoxLayout(head_card)
         head.setContentsMargins(16, 10, 16, 10)
         head.setSpacing(12)
-        back = QPushButton("←")   # 用户反馈:32×32 看不清图标 → 改 40×40 让箭头更显眼
+        # 用 Qt 原生返回箭头图标,不用 '←' 字符(用户反馈那个字形难看)。
+        # 与 episode_page 顶栏的返回键同款,两处观感一致。
+        from PySide6.QtCore import QSize as _QSize
+        from PySide6.QtWidgets import QStyle
+        back = QPushButton()
+        back.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack))
+        back.setIconSize(_QSize(20, 20))
         back.setFixedSize(40, 40)
         back.setStyleSheet(
-            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:20px;"
-            "color:#4e5969;font-weight:700;font-size:20px;}"
-            "QPushButton:hover{background:#e9ebef;border-color:#0E0F12;color:#0E0F12;}")
+            "QPushButton{background:#f7f8fa;border:1px solid #DCDAD3;border-radius:20px;}"
+            "QPushButton:hover{background:#e9ebef;border-color:#0E0F12;}")
         back.setCursor(Qt.PointingHandCursor)
         back.setToolTip(tr("back"))   # tooltip 给悬停说明,不影响视觉
         back.clicked.connect(self._go_back)

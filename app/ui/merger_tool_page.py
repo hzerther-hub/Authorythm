@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (QFileDialog, QHeaderView, QHBoxLayout, QLabel,
                                QTableWidgetItem, QVBoxLayout, QWidget)
 
 from ..core import config
+from . import widgets as W
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from ..pipeline import merge as M
