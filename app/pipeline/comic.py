@@ -402,34 +402,27 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     if not row:
         raise RuntimeError("资产不存在")
     style = _style_for(drama_id, style_value=style_value)
+    # **不再复用 row['final_prompt']** —— 它是「常规资产」流程在 dramas.style 下
+    # 生成的(可能是 3d 写实风格),与 comic_style 设的「美式漫画/日漫赛璐璐」完全无关;
+    # 复用会让 comic_image_url 永远被钉死在当初生成时那个风格上(实测用 dramas.style
+    # ='3d' 时生成的 final_prompt,后续切到 comic_style='comic' 也救不回来)。
+    # 改为每次按 row 字段拼最简 spec,让 prompt 头部的 _style_for 风格前缀独立生效。
     if kind == "character":
-        # 直接复用「常规资产」已经生成好的 final_prompt 正文 —— 那条路(prompts_gen)
-        # 的三视图构图是对的,用户实测常规资产明显更好。漫画版原先自己另拼了一条
-        # 只有中文的 spec,模型就自由发挥成张嘴嘶吼的特写 + 背景多出几个鬼影。
-        # 风格前缀仍然换成漫画风格,构图/表情约束原样沿用。
-        base = (row["final_prompt"] or "").strip()
-        if not base:
-            base = (f"角色: {row['name']}, 样貌: {row['appearance'] or ''}, "
-                    f"服装: {row['styling'] or ''}。" + _TURNAROUND_BLOCK)
-        spec = base + " 所有视图表情平静自然、双唇闭合、眼神放松,不做任何夸张情绪。纯白无缝背景,柔和均匀漫射光线"
+        # 三视图版式沿用现成 TURNAROUND_BLOCK 规范(英文 token 让模型严格遵守布局),
+        # 角色信息只用 appearance/styling 关键描述,不被 final_prompt 旧值带偏。
+        spec = (f"角色: {row['name']}, "
+                f"样貌: {row['appearance'] or ''}, "
+                f"服装: {row['styling'] or ''}。" + _TURNAROUND_BLOCK +
+                " 所有视图表情平静自然、双唇闭合、眼神放松,不做任何夸张情绪。"
+                "纯白无缝背景,柔和均匀漫射光线")
     elif kind == "scene":
-        # 复用常规资产 final_prompt(其 prompt_generator prompt 写明「目标类型:scene
-        # 场景空镜建立图」,agent 给的就是「空会议室」之类的描述),**不**再追加「电影
-        # 质感」「画面里只有场景本身」之类的中文后缀 —— 实测这些中文会干扰漫画风
-        # 格的画面构图,反而把人物塞回场景(用户反馈:常规场景无人物,漫画版冒人)。
-        # 不传 reference_images:常规图也是空镜,但漫画风格本身就有把人画进来的
-        # 倾向,塞参考图等于把任何残留的人物痕迹放大。走纯文生图 + people=0
-        # 负向守卫(禁一切人 / silhouette / 反射)与常规资产生成完全一致。
-        base = (row["final_prompt"] or "").strip()
-        if not base:
-            base = (f"场景: {row['name']}, 环境: {row['prompt'] or ''}, "
-                    f"光照: {row['lighting'] or ''}。" + _EMPTY_SCENE_BLOCK)
-        spec = base
+        # 场景:空镜,直接描述名字+环境+光照,people=0 走纯文生图 + 负向守卫禁一切人。
+        spec = (f"场景: {row['name']}, "
+                f"环境: {row['prompt'] or ''}, "
+                f"光照: {row['lighting'] or ''}。" + _EMPTY_SCENE_BLOCK)
     else:
-        base = (row["final_prompt"] or "").strip()
-        if not base:
-            base = f"道具: {row['name']}, 描述: {row['description'] or ''}。纯白无缝背景单品图"
-        spec = base
+        spec = (f"道具: {row['name']}, "
+                f"描述: {row['description'] or ''}。纯白无缝背景单品图")
     prompt = f"{style}, {spec}"
     # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720)。
     # **不再把 image_url(常规 3D 写实图)当作 reference_images 喂进生图模型** ——
