@@ -2430,6 +2430,12 @@ class EpisodePage(QWidget):
         if not tasks:
             info(tr("没有待生成的资产"))
             return
+        # 漫画资产 busy 集合:让 _reload_comic_assets 渲染每张 ComicAssetRow 时
+        # 知道哪些行是「正在生成」—— 显示 BrailleSpinner 而非静态占位。
+        if not hasattr(self, "_comic_asset_busy"):
+            self._comic_asset_busy = set()
+        self._comic_asset_busy.update(f"{k}:{i}" for k, i in tasks)
+        self._reload_comic_assets()            # 先刷一次:让每张卡显示 spinner
         btn = getattr(self, "_comic_batch", None)
         if btn is not None:
             btn.setEnabled(False)
@@ -2441,6 +2447,7 @@ class EpisodePage(QWidget):
                 if btn is not None:
                     btn.setEnabled(True)
                     btn.setText(tr("batch_comic_style"))
+                self._comic_asset_busy.clear()
                 self._reload_comic_assets()
                 return
             kind, row_id = tasks[i]
@@ -2450,6 +2457,7 @@ class EpisodePage(QWidget):
                                                     config_id=snap_img)
 
             def done(tid, result, error):
+                self._comic_asset_busy.discard(f"{kind}:{row_id}")
                 if error:
                     err(error)
                 # 每张都刷新:整批可能跑十几分钟,只在末尾刷会一直空白
@@ -2646,8 +2654,10 @@ class EpisodePage(QWidget):
                 cid, name = r["id"], (r.get("name") or r.get("location") or "")
                 if kind == "scenes" and r.get("time"):
                     name = f"{name} · {r['time']}"
+                _busy_key = f"{kind}:{cid}"
+                _busy = _busy_key in getattr(self, "_comic_asset_busy", set())
                 roww = C.ComicAssetRow(r.get("comic_image_url"), name,
-                                       bool(r.get("comic_image_url")), False,
+                                       bool(r.get("comic_image_url")), _busy,
                                        tr("comic_gen_tip"),
                                        lambda _c=cid, _k=kind: self._gen_comic_asset(_k, _c),
                                        on_open=self._preview_image,

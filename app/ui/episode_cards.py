@@ -629,7 +629,12 @@ def _click_to(widget, fn):
 
 
 class ComicAssetRow(QFrame):
-    """漫画资产行:44px 缩略 + 名称 + 状态 + 生成漫画风按钮(对齐 .asset-comic-row)。"""
+    """漫画资产行:60px 缩略 + 名称 + 状态 + 生成漫画风按钮(对齐 .asset-comic-row)。
+
+    pending=True 时缩略图位置用真 BrailleSpinner 旋转(替代之前静态字符 "⠋"
+    看上去不变),与 CharacterAssetCard 保持一致;按钮全部用橙色 outline 文字
+    按钮,与项目品牌色统一。
+    """
 
     def __init__(self, thumb_url: str, name: str, ready: bool, pending: bool,
                  button_tip: str, on_gen, on_open=None, on_redo=None):
@@ -638,20 +643,32 @@ class ComicAssetRow(QFrame):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(10)
+        # 缩略图 60×44(原 44×44 太小);pending 显 BrailleSpinner
         if thumb_url:
             th = QLabel()
-            th.setFixedSize(44, 44)
-            th.setPixmap(W.pixmap_from_media(thumb_url, 44, 44))
+            th.setFixedSize(60, 44)
+            th.setPixmap(W.pixmap_from_media(thumb_url, 60, 44))
             th.setStyleSheet("border-radius:6px;")
             if on_open:
                 th.setCursor(Qt.PointingHandCursor)
                 th.setToolTip(tr("preview"))
                 th.mousePressEvent = _click_to(th, lambda: on_open(thumb_url))
         else:
-            th = QLabel("⠋" if pending else "+")
-            th.setFixedSize(44, 44)
-            th.setAlignment(Qt.AlignCenter)
-            th.setObjectName("placeholderIcon")
+            th = QWidget()
+            th.setFixedSize(60, 44)
+            th_v = QVBoxLayout(th)
+            th_v.setContentsMargins(0, 0, 0, 0)
+            th_v.setAlignment(Qt.AlignCenter)
+            if pending:
+                from .braille import BrailleSpinner
+                self._sp = BrailleSpinner(color="#f97316", size=14, parent=th)
+                th_v.addWidget(self._sp, 0, Qt.AlignCenter)
+                self._sp.start("")
+            else:
+                ph = QLabel("+")
+                ph.setAlignment(Qt.AlignCenter)
+                ph.setObjectName("placeholderIcon")
+                th_v.addWidget(ph)
         lay.addWidget(th)
         nm = QLabel(name)
         nm.setObjectName("muted")
@@ -659,18 +676,31 @@ class ComicAssetRow(QFrame):
         lay.addWidget(nm, 1)
         text = tr("生成中") if pending else (tr("已生成") if ready else tr("待生成"))
         lay.addWidget(status_pill("pending" if pending else ("ready" if ready else "todo"), text))
-        # 已生成的图:左边 ⟳(强制重画,沿用当前画风),右边 🔖(初始生成 / 待生成)
-        # 两个都调 on_gen —— on_gen 自己判断:有图就重画、没有就生。
+        # 按钮横排:重画(已生成时显)+ 生成/重生(始终)
+        # 用文字 + 橙色 outline,与其他资产卡同款风格
+        BTN = ("QPushButton{font-size:11px;padding:3px 8px;"
+               "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
+               "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
+               "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
         if ready and on_redo:
-            from PySide6.QtWidgets import QStyle
-            redo = W.icon_btn(QStyle.StandardPixmap.SP_BrowserReload, tr("redraw"),
-                              size=26, fallback="⟳")
+            redo = QPushButton("⟳ " + tr("redraw"))
+            redo.setToolTip(tr("redraw_tip") if tr("redraw_tip") else tr("redraw"))
+            redo.setCursor(Qt.PointingHandCursor)
+            redo.setStyleSheet(BTN)
             redo.clicked.connect(lambda _=False: on_redo())
             lay.addWidget(redo)
-        btn = W.svg_icon_btn("book", button_tip, size=26)
         if on_gen:
-            btn.clicked.connect(lambda _=False: on_gen())
-        lay.addWidget(btn)
+            if ready:
+                label = tr("redraw")
+            else:
+                label = tr("gen_comic")
+            gen_btn = QPushButton(label)
+            gen_btn.setToolTip(button_tip)
+            gen_btn.setCursor(Qt.PointingHandCursor)
+            gen_btn.setStyleSheet(BTN)
+            gen_btn.setEnabled(not pending)        # 生成中禁用防止重复点
+            gen_btn.clicked.connect(lambda _=False: on_gen())
+            lay.addWidget(gen_btn)
 
 
 # ── 分镜视频任务 ──
