@@ -2373,7 +2373,10 @@ class EpisodePage(QWidget):
             grid_host = QWidget()
             grid = QGridLayout(grid_host)
             grid.setContentsMargins(0, 0, 0, 0)
-            grid.setSpacing(10)
+            # 卡片间距归零(用户反馈卡与卡之间留白过大):#assetCard 自带
+            # 1px 边框 + 卡片内 8px padding,视觉分组已经够了,再叠 grid 间距
+            # 会让 4 列挤在中间、左右大片空白被放大
+            grid.setSpacing(0)
             # 关键:不设这行,grid_host 的 sizeHint 只取布局"最小"尺寸,容器被压到
             # 几十 px,13 张角色卡只剩一张露头,其余全被裁掉(看着像"没变高")
             grid.setSizeConstraint(QLayout.SetMinimumSize)
@@ -2399,8 +2402,9 @@ class EpisodePage(QWidget):
             hl.setSpacing(6)
             grid = QGridLayout()
             grid.setContentsMargins(0, 0, 0, 0)
-            grid.setHorizontalSpacing(8)
-            grid.setVerticalSpacing(8)
+            # 与常规资产网格一致:卡片间距归零
+            grid.setHorizontalSpacing(0)
+            grid.setVerticalSpacing(0)
             hl.addLayout(grid)
             c_lay.addWidget(host)
             self.comic_asset_sections[kind] = {"grid": grid, "host": host}

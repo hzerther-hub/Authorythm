@@ -69,11 +69,6 @@ Z = {  # 中文(基准)
  "variant_open_dialog": "打开造型变体",
  "batch_redo": "重画所有",
  "batch_redo_tip": "覆盖已有 image_url,按项目设置里的视觉风格(如 3D)重新生成(会消耗 token)",
- # 工具条三类同类操作收进下拉(用户反馈宽屏下 11 个按钮挤成一排、后半截被吃掉)
- "re_extract_menu": "重提 ▾", "re_extract_menu_tip": "按剧本重新提取角色 / 场景 / 道具(只新增,不覆盖同名)",
- "batch_menu": "批量出图 ▾", "batch_menu_tip": "为本集角色 / 场景 / 道具批量生成图",
- "batch_redo_menu": "重画 ▾", "batch_redo_menu_tip": "覆盖已有图重画(消耗 token)",
- "batch_fill_menu": "补图 ▾", "batch_fill_menu_tip": "只给还没图的资产生成,不覆盖已有图(省 token)",
  "batch_redo_kind": "重画{kind}",
  "batch_redo_kind_tip": "重画本集所有{kind}资产,覆盖已有图(会消耗 token)",
  "batch_redo_all": "⟳ 重画全部(角色+场景+道具)",

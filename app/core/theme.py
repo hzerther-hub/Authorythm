@@ -27,7 +27,9 @@ QPushButton#segTab:checked { background: #ffffff; color: #1f2329; font-weight: 7
 QFrame#segWrap { background: #f2f3f5; border-radius: 999px; }
 QLabel#monoTag { background: #f2f3f5; border-radius: 4px; padding: 1px 7px;
   color: #4e5969; font-family: monospace; font-size: 11px; }
-QFrame#assetCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 10px; }
+# 卡片间距已归零(grid.setSpacing(0)),圆角从 10px 降到 4px —— 否则相邻卡的
+# 圆角互相咬合,网格线上出现锯齿状白缝,反而比留 10px 间距更乱
+QFrame#assetCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 4px; }
 QFrame#assetCard:hover { border-color: #f97316; }
 QPlainTextEdit#chapterEdit { background: #ffffff; border: 1px solid #e4e7ec;
   border-radius: 10px; }
@@ -147,7 +149,7 @@ QPushButton#segTab:checked { background: #202126; color: #f2f3f5; font-weight: 7
 QFrame#segWrap { background: #202126; border-radius: 999px; }
 QLabel#monoTag { background: #2a2c33; border-radius: 4px; padding: 1px 7px;
   color: #b8bcc4; font-family: monospace; font-size: 11px; }
-QFrame#assetCard { background: #202126; border: 1px solid #2c2e35; border-radius: 10px; }
+QFrame#assetCard { background: #202126; border: 1px solid #2c2e35; border-radius: 4px; }
 QFrame#assetCard:hover { border-color: #fb923c; }
 QPlainTextEdit#chapterEdit { background: #202126; border: 1px solid #2c2e35;
   border-radius: 10px; }

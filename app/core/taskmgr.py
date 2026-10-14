@@ -237,6 +237,7 @@ class TaskManager(QObject):
         "storyboard_split": "拆分镜", "comic": "生成漫画", "prompt": "生成提示词",
         "promo": "写宣传文案", "face_swap": "换脸", "face_swap_batch": "批量换脸",
         "merge": "拼接成片", "stitch": "拼接长图", "episode_cover": "生成章封面",
+        "chat_edit": "PhotoCraft 修图",
     }
 
     # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)

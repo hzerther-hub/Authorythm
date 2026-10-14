@@ -91,6 +91,8 @@ class ImageProcessPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 12)
         root.setSpacing(10)
+        # 让 splitter 能把它压到 388(用户偏好宽度);内容超出走垂直滚动
+        self.setMinimumWidth(388)
 
         # 顶部:标题 + 文本模型 / 图像模型(对齐剧集页顶栏的写法)
         top = QHBoxLayout()

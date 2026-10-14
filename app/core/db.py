@@ -216,6 +216,26 @@ DDL: list[str] = [
       is_favorite INTEGER DEFAULT 0, created_at TEXT NOT NULL)""",
     # 全局 KV 设置
     "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)",
+    # PhotoCraft 聊天修图会话(每张原图一条 session,多轮)
+    """CREATE TABLE IF NOT EXISTS chat_edit_sessions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT,
+        source_image TEXT NOT NULL,
+        current_image TEXT NOT NULL,
+        engine_mode TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE IF NOT EXISTS chat_edit_messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id INTEGER NOT NULL REFERENCES chat_edit_sessions(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT,
+        command_json TEXT,
+        result_image TEXT,
+        engine_label TEXT,
+        created_at TEXT NOT NULL
+    )""",
 ]
 
 INDEXES = [
@@ -227,6 +247,8 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_panels_ep ON comic_panels(episode_id)",
     "CREATE INDEX IF NOT EXISTS idx_tasks_ep ON sys_task(episode_id)",
     "CREATE INDEX IF NOT EXISTS idx_merges_ep ON video_merges(episode_id)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_edit_msg_sid ON chat_edit_messages(session_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_chat_edit_sess_updated ON chat_edit_sessions(updated_at DESC)",
 ]
 
 # ── 风格预设种子(完整复刻原版 stylePresetSeeds,电影质感锚点) ──
@@ -681,3 +703,69 @@ def start_stuck_task_watchdog(conn=None, interval_s: float = REAP_INTERVAL_S):
     t.daemon = True          # 否则程序退不出
     t.start()
     return t
+
+
+# ── PhotoCraft 聊天修图会话持久化 ──
+
+def create_chat_session(source_image: str, name: str = "", engine_mode: str = "smart") -> int:
+    """开新会话;返回 id。current_image 默认与 source_image 同值。"""
+    ts = now()
+    sid = ex(
+        "INSERT INTO chat_edit_sessions(name, source_image, current_image, engine_mode, created_at, updated_at)"
+        " VALUES(?,?,?,?,?,?)",
+        (name, source_image, source_image, engine_mode, ts, ts))
+    return sid
+
+
+def touch_chat_session(sid: int, current_image: str | None = None,
+                       engine_mode: str | None = None) -> None:
+    ts = now()
+    if current_image is None and engine_mode is None:
+        ex("UPDATE chat_edit_sessions SET updated_at=? WHERE id=?", (ts, sid))
+        return
+    row = q1("SELECT current_image, engine_mode FROM chat_edit_sessions WHERE id=?", (sid,))
+    if not row:
+        return
+    ex("UPDATE chat_edit_sessions SET current_image=?, engine_mode=?, updated_at=? WHERE id=?",
+       (current_image if current_image is not None else row["current_image"],
+        engine_mode if engine_mode is not None else row["engine_mode"],
+        ts, sid))
+
+
+def list_chat_sessions(limit: int = 50) -> list[sqlite3.Row]:
+    """按更新时间倒序返回最近会话。"""
+    return list(q(
+        "SELECT * FROM chat_edit_sessions ORDER BY updated_at DESC LIMIT ?", (limit,)))
+
+
+def get_chat_session(sid: int) -> sqlite3.Row | None:
+    return q1("SELECT * FROM chat_edit_sessions WHERE id=?", (sid,))
+
+
+def delete_chat_session(sid: int) -> None:
+    ex("DELETE FROM chat_edit_sessions WHERE id=?", (sid,))
+
+
+def add_chat_message(sid: int, role: str, content: str = "",
+                     command_json: str | None = None,
+                     result_image: str | None = None,
+                     engine_label: str | None = None) -> int:
+    ts = now()
+    mid = ex(
+        "INSERT INTO chat_edit_messages(session_id, role, content, command_json, result_image, engine_label, created_at)"
+        " VALUES(?,?,?,?,?,?,?)",
+        (sid, role, content, command_json, result_image, engine_label, ts))
+    ex("UPDATE chat_edit_sessions SET updated_at=? WHERE id=?", (ts, sid))
+    return mid
+
+
+def load_chat_messages(sid: int) -> list[sqlite3.Row]:
+    return list(q(
+        "SELECT * FROM chat_edit_messages WHERE session_id=? ORDER BY id ASC", (sid,)))
+
+
+def delete_chat_messages_after(sid: int, msg_id: int) -> None:
+    """撤回某条消息之后的所有消息(undo)。"""
+    ex(
+        "DELETE FROM chat_edit_messages WHERE session_id=? AND id>?",
+        (sid, msg_id))

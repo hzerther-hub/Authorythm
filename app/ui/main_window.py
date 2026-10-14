@@ -158,7 +158,7 @@ class MainWindow(QMainWindow):
         # 「图片处理」页 → 聊天改图页(独立 tab,免得另起炉灶)
         self.image_process_page.chatRequested.connect(self.open_chat_with_image)
 
-
+        root.addWidget(self.stack, 1)         # 页面栈占中央,stretch=1 撑满
 
         # 状态栏
         self.status = self.statusBar()
@@ -366,6 +366,9 @@ class MainWindow(QMainWindow):
         self._ensure_fresh(key)
         page = {"projects": self.projects_page,
                 "imageproc": self.image_process_page,
+                # 聊天改图是独立 tab(commit ff48962 加的 nav 按钮),必须在这张表里
+                # 登记 —— 漏了会让 _goto 拿到 None 直接 return,点按钮没反应
+                "chatedit": getattr(self, "chat_edit_page", None),
                 "face_swap": getattr(self, "face_swap_page", None),
                 "merger": getattr(self, "merger_page", None)}.get(key)
         if page is None:

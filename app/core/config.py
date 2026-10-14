@@ -9,6 +9,9 @@ from pathlib import Path
 APP_NAME = "PySide6Drama"
 APP_VERSION = "1.1.0"
 
+# PhotoCraft portable 默认安装位置(Windows 上无安装引导时指向这里)
+DEFAULT_PHOTOCRAFT_DIR = r"E:\photocraft\photocraft-0.7.0-windows-x64-portable"
+
 
 def _base_dir() -> Path:
     # 仓库根(app/ 的上一级);打包后以 exe 所在目录为根

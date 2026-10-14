@@ -330,8 +330,166 @@ class SettingsDialog(QDialog):
         f.addRow(tr("ui_font"), font_box)
         f.addRow("", W.muted(tr("ui_font_note")))
         lay.addWidget(box)
+
+        # ── PhotoCraft 聊天修图集成(独立卡片,与上方「界面」并列) ──
+        pc = W.make_card()
+        pl = QVBoxLayout(pc)
+        pl.setContentsMargins(14, 14, 14, 14)
+        pl.setSpacing(8)
+        pl.addWidget(W.h2(tr("chat_edit_section")))
+
+        # 安装目录
+        pc_dir_row = QHBoxLayout()
+        pc_dir_row.setSpacing(6)
+        self.pc_dir_edit = QLineEdit()
+        self.pc_dir_edit.setText(db.get_setting("photocraft_install_dir", "") or config.DEFAULT_PHOTOCRAFT_DIR)
+        self.pc_dir_edit.setToolTip(tr("chat_edit_install_dir_tip"))
+        pc_dir_row.addWidget(self.pc_dir_edit, 1)
+        b_dir = QPushButton("…")
+        b_dir.setFixedWidth(28)
+        b_dir.setCursor(Qt.PointingHandCursor)
+        b_dir.setToolTip(tr("chat_edit_install_dir"))
+        b_dir.clicked.connect(self._pick_photocraft_dir)
+        pc_dir_row.addWidget(b_dir)
+        b_open = QPushButton(tr("chat_edit_open_install_dir"))
+        b_open.setCursor(Qt.PointingHandCursor)
+        b_open.clicked.connect(self._open_photocraft_dir)
+        pc_dir_row.addWidget(b_open)
+        b_test = W.primary_btn(tr("chat_edit_test_cli"))
+        b_test.clicked.connect(self._test_photocraft_cli)
+        pc_dir_row.addWidget(b_test)
+        pl.addLayout(pc_dir_row)
+        pl.addWidget(W.muted(tr("chat_edit_install_dir_tip")))
+
+        # CLI 路径(可选覆盖)
+        cli_h_row = QHBoxLayout()
+        cli_h_row.setSpacing(6)
+        self.pc_cli_edit = QLineEdit()
+        self.pc_cli_edit.setText(db.get_setting("photocraft_cli_path", ""))
+        self.pc_cli_edit.setToolTip(tr("chat_edit_cli_path_tip"))
+        cli_h_row.addWidget(self.pc_cli_edit, 1)
+        b_cli = QPushButton("…")
+        b_cli.setFixedWidth(28)
+        b_cli.setCursor(Qt.PointingHandCursor)
+        b_cli.clicked.connect(self._pick_photocraft_cli)
+        cli_h_row.addWidget(b_cli)
+        pl.addLayout(cli_h_row)
+
+        # 引擎模式
+        eng_row = QHBoxLayout()
+        eng_row.setSpacing(6)
+        eng_row.addWidget(W.muted(tr("chat_edit_engine") + ":"))
+        self.pc_engine_combo = QComboBox()
+        for k, label in [
+            ("smart", tr("chat_edit_engine_smart")),
+            ("whitelist", tr("chat_edit_engine_whitelist")),
+            ("llm", tr("chat_edit_engine_llm")),
+            ("off", tr("chat_edit_engine_off")),
+        ]:
+            self.pc_engine_combo.addItem(label, k)
+        cur_mode = db.get_setting("chat_edit_engine_mode", "smart") or "smart"
+        j = self.pc_engine_combo.findData(cur_mode)
+        self.pc_engine_combo.setCurrentIndex(max(0, j))
+        self.pc_engine_combo.currentIndexChanged.connect(self._save_pc_engine_mode)
+        eng_row.addWidget(self.pc_engine_combo)
+        eng_row.addStretch(1)
+        pl.addLayout(eng_row)
+
+        # LLM 文本模型选择(仅在智能/LLM 模式下生效)
+        llm_row = QHBoxLayout()
+        llm_row.setSpacing(6)
+        llm_row.addWidget(W.muted(tr("text_svc") + ":"))
+        self.pc_llm_combo = QComboBox()
+        self.pc_llm_combo.setMinimumWidth(180)
+        self.pc_llm_combo.addItem(tr("configured"), "")
+        for r in registry.list_configs("text"):
+            self.pc_llm_combo.addItem((r["model"] or "").split("/")[-1] or r["model"], str(r["id"]))
+        cur_llm = db.get_setting("chat_edit_llm_config_id", "")
+        j = self.pc_llm_combo.findData(cur_llm)
+        self.pc_llm_combo.setCurrentIndex(max(0, j))
+        self.pc_llm_combo.currentIndexChanged.connect(self._save_pc_llm)
+        llm_row.addWidget(self.pc_llm_combo)
+        llm_row.addStretch(1)
+        pl.addLayout(llm_row)
+
+        # 状态(测试后在这里显示)
+        self.pc_status = W.muted("")
+        pl.addWidget(self.pc_status)
+
+        # 保存时统一落盘
+        self.pc_dir_edit.editingFinished.connect(self._save_pc_dir)
+        self.pc_cli_edit.editingFinished.connect(self._save_pc_cli)
+
+        lay.addWidget(pc)
         lay.addStretch(1)
         return w
+
+    def _pick_photocraft_dir(self):
+        from PySide6.QtWidgets import QFileDialog
+        d = QFileDialog.getExistingDirectory(self, tr("chat_edit_install_dir"),
+                                              self.pc_dir_edit.text())
+        if d:
+            self.pc_dir_edit.setText(d)
+            db.set_setting("photocraft_install_dir", d)
+            self.pc_status.setText("")
+
+    def _open_photocraft_dir(self):
+        import os
+        from pathlib import Path
+        d = self.pc_dir_edit.text().strip()
+        if d and Path(d).is_dir():
+            try:
+                os.startfile(d)  # noqa
+            except Exception as exc:  # noqa: BLE001
+                self.pc_status.setText(str(exc)[:160])
+
+    def _pick_photocraft_cli(self):
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        start = self.pc_dir_edit.text() or ""
+        f, _ = QFileDialog.getOpenFileName(
+            self, tr("chat_edit_cli_path"),
+            start, "Exe (photocraft-cli.exe *.exe);;All files (*)")
+        if f:
+            self.pc_cli_edit.setText(f)
+            db.set_setting("photocraft_cli_path", f)
+
+    def _test_photocraft_cli(self):
+        self._save_pc_dir()
+        self._save_pc_cli()
+        from ..ai.photocraft_bridge import ChatEditEngine
+        eng = ChatEditEngine()
+        ok, txt = eng.status_text()
+        if ok:
+            self.pc_status.setText(tr("chat_edit_cli_ok").format(txt))
+        else:
+            self.pc_status.setText(tr("chat_edit_cli_bad").format(txt))
+
+    def _save_pc_dir(self):
+        d = self.pc_dir_edit.text().strip()
+        cur = db.get_setting("photocraft_install_dir", "") or config.DEFAULT_PHOTOCRAFT_DIR
+        if d and d != cur:
+            db.set_setting("photocraft_install_dir", d)
+            from ..ai.photocraft_bridge import PhotocraftCLI as _PC
+            _PC._cmds_cache = {}
+            _PC._cmds_cache_ts = 0.0
+
+    def _save_pc_cli(self):
+        p = self.pc_cli_edit.text().strip()
+        cur = db.get_setting("photocraft_cli_path", "")
+        if p != cur:
+            db.set_setting("photocraft_cli_path", p)
+            from ..ai.photocraft_bridge import PhotocraftCLI as _PC
+            _PC._cmds_cache = {}
+            _PC._cmds_cache_ts = 0.0
+
+    def _save_pc_engine_mode(self):
+        mode = self.pc_engine_combo.currentData() or "smart"
+        db.set_setting("chat_edit_engine_mode", mode)
+
+    def _save_pc_llm(self):
+        cid = self.pc_llm_combo.currentData() or ""
+        db.set_setting("chat_edit_llm_config_id", cid)
 
     def _change_font(self):
         """切换界面字体,立即生效(重贴 QSS + 重设应用默认字体)。"""

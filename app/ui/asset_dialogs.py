@@ -868,6 +868,8 @@ class _BindCard(QFrame):
         self.setObjectName("bindCard")
         self._checked = checked
         self._on_toggle = on_toggle
+        self._row = row                       # _refresh_grids 用:重设勾选时找对应 id
+        self._kind = kind
         lay = QVBoxLayout(self)
         lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(3)
@@ -923,6 +925,9 @@ class ComicPanelBindDialog(QDialog):
     来自 split_panels 的自动绑定写入 comic_panel_characters/scenes/props;
     本对话框是手动覆写通道 —— 用户能再勾选/取消,确认后整集替换语义写入
     (「整格重绑」),与 _toggle_ref_bind 风格一致。
+
+    **默认全部自动绑定**(已绑的不动,未绑的全选上),用户不满意再手调;
+    顶部「全选 / 全不选」一键切换,不再一个个点。
     """
 
     def __init__(self, parent, drama_id: int, panel_id: int, on_saved=None):
@@ -931,7 +936,7 @@ class ComicPanelBindDialog(QDialog):
         self.panel_id = panel_id
         self._on_saved = on_saved
         self.setWindowTitle(tr("bind_panel_assets"))
-        self.resize(820, 540)
+        self.resize(960, 600)
         # 三段资产先一次性读出
         self._chars = [dict(r) for r in db.q(
             "SELECT id, name, appearance, styling, image_url, comic_image_url "
@@ -952,9 +957,19 @@ class ComicPanelBindDialog(QDialog):
         bound_props = {r["prop_id"] for r in db.q(
             "SELECT prop_id FROM comic_panel_props WHERE panel_id=?",
             (panel_id,))}
-        self._bound_chars = bound_chars
-        self._bound_scenes = bound_scenes
-        self._bound_props = bound_props
+        # **默认全部自动勾选**(已绑的不动 + 未绑的全选上),用户想减再手调。
+        # 单独把场景限制在 1 个(单选语义)。
+        self._bound_chars = set(c["id"] for c in self._chars)  # ← 全选
+        self._bound_props = set(p["id"] for p in self._props)  # ← 全选
+        # 场景段(单选语义:每格至多一个主场景;不勾=无主场景)
+        self._scene_chosen = bound_scenes.copy()
+        if len(self._scene_chosen) > 1:
+            # 模型一次给了多个 scene_id 时只保留第一个,其它视为错误残留
+            only = next(iter(self._scene_chosen))
+            self._scene_chosen = {only}
+        # 若无已绑场景且只有 1 个场景 → 自动选这个(最常见的「整集就 1 个场景」)
+        if not self._scene_chosen and len(self._scenes) == 1:
+            self._scene_chosen = {self._scenes[0]["id"]}
 
         root = QVBoxLayout(self)
         tip = QLabel(tr("bind_panel_tip"))
@@ -962,12 +977,22 @@ class ComicPanelBindDialog(QDialog):
         tip.setWordWrap(True)
         root.addWidget(tip)
 
-        # 场景段(单选语义:每格至多一个主场景;不勾=无主场景)
-        self._scene_chosen = bound_scenes.copy()
-        if len(self._scene_chosen) > 1:
-            # 模型一次给了多个 scene_id 时只保留第一个,其它视为错误残留
-            only = next(iter(self._scene_chosen))
-            self._scene_chosen = {only}
+        # 顶部工具条:全选/全不选/分别各段切换 + 变体说明
+        tools = QHBoxLayout()
+        tools.setSpacing(6)
+        all_on = QPushButton("✓ " + tr("bind_all_on"))
+        all_on.setObjectName("slateSort")
+        all_off = QPushButton("✗ " + tr("bind_all_off"))
+        all_off.setObjectName("slateSort")
+        all_on.clicked.connect(self._all_on)
+        all_off.clicked.connect(self._all_off)
+        tools.addWidget(all_on)
+        tools.addWidget(all_off)
+        tools.addStretch(1)
+        hint = QLabel(tr("bind_default_hint"))
+        hint.setObjectName("muted")
+        tools.addWidget(hint)
+        root.addLayout(tools)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -975,8 +1000,9 @@ class ComicPanelBindDialog(QDialog):
         grid = QVBoxLayout(body)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setSpacing(10)
+        # 角色段:同时显示主图(常规 / 漫画) + 变体(同角色不同造型)
         grid.addWidget(self._section_label(tr("chars"), f"{len(self._chars)}"))
-        grid.addWidget(self._build_char_grid())
+        grid.addWidget(self._build_char_grid_with_variants())
         grid.addWidget(self._section_label(tr("scenes"), f"{len(self._scenes)}"))
         grid.addWidget(self._build_scene_grid())
         grid.addWidget(self._section_label(tr("props"), f"{len(self._props)}"))
@@ -994,6 +1020,43 @@ class ComicPanelBindDialog(QDialog):
         row.addWidget(cancel)
         row.addWidget(save)
         root.addLayout(row)
+
+    def _all_on(self):
+        """一键全选:角色 + 场景(留 1 个)+ 道具全勾上。"""
+        self._bound_chars = set(c["id"] for c in self._chars)
+        self._bound_props = set(p["id"] for p in self._props)
+        if self._scenes and not self._scene_chosen:
+            self._scene_chosen = {self._scenes[0]["id"]}
+        # 重建 UI 刷新勾选
+        self._refresh_grids()
+
+    def _all_off(self):
+        """一键全不选。"""
+        self._bound_chars.clear()
+        self._bound_props.clear()
+        self._scene_chosen.clear()
+        self._refresh_grids()
+
+    def _refresh_grids(self):
+        """重画三个 grid 让勾选状态同步(简单粗暴直接重画,
+        后面 _build_* 也得在 __init__ 里走一遍)。"""
+        # 拿父 widget 重画就行 —— grid 在 scroll 里的 body 上。
+        # 简化处理:就关掉重开对话框也行,这里直接 setVisible + reset。
+        # 先实现最小可用版:遍历 _BindCard 实例 setChecked。
+        for w in self.findChildren(_BindCard):
+            row = getattr(w, "_row", None)
+            kind = getattr(w, "_kind", None)
+            if not row:
+                continue
+            if kind == "character":
+                w.box.setChecked(row["id"] in self._bound_chars)
+            elif kind == "scene":
+                w.box.setChecked(row["id"] in self._scene_chosen)
+            elif kind == "prop":
+                w.box.setChecked(row["id"] in self._bound_props)
+            elif kind == "variant":
+                # 变体选项独立管理,这里不重画
+                pass
 
     def _section_label(self, name: str, count: str) -> QLabel:
         lb = QLabel(f"{name} · {count}")
@@ -1015,6 +1078,44 @@ class ComicPanelBindDialog(QDialog):
             card = _BindCard(r, "character", checked,
                              on_toggle=lambda v, rid=r["id"]: self._toggle_char(rid, v))
             g.addWidget(card, i // cols, i % cols)
+        return wrap
+
+    def _build_char_grid_with_variants(self) -> QWidget:
+        """角色段:每行一个角色(主图 + 该角色所有变体,横向并排)。"""
+        wrap = QWidget()
+        g = QVBoxLayout(wrap)
+        g.setContentsMargins(0, 0, 0, 0)
+        g.setSpacing(10)
+        if not self._chars:
+            g.addWidget(QLabel(tr("no_assets_yet")))
+            return wrap
+        for r in self._chars:
+            # 主图卡
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            row.setContentsMargins(0, 0, 0, 0)
+            checked = r["id"] in self._bound_chars
+            card = _BindCard(r, "character", checked,
+                             on_toggle=lambda v, rid=r["id"]: self._toggle_char(rid, v))
+            card.setFixedWidth(240)
+            row.addWidget(card)
+            # 变体卡(若有):同角色不同造型(面具版/老年版/病号版等)→ 供「此刻画风不同」的镜
+            vs = db.q("SELECT id, label, image_url, comic_image_url "
+                      "FROM character_variants WHERE character_id=? "
+                      "AND COALESCE(image_url, comic_image_url)!='' "
+                      "ORDER BY sort_order, id", (r["id"],))
+            if vs:
+                tag = QLabel(f"+ {len(vs)} {tr('variant_label')}")
+                tag.setObjectName("muted")
+                tag.setStyleSheet("padding-top:18px;")
+                row.addWidget(tag, 0, Qt.AlignTop)
+                for v in vs:
+                    checked_v = False  # 变体默认不勾(避免过多参考图让模型花)
+                    vcard = _BindCard(v, "variant", checked_v,
+                                      on_toggle=lambda v_, vid=v["id"]: None)
+                    vcard.setFixedWidth(140)
+                    row.addWidget(vcard)
+            g.addLayout(row)
         return wrap
 
     def _build_scene_grid(self) -> QWidget:

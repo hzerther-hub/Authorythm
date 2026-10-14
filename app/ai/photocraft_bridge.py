@@ -499,6 +499,14 @@ class IntentParser:
             return [], "", f"LLM 异常:{exc}"
 
         raw = (raw or "").strip()
+        # 推理型模型(minimax-M3 / glm 等)会先吐一整段 <think>...</think> 推理,
+        # 再给 JSON。这里不剥就 json.loads 必然失败(实测 MiniMax-M3 全程在推理)。
+        # 与 agents/runner.extract_json 同款处理:成对先剥,未闭合的尾巴取最后一个
+        # <think> 之后的全部内容(正文在思考之后)。
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S)
+        if "<think>" in raw:
+            raw = raw.rsplit("<think>", 1)[-1]
+        raw = raw.strip()
         # LLM 偶尔会裹一层 Markdown ```json```,扒掉再启
         if raw.startswith("```"):
             raw = re.sub(r"^```(?:json)?\s*", "", raw, count=1)
@@ -541,6 +549,506 @@ class IntentParser:
         return steps, note, ""
 
 
+def _wants_text_removal(text: str) -> bool:
+    """判断用户这句是不是「把图上的文字去掉/替换掉」。
+
+    触发范围刻意保守 —— 误判的代价是多一次识图 LLM 调用(几秒 + token)。
+    「字」单字太泛,只在同时提到图/画面类词时才认;「水印/字幕/标题/文案」
+    本身就是专用词,直接认。
+
+    容错:
+      - 常见打字容错「去请」「去调」也算去掉
+      - 「erase / clean / remove」等英文指令也接受
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    # 去掉类关键词 —— 包括常见打字容错("去请"是用户实测的打字错误)
+    remove_words = ("去掉", "去除", "删除", "抹掉", "清除", "消除", "擦掉", "擦除",
+                    "遮掉", "不要", "去请", "除掉", "移除", "消掉",
+                    "remove", "erase", "clean", "delete")
+    dedicated = ("文字", "文本", "文案", "字幕", "水印", "签名", "logo")
+    broad_char = "字"
+    broad_ctx = ("图", "图片", "画面", "照片", "海报", "封面", "背景", "上", "里", "中")
+    low = t.lower()
+    for rw in remove_words:
+        if rw not in t and rw not in low:
+            continue
+        # 专用词直接命中
+        for dw in dedicated:
+            if dw in t:
+                return True
+        # 单字「字」要求同时有上下文词
+        if broad_char in t and any(c in t for c in broad_ctx):
+            return True
+    return False
+
+
+# ── 批量意图(分析 + N 个方案分别执行) ──
+
+_BATCH_RE_NUM = re.compile(r"[三四五六七八九个十]?\s*个\s*(?:方案|改法|版本|想法|修改|变体|处理|做法)")
+_BATCH_RE_DO = re.compile(r"(分别|逐个|依次|挨个|每个)(执行|做|出图|跑|处理|试|尝试)")
+_BATCH_RE_FLOW = re.compile(r"先\s*.+?\s*(?:然后|再|接着|之后)\s*.+?(?:执行|做|出图|跑|处理)")
+_BATCH_RE_N = re.compile(r"(\d+)\s*个\s*(?:方案|改法|版本|想法|修改|变体)")
+
+
+def _wants_batch_analysis(text: str) -> bool:
+    """检测「先分析,再 N 个方案分别执行」类批量请求。
+
+    触发关键词:
+      - 「N 个方案/改法/版本」(三/四/五.../数字 N)
+      - 「分别/逐个/依次/每个 执行/做/出图」
+      - 「先 X,然后/再 Y,执行」(带分析意图)
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if _BATCH_RE_NUM.search(t):
+        return True
+    if _BATCH_RE_DO.search(t):
+        return True
+    # 「先分析...再执行」也要认(用户没明说数量就给默认 3)
+    if _BATCH_RE_FLOW.search(t) and ("分析" in t or "看" in t):
+        return True
+    return False
+
+
+def _wants_batch_n(text: str) -> int:
+    """从用户句子里提取 N(默认 3)。"""
+    m = _BATCH_RE_N.search(text or "")
+    if m:
+        try:
+            return max(1, min(8, int(m.group(1))))
+        except (TypeError, ValueError):
+            pass
+    m = _BATCH_RE_NUM.search(text or "")
+    if m:
+        cn = m.group(0)
+        digits = {"三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+        for k, v in digits.items():
+            if k in cn:
+                return min(8, v)
+    return 3
+
+
+# 批量规划的 LLM 系统提示 —— 让 LLM 看图后给 N 个**单条可执行**方案
+_ANALYZE_PLAN_SYSTEM = """你是图像修改顾问。用户给一张图 + 一句修改意图。
+
+任务:
+1. 用 2-3 句中文简短分析图的构图/色调/主题(共 < 100 字)
+2. 提出 N 个不同的修改方案。每个方案必须有一个**单条可执行**的 prompt。
+
+输出严格 JSON(不要 Markdown 围栏、不要解释、不要思考过程):
+{
+  "analysis": "构图分析文本",
+  "plans": [
+    {
+      "id": "A",
+      "title": "方案标题(5-10 字)",
+      "description": "这个方案要做什么(1-2 句中文)",
+      "prompt": "具体的修改指令,必须是「聊天改图」能直接执行的单条指令"
+    },
+    ...
+  ]
+}
+
+prompt 必须是「聊天改图」已支持的指令,例如:
+- "改成黑白" / "反色" / "去色"
+- "亮度+30" / "对比+10" / "饱和度+20"
+- "高斯模糊 5" / "锐化"
+- "顺时针旋转 90" / "水平翻转"
+- "裁剪成 1:1 居中"
+- "把'X'改成'Y'"
+- "去掉图片上的文字"
+
+要求:
+- plans 数量 = 用户要求的 N
+- 每个 plan 的 prompt 必须是单条可执行指令(不要复杂句)
+- 3 个方案必须有**视觉差异**,不要同质化
+- 不要泛泛而谈("增强" / "优化" 这种不可执行的不收)"""
+
+
+def analyze_and_plan(image_path: str, user_intent: str, n: int = 3,
+                     config_id: int | None = None,
+                     timeout: int = 90) -> tuple[str, list[dict], str]:
+    """LLM 看图 + 返回 N 个修改方案。
+
+    返回 (analysis, plans, error)。
+    plans = [{"id", "title", "description", "prompt"}, ...]
+
+    实现:
+      - data URL 直接传给多模态 LLM(同 locate_text_regions 路径)
+      - 推理块 / Markdown 围栏 用 _strip_reasoning 统一剥掉
+      - 兜底:LLM 没给方案时返回空列表(由 caller 走温和回复)
+    """
+    from . import text_client
+    from .image_client import _ref_data_url
+
+    p = Path(image_path)
+    if not p.exists():
+        return "", [], f"图片不存在:{image_path}"
+    data_url = _ref_data_url(str(p))
+    if not data_url:
+        return "", [], "图片读取失败(无法转 data URL)"
+
+    ask = (f"用户意图:{user_intent}\n\n"
+           f"请按系统提示给出 {n} 个方案的 JSON。")
+
+    try:
+        raw = text_client.chat(
+            ask, system=_ANALYZE_PLAN_SYSTEM,
+            config_id=config_id, temperature=0.5, max_tokens=8000,
+            json_mode=True, timeout=timeout, image_urls=[data_url])
+    except text_client.AIError as exc:
+        return "", [], f"LLM 调用失败:{exc}"
+    except Exception as exc:  # noqa: BLE001
+        return "", [], f"LLM 异常:{exc}"
+
+    body = _strip_reasoning(raw)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        return "", [], f"LLM 输出不是 JSON({exc}):{body[:160]}"
+    if not isinstance(data, dict):
+        return "", [], "LLM JSON 顶层不是 dict"
+
+    analysis = (data.get("analysis") or "").strip()
+    plans_raw = data.get("plans") or []
+    if not isinstance(plans_raw, list):
+        return analysis, [], "LLM plans 不是数组"
+
+    letters = "ABCDEFGH"
+    out: list[dict] = []
+    for i, p in enumerate(plans_raw):
+        if not isinstance(p, dict):
+            continue
+        prompt = str(p.get("prompt") or "").strip()
+        if not prompt:
+            continue
+        out.append({
+            "id": str(p.get("id") or letters[i] if i < len(letters) else str(i + 1)),
+            "title": str(p.get("title") or f"方案 {letters[i]}").strip(),
+            "description": str(p.get("description") or "").strip(),
+            "prompt": prompt,
+        })
+    return analysis, out[:n], ""
+
+
+# ── 文字定位(用多模态 LLM 替代 OCR)──
+
+# 用户说「去掉图片上的文字」时,PhotoCraft CLI 只能做 edit.contentAwareFill,
+# 必须先有 select.rect 选区,而 CLI 的 858 条命令里**没有 OCR / 文字检测**,
+# 不知道文字在哪 → LLM 直接回 0 steps。
+#
+# 这里补一层:多模态 LLM(项目里本来就配了识图模型)看图,返回文字包围盒,
+# 再翻译成 select.rect + edit.contentAwareFill。坐标用 0-1000 归一化,
+# 避免不同分辨率下换算出错。
+
+_LOCATE_SYSTEM = """你是图片文字检测器。找出图中所有**文字区域**并返回包围盒坐标。
+
+**最重要**:用户消息里会告诉你这张图的实际像素尺寸(如「这张图是 800x600 像素」)。
+你必须返回**该像素尺寸下的坐标**,不要返回百分比、不要自己换算、不要用 0-1000 归一化。
+
+严格输出 JSON,不要任何解释、Markdown 围栏或思考过程:
+{"regions": [{"text": "识别到的文字", "x1": 120, "y1": 80, "x2": 400, "y2": 140}]}
+
+坐标规则:
+- x1/y1 = 文字左上角像素坐标;x2/y2 = 右下角像素坐标;全部是整数
+- x1 < x2,y1 < y2,且必须落在图片尺寸范围内(0 ≤ 坐标 < 宽/高)
+- 框要**完整包住文字笔画**,宁可略大一点也别切到字;四周留 3-6 像素余量
+- 一个文字行/词组算一个 region;同一块连续文字合并成一个
+- 图中没有文字时返回 {"regions": []}
+
+只检测文字,不要把图案、logo 图形、人物面部当成文字。"""
+
+
+def _strip_reasoning(raw: str) -> str:
+    """剥 <think> 推理块 + Markdown 围栏,留下纯 JSON 正文。
+
+    推理型模型(minimax-M3 / glm 等)会先吐一整段 <think> 再给 JSON,
+    不剥就 json.loads 必然失败。
+    """
+    raw = (raw or "").strip()
+    raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.S)
+    if "<think>" in raw:
+        raw = raw.rsplit("<think>", 1)[-1]
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, count=1)
+        raw = re.sub(r"\s*```$", "", raw, count=1)
+    return raw.strip()
+
+
+def locate_text_regions(image_path: str, config_id: int | None = None,
+                        timeout: int = 60) -> tuple[list[dict], str]:
+    """用多模态 LLM 找出图里的文字区域。
+
+    返回 (regions, error);regions = [{"text", "x1","y1","x2","y2"}],**像素坐标**。
+
+    为什么把图片尺寸写进提示:让模型自己按百分比/千分比换算时算不准
+    (实测 800×600 的图,文字在 y≈400 处,模型报 y=300‰ → 换算回像素只有 240,
+    框完全错位)。直接告知尺寸并要求返回像素坐标后,坐标基本吻合。
+    """
+    from . import text_client
+    from .image_client import _ref_data_url
+    p = Path(image_path)
+    if not p.exists():
+        return [], f"图片不存在:{image_path}"
+    iw = ih = 0
+    try:
+        from PIL import Image
+        with Image.open(p) as _im:
+            iw, ih = _im.size
+    except Exception:  # noqa: BLE001
+        pass
+    data_url = _ref_data_url(str(p))
+    if not data_url:
+        return [], "图片读取失败(无法转成 data URL)"
+    ask = (f"这张图是 {iw}×{ih} 像素。"
+           f"请找出图里所有文字,返回该尺寸下的像素坐标包围盒。") if iw else \
+          "请找出图里所有文字,返回像素坐标包围盒。"
+    try:
+        raw = text_client.chat(
+            ask, system=_LOCATE_SYSTEM,
+            config_id=config_id, temperature=0.1, max_tokens=8000,
+            json_mode=True, timeout=timeout, image_urls=[data_url])
+    except text_client.AIError as exc:
+        return [], f"识图模型调用失败:{exc}"
+    except Exception as exc:  # noqa: BLE001
+        return [], f"识图异常:{exc}"
+
+    body = _strip_reasoning(raw)
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        return [], f"识图模型输出不是 JSON:{body[:160]}"
+    regions_raw = data.get("regions") if isinstance(data, dict) else None
+    if not isinstance(regions_raw, list):
+        return [], f"识图模型未返回 regions:{body[:160]}"
+
+    # 万一模型又给了 0-1000 归一化值(坐标看着像千分比),按图尺寸还原
+    looks_normalized = bool(regions_raw) and max(
+        (int(float(r.get(k) or 0)) for r in regions_raw if isinstance(r, dict)
+         for k in ("x2", "y2")), default=0) <= 1000 and iw > 1000
+
+    out: list[dict] = []
+    for r in regions_raw:
+        if not isinstance(r, dict):
+            continue
+        try:
+            x1 = int(float(r.get("x1")))
+            y1 = int(float(r.get("y1")))
+            x2 = int(float(r.get("x2")))
+            y2 = int(float(r.get("y2")))
+        except (TypeError, ValueError):
+            continue
+        if looks_normalized and iw:
+            x1, x2 = int(x1 / 1000 * iw), int(x2 / 1000 * iw)
+            y1, y2 = int(y1 / 1000 * ih), int(y2 / 1000 * ih)
+        limit_w = iw or 10000
+        limit_h = ih or 10000
+        x1, x2 = sorted((max(0, min(limit_w, x1)), max(0, min(limit_w, x2))))
+        y1, y2 = sorted((max(0, min(limit_h, y1)), max(0, min(limit_h, y2))))
+        if x2 - x1 < 2 or y2 - y1 < 2:
+            continue
+        out.append({"text": str(r.get("text") or "").strip()[:40],
+                    "x1": x1, "y1": y1, "x2": x2, "y2": y2})
+    return out, ""
+
+
+def regions_to_steps(regions: list[dict], image_path: str | None = None,
+                     fill_cmd: str = "edit.contentAwareFill") -> list[Step]:
+    """把文字包围盒翻译成 select.rect + 填充命令的步骤序列。
+
+    两个必须对齐 CLI 的细节(查 photocraft-cli 命令表确认):
+      1. `select.rect` 的参数是 **x / y / width / height**(左上角 + 宽高),
+         **不是** x1/y1/x2/y2;
+      2. 单位是**像素** —— locate_text_regions 已把图片尺寸写进提示让模型直接给
+         像素坐标,这里不再做归一化换算。
+
+    image_path 只用于兜底:拿到真实画布尺寸好把选区夹回图内。
+    """
+    iw = ih = 0
+    if image_path:
+        try:
+            from PIL import Image
+            with Image.open(image_path) as _im:
+                iw, ih = _im.size
+        except Exception:  # noqa: BLE001
+            pass
+    # 外扩系数:模型给的框仍可能略紧,contentAwareFill 只处理选区内像素,
+    # 框小了字就抹不干净。宁可多盖背景(fill 本来就是拿周围像素推),不能漏字。
+    GROW = 0.20   # 每边外扩 20%
+    steps: list[Step] = []
+    for r in regions:
+        px1, py1 = int(r["x1"]), int(r["y1"])
+        px2, py2 = int(r["x2"]), int(r["y2"])
+        w = max(1, px2 - px1)
+        h = max(1, py2 - py1)
+        x = int(px1 - w * GROW)
+        y = int(py1 - h * GROW)
+        ex2 = int(px2 + w * GROW)
+        ey2 = int(py2 + h * GROW)
+        # 夹回画布
+        if iw:
+            x = max(0, min(iw - 2, x))
+            ex2 = max(x + 2, min(iw, ex2))
+        if ih:
+            y = max(0, min(ih - 2, y))
+            ey2 = max(y + 2, min(ih, ey2))
+        steps.append(Step(
+            cmd="select.rect",
+            params={"x": x, "y": y, "width": max(1, ex2 - x),
+                    "height": max(1, ey2 - y), "mode": "replace"},
+            reason=f"框选「{r.get('text') or '文字'}」({x},{y} {ex2 - x}×{ey2 - y})"))
+    if regions:
+        steps.append(Step(cmd=fill_cmd, params={"sampling": "auto"},
+                          reason=f"内容识别填充,抹掉 {len(regions)} 处文字"))
+        steps.append(Step(cmd="select.deselect", params={}, reason="清除选区"))
+    return steps
+
+
+def remove_text_by_inpaint(image_path: str, regions: list[dict],
+                           out_file: str | None = None) -> tuple[str, str]:
+    """用项目自带的 inpaint 能力抹掉文字区域(绕开 PhotoCraft 选区限制)。
+
+    为什么不用 PhotoCraft 的 select.rect + contentAwareFill:
+    实测 photocraft-cli 的 `run` 模式下**选区状态不在命令间传递** ——
+    select.rect 返回 null,后续 contentAwareFill 的 window 与选区坐标完全无关
+    (选 y=430,填充 window 是 y=289),文字纹丝不动。这是 CLI 侧限制,换调用姿势无效。
+
+    这里走 app.ai.image_client.inpaint_masked:LLM 定位 → 合成矩形 mask →
+    inpaint 重建被盖住的像素。定位框由 locate_text_regions 给(像素坐标)。
+    """
+    import io as _io
+    import uuid as _uuid
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:  # pragma: no cover
+        return "", "Pillow 未安装"
+    from ..core import config
+    from ..pipeline.inpaint import inpaint_masked
+
+    p = Path(image_path)
+    if not p.exists():
+        return "", f"图片不存在:{image_path}"
+    try:
+        base = Image.open(p)
+        base.load()
+    except Exception as exc:  # noqa: BLE001
+        return "", f"图片读取失败:{exc}"
+    W, H = base.size
+
+    # 透明蒙版:alpha=255 处被重绘(见 inpaint_masked 约定「alpha=擦除强度」)
+    mask = Image.new("RGBA", (W, H), (255, 255, 255, 0))
+    d = ImageDraw.Draw(mask)
+    for r in regions:
+        x1, y1 = int(r["x1"]), int(r["y1"])
+        x2, y2 = int(r["x2"]), int(r["y2"])
+        w, h = max(1, x2 - x1), max(1, y2 - y1)
+        # 外扩 20% + 至少 6px,盖住字形抗锯齿边缘
+        gx, gy = max(0, int(w * 0.2)) + 6, max(0, int(h * 0.2)) + 6
+        d.rectangle([max(0, x1 - gx), max(0, y1 - gy),
+                     min(W - 1, x2 + gx), min(H - 1, y2 + gy)],
+                    fill=(0, 0, 0, 255))
+    buf = _io.BytesIO()
+    mask.save(buf, "PNG")
+
+    try:
+        result = inpaint_masked(p.read_bytes(), buf.getvalue())
+    except Exception as exc:  # noqa: BLE001
+        return "", f"局部重绘失败:{exc}"
+    if not result:
+        return "", "局部重绘没有返回结果"
+    out = Path(out_file) if out_file else (
+        config.STATIC_DIR / "processed" / f"notext_{_uuid.uuid4().hex[:10]}.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(result)
+    return str(out), ""
+
+
+# ── OpenCV 抹字(本地、零网络) ──
+
+def _opencv_available() -> bool:
+    """OpenCV(cv2) + numpy 是否可用。TextReplaceSkill 用这个判定走 cv2.inpaint
+    还是退到 inpaint_masked。
+    """
+    try:
+        import cv2  # noqa: F401
+        import numpy as np  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def inpaint_regions_opencv(in_path: str, regions: list[dict], out_path: str,
+                           radius: int = 3) -> tuple[bool, str]:
+    """用 OpenCV cv2.inpaint(TELEA 算法)抹掉指定文字区域。
+
+    CLI 兜底:PhotoCraft 的 select.rect 选区状态不传递(实测),
+    后续 contentAwareFill 完全对不上字。cv2.inpaint 直接吃 mask,
+    算法速度够、抹中文小字、字幕、水印都干净。
+
+    返回 (success, error)。
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return False, "未安装 opencv-python,无法用 cv2.inpaint"
+
+    p = Path(in_path)
+    if not p.exists():
+        return False, f"图片不存在:{in_path}"
+    img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+    if img is None:
+        return False, f"图片读取失败:{in_path}"
+    h, w = img.shape[:2]
+
+    mask = np.zeros((h, w), dtype=np.uint8)
+    for r in regions:
+        x1, y1 = int(r["x1"]), int(r["y1"])
+        x2, y2 = int(r["x2"]), int(r["y2"])
+        rw, rh = max(1, x2 - x1), max(1, y2 - y1)
+        # 外扩 20% + 6px,盖住字形抗锯齿边缘(跟 remove_text_by_inpaint 比例一致)
+        gx = max(0, int(rw * 0.2)) + 6
+        gy = max(0, int(rh * 0.2)) + 6
+        cv2.rectangle(mask,
+                      (max(0, x1 - gx), max(0, y1 - gy)),
+                      (min(w - 1, x2 + gx), min(h - 1, y2 + gy)),
+                      255, thickness=-1)
+    # TELEA = Fast Marching Method:速度够、对小区域干净
+    result = cv2.inpaint(img, mask, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if not cv2.imwrite(str(out), result):
+        return False, f"写出失败:{out_path}"
+    return True, ""
+
+
+def remove_text(image_path: str, out_file: str | None = None,
+                config_id: int | None = None) -> tuple[str, str]:
+    """一键抹掉图中所有文字:LLM 定位 + OpenCV/inpaint 抹除。
+
+    这是 _wants_text_removal 那条路径的真正实现 —— interpret() 里那条
+    select.rect + contentAwareFill 实际上没生效(CLI 选区不传递)。
+    """
+    regions, lerr = locate_text_regions(image_path, config_id=config_id)
+    if lerr:
+        return "", f"文字定位失败:{lerr}"
+    if not regions:
+        return "", "这张图里没检测到文字,无法执行「去文字」。"
+    out = Path(out_file) if out_file else (
+        config.STATIC_DIR / "processed" / f"notext_{int(time.time())}.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    if _opencv_available():
+        ok, err = inpaint_regions_opencv(image_path, regions, str(out))
+        if ok:
+            return str(out), ""
+    return remove_text_by_inpaint(image_path, regions, out_file=str(out))
+
+
 # ── 顶层入口 ──
 
 class ChatEditEngine:
@@ -578,7 +1086,22 @@ class ChatEditEngine:
         if mode == "whitelist":
             return [], "whitelist", ""
 
-        # 3. 走 LLM
+        # 3. 「去掉图上的文字」这类需要选区的指令:CLI 没 OCR,先用多模态 LLM
+        #    定位文字,再翻译成 select.rect + contentAwareFill。
+        #    不做这步的话 LLM 会因为「没给坐标」直接回 0 steps(实测)。
+        if _wants_text_removal(user_text) and image_url:
+            regions, lerr = locate_text_regions(image_url, config_id=llm_config_id)
+            if lerr:
+                return [], "llm", f"文字定位失败:{lerr}"
+            if not regions:
+                return [], "llm", "这张图里没检测到文字,无法执行「去文字」。"
+            steps = regions_to_steps(regions, image_path=image_url)
+            found = "、".join(f"「{r['text']}」" for r in regions[:5]) or f"{len(regions)} 处"
+            note = (f"已定位到 {len(regions)} 处文字:{found}。"
+                    f"逐个框选后用内容识别填充抹除。")
+            return steps, "llm", note
+
+        # 4. 走 LLM
         steps, note, lerr = self.parser.parse(
             user_text, image_url=image_url, config_id=llm_config_id)
         if lerr:

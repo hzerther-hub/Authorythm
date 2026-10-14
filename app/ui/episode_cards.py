@@ -276,26 +276,17 @@ class CoverBox(QFrame):
     """封面框:图或占位图标 + 左上状态角标 + 左下类型角标(对齐 .asset-cover / .character-portrait)。
 
     角标用 QGridLayout 同格叠放实现「浮在图上」,避免嵌套布局把图挤小。
-
-    **固定框高 + 图等比例 letterbox**:用户反馈行高不齐(角色 1024×1024 撑
-    250 高、场景 2624×1472 撑 140 高,同一行 4 张高低不一)。改为统一框高
-    (ASSET_CARD_W × 280),图用 KeepAspectRatio letterbox 居中,空区填 #f4f5f7
-    浅灰 —— 同一行高度齐,人物脸脚再也不会被裁。
     """
 
     def __init__(self, url: str | None, w: int, h: int, placeholder: str,
                  badge: str = "", badge_state: str = "todo", tag_text: str = "",
                  on_click=None, pending: bool = False, on_download=None):
         super().__init__()
+        self.setFixedHeight(h)
         self._w = w
-        # 固定框高 h(上层传 280),不同图 letterbox 后行高齐;无图占位也用 h 维持外观
-        box_h = h
-        self.setMinimumHeight(box_h)
-        self.setMaximumHeight(box_h)
         self.setStyleSheet(
             "QFrame#coverBox{border:1px solid rgba(128,128,128,0.22); border-radius:8px;}"
-            "QLabel#coverInner{border:none;background:#f4f5f7;}"
-            "QLabel#placeholderIcon{background:#f4f5f7;color:#c9cdd4;font-size:42px;}")
+            "QLabel#coverInner{border:none;}")
         g = QGridLayout(self)
         g.setContentsMargins(0, 0, 0, 0)
         g.setSpacing(0)
@@ -303,17 +294,14 @@ class CoverBox(QFrame):
             img = QLabel()
             img.setObjectName("coverInner")
             img.setAlignment(Qt.AlignCenter)
-            # KeepAspectRatio letterbox:把图放进 w×h 框内,完整出图 + 居中 + 留白,
-            # 不裁。setMaximumSize 锁住框,让 QLabel 自己按比例缩。
-            img.setMaximumSize(w, box_h)
-            img.setMinimumSize(0, 0)
-            img.setPixmap(W.pixmap_from_media(url, w, box_h))
+            img.setPixmap(W.pixmap_cover_media(url, w, h))   # 铺满裁切,与参考一致
             if on_click:
                 img.setCursor(Qt.PointingHandCursor)
                 img.mousePressEvent = lambda _e: on_click()
             g.addWidget(img, 0, 0)
         else:
             ph = QLabel(placeholder)
+            ph.setObjectName("coverInner")
             ph.setObjectName("placeholderIcon")
             ph.setAlignment(Qt.AlignCenter)
             g.addWidget(ph, 0, 0)
@@ -447,7 +435,7 @@ class CharacterAssetCard(QFrame):
         # 卡片默认展示常规版,因为常规版是给视频生成当 first_frame 用的(用户主要需求)。
         # 用户要看漫画版时切换到「漫画资产」tab 即可。
         cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
-        cover = CoverBox(cover_url, 320, 280, "☺",
+        cover = CoverBox(cover_url, 320, 180, "☺",
                          badge=(labels["cover_done"] if cover_url
                                 else labels["cover_todo"]),
                          badge_state="ready" if cover_url else "todo",
@@ -552,7 +540,8 @@ class AssetCard(QFrame):
         has = bool(row.get("image_url"))
         # 封面占满卡宽:image_url(常规 / 3D)优先,漫画镜像 fallback。
         cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
-        cover = CoverBox(cover_url, 320, 280, "⌖" if kind == "scene" else "▣",
+        cover = CoverBox(cover_url, 320, (180 if kind == "scene" else 240),
+                         "⌖" if kind == "scene" else "▣",
                          badge=labels["cover_done"] if cover_url else labels["cover_todo"],
                          badge_state="ready" if cover_url else "todo",
                          tag_text=labels["cover_tag"],
