@@ -2832,7 +2832,13 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _gen_one(self, row_id: int, table: str, by_text: bool) -> str:
-        """生成单个资产形象图(文绘/图绘),落库并返回本地 URL。"""
+        """生成单个资产形象图(文绘/图绘),落库并返回本地 URL。
+
+        comic_image_url 同时清空:
+        卡片封面优先显示 comic_image_url,不空就会一直盖住新画的 3D 图,
+        让用户误以为「重画没生效」。
+        漫画版用户想看时,再用专门的漫画重画按钮单独生成。
+        """
         if True:
             row = dict(db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,)) or {})
             fp = row.get("final_prompt") or ""
@@ -2883,7 +2889,10 @@ class EpisodePage(QWidget):
                                                         reference_images=refs or None,
                                                         size=size, people=people)
             url = config.path_to_media_url(out)
-            db.ex(f"UPDATE {table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), row_id))
+            # 同步清空 comic_image_url:卡片优先展示它,不空就会盖住新画的 image_url。
+            # 用户想要漫画版时,用漫画专用按钮单独生成(不影响常规版)。
+            db.ex(f"UPDATE {table} SET image_url=?, comic_image_url=NULL, updated_at=? WHERE id=?",
+                  (url, db.now(), row_id))
             return url
 
     def _batch_images(self, table: str):
