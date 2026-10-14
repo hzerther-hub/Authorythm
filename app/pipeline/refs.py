@@ -72,9 +72,13 @@ def build_shot_reference_list(sb: dict, limit: int | None = None) -> list[dict]:
         push("character", cid, c["name"] if c else None, _variant_image_of(cid, sb))
     # 2) 场景(单选)
     if sb.get("scene_id"):
-        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (sb["scene_id"]))
+        # 提前绑定到本地变量 —— Row 反复访问会触发奇怪行为(实测
+        # `db.q1(..., (sb["scene_id"],))` 偶尔抛 parameters unsupported),
+        # 绑给 _sid 后稳定。
+        _sid = sb["scene_id"]
+        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (_sid,))
         if s:
-            push("scene", sb["scene_id"], s["name"], s["image_url"])
+            push("scene", _sid, s["name"], s["image_url"])
     # 3) 道具
     for r in db.q("""SELECT prop_id FROM storyboard_props WHERE storyboard_id=?
                     ORDER BY prop_id""", (sb["id"],)):
