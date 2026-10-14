@@ -237,6 +237,18 @@ ASSET_LABELS = {
 }
 
 
+def _indent_block(text: str, prefix: str = "  ") -> str:
+    """多行文本按行缩进(每行加 prefix),空行保持空。
+
+    给 TXT 导出的字段值做整齐的视觉缩进 ——「分镜描述」下两格再开始,
+    比直接贴原文好读;空字段就只输出空串(整个段标题下是空的)。
+    """
+    if not text:
+        return ""
+    lines = text.splitlines() or [""]
+    return "\n".join((prefix + ln) if ln else "" for ln in lines)
+
+
 class SlateProductionHeader(QFrame):
     """拍板式 production roll header —— 顶部 36px 黑色细条。
 
@@ -3138,6 +3150,15 @@ class EpisodePage(QWidget):
         self.batch_video_btn = WaitingButton(tr("batch_video"), primary=True)
         self.batch_video_btn.clicked.connect(self._batch_video)
         bar.addWidget(self.batch_video_btn)
+        # ↓ 下载 TXT:把当前剧集所有分镜的描述/视频提示词/氛围/旁白打成 TXT
+        # 按镜头分节,方便存到笔记或喂给其它工具。图标用 ↓ 区别于 ⟳ 重画类按钮。
+        from PySide6.QtWidgets import QPushButton
+        dl_btn = QPushButton(tr("download_prompts_txt"))
+        dl_btn.setToolTip(tr("download_prompts_txt_tip"))
+        dl_btn.setObjectName("iconBtn")
+        dl_btn.setCursor(Qt.PointingHandCursor)
+        dl_btn.clicked.connect(self._download_storyboards_txt)
+        bar.addWidget(dl_btn)
         lay.addLayout(bar)
 
         # ── 空态 ──
@@ -4757,6 +4778,70 @@ class EpisodePage(QWidget):
                 ok(tr('补全完成,共修复 {} 个分镜').format(r.get('completed', 0)))
             self._reload_storyboard()
         TASKMGR.submit("sb_repair", job, done, episode_id=self.episode_id)
+
+    def _download_storyboards_txt(self):
+        """把当前剧集所有分镜打成 TXT,按镜头分节(描述/视频提示词/氛围/旁白)。
+
+        用户场景:把整套提示词存到 Notion / Obsidian / 喂给其它 AI / 复刻到别的项目。
+        """
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        rows = db.q("SELECT * FROM storyboards WHERE episode_id=? "
+                    "AND deleted_at IS NULL ORDER BY storyboard_number",
+                    (self.episode_id,))
+        if not rows:
+            err(tr("当前剧集还没有分镜"))
+            return
+        # 默认文件名:EP01_两集_分镜提示词_2026-10-14.txt
+        ep = db.q1("SELECT episode_number, title FROM episodes WHERE id=?", (self.episode_id,))
+        ep_no = ep["episode_number"] if ep else 0
+        ep_title = (ep["title"] if ep and ep["title"] else f"EP{ep_no:02d}").replace("/", "_")
+        default_name = f"EP{ep_no:02d}_{ep_title}_分镜提示词_{db.now()[:10]}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("download_prompts_txt"), default_name,
+            "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        # 标题/元数据
+        drama = db.q1("SELECT title FROM dramas WHERE id=?", (self.drama_id,))
+        drama_title = drama["title"] if drama else ""
+        out = []
+        out.append(f"【分镜提示词 · EP{ep_no:02d} · {drama_title}】")
+        out.append(f"导出时间:{db.now()}")
+        out.append(f"剧集:{ep_title}")
+        out.append(f"分镜总数:{len(rows)}")
+        out.append("")
+        # 每镜头一节
+        line = "─" * 60
+        for r in rows:
+            n = r["storyboard_number"]
+            out.append(line)
+            out.append(f"镜头 #{n:02d}")
+            out.append(line)
+            out.append("【分镜描述】")
+            desc = (r["description"] or r["content"] or "").strip()
+            out.append(_indent_block(desc))
+            out.append("")
+            out.append("【视频提示词】")
+            vp = (r["video_prompt"] or "").strip()
+            out.append(_indent_block(vp))
+            out.append("")
+            out.append("【氛围】")
+            at = (r["atmosphere"] or "").strip()
+            out.append(_indent_block(at))
+            out.append("")
+            out.append("【旁白】")
+            na = (r["narration"] or "").strip()
+            out.append(_indent_block(na))
+            out.append("")
+        out.append(line)
+        out.append(f"EOF · 共 {len(rows)} 个镜头")
+        out.append(line)
+        try:
+            Path(path).write_text("\n".join(out), encoding="utf-8")
+            ok(tr("已导出 {} 个分镜到:").format(len(rows)) + f"\n{path}")
+        except Exception as e:                                  # noqa: BLE001
+            err(f"写入失败:{e}")
 
     def _split_sb(self):
         """重新拆分分镜(改后台任务 + 轮询,对齐原版 split-async)。"""

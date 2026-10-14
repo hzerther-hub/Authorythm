@@ -17,6 +17,7 @@ from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
 from .toast import err, ok
+from .projects_page import _one_line
 from .cover_dialog import CoverPanel, EpisodeCoverButton  # noqa: F401  (封面入口后续可能复用)
 
 # 封面右侧"前 N 集"快速视图:N=6 张,3 列;超出 N 的 EP 走下方 tabs 「剧集列表」。
@@ -670,6 +671,20 @@ class ProjectPage(QWidget):
         self.book_btn.setToolTip(tr("导入整本 TXT → 结构分析 → 依样仿写(新建项目)"))
         self.book_btn.clicked.connect(self._book_import)
         head.addWidget(self.book_btn)
+        # 三个下载按钮:导出本项目所有剧集的小说正文 / 剧本 / 分镜提示词。
+        # 用户场景:把整个项目的核心文本资产打包带走(备份 / 喂给其它 AI / 归档)。
+        self.dl_novel_btn = QPushButton("↓ " + tr("download_novel"))
+        self.dl_novel_btn.setToolTip(tr("download_novel_tip"))
+        self.dl_novel_btn.clicked.connect(lambda: self._download_project_text("novel"))
+        head.addWidget(self.dl_novel_btn)
+        self.dl_script_btn = QPushButton("↓ " + tr("download_script"))
+        self.dl_script_btn.setToolTip(tr("download_script_tip"))
+        self.dl_script_btn.clicked.connect(lambda: self._download_project_text("script"))
+        head.addWidget(self.dl_script_btn)
+        self.dl_prompts_btn = QPushButton("↓ " + tr("download_prompts"))
+        self.dl_prompts_btn.setToolTip(tr("download_prompts_tip"))
+        self.dl_prompts_btn.clicked.connect(lambda: self._download_project_text("prompts"))
+        head.addWidget(self.dl_prompts_btn)
         root.addWidget(head_card)
         self.head_card = head_card
 
@@ -775,6 +790,84 @@ class ProjectPage(QWidget):
     def _book_import(self):
         from .book_import_dialog import BookImportDialog
         BookImportDialog(self, self.drama_id).exec()
+
+    def _download_project_text(self, kind: str):
+        """项目级下载:把本项目所有剧集的内容打成 TXT。
+
+        kind:
+          - "novel"   → episodes.content(小说正文)
+          - "script"  → episodes.script_content(剧本)
+          - "prompts" → storyboards.description/video_prompt/atmosphere/narration
+                        (按镜头分节,同分镜下载按钮的格式)
+        """
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        if not self.drama_id:
+            err("请先打开一个项目")
+            return
+        d = db.q1("SELECT title FROM dramas WHERE id=?", (self.drama_id,))
+        drama_title = (d["title"] if d else "项目").replace("/", "_")
+        label = {"novel": "小说", "script": "剧本", "prompts": "提示词"}.get(kind, kind)
+        default_name = f"{drama_title}_全剧集_{label}_{db.now()[:10]}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr(f"download_{kind}"), default_name,
+            "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        eps = db.q("SELECT id, episode_number, title FROM episodes "
+                   "WHERE drama_id=? ORDER BY episode_number", (self.drama_id,))
+        out = []
+        out.append(f"【{drama_title} · 全剧集{label}】")
+        out.append(f"导出时间:{db.now()}")
+        out.append(f"剧集数:{len(eps)}")
+        out.append("")
+        line = "═" * 60
+        sep = "─" * 60
+        sep2 = "·" * 60
+        n_eps_with = 0
+        for ep in eps:
+            ep_no = ep["episode_number"]
+            ep_title = ep["title"] or f"EP{ep_no:02d}"
+            ep_row = db.q1("SELECT content, script_content FROM episodes WHERE id=?", (ep["id"],))
+            out.append(line)
+            out.append(f"EP{ep_no:02d} · {ep_title}")
+            out.append(line)
+            if kind == "novel":
+                body = (ep_row["content"] if ep_row else "") or ""
+                if body.strip():
+                    n_eps_with += 1
+                out.append(body or tr("no_content_yet"))
+            elif kind == "script":
+                body = (ep_row["script_content"] if ep_row else "") or ""
+                if body.strip():
+                    n_eps_with += 1
+                out.append(body or tr("no_content_yet"))
+            else:  # prompts
+                sbs = db.q("SELECT * FROM storyboards WHERE episode_id=? "
+                           "AND deleted_at IS NULL ORDER BY storyboard_number",
+                           (ep["id"],))
+                if not sbs:
+                    out.append(tr("no_content_yet"))
+                    continue
+                n_eps_with += 1
+                for r in sbs:
+                    n = r["storyboard_number"]
+                    out.append(sep2)
+                    out.append(f"  · 镜头 #{n:02d}")
+                    out.append(f"    分镜描述:{_one_line(r['description'] or r['content'])}")
+                    out.append(f"    视频提示词:{_one_line(r['video_prompt'])}")
+                    out.append(f"    氛围:{_one_line(r['atmosphere'])}")
+                    out.append(f"    旁白:{_one_line(r['narration'])}")
+                out.append(sep)
+            out.append("")
+        out.append(line)
+        out.append(f"EOF · 共 {len(eps)} 集 / {n_eps_with} 集有内容")
+        out.append(line)
+        try:
+            Path(path).write_text("\n".join(out), encoding="utf-8")
+            ok(f"已导出 {len(eps)} 集({n_eps_with} 集有内容){label}到:\n{path}")
+        except Exception as e:                              # noqa: BLE001
+            err(f"写入失败:{e}")
 
     def load(self, drama_id: int):
         self.drama_id = drama_id

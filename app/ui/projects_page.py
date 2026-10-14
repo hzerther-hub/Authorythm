@@ -109,6 +109,18 @@ def _pill(text: str, tone: str = "") -> QLabel:
     return lab
 
 
+def _one_line(text: str | None, max_len: int = 200) -> str:
+    """把多行文本压成单行摘要(去换行 + 折叠空白)。
+
+    项目级 TXT 导出的字段摘要用 —— 一行一个字段看起来像清单,
+    比起多行堆叠更适合「快速浏览 + 复制粘贴到其它工具」。
+    """
+    if not text:
+        return "(空)"
+    s = " ".join(text.split())
+    return s if len(s) <= max_len else s[:max_len] + "…"
+
+
 class SlateStrip(QFrame):
     """拍板顶条 —— 每张项目卡的视觉签名。
 
@@ -518,6 +530,14 @@ class ProjectsPage(QWidget):
             self._filter_btns[key] = b
             bar.addWidget(b)
         self._filter = "all"
+        # ↓ 下载项目全部提示词:把所有剧集的分镜提示词打成一个大 TXT(每集一节)。
+        # 用户场景:复制整套提示词到 Notion / 喂给其它 AI / 项目归档备份。
+        self._download_all_btn = QPushButton(tr("download_project_prompts"))
+        self._download_all_btn.setObjectName("slateSort")
+        self._download_all_btn.setToolTip(tr("download_project_prompts_tip"))
+        self._download_all_btn.setCursor(Qt.PointingHandCursor)
+        self._download_all_btn.clicked.connect(self._download_all_prompts_txt)
+        bar.addWidget(self._download_all_btn)
         bar.addStretch(1)
         from PySide6.QtWidgets import QComboBox
         self.sort = QComboBox()
@@ -621,6 +641,78 @@ class ProjectsPage(QWidget):
         db.ex("UPDATE dramas SET status=?, updated_at=? WHERE id=?", (status, db.now(), drama_id))
         ok(f"{tr('status_marked')}: {status_label(status)}")
         self.reload()
+
+    def _download_all_prompts_txt(self):
+        """项目级批量导出:把当前筛选下的所有剧集的分镜提示词打成一个大 TXT。
+
+        每集一节(EP01 / EP02...),集内每个镜头一子节,字段统一:
+        分镜描述 / 视频提示词 / 氛围 / 旁白。
+        """
+        from PySide6.QtWidgets import QFileDialog
+        from pathlib import Path
+        # 取当前筛选下的项目(尊重搜索/筛选/排序)
+        kw = self.search.text().strip()
+        want = FILTER_DB.get(self._filter)
+        rows = [dict(r) for r in db.q("SELECT * FROM dramas")]
+        shown = [d for d in rows
+                 if (not kw or kw in d["title"])
+                 and (want is None or (d.get("status") or "pending") == want)]
+        if not shown:
+            err("当前筛选下没有项目")
+            return
+        # 默认文件名
+        default_name = f"项目提示词合集_{db.now()[:10]}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            self, tr("download_project_prompts"), default_name,
+            "Text files (*.txt);;All files (*)")
+        if not path:
+            return
+        out = []
+        out.append(f"【项目提示词合集 · {len(shown)} 个项目】")
+        out.append(f"导出时间:{db.now()}")
+        out.append("")
+        grand_eps = grand_sbs = 0
+        line = "═" * 60
+        sep = "─" * 60
+        for d in shown:
+            eps = db.q("SELECT id, episode_number, title FROM episodes "
+                       "WHERE drama_id=? ORDER BY episode_number", (d["id"],))
+            if not eps:
+                continue
+            out.append(line)
+            out.append(f"项目:{d['title']}  (drama_id={d['id']})")
+            out.append(line)
+            for ep in eps:
+                ep_no = ep["episode_number"]
+                ep_title = ep["title"] or f"EP{ep_no:02d}"
+                out.append("")
+                out.append(f"EP{ep_no:02d} · {ep_title}")
+                out.append(sep)
+                sbs = db.q("SELECT * FROM storyboards WHERE episode_id=? "
+                           "AND deleted_at IS NULL ORDER BY storyboard_number",
+                           (ep["id"],))
+                grand_eps += 1
+                grand_sbs += len(sbs)
+                if not sbs:
+                    out.append("  (无分镜)")
+                    continue
+                for r in sbs:
+                    n = r["storyboard_number"]
+                    out.append(f"  · 镜头 #{n:02d}")
+                    out.append(f"    分镜描述:{_one_line(r['description'] or r['content'])}")
+                    out.append(f"    视频提示词:{_one_line(r['video_prompt'])}")
+                    out.append(f"    氛围:{_one_line(r['atmosphere'])}")
+                    out.append(f"    旁白:{_one_line(r['narration'])}")
+                out.append(sep)
+            out.append("")
+        out.append(line)
+        out.append(f"EOF · 共 {grand_eps} 集 / {grand_sbs} 个分镜")
+        out.append(line)
+        try:
+            Path(path).write_text("\n".join(out), encoding="utf-8")
+            ok(f"已导出 {grand_eps} 集 / {grand_sbs} 个分镜到:\n{path}")
+        except Exception as e:                              # noqa: BLE001
+            err(f"写入失败:{e}")
 
     def _delete(self, drama_id: int, _title: str):
         from PySide6.QtWidgets import QMessageBox
