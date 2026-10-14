@@ -11,16 +11,28 @@
 
 ---
 
-## 🌐 语言支持(15 种)
+## 🌐 语言支持(16 种)
 
-**界面语言与 AI 内容语言是同一个开关,内置 15 种**(超过原版 Web 的"UI 15 种 + AI 内容 4 种"):
+**界面语言与 AI 内容语言是同一个开关,内置 16 种**(简繁中文 + 14 种其他语言):
 
-中文 / English / 日本語 / 한국어 / Français / Deutsch / Italiano / Português / Español / Tiếng Việt / Türkçe / العربية / हिन्दी / Bahasa Indonesia / ภาษาไทย
+简体中文 / 繁體中文 / English / 日本語 / 한국어 / Français / Deutsch / Italiano / Português / Español / Tiếng Việt / Türkçe / العربية / हिन्दी / Bahasa Indonesia / ภาษาไทย
 
 - 切换入口:顶栏「界面与 AI 内容语言」或「设置 → 通用」;
 - 切换后界面文案与 AI 产出(剧本/资产提取/分镜/提示词/小说/文案)**同时**使用所选语言;
 - 非 zh/en/ja/ko 的语言通过在 Agent System Prompt 末尾注入显式输出语言指令实现(防止模型漂回英文);
-- 本地化文件:`app/core/i18n.py`(新增语言只需在 `LANGS` 加一行 + 补 `T[lang]` 字典)。
+- 本地化文件:`app/core/i18n.py`(主表 + `_t()` fallback)+ `app/core/ui_strings.py`(15 语言全量翻译表,新增语言只需在 `LANGS` 加一行 + 补一列 15 元素 list)。
+- **Edge TTS 朗读同步 16 语种**: 切换到「朗读音色」(女声/男声)后,Edge TTS 读出章节文本时,按主脚本自动从 16 语种 × 男女 = 32 个微软神经 voice 中选一个,语种变了 voice 自动切。
+
+## 🔊 Edge TTS 朗读(免费神经语音)
+
+`dramas.metadata.tts_gender`(`female` / `male`)驱动,链路 4 段:
+
+1. **Path A/B 火山豆包**(用户配了 API Key 时) → 付费高质量
+2. **Path C Microsoft Edge TTS**(默认) → **免费云端神经语音,无 API Key、无需下载语言包**,只要联网就有声
+3. **detect_lang(text)** 用「脚本扫描 + langdetect + 繁中独有字」三重判定,16 种系统界面语言全覆盖
+4. **EDGE_VOICE_LIST** 32 个 voice 预设(微软 Azure Neural voices),按 `text 主语言 + gender` 自动选
+
+朗读入口:集工作台「原始内容」面板 → 「🔊 朗读本章」→ 走 `novel.read_aloud` 全集串行合成,完成后弹 `AudioPreviewDialog` 内嵌播放窗口(标题带 `voice 名 + 女声/男声`),用户再次点会弹「重放/重新生成」二选一。分镜旁白走同一入口,`storyboards.narration_voice` 字段记录真实 voice。
 
 ## ✨ 功能全景
 
@@ -36,6 +48,10 @@
 | 无损合并工具页 | ffprobe 参数一致性检测(分辨率/编码/帧率/Profile/采样率)→ 三通道:全一致 `-c copy` 秒合 / 视频一致音频不同→智能直通 / 少数异类→一键对齐多数派;失败回退链(换中间容器→重编码) |
 | 同款复刻 | 参考视频抽帧 → AI 出分镜表 → 产品/模特素材 → 逐镜首帧图+图生视频 → 按原片节奏无损拼接 |
 | 小说线 | 开书策划(总纲/世界观/合约/卷/章节)→ 逐章生成 → 六维审校 → 按指令改稿 → 导出整本 |
+| 项目级"温画画风" | `dramas.comic_style` 字段统一漫画资产/漫画格画风,项目设定一键切;其它漫化页不重复下拉 |
+| 项目级"朗读音色" | `dramas.metadata.tts_gender` 字段统一男女声(女声/男声) → Edge TTS 16 语种 × 男女 32 个神经 voice 自动选 |
+| Edge TTS 免费神经朗读 | 微软云端 Microsoft Edge TTS,**无需 API Key**,**不需下载语言包**,只要联网就有声;脚本旁白 + 整章朗读 同一链路;播放窗口带 voice 名字 |
+| 漫画跨格一致性 | 链式 keyframe 馈送(上一张 panel 出图后 url 喂给下一张)+ character_variants 多角度参考图(优先取变体图,没有时退回主图),跨格角色/场景/光影保持一致 |
 | 数据 | SQLite 单文件(23 张表)+ 本体媒体存储,`data/` 目录即全部数据 |
 
 ## 📊 功能对照表(原版 Web ↔ 本桌面版)

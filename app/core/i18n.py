@@ -1183,6 +1183,20 @@ T["th"] = _t(T["en"], nav_projects="โปรเจกต์", nav_settings="ต
  merge_now="รวมเลย", movie_quality="คุณภาพระดับภาพยนตร์",
 )
 
+T["zh-Hant"] = _t(T["en"],
+    recent_n_label='前 {} 集',
+    chapter_words_chip='每章字數 {}',
+    read_aloud_busy='合成中…',
+    audio_preview='朗讀預覽',
+    read_aloud_replay='重播',
+    read_aloud_regen='重新生成',
+    read_aloud_done_q='本章已合成朗讀音訊({} 段),重播還是重新生成?',
+    tts_gender='朗讀音色',
+    tts_gender_female='女聲',
+    tts_gender_male='男聲',
+    tts_gender_hint='Edge TTS 免費神經語音,語種跟隨文本自動切換;不需下載語言包,只要聯網就有聲')
+
+
 _LISTENERS: list = []
 
 
