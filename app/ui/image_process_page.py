@@ -13,7 +13,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
                                QLabel, QLineEdit, QPlainTextEdit, QPushButton,
                                QScrollArea, QVBoxLayout, QWidget)
@@ -73,6 +73,9 @@ EDIT_NEGATIVE = ("extra people, additional people, background characters, bystan
 
 class ImageProcessPage(QWidget):
     """AI 改图工作台。"""
+
+    # 主窗口订阅该信号 → 转发给 ChatEditDrawer 加载图并打开抽屉
+    chatRequested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -226,6 +229,13 @@ class ImageProcessPage(QWidget):
         act = QHBoxLayout()
         self.status_lab = W.muted("")
         act.addWidget(self.status_lab, 1)
+        # 「发送到聊天修图」:把第一张选中的图送进 ChatEditDrawer 新会话,
+        # 主窗口订阅 chatRequested 信号 → 打开抽屉 + 加载图。
+        self.chat_send_btn = QPushButton("💬 " + tr("send_to_chat_edit"))
+        self.chat_send_btn.setToolTip(tr("send_to_chat_edit_tip"))
+        self.chat_send_btn.setCursor(Qt.PointingHandCursor)
+        self.chat_send_btn.clicked.connect(self._send_to_chat)
+        act.addWidget(self.chat_send_btn)
         # 必须用 WaitingButton:W.primary_btn 返回的是普通 QPushButton,**没有
         # .busy() 方法** —— 在 TASKMGR.submit 之前就 AttributeError,任务永远提交
         # 不出去;而且 _busy 已置 True,之后再点全被 return 挡掉(表现为按钮都不能按)。
@@ -309,6 +319,24 @@ class ImageProcessPage(QWidget):
         self._sources.clear()
         self._render_sources()
 
+    def _send_to_chat(self):
+        """把当前选中列表的第一张图送进 ChatEditDrawer 新会话。
+
+        主窗口通过 `chatRequested = Signal(str)` 订阅 → 转发给 drawer.set_image。
+        自动新开会话,便于用户立刻输入修图指令多轮对话。
+        """
+        if not self._sources:
+            from .toast import err
+            err(tr("no_images_to_chat"))
+            return
+        first = self._sources[0]
+        # URL 直接发,本地路径转 file:// 兼容某些 drawer 实现
+        from app.core import config as _cfg
+        path = first if first.startswith(("file://", "/", "http")) else first
+        self.chatRequested.emit(path)
+        from .toast import ok
+        ok(tr("image_sent_to_chat"))
+
     def _render_sources(self):
         while self.src_lay.count():
             it = self.src_lay.takeAt(0)
@@ -361,6 +389,17 @@ class ImageProcessPage(QWidget):
                     "QPushButton:hover{background:#f97316;color:#ffffff;}")
                 b.clicked.connect(lambda _=False, x=str(s), f=cb: f(x))
                 bar.addWidget(b)
+            # PhotoCraft 聊天修图入口
+            cb_btn = QPushButton("💬")
+            cb_btn.setFixedSize(30, 22)
+            cb_btn.setCursor(Qt.PointingHandCursor)
+            cb_btn.setToolTip(tr("chat_edit_open_drawer"))
+            cb_btn.setStyleSheet(
+                "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
+                "border-radius:4px;color:#1f2329;font-size:12px;padding:0;}"
+                "QPushButton:hover{background:#f97316;color:#ffffff;}")
+            cb_btn.clicked.connect(lambda _=False, x=str(s): self.chatRequested.emit(x))
+            bar.addWidget(cb_btn)
             rm = W.svg_icon_btn("close", "", size=22)
             rm.setCursor(Qt.PointingHandCursor)
             rm.setToolTip(tr("u_delete"))
@@ -435,13 +474,44 @@ class ImageProcessPage(QWidget):
                 lb.setWordWrap(True)
                 lb.setStyleSheet("color:#dc2626; font-size:11px; border:none; background:transparent;")
             cl.addWidget(box)
-            cap = QLabel(Path(str(src)).stem[:18])
+            cap_row = QHBoxLayout()
+            cap_row.setContentsMargins(0, 0, 0, 0)
+            cap_row.setSpacing(2)
+            cap = QLabel(Path(str(src)).stem[:16])
             cap.setObjectName("muted")
             cap.setAlignment(Qt.AlignCenter)
             cap.setToolTip(str(e) if e else str(src))
-            cl.addWidget(cap)
+            cap_row.addWidget(cap, 1)
+            if out:
+                # 聊天继续修(把 out 再次丢进抽屉)
+                cb = QPushButton("💬")
+                cb.setFixedSize(22, 18)
+                cb.setCursor(Qt.PointingHandCursor)
+                cb.setToolTip(tr("chat_edit_open_drawer"))
+                cb.setStyleSheet(
+                    "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
+                    "border-radius:3px;color:#1f2329;font-size:11px;padding:0;}"
+                    "QPushButton:hover{background:#f97316;color:#ffffff;}")
+                cb.clicked.connect(lambda _=False, x=out: self.chatRequested.emit(x))
+                cap_row.addWidget(cb)
+            wrap = QFrame()
+            wrap.setLayout(cap_row)
+            cl.addWidget(wrap)
             self.res_lay.insertWidget(self.res_lay.count() - 1, cell)
         self.res_lay.addStretch(1)
+
+    def add_chat_result(self, out_path: str, src_for_label: str | None = None):
+        """被聊天抽屉调用:把对话产生的成品图加入结果区,左侧素材同步替换。"""
+        if not out_path or not Path(out_path).exists():
+            return
+        src = src_for_label or (self._sources[-1] if self._sources else out_path)
+        self._render_results([(src, out_path, None)])
+        # 把成品作为最新素材替换左侧
+        if src and src in self._sources:
+            self._replace_source(src, out_path)
+        elif not self._sources:
+            self._sources.append(out_path)
+            self._render_sources()
 
     def _open_edit(self, path: str):
         """打开改图对话框(裁剪/旋转/翻转/调色/滤镜/水印/尺寸/去背景)。
