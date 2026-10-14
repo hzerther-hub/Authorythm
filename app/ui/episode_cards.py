@@ -1035,10 +1035,25 @@ class ComicPanelCard(QFrame):
             cl2 = QVBoxLayout(cell)
             cl2.setContentsMargins(0, 0, 0, 0)
             cl2.setAlignment(Qt.AlignCenter)
-            ph = QLabel("⠋" if busy else "▣")
-            ph.setAlignment(Qt.AlignCenter)
-            ph.setObjectName("comicThumb")
-            cl2.addWidget(ph)
+            if busy:
+                # 动态旋转的盲文 spinner(替代之前只渲染静态 "⠋" 字符,
+                # 那样看上去永远不变,用户误以为批量卡住)。start() 启动 90ms
+                # 一次的帧循环,busy=True 进来直接转,reload_comic 重渲染时
+                # 也会跟着 busy_ids 集合重新激活。
+                from .braille import BrailleSpinner
+                spin_host = QWidget()
+                spin_host.setFixedSize(36, 36)
+                _sl = QVBoxLayout(spin_host)
+                _sl.setContentsMargins(0, 0, 0, 0)
+                self._busy_spin = BrailleSpinner(color="#f97316", size=18, parent=spin_host)
+                self._busy_spin.start("")
+                _sl.addWidget(self._busy_spin)
+                cl2.addWidget(spin_host, 0, Qt.AlignCenter)
+            else:
+                ph = QLabel("▣")
+                ph.setAlignment(Qt.AlignCenter)
+                ph.setObjectName("comicThumb")
+                cl2.addWidget(ph)
             if not busy and on_draw:
                 draw = QPushButton(labels["draw"])
                 draw.setFixedSize(64, 26)
