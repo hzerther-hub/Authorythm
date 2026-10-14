@@ -2293,6 +2293,15 @@ class EpisodePage(QWidget):
             b.clicked.connect(lambda _=False, k=kind: self._batch_images(k))
             self._batch_btns[kind] = b
             bar.addWidget(b)
+        # 重画所有:覆盖已有 image_url,按项目设置风格(如 3D)重出。
+        # 串行 + 间隔 3s 防并发踩接口(同 _batch_images)。
+        self._batch_redo_btns: dict[str, WaitingButton] = {}
+        for kind in ("characters", "scenes", "props"):
+            b = WaitingButton("⟳ " + tr("batch_redo"))
+            b.setToolTip(tr("batch_redo_tip"))
+            b.clicked.connect(lambda _=False, k=kind: self._batch_redo_images(k))
+            self._batch_redo_btns[kind] = b
+            bar.addWidget(b)
         lay.addLayout(bar)
 
         # 漫画资产工具条(仅 comic 模式可见)—— 仿分镜工作台 batch_video_btn 的「工具条最右 primary」放法
@@ -2377,6 +2386,8 @@ class EpisodePage(QWidget):
             b.setVisible(mode == "regular")
         self.extract_all_btn.setVisible(mode == "regular")
         for b in self._batch_btns.values():
+            b.setVisible(mode == "regular")
+        for b in getattr(self, "_batch_redo_btns", {}).values():
             b.setVisible(mode == "regular")
         self._comic_bar.setVisible(mode == "comic")
         self._reload_assets()
@@ -2906,6 +2917,77 @@ class EpisodePage(QWidget):
                 ok(tr("批量文绘完成:{}/{} 成功").format(result["done"], result["total"]))
 
         btn = self._batch_btns.get(table)
+        if btn:
+            btn.busy(tr("in_progress"))
+        for k in _keys:
+            self._asset_busy.add(k)
+        self._reload_assets()
+        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+    def _batch_redo_images(self, table: str):
+        """批量重画:覆盖所有已有 image_url,按项目设置里的视觉风格(如 3D)重出。
+
+        与 _batch_images 区别:不挑「待生成」的,而是**全部重做**。换项目风格后、
+        或怀疑旧 final_prompt 跑过 comic 风格污染时,用这个一键刷一遍。
+        串行 + 间隔 3 秒,同 _batch_images(并发会让生图接口互相踩)。
+        """
+        import time as _time
+        rows = db.q(f"SELECT id FROM {table} WHERE drama_id=?", (self.drama_id,))
+        # 只重画本集已关联的(避免刷整个项目的资产 ——
+        # 用户期望"这一集的所有资产重画",而非"整个项目全刷")。
+        if table == "characters":
+            link, col = "episode_characters", "character_id"
+        elif table == "scenes":
+            link, col = "episode_scenes", "scene_id"
+        else:
+            link, col = "episode_props", "prop_id"
+        rows = db.q(f"SELECT t.id FROM {table} t "
+                    f"JOIN {link} l ON l.{col}=t.id "
+                    f"WHERE t.drama_id=? AND l.episode_id=? ORDER BY t.id",
+                    (self.drama_id, self.episode_id))
+        if not rows:
+            ok(tr("本集暂无 {} 资产").format(tr({"characters": "角色", "scenes": "场景", "props": "道具"}.get(table, table))))
+            return
+        n = len(rows)
+        # 二次确认:会覆盖已有图、烧 token
+        if not ask(self, tr("batch_redo"),
+                   tr("将按项目设置里的视觉风格(目前={style})重画本集 {n} 个{what}。"
+                      "已有 image_url 会被覆盖,token 按生图次数计费。是否继续?").format(
+                       style=db.drama_style(self.drama_id) or "3d",
+                       n=n,
+                       what=tr({"characters": "角色", "scenes": "场景", "props": "道具"}.get(table, table))),
+                   danger=True):
+            return
+        ok(tr("开始批量重画,共 {} 个资产(串行,间隔 3 秒)").format(n))
+        if not hasattr(self, "_asset_busy"):
+            self._asset_busy = set()
+        _keys = [f"{table}:{r['id']}" for r in rows]
+
+        def job(tid):
+            done_cnt = 0
+            for i, r in enumerate(rows):
+                if i:
+                    _time.sleep(3)
+                try:
+                    self._gen_one(r["id"], table, by_text=True)
+                    done_cnt += 1
+                except Exception as exc:  # noqa: BLE001
+                    err(tr("资产 {} 失败:{}").format(r["id"], str(exc)[:100]))
+            return {"done": done_cnt, "total": n}
+
+        def done(tid, result, error):
+            btn = self._batch_redo_btns.get(table)
+            if btn:
+                btn.idle()
+            for k in _keys:
+                self._asset_busy.discard(k)
+            self._reload_assets()
+            if error:
+                err(error)
+            else:
+                ok(tr("批量重画完成:{}/{} 成功").format(result["done"], result["total"]))
+
+        btn = self._batch_redo_btns.get(table)
         if btn:
             btn.busy(tr("in_progress"))
         for k in _keys:
