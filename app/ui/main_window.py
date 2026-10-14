@@ -28,6 +28,9 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle(tr("app_title"))
         self.resize(1360, 860)
+        # 锁定最小窗口大小 —— 否则打开抽屉时 splitter 会按子控件 minimumSizeHint
+        # 把整个窗口撑大(实测 1360 → 1685),用户拖尺寸反而奇怪。
+        self.setMinimumSize(1100, 720)
         from PySide6.QtGui import QIcon
         _logo = config.ROOT_DIR / "app" / "assets" / "logo.png"
         if _logo.exists():
@@ -73,6 +76,8 @@ class MainWindow(QMainWindow):
         self.nav_btns: dict[str, QPushButton] = {}
         # 换脸/合并不再放顶部导航:换脸收进角色资产卡(图片处),合并收进制作台导出面板
         # 「图片处理」排在「项目」之后:AI 改图是独立工具,不依赖具体项目
+        # 聊天改图作为侧栏(splitter)存在,不在顶部导航占位 —— 顶栏 💬 按钮只在
+        # 图片处理页打开抽屉,抽屉只在那页可见,可拖动调宽度。
         self._nav_defs = [("projects", "▦", "nav_projects"),
                           ("imageproc", "◑", "nav_image_process")]
         for key, icon, label_key in self._nav_defs:
@@ -105,21 +110,7 @@ class MainWindow(QMainWindow):
         lang_btn.setStyleSheet(icon_font)
         lang_btn.setToolTip(tr("lang_short"))
         lang_btn.clicked.connect(self._switch_language)
-        # PhotoCraft 聊天修图抽屉入口(统一顶置,32×32,带橙色描边 + 💬 文字双保险)。
-        # 之前用 emoji 💬 在部分 Windows 字体下不显色,用户反馈「看不到入口」;
-        # 改成 SVG icon + emoji 文字双保险 + 橙色 outline 在灰色头部里更醒目。
-        self.chat_btn = QPushButton("💬")
-        self.chat_btn.setObjectName("headerIconBtn")
-        self.chat_btn.setFixedSize(32, 32)
-        self.chat_btn.setStyleSheet(
-            icon_font +
-            "QPushButton{color:#f97316;border:1px solid #fed7aa;background:#fff8f1;}"
-            "QPushButton:hover{background:#fff0e1;border-color:#f97316;}")
-        self.chat_btn.setToolTip(tr("chat_edit_open_drawer"))
-        self.chat_btn.setCursor(Qt.PointingHandCursor)
-        W.set_icon(self.chat_btn, "message")
-        self.chat_btn.clicked.connect(self.toggle_chat_drawer)
-        for b in (theme_btn, settings_btn, lang_btn, self.chat_btn):
+        for b in (theme_btn, settings_btn, lang_btn):
             nav_lay.addWidget(b)
         tlay.addWidget(nav_wrap)
         from .braille import BrailleSpinner, BrailleBar
@@ -144,7 +135,7 @@ class MainWindow(QMainWindow):
         root.addWidget(self.banner)
         self._refresh_ai_banner()
 
-        # 页面栈
+        # 页面栈(图片处理 / 聊天改图 各自独立 tab,不再共用 splitter)
         self.stack = QStackedWidget()
         self.projects_page = ProjectsPage()
         self.project_page = ProjectPage()
@@ -155,43 +146,18 @@ class MainWindow(QMainWindow):
         self.face_swap_page = FaceSwapPage()
         self.merger_page = MergerToolPage()
         from .image_process_page import ImageProcessPage
+        from .chat_edit_drawer import ChatEditDrawer
         self.image_process_page = ImageProcessPage()
+        self.chat_edit_page = ChatEditDrawer(self)            # 独立 tab,与图片处理并列
         for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
-                  self.face_swap_page, self.merger_page, self.image_process_page):
+                  self.face_swap_page, self.merger_page, self.image_process_page,
+                  self.chat_edit_page):
             self.stack.addWidget(p)
 
-        # ── 右侧聊天修图抽屉(默认收起,点击 💬 词条展开) ──
-        from PySide6.QtWidgets import QSplitter
-        self.splitter = QSplitter(Qt.Horizontal)
-        self.splitter.setChildrenCollapsible(True)
-        # 拖拽手柄加宽 + 加灰色背景 + 抓手光标,用户容易找到。
-        # 中间一根竖条 + hover/pressed 时变橙色(品牌色),提示可拖动区域。
-        self.splitter.setHandleWidth(10)
-        self.splitter.setStyleSheet(
-            "QSplitter::handle{background:#e4e7ec;border-left:1px solid #d1d5db;}"
-            "QSplitter::handle:hover{background:rgba(249,115,22,80);}"
-            "QSplitter::handle:pressed{background:rgba(249,115,22,180);}"
-        )
-        self.splitter.setCursor(Qt.SplitHCursor)
-        self.splitter.addWidget(self.stack)
-        from .chat_edit_drawer import ChatEditDrawer
-        self.chat_drawer = ChatEditDrawer(self)
-        self.chat_drawer.setMinimumWidth(280)
-        self.chat_drawer.setMaximumWidth(960)
-        self.splitter.addWidget(self.chat_drawer)
-        self.splitter.setStretchFactor(0, 1)
-        self.splitter.setStretchFactor(1, 0)
-        # 启动时抽屉完全隐藏(切到图片处理页再按需展开)
-        self.chat_drawer.hide()
-        self.splitter.setSizes([10000, 0])      # 初始完全折叠
-        self.splitter.splitterMoved.connect(self._on_chat_splitter_moved)
-        self._chat_visible = False
-        root.addWidget(self.splitter, 1)
-        # 抽屉里的"打开桌面端/去设置"按钮交回主窗口
-        self.chat_drawer.openDesktopApp.connect(self._open_photocraft_desktop)
-        self.chat_drawer.needSettings.connect(self._open_settings)
-        # 抽屉只服务于「图片处理」页 —— 其它页面隐藏 💬 按钮并收起抽屉
-        self.chat_btn.setVisible(False)
+        # 「图片处理」页 → 聊天改图页(独立 tab,免得另起炉灶)
+        self.image_process_page.chatRequested.connect(self.open_chat_with_image)
+
+
 
         # 状态栏
         self.status = self.statusBar()
@@ -212,7 +178,9 @@ class MainWindow(QMainWindow):
         self.clone_page.open_workbench_requested.connect(self._enter_episode)
         # 聊天抽屉 ↔ 图片处理页:来源/结果点 💬 → 抽屉加载;抽屉保存 → 结果区新增
         self.image_process_page.chatRequested.connect(self.open_chat_with_image)
-        self.chat_drawer.imageSaved.connect(self._on_chat_image_saved)
+        self.chat_edit_page.imageSaved.connect(self._on_chat_image_saved)
+        self.chat_edit_page.needSettings.connect(self._open_settings)
+        self.chat_edit_page.openDesktopApp.connect(self._open_photocraft_desktop)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
         # 任务抽屉是浮在 central 上的,切页时必须收掉,否则会跟着飘到别的页面
@@ -237,12 +205,6 @@ class MainWindow(QMainWindow):
         d = getattr(self, "_task_drawer", None)
         if d is not None:
             d.closed.emit(d)
-        # PhotoCraft 聊天抽屉:只在「图片处理」页出现;切到其它页时收起
-        cur = self.stack.currentWidget()
-        on_imageproc = cur is getattr(self, "image_process_page", None)
-        self.chat_btn.setVisible(on_imageproc)
-        if not on_imageproc and self._chat_visible:
-            self.toggle_chat_drawer()
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -268,7 +230,7 @@ class MainWindow(QMainWindow):
         """
         QTimer.singleShot(0, self._rebuild_ui)
 
-    _PAGE_KINDS = ["projects", "project", "episode", "clone", "face_swap", "merger"]
+    _PAGE_KINDS = ["projects", "project", "episode", "clone", "face_swap", "merger", "imageproc", "chatedit"]
 
     def _make_page(self, kind: str):
         """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。"""
@@ -295,7 +257,10 @@ class MainWindow(QMainWindow):
             return p
         return None
 
-    _PAGE_ATTR = {"projects": "projects_page", "project": "project_page", "episode": "episode_page"}
+    _PAGE_ATTR = {
+        "projects": "projects_page", "project": "project_page", "episode": "episode_page",
+        "imageproc": "image_process_page", "chatedit": "chat_edit_page",
+    }
 
     def _swap_page(self, kind: str, new) -> None:
         """把栈内某一页换成 new。
@@ -375,11 +340,11 @@ class MainWindow(QMainWindow):
         cur = self.stack.currentWidget()
         for k, b in self.nav_btns.items():
             page = {"projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
-                    "merger": getattr(self, "merger_page", None)}.get(k)
+                    "merger": getattr(self, "merger_page", None),
+                    "imageproc": getattr(self, "image_process_page", None),
+                    "chatedit": getattr(self, "chat_edit_page", None)}.get(k)
             if page is not None:
                 b.setChecked(cur is page)
-        if hasattr(self, "chat_btn"):
-            self.chat_btn.setToolTip(tr("chat_edit_open_drawer"))
 
     def _refresh_ai_banner(self):
         """AI 服务就绪横幅:缺失时明确列出缺哪几类,点击直达设置。"""
@@ -515,33 +480,17 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QApplication
         apply_theme(QApplication.instance(), new)
 
-    # ── PhotoCraft 聊天修图抽屉控制 ──
+    # ── PhotoCraft 聊天改图页面(独立 tab) ──
     def toggle_chat_drawer(self):
-        if self._chat_visible:
-            # 收起:直接 hide 抽屉,留给 stack 全部空间 —— setSizes(w,0) 会被 min=380 钳位
-            self.chat_drawer.hide()
-            self._chat_visible = False
-        else:
-            w = self.splitter.width()
-            # 配了 PhotoCraft → 抽屉占大头(60%);没配 → 抽屉小头(28%)让图片处理最大
-            from PySide6.QtWidgets import QApplication
-            from ..ai.photocraft_bridge import resolve_cli_path
-            has_cli = bool(resolve_cli_path())
-            ratio = 0.60 if has_cli else 0.28
-            target = max(380, min(820, int(w * ratio)))
-            self.chat_drawer.show()
-            self.splitter.setSizes([w - target, target])
-            self._chat_visible = True
+        """旧名保留兼容:点 💬 头按钮 = 切到聊天改图 tab。"""
+        self._goto("chatedit")
 
     def open_chat_with_image(self, path: str):
-        """图片处理页的来源/结果缩略图点「聊天」时调用:打开抽屉 + 加载图。"""
-        if not self._chat_visible:
-            self.toggle_chat_drawer()
-        self.chat_drawer.set_image(path)
-
-    def _on_chat_splitter_moved(self, _pos: int, _idx: int):
-        sizes = self.splitter.sizes()
-        self._chat_visible = sizes[-1] > 0 and self.chat_drawer.isVisible()
+        """图片处理页的来源/结果缩略图点「发送」时调用:
+        切到聊天改图 tab 并加载图(自动新会话)。
+        """
+        self._goto("chatedit")
+        self.chat_edit_page.set_image(path)
 
     def _on_chat_image_saved(self, out_path: str):
         """抽屉里点「保存到结果区」:在当前页(若为图片处理页)加入结果。"""
