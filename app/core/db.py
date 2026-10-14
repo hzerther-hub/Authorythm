@@ -163,6 +163,7 @@ DDL: list[str] = [
       emotion_tags TEXT, status TEXT DEFAULT 'pending',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS storyboard_characters (storyboard_id INTEGER NOT NULL, character_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, character_id))""",
+    """CREATE TABLE IF NOT EXISTS storyboard_scenes (storyboard_id INTEGER NOT NULL, scene_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, scene_id))""",
     """CREATE TABLE IF NOT EXISTS storyboard_props (storyboard_id INTEGER NOT NULL, prop_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, prop_id))""",
     # 漫画格
     """CREATE TABLE IF NOT EXISTS comic_panels (
@@ -397,6 +398,8 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN narration_start REAL DEFAULT 0",
                 # JEV 情绪标签(JSON 数组;detect_emotions 写入,不重写 atmosphere)
                 "ALTER TABLE storyboards ADD COLUMN emotion_tags TEXT",
+                # storyboard_scenes 表 DDL 漏了 → 老库建表后缺失;补上
+                "CREATE TABLE IF NOT EXISTS storyboard_scenes (storyboard_id INTEGER NOT NULL, scene_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, scene_id))",
                 "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'",
                 "ALTER TABLE dramas ADD COLUMN intro_title TEXT",
                 "ALTER TABLE dramas ADD COLUMN intro_font TEXT",
