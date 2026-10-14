@@ -79,7 +79,8 @@ class MainWindow(QMainWindow):
         # 聊天改图作为侧栏(splitter)存在,不在顶部导航占位 —— 顶栏 💬 按钮只在
         # 图片处理页打开抽屉,抽屉只在那页可见,可拖动调宽度。
         self._nav_defs = [("projects", "▦", "nav_projects"),
-                          ("imageproc", "◑", "nav_image_process")]
+                          ("imageproc", "◑", "nav_image_process"),
+                          ("chatedit", "💬", "chat_edit_nav")]
         for key, icon, label_key in self._nav_defs:
             b = QPushButton(f"{icon}  {tr(label_key)}")
             b.setObjectName("navSeg")
