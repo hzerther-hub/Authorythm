@@ -429,9 +429,11 @@ class CharacterAssetCard(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(7)
-        # 封面图:漫画风格镜像(comic_image_url)优先,常规图作 fallback。
-        # 这让用户选「美式漫画」时,卡片预览立刻是该风格;否则被 3D 写实常规图喧宾夺主。
-        cover_url = (row.get("comic_image_url") or "").strip() or (row.get("image_url") or "").strip()
+        # 封面图:image_url(常规 / 3D)优先,漫画镜像 comic_image_url 作 fallback。
+        # 两个字段独立 —— 常规资产走 image_url,漫画资产走 comic_image_url;
+        # 卡片默认展示常规版,因为常规版是给视频生成当 first_frame 用的(用户主要需求)。
+        # 用户要看漫画版时切换到「漫画资产」tab 即可。
+        cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
         cover = CoverBox(cover_url, 320, 280, "☺",
                          badge=(labels["cover_done"] if cover_url
                                 else labels["cover_todo"]),
@@ -535,9 +537,8 @@ class AssetCard(QFrame):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         has = bool(row.get("image_url"))
-        # 封面占满卡宽:漫画风格镜像(comic_image_url)优先,常规图 fallback。
-        # 选「美式漫画」画风时,卡片预览就是该风格;否则被 3D 写实常规图喧宾夺主。
-        cover_url = (row.get("comic_image_url") or "").strip() or (row.get("image_url") or "").strip()
+        # 封面占满卡宽:image_url(常规 / 3D)优先,漫画镜像 fallback。
+        cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
         cover = CoverBox(cover_url, 320, 280, "⌖" if kind == "scene" else "▣",
                          badge=labels["cover_done"] if cover_url else labels["cover_todo"],
                          badge_state="ready" if cover_url else "todo",

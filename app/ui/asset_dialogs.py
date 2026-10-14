@@ -565,10 +565,10 @@ class AssetDetailDialog(QDialog):
         self.img.setAlignment(Qt.AlignCenter)
         self.img.setFixedSize(280, 280)
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;")
-        # 优先 comic_image_url,没有再回退 image_url —— 与列表卡 CoverBox 同一优先级,
-        # 否则同名角色「列表显示 comic 单张」「详情显示 3D 三视图」两张图打架
-        _cover = ((row.get("comic_image_url") or "").strip()
-                  or (row.get("image_url") or "").strip())
+        # 优先 image_url(常规 / 3D),没有再回退 comic_image_url —— 与列表卡 CoverBox 同一优先级,
+        # 详情页预览就是用户主要使用的常规版(给视频生成当 first_frame)。
+        _cover = ((row.get("image_url") or "").strip()
+                  or (row.get("comic_image_url") or "").strip())
         self.img.setPixmap(W.pixmap_from_media(_cover, 276, 276))
         self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, _cover, row["name"]).exec()
         self.img.setToolTip(tr("点击查看大图"))
