@@ -1,22 +1,27 @@
-<!-- 此注释表明此 README 的语言。其它语言的 README 见同目录下的兄弟文件。 -->
-> **语言 / Language / 言語 / 언어**: [简体中文](README.md) | [繁體中文](README.zh-Hant.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [Português](README.pt.md) | [Español](README.es.md) | [Tiếng Việt](README.vi.md) | **Türkçe** | [العربية](README.ar.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [ภาษาไทย](README.th.md)
+<!-- 此 README 的语言: tr。所有 16 语言 README 互链,见顶部跳转栏。 -->
+[简体中文](README.md) | [繁體中文](README.zh-Hant.md) | [English](README.en.md) | [日本語](README.ja.md) | [한국어](README.ko.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Italiano](README.it.md) | [Português](README.pt.md) | [Español](README.es.md) | [Tiếng Việt](README.vi.md) | **Türkçe** | [العربية](README.ar.md) | [हिन्दी](README.hi.md) | [Bahasa Indonesia](README.id.md) | [ภาษาไทย](README.th.md)
 
-# 易好短剧 · PySide6 版 / Yihao Shorts (PySide6 Edition)
+# Yihao Shorts · PySide6 Sürümü
 
-AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git) (Web 版),并集成了两个社区工具的核心能力:
-- **[golanse/easymerger](https://github.com/golanse/easymerger)** — 无损视频合并(参数检测/智能直通/一键对齐异类)
-- **[liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)** — 同款复刻(爆款视频结构迁移到你的产品)
+> Kısa filmler, romanlar ve çizgi romanlar için hepsi bir arada yapay zekâ stüdyosu — açık kaynak Web sürümüyle %100 özellik eşliği, 16 dilde sinirsel sesli okuma özelliğiyle.
 
-> 黑盒分析报告: [docs/易好短剧-工具分析.md](docs/易好短剧-工具分析.md) · 实施计划: [PLAN.md](PLAN.md) · 过程记录: [PROGRESS.md](PROGRESS.md)
+> 黑盒分析: [docs/易好短剧-工具分析.md](docs/易好短剧-工具分析.md) · 实施计划: [PLAN.md](PLAN.md) · 过程记录: [PROGRESS.md](PROGRESS.md)
+> 上游项目: [ooooinfo/yihao_drama](https://gitee.com/ooooinfo/yihao_drama.git) (Web 版) · 集成组件: [golanse/easymerger](https://github.com/golanse/easymerger) · [liangdabiao/video-clone-lite](https://github.com/liangdabiao/video-clone-lite)
+
+## ✨ Temel özellikler
+
+🎬 **5 yaratıcı hedef**: roman · kısa film · çizgi roman · tanıtım (6 platform × 6 format) · viral-video klonu
+🔧 **6 aşamalı iş akışı**: ham metin → AI yeniden yazma → görsel hikâye → storyboard → çizgi roman → birleştirme & dışa aktarma
+🤖 **10 AI ajanı**: senaryo yeniden yazma, karakter/sahne çıkarımı, çekim bölme, istemler, roman yazma, planlama, 6 boyutlu inceleme, düzenleme, çizgi roman bölme, tanıtım metni — System Prompt'lar tamamen düzenlenebilir
+🎙️ **Ücretsiz Edge TTS okuma**: 16 dil × 2 cinsiyet = 32 Microsoft sinir sesi, API anahtarı yok, dil paketi yok, sadece internet gerekir. Proje düzeyinde ses ayarı bölüm tutarlılığını korur
+🎨 **Panel arası tutarlılık**: toplu çizgi roman üretimi zincirleme keyframe beslemesi (tamamlanan her panelin görüntüsü bir sonrakini besler) + `character_variants` çok açılı referansları kullanır, karakterler ve sahneler paneller arası sabit kalır
+
+## 🚀 Hızlı başlangıç
+
+- **Gereksinimler**: Python 3.10+ (3.13 ile geliştirildi)
+- **Çalıştır**: `py -3.13 -m app.main` veya `start.bat` çift tıklayın
+- **Tam belgeler**: [ana README](README.md) bölümüne bakın
 
 ---
 
-## 📑 内容说明 / Contents / Contenu / Inhalt / ...
-
-Bu dosya Türkçe kısa bir özettir. Tüm belgeler için [Basitleştirilmiş Çince README](README.md) bölümüne bakın.
-
----
-
-**快速开始 / Quick start / Démarrage / Inicio / Inizia / Começar / Начало / 开始**: 安装 Python 3.10+,运行 `py -3.13 -m app.main` 或双击 `start.bat`。
-
-**完整文档 / Full documentation**: 简中(主) · [English](README.en.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [繁體中文](README.zh-Hant.md)
+📘 **完整文档 / Full docs / Dokümentlar / 文档全貌**: [主 README](README.md) (简中) — 包含「功能对照表」「项目结构」「许可」等全部章节。
