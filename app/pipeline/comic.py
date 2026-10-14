@@ -154,16 +154,41 @@ def panel_people_count(panel_id: int) -> int:
     return max(1, int(n or 0))
 
 
+def _character_best_ref(character_id: int) -> str:
+    """角色参考图优先级:character_variants.comic_image_url(多角度,任意一张)
+    > character_variants.image_url > characters.comic_image_url > characters.image_url。
+
+    variants 表是多角度图(front/side/3-4/back),用其任何一张作 ref 都比单张主图
+    更稳;取 sort_order 最小且有图的那张。多角度图本身由 comic_pipeline._ensure_char_variants
+    之类的钩子生成,落库后这里直接用。
+    """
+    v = db.q1(
+        "SELECT comic_image_url, image_url FROM character_variants "
+        "WHERE character_id=? AND COALESCE(comic_image_url, image_url)!='' "
+        "ORDER BY sort_order, id LIMIT 1", (character_id,))
+    if v and (v.get("comic_image_url") or v.get("image_url")):
+        return v.get("comic_image_url") or v.get("image_url")
+    c = db.q1("SELECT comic_image_url, image_url FROM characters WHERE id=?", (character_id,))
+    if c:
+        return (c.get("comic_image_url") or c.get("image_url") or "")
+    return ""
+
+
 def _panel_bound_assets(panel_id: int) -> tuple[list[dict], list[dict], list[dict]]:
     """读出该 panel 绑定的角色/场景/道具(各自全集,不去重;后续按出现次序拼)。
 
     返回 [(chars...), (scenes...), (props...)]。每条记录至少有 id/name。
-    优先拿 comic_image_url(漫画风格镜像);没有则退回 image_url,都没有就忽略。
+    角色参考图字段 _ref_url 优先用 character_variants 多角度图,没有时回退到
+    characters 主图(漫画风格或原图)。
     """
-    chars = [dict(r) for r in db.q(
+    chars_raw = [dict(r) for r in db.q(
         "SELECT c.id, c.name, c.appearance, c.styling, c.comic_image_url, c.image_url "
         "FROM comic_panel_characters pc JOIN characters c ON c.id = pc.character_id "
         "WHERE pc.panel_id=? ORDER BY c.id", (panel_id,))]
+    chars = []
+    for c in chars_raw:
+        c["_ref_url"] = _character_best_ref(c["id"])
+        chars.append(c)
     scenes = [dict(r) for r in db.q(
         "SELECT s.id, s.name, s.prompt, s.lighting, s.comic_image_url, s.image_url "
         "FROM comic_panel_scenes ps JOIN scenes s ON s.id = ps.scene_id "
@@ -175,15 +200,24 @@ def _panel_bound_assets(panel_id: int) -> tuple[list[dict], list[dict], list[dic
     return chars, scenes, props
 
 
-def panel_reference_images(panel_id: int) -> list[str]:
-    """把绑定资产的镜像/原图转成本地路径,作为生图端的 reference_images。
+def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) -> list[str]:
+    """把绑定资产的参考图转成本地路径,作为生图端的 reference_images。
+
+    角色参考图优先用 character_variants 多角度图(若有),否则用主图
+    comic_image_url / image_url;场景/道具只用主图。
+
+    prev_image_url (跨 panel 一致性,Step 1「keyframe 链式馈送」):
+      同一集**相邻的上一张 panel** 出图后,会把这个 url 加到参考图集**末尾**,
+      提示模型「保持上一镜头的构图/光影/人物站位」。跨组(切镜)不传。
 
     没绑定任何资产 / 资产都没图时返回空列表(出图端会直接走纯文生图)。
+    上限 6 张(agnes 硬限制),prev_image_url 始终保留,资产参考按顺序裁。
     """
     chars, scenes, props = _panel_bound_assets(panel_id)
     out: list[str] = []
     for r in chars + scenes + props:
-        url = (r.get("comic_image_url") or r.get("image_url") or "").strip()
+        # 角色已经有 _ref_url 字段;场景/道具退回到原 comic_image_url/image_url
+        url = r.get("_ref_url") or r.get("comic_image_url") or r.get("image_url") or ""
         if not url:
             continue
         if url.startswith(("/static/", "static/")):
@@ -196,6 +230,15 @@ def panel_reference_images(panel_id: int) -> list[str]:
             lp = Path(url)
         if lp.exists():
             out.append(str(lp))
+    # keyframe 链式馈送:始终追加到末尾,这样若资产参考图很多时 prev 不会被挤掉。
+    if prev_image_url:
+        from pathlib import Path
+        if prev_image_url.startswith(("/static/", "static/")):
+            plp = config.media_url_to_path(prev_image_url)
+        else:
+            plp = Path(prev_image_url)
+        if plp.exists():
+            out.append(str(plp))
     # 参考图上限:防止绑定过多撑爆生图 payload。≤6 是 agnes 的硬上限。
     return out[:6]
 

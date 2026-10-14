@@ -5371,6 +5371,12 @@ class EpisodePage(QWidget):
         """漫画批量配图:逐格**链式串行**(上一格完成再提下一格,不并发踩生图接口),
         按钮全程等待态,最后一格完成才恢复(对齐其它批量按钮的等待效果)。
 
+        **跨 panel 一致性(Step 1 + Step 2)**:
+          - Step 1:每张 panel 出图后,把它的 image_url 喂给下一张(链式 keyframe),
+            保持构图/光影/人物站位一致。
+          - Step 2:角色参考图优先 character_variants 多角度图(若存在),否则
+            退到主图 comic_image_url;单图也能减少跨格形象漂移。
+
         主线程快照:text_model / image_model currentData 不能再在 worker 线程里读,
         否则语言切换/页面重建时拿 libshiboken "Internal C++ object already deleted",
         表现是堆栈第一行 taskmgr.py:148,第二行 episode_page.py 的 self.fn —— 正是用户报告的报错。
@@ -5390,6 +5396,9 @@ class EpisodePage(QWidget):
         snap_text = self.text_model.currentData()
         snap_img = self.image_model.currentData()
         # 画风统一走项目级(dramas.comic_style),不再有 snap_style。
+        # 链式 keyframe 状态:在 closure 内记录「刚完成的上一张 url」,下一张
+        # 出图时把 prev_image_url 传给 panel_reference_images。
+        state = {"last_url": None}
 
         def run(i: int):
             if i >= len(ids):
@@ -5398,33 +5407,41 @@ class EpisodePage(QWidget):
                 self._reload_comic()
                 return
             pid = ids[i]
+            prev_url = state["last_url"]    # 第一张 panel 时为 None
 
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
                                                     config_id=snap_text)
                 # 见 _one_panel_image 的注释:仅在 provider 真支持时传参考图
-                refs = comic_pipe.panel_reference_images(pid) if image_client.supports_reference_images(
-                    (registry.check_ready("image", snap_img) or {}).get("provider")) else []
+                if image_client.supports_reference_images(
+                        (registry.check_ready("image", snap_img) or {}).get("provider")):
+                    refs = comic_pipe.panel_reference_images(pid, prev_image_url=prev_url)
+                else:
+                    refs = []
                 out, _p = image_client.generate_image(
                     fp, config_id=snap_img,
                     size="1024x1536",
                     reference_images=refs or None,
                     people=comic_pipe.panel_people_count(pid))
+                url = config.path_to_media_url(out)
                 db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
-                      (config.path_to_media_url(out), db.now(), pid))
+                      (url, db.now(), pid))
                 return str(out)
 
             def done(tid, result, error):
                 self._comic_busy.discard(pid)
                 if error:
                     err(error)
+                else:
+                    # 链式 keyframe:把刚完成的 url 喂给下一张 panel
+                    state["last_url"] = result
                 # 逐格刷新:刚完成的格子立即显示成图。此前只在整个链结束时 reload,
                 # 15 格 × 每格约 1 分钟的全过程里网格纹丝不动(全部转圈),
                 # 看着就是"批量没有结果"—— 其实图一直在落库,只是界面不更新
                 self._reload_comic()
                 run(i + 1)          # done 在主线程回调,链式提交下一格
 
-            TASKMGR.submit("image", job, done, episode_id=self.episode_id)
+        TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 
         self._reload_comic()
         run(0)
