@@ -1893,7 +1893,10 @@ class EpisodePage(QWidget):
                         pass
                     # 立刻进合成分支(下面)
                 elif chosen is replay:
-                    self._open_audio_preview(last_url)
+                    self._open_audio_preview(
+                        last_url,
+                        voice=getattr(self, "_last_read_aloud_voice", ""),
+                        gender=getattr(self, "_last_read_aloud_gender", ""))
                     return
                 else:
                     return
@@ -1919,15 +1922,26 @@ class EpisodePage(QWidget):
             # 缓存 + 内嵌播放,不再调起系统播放器
             self._last_read_aloud_url = result["audio_url"]
             self._last_read_aloud_chunks = result["chunks"]
-            self._open_audio_preview(result["audio_url"])
+            self._last_read_aloud_voice = result.get("voice", "")
+            self._last_read_aloud_gender = result.get("gender", "")
+            self._open_audio_preview(result["audio_url"],
+                                     voice=self._last_read_aloud_voice,
+                                     gender=self._last_read_aloud_gender)
             ok(tr('已合成朗读音频({} 段)').format(result['chunks']))
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id)
 
-    def _open_audio_preview(self, url: str):
-        """用内嵌 AudioPreviewDialog 播 MP3,不调系统播放器。"""
+    def _open_audio_preview(self, url: str, voice: str = "", gender: str = ""):
+        """用内嵌 AudioPreviewDialog 播 MP3,不调系统播放器。
+        voice / gender 来自上次合成 done 回调,会写到窗口标题供用户看。
+        """
         from .asset_dialogs import AudioPreviewDialog
         ep = db.q1("SELECT episode_number, title FROM episodes WHERE id=?", (self.episode_id,)) or {}
-        title = f"🔊 {tr('read_aloud')} · 第 {ep.get('episode_number', '?')} 集"
+        parts = [f"🔊 Edge TTS 朗读 · 第 {ep.get('episode_number', '?')} 集"]
+        if voice:
+            parts.append(f"· {voice}")
+        if gender:
+            parts.append(f"({tr('tts_gender_female') if gender == 'female' else tr('tts_gender_male')})")
+        title = "  ".join(parts)
         dlg = AudioPreviewDialog(self, url, title=title)
         dlg.setAttribute(Qt.WA_DeleteOnClose)     # 关闭后释放,避免反复播放堆内存
         dlg.show()                                # 非模态,用户可在后台播放时继续操作
@@ -5000,20 +5014,25 @@ class EpisodePage(QWidget):
         # (火山豆包,registry 里按 is_default desc, priority desc 选第一)。
         # 后续若加 top-level TTS combo,改成 snap_tts_cfg = self.tts_model.currentData() 即可。
 
-        # 对齐 E:\xiaoshuo 的 TTS 行为 —— 合成成功落 narration_voice,记录实际用到的音色。
-        # narration_voice 让后续 UI/导出能复现同一音色,db 里的 stale 旧文件不阻塞
-        # 试听(路径已被新 url 覆盖)。
+        # 与 read_aloud 共用项目级「朗读音色」:从 dramas.metadata.tts_gender 读男女偏好,
+        # 合成完成时把 tts_client.last_voice() 真实使用的 voice 写回 storyboards.narration_voice,
+        # 后续试听/导出能复现同一音色。
         snap_old_url = db.q1("SELECT narration_audio_url FROM storyboards WHERE id=?", (sb_id,)) or {}
         old_url = (snap_old_url or {}).get("narration_audio_url") or ""  # noqa
+        snap_gender = "female"
+        d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
+        if d:
+            meta = db.jload(d["metadata"], {}) or {}
+            snap_gender = meta.get("tts_gender") or "female"
         def job(tid):
             sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             text = (sb["narration"] or "").strip() or (sb["content"] or "")[:120]
             if not text:
                 raise RuntimeError(tr("无旁白文本"))
             p = tts_client.synthesize(text, target_duration=sb["duration"],
-                                       config_id=None)
+                                       config_id=None, gender=snap_gender)
             audio_url = config.path_to_media_url(p)
-            voice_used = tts_client.DEFAULT_VOICE
+            voice_used = tts_client.last_voice() or tts_client.DEFAULT_VOICE
             db.ex("UPDATE storyboards SET narration_audio_url=?, narration_voice=?, updated_at=? WHERE id=?",
                   (audio_url, voice_used, db.now(), sb_id))
             # 覆盖上一次:旧音频 uuid 命名,换台不删就成孤儿文件一直堆在磁盘。
@@ -5033,7 +5052,7 @@ class EpisodePage(QWidget):
                 err("♪ 合成失败:" + str(error)[:280])
             else:
                 self._reload_storyboard()
-                ok("♪ 合成完成")
+                ok("♪ 合成完成(Edge TTS · {})".format(tts_client.last_voice()))
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _toggle_narration_audio(self):

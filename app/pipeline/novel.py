@@ -1530,4 +1530,10 @@ def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
         p.unlink(missing_ok=True)
     out = out_dir / f"ep-{episode_id}-{_uuid.uuid4().hex[:8]}.mp3"
     out.write_bytes(b"".join(parts))
-    return {"audio_url": config.path_to_media_url(out), "chunks": len(chunks)}
+    # 取出本次合成真正使用的 voice(Edge 32 预设 或 volcengine BV001 之类),
+    # 弹播放器时让用户看到「这次朗读用的是哪个具体声音」。
+    used_voice = tts_client.last_voice()
+    return {"audio_url": config.path_to_media_url(out),
+            "chunks": len(chunks),
+            "voice": used_voice,
+            "gender": gender}

@@ -272,6 +272,15 @@ def _synth_audio10(base: str, key: str, text: str, fmt: str = "mp3",
     return out
 
 
+# 模块级最近一次合成使用的 voice,UI(朗读预览窗口标题等)读这个值显示给用户。
+_LAST_VOICE: str = ""
+
+
+def last_voice() -> str:
+    """返回最近一次 synthesize() 实际选用的 voice(含 volcengine BV001 / Edge Neural 名称)。"""
+    return _LAST_VOICE
+
+
 # ── Path C:Edge TTS 同步封装 ──
 def _synthesize_edge(text: str, voice: str = EDGE_DEFAULT_FEMALE,
                      speech_rate: int = 0, fmt: str = "mp3") -> Path:
@@ -279,6 +288,8 @@ def _synthesize_edge(text: str, voice: str = EDGE_DEFAULT_FEMALE,
     通常已在运行,这里用 thread 隔离跑)。Edge 不支持 ffprobe 提速循环,与
     target_duration 联动时只影响 volcengine 路径。
     """
+    global _LAST_VOICE
+    _LAST_VOICE = voice
     import asyncio
     import concurrent.futures
     import edge_tts
@@ -313,6 +324,7 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
     target_duration 在 Edge 路径会被忽略(Edge 的提速语义与 volcengine 不同,
     强制 speed 走 rate percent 参数;ffprobe 校验留给下一版本)。
     """
+    global _LAST_VOICE
     cfg = None
     try:
         cfg = registry.check_ready("tts", config_id)
@@ -331,6 +343,7 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
     # ── Path A/B:豆包 ──
     if key:
         volc_voice = voice or cfg.get("model") or DEFAULT_VOICE
+        _LAST_VOICE = volc_voice
         try:
             return _synthesize_volc(text, volc_voice, cfg, target_duration, speed)
         except Exception as e:          # noqa: BLE001 —— 豆包挂了就降级
@@ -338,6 +351,7 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
 
     # ── Path C:Edge TTS 兜底 ──
     chosen = voice if (voice and "Neural" in voice) else pick_edge_voice(text, gender)
+    _LAST_VOICE = chosen
     return _synthesize_edge(text, voice=chosen,
                             speech_rate=int(round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100)))
 
