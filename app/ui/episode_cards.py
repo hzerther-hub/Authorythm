@@ -814,7 +814,15 @@ class VideoTaskRow(QFrame):
         act.setEnabled(True)
         act.setCursor(Qt.PointingHandCursor)
         if on_action:
-            act.clicked.connect(lambda _=False: on_action())
+            # 点击瞬间:禁用按钮 + 切旋转图标,防止重复点击。
+            # 后台 task 跑完由 set_state('done'/'ready') 重新启用。
+            def _act_with_busy():
+                act.setEnabled(False)
+                self._spin.start("")
+                self._spin.parentWidget().setVisible(True)
+                self.act_btn.setVisible(False)
+                on_action()
+            act.clicked.connect(lambda _=False: _act_with_busy())
         spin_host = QWidget()
         spin_host.setFixedSize(24, 24)
         from .braille import BrailleSpinner
@@ -831,15 +839,25 @@ class VideoTaskRow(QFrame):
             rg.setToolTip(tr("重新生成首帧"))
             rg.setCursor(Qt.PointingHandCursor)
             rg.setStyleSheet("QPushButton{font-size:11px;padding:0;}")
-            rg.clicked.connect(lambda _=False: on_regen())
+            # 重生首帧:点击后禁用,等 set_state 回来恢复
+            def _rg_with_busy():
+                rg.setEnabled(False)
+                on_regen()
+            rg.clicked.connect(lambda _=False: _rg_with_busy())
             lay.addWidget(rg)
+            self._rg_btn = rg  # 留给 _apply_state 在非 pending 时启用
         if on_approve and image_status == "pending_review":
             ap = W.svg_icon_btn("check", tr("确认出视频"), size=22)
             ap.setStyleSheet(
                 "QPushButton{background:#16a34a;color:#fff;border:none;"
                 "border-radius:5px;font-weight:700;font-size:12px;padding:0;}")
-            ap.clicked.connect(lambda _=False: on_approve())
+            # 确认出视频:点击后禁用,等 set_state 回来恢复
+            def _ap_with_busy():
+                ap.setEnabled(False)
+                on_approve()
+            ap.clicked.connect(lambda _=False: _ap_with_busy())
             lay.addWidget(ap)
+            self._ap_btn = ap  # 留给 _apply_state 在非 pending 时启用
         lay.addWidget(act_host)
         self.act_btn = act
         self._spin = _spin
@@ -852,6 +870,11 @@ class VideoTaskRow(QFrame):
         pending = state == "pending"
         self.act_btn.setVisible(not pending)
         self.act_btn.setEnabled(not pending)
+        # 点击瞬间已被禁用,任务跑完 set_state 来恢复 + 重启按钮
+        if hasattr(self, "_rg_btn"):
+            self._rg_btn.setEnabled(not pending)
+        if hasattr(self, "_ap_btn"):
+            self._ap_btn.setEnabled(not pending)
         if pending:
             self._spin.start("")
         else:

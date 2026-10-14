@@ -50,10 +50,14 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
               + "  prop_ids: [int,...]        本格出现的道具 id 列表(无道具则空数组)\n"
               + "没有的字段就当 null / 空数组,缺字段的格子仍会被保留(不会丢掉)。")
     data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=config_id)
-    # 兼容函数调用信封:部分模型会把内容包在 {"name":…,"parameters":{"panels":[…]}}
-    if isinstance(data, dict) and not data.get("panels") and isinstance(data.get("parameters"), dict):
-        data = data["parameters"]
-    panels = data.get("panels") or (data if isinstance(data, list) else [])
+    # 兼容三种返回形态:{"panels":[…]} / {"parameters":{"panels":[…]}} / 裸数组
+    if isinstance(data, list):
+        panels = data
+    else:
+        # 兼容函数调用信封:部分模型会把内容包在 {"name":…,"parameters":{"panels":[…]}}
+        if not data.get("panels") and isinstance(data.get("parameters"), dict):
+            data = data["parameters"]
+        panels = data.get("panels") or []
     if not panels:
         raise RuntimeError("漫画分镜结果为空")
     ts = db.now()
