@@ -89,9 +89,19 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     # 判据只看**英文 token 在不在**,不能因为写了中文「三视图」就放过 ——
     # 图像模型不认中文布局词(实测中文三视图照样出单人立绘),放过等于没补。
     if not any(k in fp for k in ("turnaround", "reference sheet", "multi-view", "orthographic")):
-        fp += (", character turnaround sheet, front-face close-up on the left, "
-               "three equal-height full-body views on the right (front / 90-degree side / back), "
-               "orthographic views, no perspective distortion")
+        fp += (", character turnaround sheet, three equal-height full-body views "
+               "shown strictly side by side in left-to-right order: "
+               "(1) FRONT VIEW facing camera, (2) SIDE VIEW rotated exactly 90 degrees, "
+               "(3) BACK VIEW facing away from camera. "
+               "All three views must be full body from head to toe, equal height, "
+               "identical character instance (same face / hair / outfit / accessories), "
+               "neutral A-pose standing, hands relaxed at sides, eyes looking straight ahead. "
+               "Pure white seamless background, soft even diffuse lighting from front, "
+               "no dramatic shadows, orthographic projection (no perspective distortion), "
+               "no close-up portraits, no facial zoom-ins, "
+               "only three full-body views in a horizontal row, "
+               "no props / furniture / environment / scenery in the frame, "
+               "front face / profile / back view layout, no 3/4 angle, no diagonal pose")
     # 只落库正向提示词。质量守卫与负向词由 app/ai/prompt_guards.py 在**生图时统一追加**
     # (positive 走 apply_image_quality_guard、负面走 negative_prompt),不再拼接进资产
     # 提示词正文 —— 否则每个角色的 final_prompt 都拖着一段重复的守卫文本,详情页难以编辑,
