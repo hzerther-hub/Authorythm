@@ -2421,6 +2421,11 @@ class EpisodePage(QWidget):
         """
         from ..pipeline import comic as comic_pipe
         snap_img = self.image_model.currentData()   # 工作线程里读 combo 会 Internal C++ object already deleted
+        # 标记漫画资产 busy(全 tab 共享)_comic_asset_busy set
+        if not hasattr(self, "_comic_asset_busy"):
+            self._comic_asset_busy = set()
+        self._comic_asset_busy.add(f"{kind}:{row_id}")
+        self._reload_assets()  # 立即把按钮变旋转字
         # 画风统一走项目级「温画画风」(dramas.comic_style),其它入口不再下拉覆盖。
         if force:
             kind_table = {"character": "characters", "scene": "scenes", "prop": "props"}.get(kind)
@@ -2431,6 +2436,7 @@ class EpisodePage(QWidget):
             return comic_pipe.comic_asset_image(self.drama_id, kind, row_id,
                                                 config_id=snap_img)
         def done(tid, result, error):
+            self._comic_asset_busy.discard(f"{kind}:{row_id}")
             if error:
                 err(error)
             self._reload_comic_assets()
@@ -3376,7 +3382,7 @@ class EpisodePage(QWidget):
         ff_act = QHBoxLayout()
         ff_act.setSpacing(6)
         ff_act.setContentsMargins(0, 2, 0, 0)
-        self.sb_ff_gen_btn = QPushButton("▣ " + tr("gen_first_frame"))
+        self.sb_ff_gen_btn = WaitingButton("▣ " + tr("gen_first_frame"))
         # 之前错挂 refTab(那是页签下划线样式),按出来的按钮又大又空。
         # 改成 ffAction(次级) + ffAction[primary] 主行动,体积小一档。
         self.sb_ff_gen_btn.setObjectName("ffAction")
@@ -4666,11 +4672,16 @@ class EpisodePage(QWidget):
             if not ask(self, tr("重新生成首帧"),
                        tr("将重新生成首帧图,已确认的首帧会回到待审状态。是否继续?")):
                 return
+        btn = getattr(self, "sb_ff_gen_btn", None)
+        if btn is not None and hasattr(btn, "busy"):
+            btn.busy(tr("in_progress"))
         db.ex("UPDATE storyboards SET image_status='generating', updated_at=? WHERE id=?",
               (db.now(), sb_id))
         self._reload_storyboard()
 
         def done(tid, result, error):
+            if btn is not None and hasattr(btn, "idle"):
+                btn.idle()
             if error:
                 db.ex("UPDATE storyboards SET image_status='failed', updated_at=? WHERE id=?",
                       (db.now(), sb_id))
@@ -4706,10 +4717,15 @@ class EpisodePage(QWidget):
 
     def _gen_first_frame(self, sb_id: int):
         from ..pipeline import shot_tools
+        btn = getattr(self, "sb_ff_gen_btn", None)
+        if btn is not None and hasattr(btn, "busy"):
+            btn.busy(tr("in_progress"))
         def job(tid):
             return shot_tools.generate_first_frame(self.episode_id, sb_id,
                                                    config_id=self.image_model.currentData())
         def done(tid, result, error):
+            if btn is not None and hasattr(btn, "idle"):
+                btn.idle()
             if error:
                 err("▣ 首帧失败:" + str(error)[:280])
             self._reload_storyboard()
@@ -4717,12 +4733,17 @@ class EpisodePage(QWidget):
 
     def _compose_i2v(self, sb_id: int):
         from ..pipeline import shot_tools
+        btn = getattr(self, "sb_compose_btn", None)
+        if btn is not None and hasattr(btn, "busy"):
+            btn.busy(tr("in_progress"))
         db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
         res = self.res_combo.currentText()
         def job(tid):
             return shot_tools.compose_from_image(self.episode_id, sb_id, res,
                                                  config_id=self.video_model.currentData())
         def done(tid, result, error):
+            if btn is not None and hasattr(btn, "idle"):
+                btn.idle()
             if error:
                 db.ex("UPDATE storyboards SET status='failed' WHERE id=?", (sb_id,))
                 err("▷ i2v合成失败:" + str(error)[:280])

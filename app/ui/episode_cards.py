@@ -388,24 +388,37 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
 
 # ── 资产卡 ──
 def apply_asset_busy(card, cover, gen_btns: list, busy: bool):
-    """资产卡生成中状态:封面盖半透明遮罩+盲文转圈,文绘/图绘按钮变旋转字并禁点。
+    """资产卡生成中状态:封面盖半透明遮罩+盲文转圈,**所有**按钮禁用并变旋转字。
 
-    gen_btns 为 [(按钮, 原文字)];卡片按 busy 重建,无需恢复逻辑。
+    gen_btns 为 [(按钮, 原文字)] —— 通常只指 gen 按钮(文绘/图绘);
+    但 busy=True 时仍要禁用其它按钮(上传/换脸/删除/造型变体 等),
+    防止用户在生成途中再点造成并发任务或状态错乱。
+
+    卡片 busy=False 时:原按钮文字 + 启用;True 时:全卡按钮禁用 + 旋转字。
     """
     if cover is not None:
         cover.set_pending(busy)
+    # 收集卡上**所有** QPushButton(上传/换脸/删除/变体/文绘/图绘 都算)
+    all_btns = list(card.findChildren(QPushButton))
+    # 把 gen_btns 里没有的按钮也补进去(它们的原文字直接读 button.text())
+    known_ids = {id(b) for b, _ in gen_btns}
+    extra = [(b, b.text()) for b in all_btns if id(b) not in known_ids]
+    full_btns = list(gen_btns) + extra
     if not busy:
+        for b, orig in full_btns:
+            b.setEnabled(True)
+            b.setText(orig)
         return
     from PySide6.QtCore import QTimer
     from .braille import BRAILLE_FRAMES
-    for b, _orig in gen_btns:
+    for b, _orig in full_btns:
         b.setEnabled(False)
         b.setText(BRAILLE_FRAMES[0])
     state = {"i": 0}
 
     def tick():
         state["i"] = (state["i"] + 1) % len(BRAILLE_FRAMES)
-        for b, _orig in gen_btns:
+        for b, _orig in full_btns:
             b.setText(BRAILLE_FRAMES[state["i"]])
     t = QTimer(card)
     t.timeout.connect(tick)
