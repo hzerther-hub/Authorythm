@@ -342,7 +342,20 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
 
     # ── Path A/B:豆包 ──
     if key:
-        volc_voice = voice or cfg.get("model") or DEFAULT_VOICE
+        # 选 voice 优先级:调用方传入 > cfg.models 列表按 gender 匹配 > cfg.model 默认
+        volc_voice = voice
+        if not volc_voice:
+            try:
+                models_list = db.jload((cfg.get("models") if cfg else "") or "", []) or []
+            except Exception:                          # noqa: BLE001
+                models_list = []
+            if models_list:
+                # 用下划线包围的子串做边界匹配:zh_female_xxx 不会被 'male' 误中。
+                target = "_male_" if gender == "male" else "_female_"
+                volc_voice = next((m for m in models_list
+                                   if target in (m or "").lower()), models_list[0])
+            else:
+                volc_voice = (cfg.get("model") if cfg else None) or DEFAULT_VOICE
         _LAST_VOICE = volc_voice
         try:
             return _synthesize_volc(text, volc_voice, cfg, target_duration, speed)
