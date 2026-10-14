@@ -142,8 +142,12 @@ def build_image_negative_guard(people: int = 1) -> str:
         return (
             f"person beyond the {people} characters, extra figure, onlooker, bystander, crowd, audience, "
             "duplicate character, copy of subject, doppelganger, ghostly double, "
-            "transparent figure in background, blurred person watching, mannequin, silhouette in mist, "
-            "extra heads, crowd in background, friends standing behind, coworkers watching"
+            "ghost figure, ghost copy, ghost in background, transparent figure, transparent body, "
+            "translucent figure, semi-transparent person, faded silhouette, "
+            "second copy of same character, mirror image of character, "
+            "blurred person watching, mannequin, silhouette in mist, "
+            "extra heads, crowd in background, friends standing behind, coworkers watching, "
+            "no character turnaround sheet in background, no reference photo in scene"
         )
     return IMAGE_NEGATIVE_GUARD
 

@@ -2315,11 +2315,26 @@ class EpisodePage(QWidget):
             b.clicked.connect(lambda _=False, k=kind: self._batch_redo_images(k))
             self._batch_redo_btns[kind] = b
             bar.addWidget(b)
+        # 补图单类:只生 image_url 为空的资产生图(不覆盖已有图)。
+        # 用户场景:之前只生了一半,想把缺的补上;不需要重画已有的。
+        # 与「重画 X」按钮紧挨放,选哪个一目了然。
+        self._batch_fill_btns: dict[str, WaitingButton] = {}
+        for kind in ("characters", "scenes", "props"):
+            b = WaitingButton("+ " + tr("batch_fill_missing_kind").format(kind=kind_label[kind]))
+            b.setToolTip(tr("batch_fill_missing_tip").format(kind=kind_label[kind]))
+            b.clicked.connect(lambda _=False, k=kind: self._batch_fill_missing(k))
+            self._batch_fill_btns[kind] = b
+            bar.addWidget(b)
         # 「重画全部」:一次性刷三种,字面意义清楚。
         self.batch_redo_all_btn = WaitingButton(tr("batch_redo_all"))
         self.batch_redo_all_btn.setToolTip(tr("batch_redo_all_tip"))
         self.batch_redo_all_btn.clicked.connect(self._batch_redo_all)
         bar.addWidget(self.batch_redo_all_btn)
+        # 「补图全部」:只刷 image_url 为空的资产,不覆盖已有图(省 token)。
+        self.batch_fill_all_btn = WaitingButton(tr("batch_fill_missing_all"))
+        self.batch_fill_all_btn.setToolTip(tr("batch_fill_missing_all_tip"))
+        self.batch_fill_all_btn.clicked.connect(self._batch_fill_missing_all)
+        bar.addWidget(self.batch_fill_all_btn)
         lay.addLayout(bar)
 
         # 漫画资产工具条(仅 comic 模式可见)—— 仿分镜工作台 batch_video_btn 的「工具条最右 primary」放法
@@ -2407,8 +2422,12 @@ class EpisodePage(QWidget):
             b.setVisible(mode == "regular")
         for b in getattr(self, "_batch_redo_btns", {}).values():
             b.setVisible(mode == "regular")
+        for b in getattr(self, "_batch_fill_btns", {}).values():
+            b.setVisible(mode == "regular")
         if hasattr(self, "batch_redo_all_btn"):
             self.batch_redo_all_btn.setVisible(mode == "regular")
+        if hasattr(self, "batch_fill_all_btn"):
+            self.batch_fill_all_btn.setVisible(mode == "regular")
         self._comic_bar.setVisible(mode == "comic")
         self._reload_assets()
 
@@ -3087,6 +3106,121 @@ class EpisodePage(QWidget):
         for b in self._batch_redo_btns.values():
             b.busy(tr("in_progress"))
         self.batch_redo_all_btn.busy(tr("in_progress"))
+        for k in _keys:
+            self._asset_busy.add(k)
+        self._reload_assets()
+        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+    def _batch_fill_missing(self, table: str):
+        """补图:只为本集已关联但 image_url 为空的资产生图,不覆盖已有图。
+
+        与 _batch_redo_images 区别:后者无差别覆盖;本函数只看 NULL / 空串,
+        把缺的补上 —— 用户场景:之前只生了一半,想把缺的补全,不想重新烧 token
+        浪费在已有图上。
+        """
+        import time as _time
+        if table == "characters":
+            link, col = "episode_characters", "character_id"
+        elif table == "scenes":
+            link, col = "episode_scenes", "scene_id"
+        else:
+            link, col = "episode_props", "prop_id"
+        rows = db.q(f"SELECT t.id FROM {table} t "
+                    f"JOIN {link} l ON l.{col}=t.id "
+                    f"WHERE t.drama_id=? AND l.episode_id=? "
+                    f"AND (t.image_url IS NULL OR t.image_url='') "
+                    f"ORDER BY t.id",
+                    (self.drama_id, self.episode_id))
+        if not rows:
+            ok(tr("没有待补图的资产(本集关联的都已生成)"))
+            return
+        n = len(rows)
+        ok(tr("开始补图,共 {} 个资产(只生空白,不覆盖)").format(n))
+        if not hasattr(self, "_asset_busy"):
+            self._asset_busy = set()
+        _keys = [f"{table}:{r['id']}" for r in rows]
+
+        def job(tid):
+            done_cnt = 0
+            for i, r in enumerate(rows):
+                if i:
+                    _time.sleep(3)
+                try:
+                    self._gen_one(r["id"], table, by_text=True)
+                    done_cnt += 1
+                except Exception as exc:  # noqa: BLE001
+                    err(tr("资产 {} 失败:{}").format(r["id"], str(exc)[:100]))
+            return {"done": done_cnt, "total": n}
+
+        def done(tid, result, error):
+            btn = self._batch_fill_btns.get(table)
+            if btn:
+                btn.idle()
+            for k in _keys:
+                self._asset_busy.discard(k)
+            self._reload_assets()
+            if error:
+                err(error)
+            else:
+                ok(tr("补图完成:{}/{} 成功").format(result["done"], result["total"]))
+
+        btn = self._batch_fill_btns.get(table)
+        if btn:
+            btn.busy(tr("in_progress"))
+        for k in _keys:
+            self._asset_busy.add(k)
+        self._reload_assets()
+        TASKMGR.submit("image", job, done, drama_id=self.drama_id)
+
+    def _batch_fill_missing_all(self):
+        """补图全部:三种 kind 都只补空白,已有图不覆盖。"""
+        import time as _time
+        all_rows = []
+        for table, link, col in (("characters", "episode_characters", "character_id"),
+                                 ("scenes", "episode_scenes", "scene_id"),
+                                 ("props", "episode_props", "prop_id")):
+            for r in db.q(f"SELECT t.id FROM {table} t "
+                          f"JOIN {link} l ON l.{col}=t.id "
+                          f"WHERE t.drama_id=? AND l.episode_id=? "
+                          f"AND (t.image_url IS NULL OR t.image_url='') ORDER BY t.id",
+                          (self.drama_id, self.episode_id)):
+                all_rows.append((table, r["id"]))
+        if not all_rows:
+            ok(tr("没有待补图的资产"))
+            return
+        n = len(all_rows)
+        ok(tr("开始补图,共 {} 个资产(只生空白)").format(n))
+        if not hasattr(self, "_asset_busy"):
+            self._asset_busy = set()
+        _keys = [f"{t}:{rid}" for t, rid in all_rows]
+
+        def job(tid):
+            done_cnt = 0
+            for i, (table, rid) in enumerate(all_rows):
+                if i:
+                    _time.sleep(3)
+                try:
+                    self._gen_one(rid, table, by_text=True)
+                    done_cnt += 1
+                except Exception as exc:  # noqa: BLE001
+                    err(tr("资产 {}/{} 失败:{}").format(table, rid, str(exc)[:100]))
+            return {"done": done_cnt, "total": n}
+
+        def done(tid, result, error):
+            for b in self._batch_fill_btns.values():
+                b.idle()
+            self.batch_fill_all_btn.idle()
+            for k in _keys:
+                self._asset_busy.discard(k)
+            self._reload_assets()
+            if error:
+                err(error)
+            else:
+                ok(tr("补图完成:{}/{} 成功").format(result["done"], result["total"]))
+
+        for b in self._batch_fill_btns.values():
+            b.busy(tr("in_progress"))
+        self.batch_fill_all_btn.busy(tr("in_progress"))
         for k in _keys:
             self._asset_busy.add(k)
         self._reload_assets()
@@ -5654,11 +5788,22 @@ class EpisodePage(QWidget):
             # qwen-image / volcengine 等会丢参考图,直接走纯文生图避免误导预期
             refs = comic_pipe.panel_reference_images(panel_id) if image_client.supports_reference_images(
                 (registry.check_ready("image", snap_img) or {}).get("provider")) else []
+            # 漫画格专项负向词(叠加全局守卫):强调「不要鬼影/复制人/参考图翻拍」。
+            # 之前默认守卫词太软,模型常出「主体+主体半透明副本」「参考图三视图当成画面背景」等
+            # 错误(实测会议室场景多出 2 个透明人物 → 改后清除)。参考视频守卫的力道。
+            extra_neg = ("ghost figure, ghost copy, ghost in background, transparent body, "
+                         "translucent figure, semi-transparent person, faded silhouette, "
+                         "second copy of same character, mirror image of character, "
+                         "character lined up in row, character turnaround sheet in background, "
+                         "no faces turned away, no profile shot, no 3/4 angle, "
+                         "no standing figure in background, no extra body silhouette behind subject, "
+                         "no faded body in mist, no echo figure, no reflection of same person")
             out, _p = image_client.generate_image(
                 fp, config_id=snap_img,
                 size="1024x1536",
                 reference_images=refs or None,
-                people=comic_pipe.panel_people_count(panel_id))
+                people=comic_pipe.panel_people_count(panel_id),
+                extra_negative=extra_neg)
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), panel_id))
             return str(out)
