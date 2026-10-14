@@ -57,20 +57,66 @@ class ProjectSettingsDialog(QDialog):
         self.drama_id = drama_id
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
         self.setWindowTitle(tr("project_settings"))
-        self.resize(480, 460)
+        self.resize(640, 540)
         root = QVBoxLayout(self)
         root.addWidget(W.h2(tr("project_settings")))
-        f = QFormLayout()
+        # 双列布局:把字段配对到两列,缩短对话框高度
+        # 列结构:[label, control, label, control] 四列两两配对
+        # 全宽行:占 col 0+1 (左) + col 2+3 (右,空占)
+        from PySide6.QtWidgets import QGridLayout
+        f = QGridLayout()
+        f.setHorizontalSpacing(14)
+        f.setVerticalSpacing(6)
+        f.setColumnStretch(1, 3)
+        f.setColumnStretch(3, 3)
+        row_idx = 0
+
+        def _lab(text: str) -> QLabel:
+            return QLabel(text)
+
+        def _row_pair(label_l, ctrl_l, label_r, ctrl_r):
+            """左 (col 0,1) 右 (col 2,3) 一行两项配对。"""
+            nonlocal row_idx
+            f.addWidget(_lab(label_l), row_idx, 0, Qt.AlignRight | Qt.AlignVCenter)
+            f.addWidget(ctrl_l, row_idx, 1)
+            f.addWidget(_lab(label_r), row_idx, 2, Qt.AlignRight | Qt.AlignVCenter)
+            f.addWidget(ctrl_r, row_idx, 3)
+            row_idx += 1
+
+        def _row_full(label_text, ctrl, hint_text=None):
+            """全宽一行(标签 col 0,控件 col 1-3 合并)。"""
+            nonlocal row_idx
+            if label_text:
+                f.addWidget(_lab(label_text), row_idx, 0, Qt.AlignRight | Qt.AlignTop)
+                f.addWidget(ctrl, row_idx, 1, 1, 3)
+            else:
+                f.addWidget(ctrl, row_idx, 0, 1, 4)
+            row_idx += 1
+            if hint_text:
+                f.addWidget(_muted(hint_text), row_idx, 0, 1, 4)
+                row_idx += 1
+
+        def _row_hint_full(hint_text):
+            nonlocal row_idx
+            f.addWidget(_muted(hint_text), row_idx, 0, 1, 4)
+            row_idx += 1
+
+        # 项目名称 — 全宽
         self.title = QLineEdit(d["title"])
-        f.addRow(tr("project_name"), self.title)
+        _row_full(tr("project_name"), self.title)
+
         meta = db.jload(d["metadata"], {})
+        # 简介 — 全宽
         self.intro = QLineEdit(meta.get("intro", ""))
         self.intro.setPlaceholderText(tr("u_whole_placeholder"))
-        f.addRow(tr("u_intro"), self.intro)
+        _row_full(tr("u_intro"), self.intro)
+
+        # 题材 — 全宽(短文本输入)
         self.genre = QLineEdit(meta.get("genre", ""))
         self.genre.setPlaceholderText(tr("u_genre"))
-        f.addRow(tr("u_genre"), self.genre)
-        # AI 起草简介/题材:素材优先级 = 首章正文 > 创意描述 > 项目名
+        _row_full(tr("u_genre"), self.genre)
+
+        # AI 起草简介/题材 + 提示 — 全宽放一行
         meta_row = QWidget()
         mr = QHBoxLayout(meta_row)
         mr.setContentsMargins(0, 0, 0, 0)
@@ -81,18 +127,13 @@ class ProjectSettingsDialog(QDialog):
         mr.addWidget(self.meta_btn)
         mr.addWidget(_muted(tr("简介与题材会作为小说策划 / 分镜 / 画面生成的上下文")))
         mr.addStretch(1)
-        f.addRow("", meta_row)
-        # 写法文风:6 个预设 + 自定义(对齐原版 episode.vue 的 NOVEL_STYLES)
+        _row_full("", meta_row)
+
+        # 写法文风:6 预设 + 自定义(全宽)
         from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
-        style_row = QWidget()
-        sr = QVBoxLayout(style_row)
-        sr.setContentsMargins(0, 0, 0, 0)
-        sr.setSpacing(4)
-        sr1 = QHBoxLayout()
         self.novel_style = QComboBox()
         self.novel_style.addItem(tr("未选(跟随默认)"), "")
         for name, prompt in NOVEL_STYLES:
-            # 名字走 tr(),提示词保持中文 —— 后者是发给模型的指令,不是界面文案
             self.novel_style.addItem(tr(name), prompt)
         self.novel_style.addItem(tr("自定义…"), NOVEL_STYLE_CUSTOM)
         _cur = (d["novel_style"] or "").strip()
@@ -101,88 +142,74 @@ class ProjectSettingsDialog(QDialog):
             _si = self.novel_style.findData(NOVEL_STYLE_CUSTOM)
         self.novel_style.setCurrentIndex(_si)
         self.novel_style.currentIndexChanged.connect(self._on_style_pick)
-        sr1.addWidget(self.novel_style, 1)
-        sr.addLayout(sr1)
+        _row_full(tr("写法文风"), self.novel_style)
+
         self.novel_style_edit = QPlainTextEdit(_cur)
         self.novel_style_edit.setPlaceholderText(tr("自定义文风:写清句式、节奏、视角与爽点节奏"))
-        self.novel_style_edit.setMaximumHeight(64)
-        self.novel_style_edit.setVisible(
-            self.novel_style.currentData() == NOVEL_STYLE_CUSTOM)
+        self.novel_style_edit.setMaximumHeight(56)
+        self.novel_style_edit.setVisible(self.novel_style.currentData() == NOVEL_STYLE_CUSTOM)
         self.novel_style_edit.textChanged.connect(self._on_style_text)
-        sr.addWidget(self.novel_style_edit)
-        f.addRow(tr("写法文风"), style_row)
-        f.addRow("", _muted(tr("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述")))
+        _row_full("", self.novel_style_edit)
+        _row_hint_full(tr("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述"))
+
+        # 画面比例 | 视觉风格  (两列配对)
         self.aspect = QComboBox()
         for v, label in ASPECTS:
             self.aspect.addItem(label if label == "auto" else tr(label), v)
         i = self.aspect.findData(d["aspect_ratio"])
         self.aspect.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("aspect_ratio"), self.aspect)
         self.style = QComboBox()
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
-            self.style.addItem(tr(r["name"]), r["value"])   # 预设名随语言
+            self.style.addItem(tr(r["name"]), r["value"])
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("visual_style"), self.style)
-        # 项目级"温画画风":漫画资产 / 漫画格生成的统一出口(从这里集中改,
-        # 其它漫化页面不再重复下拉)。
-        cs_row = QWidget()
-        csr = QVBoxLayout(cs_row)
-        csr.setContentsMargins(0, 0, 0, 0)
-        csr.setSpacing(4)
-        csr1 = QHBoxLayout()
+        _row_pair(QLabel(tr("aspect_ratio")), self.aspect,
+                 QLabel(tr("visual_style")), self.style)
+
+        # 画风(温画画风) | 内容语言  (两列配对)
         self.comic_style = QComboBox()
         self.comic_style.addItem(tr("未选(跟随默认)"), "")
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
             self.comic_style.addItem(tr(r["name"]), r["value"])
         self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
-        csr1.addWidget(self.comic_style, 1)
-        csr.addLayout(csr1)
-        self.comic_style_edit = QPlainTextEdit(d["comic_style"] or "")
-        self.comic_style_edit.setPlaceholderText(tr("自定义画风:写清笔触、线条、色调、氛围"))
-        self.comic_style_edit.setMaximumHeight(64)
-        csr.addWidget(self.comic_style_edit)
-        f.addRow(tr("u_comic_style"), cs_row)
-        f.addRow("", _muted(tr("本项目的所有漫画资产图与漫画格共用此画风;选自定义可自由描述")))
-        # 实时切换信号:控件已建好,才挂监听。
-        # 选预设 → 自动写回 self.comic_style_edit + 写入 DB;
-        # 选自定义 → 展开编辑框;编辑框内容脱离当前预设时 → 下拉拨回「自定义…」。
         self.comic_style.currentIndexChanged.connect(self._on_comic_style_pick)
-        self.comic_style_edit.textChanged.connect(self._on_comic_style_text)
-        # 初始态:文本已存在、若能对上预设 → 选中那一项;否则按"自定义"显示。
-        _init_cs = (d["comic_style"] or "").strip()
-        _cs_idx = self.comic_style.findData(_init_cs) if _init_cs else 0
+        _cur_cs = (d["comic_style"] or "").strip()
+        _cs_idx = self.comic_style.findData(_cur_cs) if _cur_cs else 0
         if _cs_idx < 0:
             _cs_idx = self.comic_style.findData("__custom__")
         self.comic_style.setCurrentIndex(_cs_idx if _cs_idx >= 0 else 0)
-        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
-        # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
-        # 项目级内容语言(对齐原版 a6a47dc:每个项目可固定语言,互不干扰)
         self.language = QComboBox()
         self.language.addItem(tr("跟随全局设置"), "auto")
         for code, name in LANGS:
             self.language.addItem(f"{name} ({code})", code)
         _li = self.language.findData(d["language"] or "auto")
         self.language.setCurrentIndex(_li if _li >= 0 else 0)
-        f.addRow(tr("内容语言"), self.language)
-        f.addRow("", W.muted(tr("本项目的剧本/资产/分镜等 AI 产出固定使用该语言,不影响其他项目")))
+        _row_pair(QLabel(tr("u_comic_style")), self.comic_style,
+                 QLabel(tr("内容语言")), self.language)
+        _row_hint_full(tr("本项目的所有漫画资产图与漫画格共用此画风;选自定义可自由描述"))
+
+        # 漫画画风自定义编辑框 — 全宽(展开条件)
+        self.comic_style_edit = QPlainTextEdit(d["comic_style"] or "")
+        self.comic_style_edit.setPlaceholderText(tr("自定义画风:写清笔触、线条、色调、氛围"))
+        self.comic_style_edit.setMaximumHeight(56)
+        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
+        self.comic_style_edit.textChanged.connect(self._on_comic_style_text)
+        _row_full("", self.comic_style_edit)
+
+        # 人物面孔文化 | 朗读音色  (两列配对)
         self.ethnicity = QComboBox()
         for v, label in ETHNICITIES:
             self.ethnicity.addItem(label if label == "auto" else tr(label), v)
         i = self.ethnicity.findData(d["ethnicity"])
         self.ethnicity.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("ethnicity"), self.ethnicity)
-        # 「朗读音色」—— Edge TTS(免费微软神经语音,无需 API key,云端流式合成)。
-        # 性别二选一,实际 voice 走 tts_client.pick_edge_voice(text, gender) 从 16 语种
-        # × 男女 = 32 个预设里自动挑;朗读文本语言变化时,Edge 自动换 voice,
-        # 整套不用下载本地语言包,只要联网就有声。
         self.tts_gender = QComboBox()
         self.tts_gender.addItem("👩 " + tr("tts_gender_female"), "female")
         self.tts_gender.addItem("👨 " + tr("tts_gender_male"), "male")
         i = self.tts_gender.findData(meta.get("tts_gender", "female"))
         self.tts_gender.setCurrentIndex(i if i >= 0 else 0)
-        f.addRow(tr("tts_gender"), self.tts_gender)
-        f.addRow("", _muted(tr("tts_gender_hint")))
+        _row_pair(QLabel(tr("ethnicity")), self.ethnicity,
+                 QLabel(tr("tts_gender")), self.tts_gender)
+        _row_hint_full(tr("tts_gender_hint"))
 
         # ── 创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
         # 锁定条件是「**已经按这份创意生成出真实文字**」,不是「项目里存在第 1 集」——
@@ -191,31 +218,33 @@ class ProjectSettingsDialog(QDialog):
         self.skip_creative = QCheckBox(tr("不需要创意描述 — 我会自己粘贴文章"))
         self.skip_creative.setChecked(bool(d["skip_creative"]))
         self.skip_creative.setDisabled(self._generated)
-        f.addRow("", self.skip_creative)
+        f.addWidget(self.skip_creative, row_idx, 0, 1, 4)
+        row_idx += 1
         self.creative = QPlainTextEdit(d["creative_description"] or "")
         self.creative.setPlaceholderText(tr("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣男、拿回母亲遗产……"))
-        self.creative.setMaximumHeight(96)
+        self.creative.setMaximumHeight(72)
         self.creative.setDisabled(self._generated or bool(d["skip_creative"]))
-        f.addRow(tr("u_creative_desc"), self.creative)
-        f.addRow("", W.muted(
+        _row_full(tr("u_creative_desc"), self.creative)
+        _row_hint_full(
             tr("creative_locked_hint") if self._generated
-            else tr("creative_free_hint")))
+            else tr("creative_free_hint"))
+
         from ..pipeline.novel import POV_LABELS, get_novel_pov
         self.pov_combo = QComboBox()
         for code, desc in POV_LABELS.items():
             self.pov_combo.addItem(tr(desc), code)
         self.pov_combo.setCurrentIndex(self.pov_combo.findData(get_novel_pov(d["id"])))
         self.pov_combo.setToolTip(tr("写章与审校都会按此人称强制校验"))
-        f.addRow(tr("叙事人称"), self.pov_combo)
         self.total_eps = QSpinBox()
         self.total_eps.setRange(1, 999)
         self.total_eps.setValue(int(d["total_episodes"] or 1))
-        f.addRow(tr("集数"), self.total_eps)
-        f.addRow("", W.muted(tr("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。")))
+        _row_pair(QLabel(tr("叙事人称")), self.pov_combo,
+                 QLabel(tr("集数")), self.total_eps)
+        _row_hint_full(tr("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
+
         self.skip_creative.toggled.connect(
             lambda on: self.creative.setDisabled(on or self._generated))
         root.addLayout(f)
-        root.addStretch(1)
         row = QHBoxLayout()
         cancel = QPushButton(tr("cancel"))
         cancel.clicked.connect(self.reject)
