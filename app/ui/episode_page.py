@@ -5226,12 +5226,13 @@ class EpisodePage(QWidget):
                 ("scene",     "comic_panel_scenes",     "scenes",     "scene_id"),
                 ("prop",      "comic_panel_props",      "props",      "prop_id"),
             ):
-                for x in db.q(
+                for r in db.q(
                     f"SELECT pc.panel_id pid, t.* FROM {link} pc "
                     f"JOIN {table} t ON t.id = pc.{id_col} "
                     f"WHERE pc.panel_id IN ({ph}) ORDER BY t.id", ids):
-                    x["kind"] = kind
-                    bound_by_panel.setdefault(x["pid"], []).append(dict(x))
+                    # db.q 返回 sqlite3.Row 不可写 —— 先转 dict 再补 kind 字段
+                    x = dict(r); x["kind"] = kind
+                    bound_by_panel.setdefault(x["pid"], []).append(x)
             # 描述雷同检测:纯算 description+composition 的字符级相似度,
             # 命中阈值就在后出现的格上挂警告(避免和前序雷同 → 出图撞)
             try:
