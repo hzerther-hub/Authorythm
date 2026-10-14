@@ -135,17 +135,27 @@ def _style_for(drama_id: int, style_value: str = "") -> str:
     """
     d = db.q1("SELECT style, comic_style, ethnicity, language FROM dramas WHERE id=?",
               (drama_id,))
+    return db.style_prompt(
+        _current_style_value(drama_id, style_value),
+        ethnicity=(d["ethnicity"] if d else "") or "",
+        content_lang=(d["language"] if d else "") or "")
+
+
+def _current_style_value(drama_id: int, style_value: str = "") -> str:
+    """当前实际生效的风格 value(与 _style_for 优先级一致),供自修复/对比用。
+
+    与 _style_for 解耦:这里只返回 value 字符串,不取 style_prompt 全文。
+    comic_asset_image 用它对比 row.final_prompt_style,不一致就自动重生成
+    final_prompt —— 避免用旧 final_prompt + 当前 comic_style 拼出矛盾 prompt。
+    """
     if style_value:
-        value = style_value
-    elif d and (d["comic_style"] or "").strip():
-        value = d["comic_style"]
-    elif d and (d["style"] or "").strip():
-        value = d["style"]
-    else:
-        value = "3d"
-    return db.style_prompt(value or "3d",
-                           ethnicity=(d["ethnicity"] if d else "") or "",
-                           content_lang=(d["language"] if d else "") or "")
+        return style_value
+    d = db.q1("SELECT style, comic_style FROM dramas WHERE id=?", (drama_id,))
+    if d and (d["comic_style"] or "").strip():
+        return d["comic_style"]
+    if d and (d["style"] or "").strip():
+        return d["style"]
+    return "3d"
 
 
 def panel_people_count(panel_id: int) -> int:
@@ -389,8 +399,13 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
                       style_value: str = "") -> str:
     """资产行的漫画风格镜像图(角色/场景/道具),写 comic_image_url;返回 URL。
 
-    style_value 留空时一律走项目级"温画画风"(dramas.comic_style),由 _style_for 收口,
+    style_value 留空时一律走项目级"温画画风」(dramas.comic_style),由 _style_for 收口,
     避免上游 UI 再重复提供下拉。
+
+    **自动校验 + 自修复**:生成前比对 row.final_prompt_style 与当前 _style_for
+    的实际生效 value,不一致说明 final_prompt 是旧风格(prompts_gen 之前按
+    dramas.style='3d' 跑出的),此时自动调 prompts_gen 重新跑一遍,让 final_prompt
+    跟当前 comic_style 对齐 —— 整个过程不需用户操作数据库。
     """
     from ..ai import image_client
     # 调用方有的传单数("character"),有的直接传表名("characters"),统一归一,
@@ -401,6 +416,25 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     row = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))
     if not row:
         raise RuntimeError("资产不存在")
+
+    # ── 自修复:校验 final_prompt_style 与当前 comic_style 一致性 ──
+    # 取当前实际生效的 style value(comic_style > style > "3d"),与 row 里的
+    # final_prompt_style 对比。不一致 → 重新调 prompts_gen 重写 final_prompt。
+    cur_style_value = _current_style_value(drama_id, style_value)
+    stored_style = (row["final_prompt_style"] or "").strip() if "final_prompt_style" in row.keys() else ""
+    if stored_style != cur_style_value:
+        from . import prompts_gen
+        try:
+            if kind == "character":
+                prompts_gen.character_prompt(row_id, config_id=config_id)
+            elif kind == "scene":
+                prompts_gen.scene_prompt(row_id, config_id=config_id)
+            else:
+                prompts_gen.prop_prompt(row_id, config_id=config_id)
+            row = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))  # 拉回新 final_prompt
+        except Exception as e:                   # noqa: BLE001 —— LLM 抽风不阻断
+            print(f"[comic] final_prompt 自修复失败(忽略,继续用旧值): {e}", flush=True)
+
     style = _style_for(drama_id, style_value=style_value)
     # **不再复用 row['final_prompt']** —— 它是「常规资产」流程在 dramas.style 下
     # 生成的(可能是 3d 写实风格),与 comic_style 设的「美式漫画/日漫赛璐璐」完全无关;
