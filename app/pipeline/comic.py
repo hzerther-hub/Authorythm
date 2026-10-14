@@ -431,21 +431,14 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
             base = f"道具: {row['name']}, 描述: {row['description'] or ''}。纯白无缝背景单品图"
         spec = base
     prompt = f"{style}, {spec}"
-    # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720),
-    # 主形象图作为参考图传入(否则 AI 看 appearance 文字自己想象,镜像不像主形象),
-    # **但场景/道具不传** —— 这两类资产是空镜/单品,常规图作为参考会带偏漫画风
-    # 的画面构成(用户实测:漫画场景会把常规图里没有的人也画进来,坑在参考图
-    # 把"无人的构图"重新打散成"有人物的构图"上)。
+    # 对齐参考项目 comic.ts:尺寸按类型区分(角色 1024x1024 / 场景道具 1280x720)。
+    # **不再把 image_url(常规 3D 写实图)当作 reference_images 喂进生图模型** ——
+    # 模型会"参考"那张写实人像,导致无论 prompt 写"美式漫画/日漫赛璐璐"等
+    # 风格前缀,输出都被钉在写实人像的视觉上。改为纯文生图,让 prompt 头部
+    # 的 comic_style 风格前缀真正生效。
+    # (场景/道具从一开始就**不**传参考图,见下面原注释。)
     size = "1024x1024" if kind == "character" else "1280x720"
     refs = []
-    if kind == "character":
-        from pathlib import Path
-        cur = (row["image_url"] or "").strip()
-        if cur:
-            lp = (config.media_url_to_path(cur) if cur.startswith(("/static/", "static/"))
-                  else Path(cur))
-            if lp.exists():
-                refs = [str(lp)]
     # 三视图的"特写格"是模型最爱加戏的位置:默认给一张张嘴嘶吼的脸。
     # 通用守卫里只有一句 no wide-open screaming mouth,权重不够,这里再加一层。
     extra_neg = ("open mouth, screaming, shouting, yelling, gasp, aghast, terrified expression, "

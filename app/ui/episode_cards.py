@@ -402,7 +402,12 @@ def apply_asset_busy(card, cover, gen_btns: list, busy: bool):
 
 
 class CharacterAssetCard(QFrame):
-    """角色卡:16:9 立绘 + 角色角标 + 样貌/妆造 + 图绘/文绘/上传/换脸/变体 + 最终提示词。"""
+    """角色卡:16:9 立绘 + 角色角标 + 样貌/妆造 + 图绘/文绘/上传/换脸/变体 + 最终提示词。
+
+    封面图:优先 comic_image_url(漫画风格镜像,与项目 comic_style 一致),
+    没漫画镜像时回退到 image_url(常规 3D)。这样卡片预览永远展示与
+    用户在「项目设定 → 画风」选的同一种风格,不会因为先常规后漫画导致观感错位。
+    """
 
     def __init__(self, row: dict, labels: dict, *, on_delete=None, on_gen_image=None, on_gen_text=None,
                  on_upload=None, on_face_swap=None, on_variants=None, on_prompt=None,
@@ -412,10 +417,13 @@ class CharacterAssetCard(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(7)
-        cover = CoverBox(row.get("image_url"), 248, 140, "☺",   # 16:9(对齐参考 .character-portrait)
-                         badge=(labels["cover_done"] if row.get("image_url")
+        # 封面图:漫画风格镜像(comic_image_url)优先,常规图作 fallback。
+        # 这让用户选「美式漫画」时,卡片预览立刻是该风格;否则被 3D 写实常规图喧宾夺主。
+        cover_url = (row.get("comic_image_url") or "").strip() or (row.get("image_url") or "").strip()
+        cover = CoverBox(cover_url, 320, 180, "☺",
+                         badge=(labels["cover_done"] if cover_url
                                 else labels["cover_todo"]),
-                         badge_state="ready" if row.get("image_url") else "todo",
+                         badge_state="ready" if cover_url else "todo",
                          tag_text=labels["cover_tag"],
                          on_click=on_open, pending=busy)
         lay.addWidget(cover)
@@ -449,10 +457,13 @@ class CharacterAssetCard(QFrame):
         lay.addLayout(summary)
         # 按钮排成一行(用户要求):图绘/文绘/上传/换脸 + 删除 横向排布,
         # 用 QHBoxLayout 而不是 QGridLayout —— 网格在窄卡片里会被压成竖排单字。
+        # 风格统一:橙色 outline(品牌色 #f97316),hover 浅橙填充,与项目主调一致;
+        # 删除按钮浅红 outline 与其它按钮同款但颜色区别。
         btns = QHBoxLayout()
-        btns.setSpacing(3)
+        btns.setSpacing(4)
         btns.setContentsMargins(0, 0, 0, 0)
         gen_btns = []      # 文绘/图绘两键:生成中变盲文旋转字(apply_asset_busy)
+        # 5 个按钮一行横排:统一高度 26px,等宽 1 份 (共 5 份 + 1 份删除 = 6 份)
         for text, tip, cb, enabled, is_gen in (
             (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True, True),
             (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True, True),
@@ -463,30 +474,30 @@ class CharacterAssetCard(QFrame):
             b.setToolTip(tip)
             b.setEnabled(enabled)
             b.setCursor(Qt.PointingHandCursor)
-            # 卡片只有 250px 宽,四个双字按钮 + 删除挤在一行,必须压缩内边距与字号,
-            # 并允许按钮在空间不足时收缩(否则布局会把它挤成竖排)。
-            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setMinimumWidth(0)
             b.setStyleSheet(
-                "QPushButton{font-size:11px;padding:2px 2px;"
-                "border:1px solid #dfe3e8;border-radius:6px;background:#fff;color:#4e5969;}"
-                "QPushButton:hover{background:#f2f3f5;}"
-                "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
+                "QPushButton{font-size:11px;padding:3px 4px;"
+                "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
+                "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
+                "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
             if is_gen:
                 gen_btns.append((b, text))
             btns.addWidget(b, 1)
-        if on_delete:                      # 单个删除:删掉不对的资产后重新提取
-            db = W.svg_icon_btn("delete", tr("删除该资产"))
-            db.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-            db.setFixedWidth(22)
+        if on_delete:                      # 删除按钮同款 outline 但红色,与生成按钮区分
+            db = QPushButton(tr("delete"))
+            db.setToolTip(tr("删除该资产"))
+            db.setCursor(Qt.PointingHandCursor)
+            db.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            db.setMinimumWidth(0)
             db.setStyleSheet(
-                "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
-                "background:#fff5f5;font-size:11px;padding:2px 0px;}"
-                "QPushButton:hover{background:#ffe9e9;}")
+                "QPushButton{font-size:11px;padding:3px 4px;"
+                "border:1px solid #fecaca;border-radius:6px;background:#fff5f5;color:#b91c1c;}"
+                "QPushButton:hover{background:#fee2e2;border-color:#ef4444;}")
             db.clicked.connect(lambda _=False: on_delete())
-            btns.addWidget(db, 0)
+            btns.addWidget(db, 1)
         lay.addLayout(btns)
         if on_variants:
             var = QPushButton(labels["variants"])
@@ -512,11 +523,13 @@ class AssetCard(QFrame):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(0)
         has = bool(row.get("image_url"))
-        # 封面占满卡宽:此前固定两列(主图+漫画图),单封面只占左半
-        cover = CoverBox(row.get("image_url"), 248, (140 if kind == "scene" else 200),
+        # 封面占满卡宽:漫画风格镜像(comic_image_url)优先,常规图 fallback。
+        # 选「美式漫画」画风时,卡片预览就是该风格;否则被 3D 写实常规图喧宾夺主。
+        cover_url = (row.get("comic_image_url") or "").strip() or (row.get("image_url") or "").strip()
+        cover = CoverBox(cover_url, 320, (180 if kind == "scene" else 240),
                          "⌖" if kind == "scene" else "▣",
-                         badge=labels["cover_done"] if has else labels["cover_todo"],
-                         badge_state="ready" if has else "todo",
+                         badge=labels["cover_done"] if cover_url else labels["cover_todo"],
+                         badge_state="ready" if cover_url else "todo",
                          tag_text=labels["cover_tag"],
                          on_click=on_open, pending=busy)
         lay.addWidget(cover)
@@ -555,11 +568,11 @@ class AssetCard(QFrame):
         flay.setSpacing(4)
         flay.addWidget(status_pill("ready" if has else "todo",
                                    labels["gen_done"] if has else labels["gen_todo"]))
-        BTN_QSS = ("QPushButton{font-size:12px;padding:2px 5px;"
-                   "border:1px solid #dfe3e8;border-radius:6px;background:#fff;color:#4e5969;}"
-                   "QPushButton:hover{background:#f2f3f5;}"
-                   "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;}")
-        # 文绘:纯文字出图,始终可用;图绘:基于已有形象图重绘(与角色卡一致的两条路径)
+        # 统一橙色 outline(品牌色 #f97316),hover 浅橙填充,与角色卡按钮同款。
+        BTN_QSS = ("QPushButton{font-size:11px;padding:3px 4px;"
+                   "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
+                   "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
+                   "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
         gen_btns = []
         for text, tip, cb, enabled in (
             (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
@@ -568,27 +581,36 @@ class AssetCard(QFrame):
             b = QPushButton(text)
             b.setToolTip(tip)
             b.setCursor(Qt.PointingHandCursor)
+            b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            b.setMinimumWidth(0)
             b.setStyleSheet(BTN_QSS)
             b.setEnabled(enabled)
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
             gen_btns.append((b, text))
-            flay.addWidget(b)
-        flay.addStretch(1)
+            flay.addWidget(b, 1)
         up = QPushButton(labels["upload"])
         up.setToolTip(labels["upload_tip"])
         up.setCursor(Qt.PointingHandCursor)
+        up.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        up.setMinimumWidth(0)
+        up.setStyleSheet(BTN_QSS)
         if on_upload:
             up.clicked.connect(lambda _=False: on_upload())
-        flay.addWidget(up)
+        flay.addWidget(up, 1)
         if on_delete:
-            dp = W.svg_icon_btn("delete", tr("删除该资产"))
+            # 浅红 outline,与生成按钮同款形但色不同(操作意图区分)
+            dp = QPushButton(tr("delete"))
+            dp.setToolTip(tr("删除该资产"))
+            dp.setCursor(Qt.PointingHandCursor)
+            dp.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            dp.setMinimumWidth(0)
             dp.setStyleSheet(
-                "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
-                "background:#fff5f5;font-size:12px;padding:2px 8px;}"
-                "QPushButton:hover{background:#ffe9e9;}")
+                "QPushButton{font-size:11px;padding:3px 4px;"
+                "border:1px solid #fecaca;border-radius:6px;background:#fff5f5;color:#b91c1c;}"
+                "QPushButton:hover{background:#fee2e2;border-color:#ef4444;}")
             dp.clicked.connect(lambda _=False: on_delete())
-            flay.addWidget(dp)
+            flay.addWidget(dp, 1)
         lay.addWidget(foot)
         _snug_card(self)
         apply_asset_busy(self, cover, gen_btns, busy)
