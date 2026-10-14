@@ -27,6 +27,9 @@ import requests
 from ..core import config
 from . import registry
 from .text_client import AIError
+# 解析 ai_service_configs.models(JSON 字符串)用;单独 import 避免 tts_client → db 的循环依赖
+import json as _json
+from ..core import db as _db_mod
 
 DEFAULT_RESOURCE_ID = "seed-tts-2.0"
 CLONED_RESOURCE_ID = "seed-icl-2.0"
@@ -346,7 +349,8 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
         volc_voice = voice
         if not volc_voice:
             try:
-                models_list = db.jload((cfg.get("models") if cfg else "") or "", []) or []
+                models_raw = (cfg.get("models") if cfg else "") or ""
+                models_list = _json.loads(models_raw) if isinstance(models_raw, str) and models_raw else []
             except Exception:                          # noqa: BLE001
                 models_list = []
             if models_list:
