@@ -82,6 +82,8 @@ class ImageProcessPage(QWidget):
         self._sources: list[str] = []          # 本地路径 / 远程 URL 混合
         self._busy = False
         self._src_widgets: list = []           # 处理中要禁用的来源控件(_build 里登记)
+        # PhotoCraft 手动改监听(每个图都用同一个 watcher 实例 —— 复用 stop+watch)
+        self._pc_watcher = None
         self._build()
         self._reload_models()
         self._reset_output_dir()
@@ -391,6 +393,17 @@ class ImageProcessPage(QWidget):
                     "QPushButton:hover{background:#f97316;color:#ffffff;}")
                 b.clicked.connect(lambda _=False, x=str(s), f=cb: f(x))
                 bar.addWidget(b)
+            # 在 PhotoCraft 桌面端打开 → 改完自动加进结果 + 替换来源
+            pc_btn = QPushButton("🖥")
+            pc_btn.setFixedSize(30, 22)
+            pc_btn.setCursor(Qt.PointingHandCursor)
+            pc_btn.setToolTip("在 PhotoCraft 里打开,改完自动同步回此处")
+            pc_btn.setStyleSheet(
+                "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
+                "border-radius:4px;color:#1f2329;font-size:12px;padding:0;}"
+                "QPushButton:hover{background:#f97316;color:#ffffff;}")
+            pc_btn.clicked.connect(lambda _=False, x=str(s): self._open_in_photocraft(x))
+            bar.addWidget(pc_btn)
             # PhotoCraft 聊天修图入口
             cb_btn = QPushButton("💬")
             cb_btn.setFixedSize(30, 22)
@@ -526,6 +539,56 @@ class ImageProcessPage(QWidget):
         if dlg.exec() == QDialog.Accepted and getattr(dlg, "saved_url", None):
             self._render_results([(path, dlg.saved_url, None)])
             self._replace_source(path, dlg.saved_url)  # 左侧素材指向最新版
+
+    def _open_in_photocraft(self, path: str):
+        """🖥 在 PhotoCraft 桌面端打开 → 改完自动同步回此处(加进结果 + 替换来源)。
+
+        与 chat-edit 页的「✋ 我手动改」共用 PhotoCraftWatcher 组件(mtime+size
+        双检 + 1.5s polling),失败(未装/未配置)给红色 toast,成功不动弹窗,
+        用户改完保存会异步把成品塞进结果区。
+        """
+        # 远程 URL / 不存在的本地路径:跳过
+        if not path or not Path(path).exists() or path.startswith(("http://", "https://")):
+            from .toast import warn
+            warn("PhotoCraft 只能打开本地文件,先下载到本地")
+            return
+        from .photocraft_watcher import PhotoCraftWatcher
+        if self._pc_watcher is None:
+            self._pc_watcher = PhotoCraftWatcher(self)
+            self._pc_watcher.changed.connect(self._on_photocraft_saved)
+        self._pc_watcher.stop()
+        ok, err = self._pc_watcher.watch(path)
+        if not ok:
+            from .toast import err as _err
+            _err(err)
+            return
+        from .toast import ok as _ok
+        _ok("PhotoCraft 已打开 · 改完保存会自动同步")
+
+    def _on_photocraft_saved(self, new_path: str):
+        """PhotoCraftWatcher 回调:把改好的图并入结果区 + 替换来源(链式编辑)。
+
+        与 _open_edit / _open_patch 的「保存即同步」行为一致 —— 但这里是异步的
+        (PhotoCraft 在桌面端保存后 1.5s 内被 polling 捕到),所以用户切走干别的也
+        不影响下次回到图片处理页看到结果。
+        """
+        # 找原 path(可能 watcher 解析过 resolve())
+        old_path = self._pc_watcher.current_path if self._pc_watcher else None
+        if not old_path or old_path not in self._sources:
+            # fallback:找与 new_path 同名(改后扩展名可能变)的来源
+            new_name = Path(new_path).name
+            for s in list(self._sources):
+                if Path(s).name == new_name and s in self._sources:
+                    old_path = s
+                    break
+        if not old_path:
+            old_path = new_path
+        # 加进结果区
+        self._render_results([(old_path, new_path, None)])
+        # 替换来源(链式编辑的入口)
+        self._replace_source(old_path, new_path)
+        from .toast import ok
+        ok(f"已同步 PhotoCraft 修改:{Path(new_path).name}")
 
     def _replace_source(self, old: str, new: str):
         """用处理后的文件替换来源列表里的原条目。

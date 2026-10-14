@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import Qt, QFileSystemWatcher, QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
@@ -211,9 +211,7 @@ class ChatEditPanel(QWidget):
         self._current_image: str | None = None     # 当前产物(下一轮的输入)
         self._history: list[dict] = []
         self._busy = False
-        self._manual_watcher: QFileSystemWatcher | None = None
-        self._manual_last_mtime: float | None = None
-        self._manual_proc = None                   # type: ignore[assignment]
+        self._pc_watcher = None                    # PhotoCraftWatcher,首次启动时建
         self._build()
         self._refresh_status()
         self._reload_sessions()
@@ -675,6 +673,71 @@ class ChatEditPanel(QWidget):
             return self._execute_single(
                 text, str(in_path), sess_id, llm_id, mode, tid)
 
+        def done(tid, result, error):
+            """job 跑完的统一回调(单步 / 批量都走这里)。"""
+            self._set_busy(False)
+            if error:
+                self._append_message_widget(
+                    "assistant", tr("chat_edit_msg_error").format(str(error)[:240]),
+                    None, None)
+                return
+            r = result or {}
+            if r.get("empty"):
+                note = r.get("note") or tr("chat_edit_msg_no_steps")
+                self._append_message_widget("assistant", note, None, None)
+                return
+
+            # ── 批量结果:分析气泡 + 每个方案分别气泡 ──
+            if r.get("kind") == "batch":
+                for sub in r.get("results", []):
+                    self._render_batch_sub(sub)
+                # 批量模式不切换 current_image —— 用户还要继续聊,原图留着
+                self.status_lab.setText(f"已生成 {len(r.get('results', []))} 个气泡")
+                return
+            steps_data = r.get("steps") or []
+            steps = [Step(**s) for s in steps_data if isinstance(s, dict) and s.get("cmd")]
+            user_text = r.get("user_text", "")
+            result_image = r.get("result_image")
+            engine_label = r.get("engine_label", "")
+            note = r.get("note", "")
+
+            # 显示助手气泡
+            # 「已按…修图」只在**结果图确实存在**时说 —— 之前无条件宣告成功,
+            # CLI 对不支持的命令返回原图时,界面照样报"已修图",用户对着
+            # 一模一样的图完全不知道发生了什么(实测「去掉图片上的文字」)。
+            has_result = bool(result_image and Path(result_image).exists())
+            content_lines = []
+            if has_result:
+                content_lines.append(f"已按「{user_text}」修图。")
+            else:
+                content_lines.append(f"未能执行「{user_text}」—— 没有产出新图。")
+            if engine_label == "inpaint":
+                pass          # inpaint 通道没有 PhotoCraft 命令,不显示命中标签
+            elif steps:
+                content_lines.append(
+                    f"({tr('chat_edit_msg_whitelist_hit') if engine_label == 'whitelist' else tr('chat_edit_msg_llm_hit')})")
+            if note:
+                content_lines.append(note)
+            self._append_message_widget(
+                "assistant", "\n".join([x for x in content_lines if x]).strip(),
+                steps, result_image)
+
+            # 持久化
+            if self._session_id:
+                db.add_chat_message(self._session_id, "user", user_text)
+                db.add_chat_message(
+                    self._session_id, "assistant", json.dumps(steps_data, ensure_ascii=False),
+                    command_json=json.dumps(steps_data, ensure_ascii=False),
+                    result_image=result_image,
+                    engine_label=engine_label)
+                if result_image and Path(result_image).exists():
+                    self._current_image = result_image
+                    db.touch_chat_session(self._session_id, current_image=result_image)
+                    self._render_thumb()
+                    self.status_lab.setText(
+                        f"{tr('chat_edit_thinking').rstrip('…') or '已生成'} "
+                        f"· {Path(result_image).name}")
+
         _TM.TASKMGR.submit("chat_edit", job, done, detail=tr("chat_edit_panel"))
 
     def _execute_single(self, prompt: str, in_path: str, sess_id,
@@ -834,72 +897,6 @@ class ChatEditPanel(QWidget):
                                 result_image=result_image,
                                 engine_label=engine_label)
 
-        def done(tid, result, error):
-            self._set_busy(False)
-            if error:
-                self._append_message_widget(
-                    "assistant", tr("chat_edit_msg_error").format(str(error)[:240]),
-                    None, None)
-                return
-            r = result or {}
-            if r.get("empty"):
-                note = r.get("note") or tr("chat_edit_msg_no_steps")
-                self._append_message_widget("assistant", note, None, None)
-                return
-
-            # ── 批量结果:分析气泡 + 每个方案分别气泡 ──
-            if r.get("kind") == "batch":
-                for sub in r.get("results", []):
-                    self._render_batch_sub(sub)
-                # 批量模式不切换 current_image —— 用户还要继续聊,原图留着
-                self.status_lab.setText(f"已生成 {len(r.get('results', []))} 个气泡")
-                return
-            steps_data = r.get("steps") or []
-            steps = [Step(**s) for s in steps_data if isinstance(s, dict) and s.get("cmd")]
-            user_text = r.get("user_text", "")
-            result_image = r.get("result_image")
-            engine_label = r.get("engine_label", "")
-            note = r.get("note", "")
-
-            # 显示助手气泡
-            # 「已按…修图」只在**结果图确实存在**时说 —— 之前无条件宣告成功,
-            # CLI 对不支持的命令返回原图时,界面照样报"已修图",用户对着
-            # 一模一样的图完全不知道发生了什么(实测「去掉图片上的文字」)。
-            has_result = bool(result_image and Path(result_image).exists())
-            content_lines = []
-            if has_result:
-                content_lines.append(f"已按「{user_text}」修图。")
-            else:
-                content_lines.append(f"未能执行「{user_text}」—— 没有产出新图。")
-            if engine_label == "inpaint":
-                pass          # inpaint 通道没有 PhotoCraft 命令,不显示命中标签
-            elif steps:
-                content_lines.append(
-                    f"({tr('chat_edit_msg_whitelist_hit') if engine_label == 'whitelist' else tr('chat_edit_msg_llm_hit')})")
-            if note:
-                content_lines.append(note)
-            self._append_message_widget(
-                "assistant", "\n".join([x for x in content_lines if x]).strip(),
-                steps, result_image)
-
-            # 持久化
-            if self._session_id:
-                db.add_chat_message(self._session_id, "user", user_text)
-                db.add_chat_message(
-                    self._session_id, "assistant", json.dumps(steps_data, ensure_ascii=False),
-                    command_json=json.dumps(steps_data, ensure_ascii=False),
-                    result_image=result_image,
-                    engine_label=engine_label)
-                if result_image and Path(result_image).exists():
-                    self._current_image = result_image
-                    db.touch_chat_session(self._session_id, current_image=result_image)
-                    self._render_thumb()
-                    self.status_lab.setText(
-                        f"{tr('chat_edit_thinking').rstrip('…') or '已生成'} "
-                        f"· {Path(result_image).name}")
-
-        _TM.TASKMGR.submit("chat_edit", job, done, detail=tr("chat_edit_panel"))
-
     def _set_busy(self, on: bool):
         self._busy = on
         self.send_btn.setEnabled(not on and self._engine.ready and self._current_image is not None)
@@ -963,53 +960,25 @@ class ChatEditPanel(QWidget):
             self.cc_status.setText(tr("chat_edit_cli_bad").format(txt))
 
     # ── 手动接力:在 PhotoCraft 桌面端打开当前图,改完自动同步回对话 ──
-
-    # 手动模式用 mtime + size 双检,既撑得住 PhotoCraft「先删后写」的原子保存,
-    # 也避开编辑器只读打开但 mtime 没变造成的误触发。配合 1.5s 的 QTimer 兜底,
-    # QFileSystemWatcher 在 Windows 下漏事件也能救回来。
-    _MANUAL_POLL_MS = 1500
+    # 复用 app.ui.photocraft_watcher.PhotoCraftWatcher(三路监听 +
+    # mtime+size 双检),不在这里重复实现。
 
     def _start_manual_edit(self):
-        """✋ 我手动改:启动 photocraft.exe <当前图>,watcher + polling 双重监听。"""
-        from ..ai.photocraft_bridge import resolve_app_path
-        import subprocess, os, time as _time2
+        """✋ 我手动改:启动 photocraft.exe <当前图>,watcher 自动同步回来。"""
         if not self._current_image or not Path(self._current_image).exists():
             self.status_lab.setText(tr("chat_edit_manual_no_img"))
             return
-        app_path = resolve_app_path()
-        if not app_path:
-            self.status_lab.setText(tr("chat_edit_cli_missing"))
+        from .photocraft_watcher import PhotoCraftWatcher
+        # 复用同一个 watcher 实例 —— 多次点击不会泄漏进程/线程
+        if not hasattr(self, "_pc_watcher") or self._pc_watcher is None:
+            self._pc_watcher = PhotoCraftWatcher(self)
+            self._pc_watcher.changed.connect(self._handle_manual_change)
+        # 终止上一次(若用户连点),重新 watch
+        self._pc_watcher.stop()
+        ok, err = self._pc_watcher.watch(self._current_image)
+        if not ok:
+            self.status_lab.setText(err[:200])
             return
-
-        # 终止之前的手动进程(若有)
-        self._stop_manual_edit()
-
-        try:
-            self._manual_proc = subprocess.Popen(
-                [app_path, str(Path(self._current_image).resolve())],
-                close_fds=True)
-        except Exception as exc:  # noqa: BLE001
-            self.status_lab.setText(str(exc)[:200])
-            return
-
-        # 监听当前图:QFileSystemWatcher(快路径)+ Polling(兜底)
-        cur = str(Path(self._current_image).resolve())
-        self._manual_last_mtime = os.path.getmtime(cur)
-        try:
-            self._manual_last_size = os.path.getsize(cur)
-        except OSError:
-            self._manual_last_size = None
-        self._manual_watcher = QFileSystemWatcher(self)
-        self._manual_watcher.addPath(cur)
-        # 同时盯一下父目录:PhotoCraft 偶尔保存为新文件(原 path 被替换/删除)
-        self._manual_watcher.addPath(str(Path(cur).parent))
-        self._manual_watcher.fileChanged.connect(self._on_manual_save)
-        self._manual_watcher.directoryChanged.connect(self._on_manual_dir_change)
-        # Polling 兜底 —— Windows 下 watcher 对「先删后写」会漏事件
-        self._manual_timer = QTimer(self)
-        self._manual_timer.setInterval(self._MANUAL_POLL_MS)
-        self._manual_timer.timeout.connect(self._poll_manual_save)
-        self._manual_timer.start()
         # 写一条"接力"消息,让对话流清楚
         self._append_message_widget("assistant",
                            f"🖐 接力给手动模式 —— PhotoCraft 已打开当前图。你保存后会同步回来。",
@@ -1024,68 +993,12 @@ class ChatEditPanel(QWidget):
         self.manual_btn.setText("🖐 改完会自动同步")
 
     def _stop_manual_edit(self):
-        if self._manual_watcher:
-            try:
-                self._manual_watcher.fileChanged.disconnect(self._on_manual_save)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                self._manual_watcher.directoryChanged.disconnect(self._on_manual_dir_change)
-            except Exception:  # noqa: BLE001
-                pass
-            self._manual_watcher.deleteLater()
-            self._manual_watcher = None
-        if getattr(self, "_manual_timer", None):
-            self._manual_timer.stop()
-            self._manual_timer.deleteLater()
-            self._manual_timer = None
-        # 不主动杀进程:用户可能已经启动了一个,关掉会让他没法继续编辑
-        self._manual_proc = None
-
-    def _on_manual_save(self, path: str):
-        """QFileSystemWatcher.fileChanged 触发。"""
-        import os
-        # 编辑器保存时常常会先删后写,QFileSystemWatcher 一次性触发后 path 会
-        # 从 watcher 里被摘掉 —— 二次保险再 addPath 一次。
-        if self._manual_watcher and path and path not in self._manual_watcher.files():
-            self._manual_watcher.addPath(path)
-        # 落到统一处理(mtime+size 变化才真触发)
-        self._check_and_apply(path)
-
-    def _on_manual_dir_change(self, _dir: str):
-        """父目录变更(PhotoCraft 偶尔保存为新文件并替换原文件)。"""
-        if self._current_image:
-            self._check_and_apply(str(Path(self._current_image).resolve()))
-
-    def _poll_manual_save(self):
-        """Polling 兜底:每 1.5s 看一次 mtime+size。watcher 漏事件也能救。"""
-        if not self._current_image:
-            return
-        self._check_and_apply(str(Path(self._current_image).resolve()))
-
-    def _check_and_apply(self, path: str):
-        """统一的「文件是否真的改了」判断:mtime 或 size 任一变化才视为改动。"""
-        import os
-        if not path or not Path(path).exists():
-            return
-        try:
-            new_mtime = os.path.getmtime(path)
-            new_size = os.path.getsize(path)
-        except OSError:
-            return
-        # mtime + size 双检:任一变化 → 真改了
-        if self._manual_last_mtime is not None:
-            mtime_changed = new_mtime > self._manual_last_mtime + 0.05  # 浮点容差
-            size_changed = (self._manual_last_size is not None
-                            and new_size != self._manual_last_size)
-            if not (mtime_changed or size_changed):
-                return
-        self._manual_last_mtime = new_mtime
-        self._manual_last_size = new_size
-        self._handle_manual_change(path)
+        """停监听(不杀 PhotoCraft 进程:用户可能自己启动的)。"""
+        if getattr(self, "_pc_watcher", None):
+            self._pc_watcher.stop()
 
     def _handle_manual_change(self, path: str):
-        """把"手动修改"作为一次 assistant 轮加入对话与持久化(watcher + polling 共用)。"""
+        """把"手动修改"作为一次 assistant 轮加入对话与持久化(PhotoCraftWatcher 回调)。"""
         note = f"📝 {tr('chat_edit_manual_done')} · {Path(path).name}"
         self._append_message_widget("assistant", note, None, str(path))
         if self._session_id:
