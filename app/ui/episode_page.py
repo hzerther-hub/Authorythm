@@ -4798,16 +4798,81 @@ class EpisodePage(QWidget):
             im.setFixedSize(46, 46)
             im.setAlignment(Qt.AlignCenter)
             im.setPixmap(W.pixmap_from_media(item.get("image_url"), 46, 46))
+            im.setCursor(Qt.PointingHandCursor)
+            # 点击图片 → 弹大图预览
+            url_full = item.get("image_url") or ""
+            im.mousePressEvent = lambda _e, u=url_full: self._preview_reference_image(u)
             cl.addWidget(im)
-            cap = QLabel(f"#{i} {item.get('name') or ''}"[:16])
+            # 文字 = 名字 + 角色定位 + 绑定状态
+            cap = QLabel(f"#{i} {item.get('name') or ''}"[:18])
             cap.setObjectName("muted")
             cap.setAlignment(Qt.AlignCenter)
+            cap.setCursor(Qt.PointingHandCursor)
+            # 点击文字 → 切换绑定状态
+            cap.mousePressEvent = lambda _e, it=item: self._toggle_ref_bind(it)
             cl.addWidget(cap)
             lay.addWidget(cell)
         if not items:
             lay.addWidget(W.muted(tr("first_frame_no_refs")))
         self.sb_ff_approve_btn.setEnabled(bool(url) and status != "approved")
         self.sb_ff_gen_btn.setEnabled(bool(self._sb_id))
+
+    def _preview_reference_image(self, url: str):
+        """点参考图缩略图 → 弹大图预览。"""
+        if not url:
+            return
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, url).exec()
+
+    def _toggle_ref_bind(self, item: dict):
+        """点参考图文字 → 切换绑定状态。
+        item 含 kind/character_id/scene_id/prop_id/name(image_url),
+        反查故事板→角色/场景/道具关联表,把这条绑上去/摘下来。
+        """
+        if not self._sb_id:
+            return
+        kind = item.get("kind")
+        if kind == "character":
+            cid = item.get("character_id")
+            existing = db.q1(
+                "SELECT 1 FROM storyboard_characters WHERE storyboard_id=? AND character_id=?",
+                (self._sb_id, cid))
+            if existing:
+                db.ex("DELETE FROM storyboard_characters WHERE storyboard_id=? AND character_id=?",
+                      (self._sb_id, cid))
+                ok(f"已解除绑定:{item.get('name')}")
+            else:
+                db.ex("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id) VALUES(?,?)",
+                      (self._sb_id, cid))
+                ok(f"已绑定:{item.get('name')}")
+        elif kind == "scene":
+            # 单选语义:勾了新场景就清旧场景
+            existing = db.q1(
+                "SELECT 1 FROM storyboard_scenes WHERE storyboard_id=? AND scene_id=?",
+                (self._sb_id, item.get("scene_id")))
+            if existing:
+                db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (self._sb_id,))
+                ok(f"已解除绑定:{item.get('name')}")
+            else:
+                db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (self._sb_id,))
+                db.ex("INSERT OR IGNORE INTO storyboard_scenes(panel_id,scene_id) VALUES(?,?)",
+                      (self._sb_id, item.get("scene_id")))
+                ok(f"已绑定:{item.get('name')}")
+        elif kind == "prop":
+            pid = item.get("prop_id")
+            existing = db.q1(
+                "SELECT 1 FROM storyboard_props WHERE storyboard_id=? AND prop_id=?",
+                (self._sb_id, pid))
+            if existing:
+                db.ex("DELETE FROM storyboard_props WHERE storyboard_id=? AND prop_id=?",
+                      (self._sb_id, pid))
+                ok(f"已解除绑定:{item.get('name')}")
+            else:
+                db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
+                      (self._sb_id, pid))
+                ok(f"已绑定:{item.get('name')}")
+        # 重新加载,刷新参考图状态(虽然顺序不变,但实际绑定可能改变 video_prompt 的 @图片N 映射)
+        self._reload_storyboard()
 
     def _regen_first_frame(self, sb_id: int, skip_confirm: bool = False):
         """重生首帧(对齐参考 regen-first-frame):完成后翻 pending_review 等用户确认。"""

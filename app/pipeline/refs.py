@@ -9,6 +9,8 @@
 
 权威顺序:角色(按绑定顺序) → 场景(单选) → 道具(按绑定顺序)
 去重:按 imageUrl 去重;截断:达到 ref_image_limit 即停(Wan 3.0 为 10 张,其他 9 张)。
+
+每条带 kind + id 字段,UI 端点文字可直接 toggle 绑定。
 """
 from __future__ import annotations
 
@@ -46,34 +48,39 @@ def _variant_image_of(character_id: int, sb: dict) -> str | None:
 
 
 def build_shot_reference_list(sb: dict, limit: int | None = None) -> list[dict]:
-    """构造该分镜的参考图权威列表:[{name, image_url}]。角色优先(缺 first_frame 时会用 [0] 兜底锁脸)。"""
+    """构造该分镜的参考图权威列表:[{kind, character_id/scene_id/prop_id, name, image_url}]。
+    角色优先(缺 first_frame 时会用 [0] 兜底锁脸)。
+
+    每条带 kind + id 字段,UI 端点文字可直接 toggle 绑定(增/删 storyboard_* 关联)。
+    """
     limit = limit or 9
     out: list[dict] = []
     seen: set[str] = set()
 
-    def push(name: str | None, url: str | None):
+    def push(kind: str, _id: int, name: str | None, url: str | None):
         if not url or url in seen or len(out) >= limit:
             return
         seen.add(url)
-        out.append({"name": name or "", "image_url": url})
+        out.append({"kind": kind, f"{kind}_id": _id,
+                    "name": name or "", "image_url": url})
 
     # 1) 角色(排首位:后端缺 first_frame 时会用 reference_image_urls[0] 兜底当首帧,锁的是角色脸)
     for r in db.q("""SELECT character_id FROM storyboard_characters WHERE storyboard_id=?
                     ORDER BY character_id""", (sb["id"],)):
         cid = r["character_id"]
         c = db.q1("SELECT name FROM characters WHERE id=?", (cid,))
-        push(c["name"] if c else None, _variant_image_of(cid, sb))
+        push("character", cid, c["name"] if c else None, _variant_image_of(cid, sb))
     # 2) 场景(单选)
     if sb.get("scene_id"):
-        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (sb["scene_id"],))
+        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (sb["scene_id"]))
         if s:
-            push(s["name"], s["image_url"])
+            push("scene", sb["scene_id"], s["name"], s["image_url"])
     # 3) 道具
     for r in db.q("""SELECT prop_id FROM storyboard_props WHERE storyboard_id=?
                     ORDER BY prop_id""", (sb["id"],)):
-        pr = db.q1("SELECT name, image_url FROM props WHERE id=?", (r["prop_id"],))
+        pr = db.q1("SELECT name, image_url FROM props WHERE id=?", (r["prop_id"]))
         if pr:
-            push(pr["name"], pr["image_url"])
+            push("prop", r["prop_id"], pr["name"], pr["image_url"])
     return out
 
 
@@ -83,30 +90,3 @@ def get_shot_reference_images(sb: dict, limit: int | None = None) -> list[str]:
 
 def get_shot_reference_index_map(sb: dict, limit: int | None = None) -> dict[str, int]:
     """name -> 序号(1 起),同名取首次出现者。"""
-    mapping: dict[str, int] = {}
-    for i, item in enumerate(build_shot_reference_list(sb, limit), start=1):
-        if item["name"] and item["name"] not in mapping:
-            mapping[item["name"]] = i
-    return mapping
-
-
-def resolve_video_prompt_refs(prompt: str, sb: dict, limit: int | None = None) -> str:
-    """把提示词里的 `@名字` 替换为 `@图片N名字`(对齐原版 resolveVideoPromptRefs)。
-
-    名字按长度降序匹配,避免「王小明」被「王小」抢先命中。
-    """
-    if not prompt:
-        return prompt or ""
-    mapping = get_shot_reference_index_map(sb, limit)
-    if not mapping:
-        return prompt
-    names = sorted(mapping.keys(), key=len, reverse=True)
-
-    def repl(m):
-        raw = m.group(1)
-        for name in names:
-            if raw.startswith(name):
-                return f"@图片{mapping[name]}{name}{raw[len(name):]}"
-        return m.group(0)
-
-    return re.sub(r"@([^\s@]+)", repl, prompt)
