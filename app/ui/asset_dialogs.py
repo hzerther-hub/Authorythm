@@ -407,6 +407,85 @@ class VideoPreviewDialog(QDialog):
         super().closeEvent(ev)
 
 
+class AudioPreviewDialog(QDialog):
+    """朗读 MP3 内嵌播放(沿用 QMediaPlayer + 播放/暂停 + 进度条)。
+
+    跟 VideoPreviewDialog 一样结构,但没有视频 widget —— 只剩音频控制行。
+    用于「朗读本章」完成后直接弹出来播,不让用户跳到系统播放器。
+    """
+
+    def __init__(self, parent, url: str | None, title: str = ""):
+        super().__init__(parent)
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        from PySide6.QtWidgets import QSlider
+        self.setWindowTitle(title or tr("audio_preview"))
+        self.resize(560, 130)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 12, 16, 12)
+        ctrl = QHBoxLayout()
+        ctrl.setSpacing(8)
+        self.play_btn = QPushButton("⏸")
+        self.play_btn.setFixedWidth(40)
+        self.play_btn.clicked.connect(self._toggle)
+        ctrl.addWidget(self.play_btn)
+        self.slider = QSlider(Qt.Horizontal)
+        self.slider.setRange(0, 1)
+        self.slider.sliderMoved.connect(lambda v: self.player.setPosition(v))
+        ctrl.addWidget(self.slider, 1)
+        self.time_lab = QLabel("0:00 / 0:00")
+        self.time_lab.setObjectName("muted")
+        self.time_lab.setFixedWidth(96)
+        ctrl.addWidget(self.time_lab)
+        close_btn = QPushButton(tr("close"))
+        close_btn.clicked.connect(self.accept)
+        ctrl.addWidget(close_btn)
+        root.addLayout(ctrl)
+        self.player = QMediaPlayer(self)
+        self.audio = QAudioOutput(self)
+        self.player.setAudioOutput(self.audio)
+        self.player.positionChanged.connect(self._on_pos)
+        self.player.durationChanged.connect(self._on_dur)
+        self.player.playbackStateChanged.connect(self._on_state)
+        from pathlib import Path
+        p = config.media_url_to_path(url) if str(url or "").startswith(("/static/", "static/")) else (Path(url) if url else None)
+        if p and str(p):
+            self.player.setSource(QUrl.fromLocalFile(str(p)))
+            self.player.play()
+
+    def _toggle(self):
+        from PySide6.QtMultimedia import QMediaPlayer
+        if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.player.pause()
+        else:
+            self.player.play()
+
+    def _on_pos(self, ms: int):
+        from PySide6.QtMultimedia import QMediaPlayer
+        st = QMediaPlayer.PlaybackState
+        self.play_btn.setText("⏸" if self.player.playbackState() == st.PlayingState else "▶")
+        self.slider.blockSignals(True)
+        self.slider.setValue(int(ms))
+        self.slider.blockSignals(False)
+        self.time_lab.setText(f"{self._fmt(ms)} / {self._fmt(self.player.duration())}")
+
+    def _on_dur(self, ms):
+        self.slider.setRange(0, max(1, int(ms)))
+
+    def _on_state(self, state):
+        from PySide6.QtMultimedia import QMediaPlayer
+        self.play_btn.setText("⏸" if state == QMediaPlayer.PlaybackState.PlayingState else "▶")
+
+    @staticmethod
+    def _fmt(ms: int) -> str:
+        s = int(ms // 1000)
+        return f"{s // 60}:{s % 60:02d}"
+
+    def closeEvent(self, ev):
+        self.player.stop()
+        super().closeEvent(ev)
+
+
 class ImageViewerDialog(QDialog):
     """大图查看器(点击图片放大)。"""
     def __init__(self, parent, url: str | None, title: str = ""):

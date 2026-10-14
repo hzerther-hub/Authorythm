@@ -1865,6 +1865,41 @@ class EpisodePage(QWidget):
         # 重复点击保护:task 已经在飞就直接返回,避免叠 spinner
         if getattr(self, "_read_aloud_in_flight", False):
             return
+        # 已经合成过 → 弹「重放 / 重新生成」二选一,避免无意义地重跑 2-3 分钟
+        last_url = getattr(self, "_last_read_aloud_url", None)
+        last_chunks = getattr(self, "_last_read_aloud_chunks", 0)
+        if last_url:
+            from .confirm import ask
+            from PySide6.QtWidgets import QMessageBox
+            from ..core import config
+            from pathlib import Path
+            existing = config.media_url_to_path(last_url)
+            if existing.exists():
+                mb = QMessageBox(self)
+                mb.setIcon(QMessageBox.Question)
+                mb.setWindowTitle(tr("audio_preview"))
+                mb.setText(tr("read_aloud_done_q").format(last_chunks))
+                replay = mb.addButton(tr("read_aloud_replay"), QMessageBox.YesRole)
+                regen = mb.addButton(tr("read_aloud_regen"), QMessageBox.NoRole)
+                cancel = mb.addButton(tr("cancel"), QMessageBox.RejectRole)
+                mb.setDefaultButton(replay)
+                mb.exec()
+                chosen = mb.clickedButton()
+                if chosen is regen:
+                    # 删旧文件,走完整合成路径
+                    try:
+                        existing.unlink(missing_ok=True)
+                    except Exception:                # noqa: BLE001
+                        pass
+                    # 立刻进合成分支(下面)
+                elif chosen is replay:
+                    self._open_audio_preview(last_url)
+                    return
+                else:
+                    return
+            else:
+                # 文件已不在,直接合成
+                self._last_read_aloud_url = None
         from ..pipeline import novel as N
         # 立即进入等待态:按钮文字换成盲文 spinner + 禁用 → 用户能看到反馈
         self._read_aloud_in_flight = True
@@ -1881,13 +1916,21 @@ class EpisodePage(QWidget):
                 self._set_raw_status("")          # 工具行清掉进度提示
             if error:
                 err(error); return
-            import os
-            from ..core import config
-            p = config.media_url_to_path(result["audio_url"])
-            if p.exists():
-                os.startfile(str(p))
+            # 缓存 + 内嵌播放,不再调起系统播放器
+            self._last_read_aloud_url = result["audio_url"]
+            self._last_read_aloud_chunks = result["chunks"]
+            self._open_audio_preview(result["audio_url"])
             ok(tr('已合成朗读音频({} 段)').format(result['chunks']))
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id)
+
+    def _open_audio_preview(self, url: str):
+        """用内嵌 AudioPreviewDialog 播 MP3,不调系统播放器。"""
+        from .asset_dialogs import AudioPreviewDialog
+        ep = db.q1("SELECT episode_number, title FROM episodes WHERE id=?", (self.episode_id,)) or {}
+        title = f"🔊 {tr('read_aloud')} · 第 {ep.get('episode_number', '?')} 集"
+        dlg = AudioPreviewDialog(self, url, title=title)
+        dlg.setAttribute(Qt.WA_DeleteOnClose)     # 关闭后释放,避免反复播放堆内存
+        dlg.show()                                # 非模态,用户可在后台播放时继续操作
 
     def _open_plan(self):
         from .novel_dialogs import NovelPlanDialog
