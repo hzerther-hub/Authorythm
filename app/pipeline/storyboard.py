@@ -147,18 +147,43 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     db.ex("UPDATE episodes SET duration=?, updated_at=? WHERE id=?",
           (max(1, round(total_dur / 60)), ts, episode_id))
     db.touch("episodes", episode_id)
-    # 自动建造型变体:扫描所有新分镜,发现外观变化就给关联角色建一条变体行。
+    # 自动建造型变体 + 情绪打标:扫描所有新分镜,发现外观/场景/道具变化就建一行;
+    # 情绪变化只打标签写到 storyboards.emotion_tags(不建变体,脸没换)。
     # 不抢着生图(避免一次性烧光 token),用户进「造型变体」对话框手动点重生。
     try:
-        from .variant_detector import ensure_variants_for_storyboard
+        from .variant_detector import (
+            ensure_variants_for_storyboard,
+            detect_emotions_in_storyboard,
+        )
         drama_id = db.q1("SELECT drama_id FROM episodes WHERE id=?",
                           (episode_id,))["drama_id"]
         n_v = 0
+        n_e = 0
         for sb in db.q("SELECT * FROM storyboards WHERE episode_id=? "
                        "AND deleted_at IS NULL", (episode_id,)):
             n_v += len(ensure_variants_for_storyboard(sb, drama_id))
-        if n_v:
-            print(f"[variant_detector] 新建 {n_v} 条造型变体(EP{episode_id})", flush=True)
+            # 情绪打标(JSON 数组);合并旧的,不覆盖
+            old = []
+            try:
+                old_row = db.q1("SELECT emotion_tags FROM storyboards WHERE id=?", (sb["id"],))
+                if old_row and old_row.get("emotion_tags"):
+                    import json as _json
+                    try:
+                        old = _json.loads(old_row["emotion_tags"])
+                    except Exception:
+                        old = []
+            except Exception:
+                pass
+            new = detect_emotions_in_storyboard(sb)
+            merged = sorted(set((old or []) + new))
+            if merged != (old or []):
+                import json as _json
+                db.ex("UPDATE storyboards SET emotion_tags=?, updated_at=? WHERE id=?",
+                      (_json.dumps(merged, ensure_ascii=False), ts, sb["id"]))
+                n_e += 1
+        if n_v or n_e:
+            print(f"[variant_detector] EP{episode_id} 新建 {n_v} 变体 / "
+                  f"{n_e} 镜打情绪标", flush=True)
     except Exception as e:                                # noqa: BLE001
         print(f"[variant_detector] 检测失败,忽略:{e}", flush=True)
     return len(boards)

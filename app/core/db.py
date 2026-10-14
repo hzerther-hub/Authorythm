@@ -160,7 +160,8 @@ DDL: list[str] = [
       atmosphere TEXT, sound_effect TEXT, description TEXT, subtitle_url TEXT,
       setting_tags TEXT, deleted_at TEXT,
       video_url TEXT, composed_video_url TEXT, duration REAL,
-      status TEXT DEFAULT 'pending', created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+      emotion_tags TEXT, status TEXT DEFAULT 'pending',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS storyboard_characters (storyboard_id INTEGER NOT NULL, character_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, character_id))""",
     """CREATE TABLE IF NOT EXISTS storyboard_props (storyboard_id INTEGER NOT NULL, prop_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, prop_id))""",
     # 漫画格
@@ -394,6 +395,8 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT",
                 # 旁白起播时间(用户要求:不必一开始讲,但 default 是 0)
                 "ALTER TABLE storyboards ADD COLUMN narration_start REAL DEFAULT 0",
+                # JEV 情绪标签(JSON 数组;detect_emotions 写入,不重写 atmosphere)
+                "ALTER TABLE storyboards ADD COLUMN emotion_tags TEXT",
                 "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'",
                 "ALTER TABLE dramas ADD COLUMN intro_title TEXT",
                 "ALTER TABLE dramas ADD COLUMN intro_font TEXT",
