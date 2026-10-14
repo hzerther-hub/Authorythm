@@ -2483,10 +2483,16 @@ class EpisodePage(QWidget):
         # 缓存:每张卡的"图"+"状态"标签,让单格完成时只更新自己那行,
         # 而不是每次都 deleteLater + 重查库 + 重渲所有 15 张图(全表重建 1.5s+)
         self._comic_asset_cards: dict[tuple[str, int], dict] = {}
-        for kind, table, label in (("character", "characters", tr("chars")),
-                                   ("scene", "scenes", tr("scenes")),
-                                   ("prop", "props", tr("props"))):
-            for r in db.q(f"SELECT * FROM {table} WHERE drama_id=? ORDER BY id", (self.drama_id,)):
+        for kind, table, label, link, col in (
+            ("character", "characters", tr("chars"), "episode_characters", "character_id"),
+            ("scene",     "scenes",     tr("scenes"), "episode_scenes",     "scene_id"),
+            ("prop",      "props",      tr("props"),  "episode_props",      "prop_id"),
+        ):
+            for r in db.q(
+                f"SELECT t.* FROM {table} t "
+                f"JOIN {link} l ON l.{col} = t.id "
+                f"WHERE t.drama_id=? AND l.episode_id=? ORDER BY t.id",
+                (self.drama_id, self.episode_id)):
                 box = W.make_card()
                 lay = QHBoxLayout(box)
                 lay.setContentsMargins(10, 6, 10, 6)
@@ -2577,13 +2583,25 @@ class EpisodePage(QWidget):
             return
         from . import episode_cards as C
         cols = {kind: 4 for kind in self.asset_sections}   # 用户指定固定 4 列
+        # 列表只显示「本集已关联」的资产(INNER JOIN episode_X),不再是整个项目
+        # 的资产 —— 「清空资产」要的就是去掉本集关联,改这里后点了立刻看得见
+        # 列表清空。其它集还在用的角色会留在它自己的列表里,不会跟着被清。
         groups = {
             "characters": [dict(r) for r in db.q(
-                "SELECT * FROM characters WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+                "SELECT c.* FROM characters c "
+                "JOIN episode_characters ec ON ec.character_id = c.id "
+                "WHERE c.drama_id=? AND ec.episode_id=? ORDER BY c.id",
+                (self.drama_id, self.episode_id))],
             "scenes": [dict(r) for r in db.q(
-                "SELECT * FROM scenes WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+                "SELECT s.* FROM scenes s "
+                "JOIN episode_scenes es ON es.scene_id = s.id "
+                "WHERE s.drama_id=? AND es.episode_id=? ORDER BY s.id",
+                (self.drama_id, self.episode_id))],
             "props": [dict(r) for r in db.q(
-                "SELECT * FROM props WHERE drama_id=? ORDER BY id", (self.drama_id,))],
+                "SELECT p.* FROM props p "
+                "JOIN episode_props ep ON ep.prop_id = p.id "
+                "WHERE p.drama_id=? AND ep.episode_id=? ORDER BY p.id",
+                (self.drama_id, self.episode_id))],
         }
         total = ready = 0
         comic_total = comic_ready = 0
@@ -4922,7 +4940,13 @@ class EpisodePage(QWidget):
         sb = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
         db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
         try:
+            # 视频提示词必须拼风格前缀(与 shot_tools.compose_from_image、generate_first_frame
+            # 同源)。原实现直接喂 raw video_prompt 出去,被视频模型默认成通用动画/
+            # 二次元风格,无视用户选的 3D 漫剧 / 写实风。
             prompt = shot_tools.resolve_prompt(dict(sb))
+            from ..core import db as _db
+            style = _db.style_prompt(_db.drama_style(self.drama_id))
+            prompt = f"{style}。{prompt}" if prompt else style
             ref_list = shot_tools.collect_reference_images(self.episode_id, sb_id)
             # 无首帧先补一张「有景物有人物」的定场帧再生成 —— 纯文生视频
             # 开场常是黑帧/空镜,成片第一眼没有画面(用户要求第一帧必须带景带人)

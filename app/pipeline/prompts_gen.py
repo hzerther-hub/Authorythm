@@ -1,5 +1,14 @@
 # -*- coding: utf-8 -*-
-"""阶段③配套:角色/场景/道具最终出图提示词(prompt_generator Agent)。"""
+"""阶段③配套:角色/场景/道具最终出图提示词(prompt_generator Agent)。
+
+⚠️ 关键:这里生成的是**常规资产**的 final_prompt(写进 image_url 走 3D/写实路径),
+不是漫画资产。必须用 dramas.style(项目设置里的视觉风格,如 3D),而**不是**
+dramas.comic_style(项目级"温画画风",那是给 comic_image_url/漫画格用的)。
+
+历史坑:此函数曾用 comic._style_for(),它优先级 comic_style > style > "3d" —
+结果是用户选了 3D,出来的常规资产图全是漫画风。comic_asset_image() 里
+"自修复"逻辑也因为 final_prompt 已经被漫画前缀污染、每次都判定不一致而反复重跑。
+"""
 from __future__ import annotations
 
 from ..agents import runner
@@ -7,8 +16,8 @@ from ..core import db
 
 
 def _style_prefix(drama_id: int) -> str:
-    from .comic import _style_for
-    return _style_for(drama_id)
+    """常规资产风格前缀:严格用 dramas.style(3D/写实/...)。"""
+    return db.style_prompt(db.drama_style(drama_id))
 
 
 def _robust_json(agent: str, prompt: str, lang=None, config_id=None) -> dict:

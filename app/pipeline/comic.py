@@ -417,23 +417,13 @@ def comic_asset_image(drama_id: int, kind: str, row_id: int, config_id: int | No
     if not row:
         raise RuntimeError("资产不存在")
 
-    # ── 自修复:校验 final_prompt_style 与当前 comic_style 一致性 ──
-    # 取当前实际生效的 style value(comic_style > style > "3d"),与 row 里的
-    # final_prompt_style 对比。不一致 → 重新调 prompts_gen 重写 final_prompt。
-    cur_style_value = _current_style_value(drama_id, style_value)
-    stored_style = (row["final_prompt_style"] or "").strip() if "final_prompt_style" in row.keys() else ""
-    if stored_style != cur_style_value:
-        from . import prompts_gen
-        try:
-            if kind == "character":
-                prompts_gen.character_prompt(row_id, config_id=config_id)
-            elif kind == "scene":
-                prompts_gen.scene_prompt(row_id, config_id=config_id)
-            else:
-                prompts_gen.prop_prompt(row_id, config_id=config_id)
-            row = db.q1(f"SELECT * FROM {table} WHERE id=?", (row_id,))  # 拉回新 final_prompt
-        except Exception as e:                   # noqa: BLE001 —— LLM 抽风不阻断
-            print(f"[comic] final_prompt 自修复失败(忽略,继续用旧值): {e}", flush=True)
+    # ── 自修复逻辑已废弃 ──
+    # 历史:曾经 prompts_gen 用 _style_for()(comic_style 优先),导致 final_prompt 跟
+    # dramas.style 不一致,需要自修复重写。现在 prompts_gen 已改为严格走 dramas.style,
+    # final_prompt 与 final_prompt_style 天然一致(comic_asset_image 自己拼 spec,不读
+    # final_prompt),自修复就只是**白烧一次 LLM**——直接跳过。
+    # 旧行里若 final_prompt 还是漫画前缀(commit 之前生成的),用户点"AI 起草最终提示词"
+    # 会重写为 3D 前缀,这里不动它们。
 
     style = _style_for(drama_id, style_value=style_value)
     # **不再复用 row['final_prompt']** —— 它是「常规资产」流程在 dramas.style 下

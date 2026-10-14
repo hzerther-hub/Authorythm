@@ -163,8 +163,8 @@ class ProjectSettingsDialog(QDialog):
             self.style.addItem(tr(r["name"]), r["value"])
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
-        _row_pair(QLabel(tr("aspect_ratio")), self.aspect,
-                 QLabel(tr("visual_style")), self.style)
+        _row_pair(tr("aspect_ratio"), self.aspect,
+                 tr("visual_style"), self.style)
 
         # 画风(温画画风) | 内容语言  (两列配对)
         self.comic_style = QComboBox()
@@ -172,28 +172,32 @@ class ProjectSettingsDialog(QDialog):
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
             self.comic_style.addItem(tr(r["name"]), r["value"])
         self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
-        self.comic_style.currentIndexChanged.connect(self._on_comic_style_pick)
-        _cur_cs = (d["comic_style"] or "").strip()
-        _cs_idx = self.comic_style.findData(_cur_cs) if _cur_cs else 0
-        if _cs_idx < 0:
-            _cs_idx = self.comic_style.findData("__custom__")
-        self.comic_style.setCurrentIndex(_cs_idx if _cs_idx >= 0 else 0)
         self.language = QComboBox()
         self.language.addItem(tr("跟随全局设置"), "auto")
         for code, name in LANGS:
             self.language.addItem(f"{name} ({code})", code)
         _li = self.language.findData(d["language"] or "auto")
         self.language.setCurrentIndex(_li if _li >= 0 else 0)
-        _row_pair(QLabel(tr("u_comic_style")), self.comic_style,
-                 QLabel(tr("内容语言")), self.language)
+        _row_pair(tr("u_comic_style"), self.comic_style,
+                 tr("内容语言"), self.language)
         _row_hint_full(tr("本项目的所有漫画资产图与漫画格共用此画风;选自定义可自由描述"))
 
         # 漫画画风自定义编辑框 — 全宽(展开条件)
+        # 顺序很关键:必须**先建 edit、再连信号、最后 setCurrentIndex**。
+        # 旧版 connect 写在 edit 之前,setCurrentIndex 同步触发 _on_comic_style_pick
+        # → 访问还没建的 self.comic_style_edit → AttributeError;Python 没真崩,
+        # 但 Qt 内部态已被搞坏,后续 dialog.show() 段错误,应用退出。
         self.comic_style_edit = QPlainTextEdit(d["comic_style"] or "")
         self.comic_style_edit.setPlaceholderText(tr("自定义画风:写清笔触、线条、色调、氛围"))
         self.comic_style_edit.setMaximumHeight(56)
-        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
+        self.comic_style.currentIndexChanged.connect(self._on_comic_style_pick)
         self.comic_style_edit.textChanged.connect(self._on_comic_style_text)
+        _cur_cs = (d["comic_style"] or "").strip()
+        _cs_idx = self.comic_style.findData(_cur_cs) if _cur_cs else 0
+        if _cs_idx < 0:
+            _cs_idx = self.comic_style.findData("__custom__")
+        self.comic_style.setCurrentIndex(_cs_idx if _cs_idx >= 0 else 0)
+        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
         _row_full("", self.comic_style_edit)
 
         # 人物面孔文化 | 朗读音色  (两列配对)
@@ -207,8 +211,8 @@ class ProjectSettingsDialog(QDialog):
         self.tts_gender.addItem("👨 " + tr("tts_gender_male"), "male")
         i = self.tts_gender.findData(meta.get("tts_gender", "female"))
         self.tts_gender.setCurrentIndex(i if i >= 0 else 0)
-        _row_pair(QLabel(tr("ethnicity")), self.ethnicity,
-                 QLabel(tr("tts_gender")), self.tts_gender)
+        _row_pair(tr("ethnicity"), self.ethnicity,
+                 tr("tts_gender"), self.tts_gender)
         _row_hint_full(tr("tts_gender_hint"))
 
         # ── 创意描述 / 跳过创意 / 集数(对齐原版 72736af)──
@@ -238,8 +242,8 @@ class ProjectSettingsDialog(QDialog):
         self.total_eps = QSpinBox()
         self.total_eps.setRange(1, 999)
         self.total_eps.setValue(int(d["total_episodes"] or 1))
-        _row_pair(QLabel(tr("叙事人称")), self.pov_combo,
-                 QLabel(tr("集数")), self.total_eps)
+        _row_pair(tr("叙事人称"), self.pov_combo,
+                 tr("集数"), self.total_eps)
         _row_hint_full(tr("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
 
         self.skip_creative.toggled.connect(
@@ -561,8 +565,12 @@ class AssetDetailDialog(QDialog):
         self.img.setAlignment(Qt.AlignCenter)
         self.img.setFixedSize(280, 280)
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;")
-        self.img.setPixmap(W.pixmap_from_media(row.get("image_url"), 276, 276))
-        self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, row.get("image_url"), row["name"]).exec()
+        # 优先 comic_image_url,没有再回退 image_url —— 与列表卡 CoverBox 同一优先级,
+        # 否则同名角色「列表显示 comic 单张」「详情显示 3D 三视图」两张图打架
+        _cover = ((row.get("comic_image_url") or "").strip()
+                  or (row.get("image_url") or "").strip())
+        self.img.setPixmap(W.pixmap_from_media(_cover, 276, 276))
+        self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, _cover, row["name"]).exec()
         self.img.setToolTip(tr("点击查看大图"))
         left.addWidget(self.img)
         dl = QPushButton(tr("↓ 下载原图"))

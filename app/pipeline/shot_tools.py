@@ -154,7 +154,13 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
         sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
         first = sb["first_frame_image"]
     ref_list = collect_reference_images(episode_id, storyboard_id)
+    # 视频提示词必须拼风格前缀 —— 与 generate_first_frame 同源。video_prompt
+    # 表里只存「0-3 秒:...」的镜头描述,不带画风,直接喂给视频模型会被它默认成
+    # 通用动画/二次元风(用户反馈:选了 3D 漫剧,视频却全是动画风 —— 根因)。
+    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    style = db.style_prompt(db.drama_style(ep["drama_id"]))
     prompt = resolve_prompt(dict(sb))
+    prompt = f"{style}。{prompt}" if prompt else style
     # 项目画幅透传(对齐参考 record.aspectRatio):不传 seedance 默认 1:1,竖屏项目全变方图
     d_row = db.q1("""SELECT d.aspect_ratio FROM dramas d JOIN episodes e ON e.drama_id=d.id
                      WHERE e.id=?""", (episode_id,))

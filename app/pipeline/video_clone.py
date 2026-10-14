@@ -252,8 +252,13 @@ def generate_shot_video(drama_id: int, board_number: int, resolution: str = "720
     if not first:
         raise RuntimeError(f"分镜 #{board_number} 还没有首帧图,请先生成镜头图")
     dur = max(4, min(12, int(float(b.get("end", 8)) - float(b.get("start", 0))) or 8))
+    # 同 shot_tools.compose_from_image:必须拼风格前缀,raw prompt 没画风会被视频
+    # 模型默认成通用动画/二次元风格
+    style = db.style_prompt(db.drama_style(drama_id))
+    body = _shot_video_prompt(b)
+    video_prompt = f"{style}。{body}" if body else style
     path, _ = video_client.generate_video(
-        _shot_video_prompt(b), resolution=resolution,
+        video_prompt, resolution=resolution,
         duration=dur, first_frame=first, config_id=config_id)
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):
