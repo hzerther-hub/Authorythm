@@ -2922,9 +2922,18 @@ class EpisodePage(QWidget):
                 prompt = (prompt + "\n" + image_client.build_image_quality_guard(people))
             # 尺寸对齐参考:角色/场景 1920x1080(三视图/概念图横幅),道具 1024x1024(产品特写)
             size = "1024x1024" if table == "props" else "1920x1080"
+            # 强化负向词:跟漫画格同款 —— 防鬼影/复制人/参考图翻拍。
+            # 角色 1 人场景:防止模型「贴心」多出半透明副本;场景/道具 0 人:
+            # 加强禁一切人(全局守卫只禁多余,这里顺手再补一刀)。
+            extra_neg = ("ghost figure, ghost copy, transparent body, translucent figure, "
+                         "semi-transparent person, faded silhouette, "
+                         "second copy of same character, mirror image of character, "
+                         "character turnaround sheet in background, "
+                         "no reference photo in scene, no three views side by side")
             out, _provider = image_client.generate_image(prompt, config_id=self._active_image_config(),
                                                         reference_images=refs or None,
-                                                        size=size, people=people)
+                                                        size=size, people=people,
+                                                        extra_negative=extra_neg)
             url = config.path_to_media_url(out)
             # 只写 image_url(常规 / 3D),不动 comic_image_url —— 两字段独立
             db.ex(f"UPDATE {table} SET image_url=?, updated_at=? WHERE id=?",
