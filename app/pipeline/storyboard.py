@@ -147,6 +147,20 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     db.ex("UPDATE episodes SET duration=?, updated_at=? WHERE id=?",
           (max(1, round(total_dur / 60)), ts, episode_id))
     db.touch("episodes", episode_id)
+    # 自动建造型变体:扫描所有新分镜,发现外观变化就给关联角色建一条变体行。
+    # 不抢着生图(避免一次性烧光 token),用户进「造型变体」对话框手动点重生。
+    try:
+        from .variant_detector import ensure_variants_for_storyboard
+        drama_id = db.q1("SELECT drama_id FROM episodes WHERE id=?",
+                          (episode_id,))["drama_id"]
+        n_v = 0
+        for sb in db.q("SELECT * FROM storyboards WHERE episode_id=? "
+                       "AND deleted_at IS NULL", (episode_id,)):
+            n_v += len(ensure_variants_for_storyboard(sb, drama_id))
+        if n_v:
+            print(f"[variant_detector] 新建 {n_v} 条造型变体(EP{episode_id})", flush=True)
+    except Exception as e:                                # noqa: BLE001
+        print(f"[variant_detector] 检测失败,忽略:{e}", flush=True)
     return len(boards)
 
 
@@ -291,6 +305,14 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
             if vp:
                 db.ex("UPDATE storyboards SET video_prompt=?, updated_at=? WHERE id=?", (vp, db.now(), r["id"]))
                 done += 1
+                # video_prompt 也可能命中外观变化 → 给关联角色建一条变体
+                try:
+                    from .variant_detector import ensure_variants_for_storyboard
+                    sb_now = db.q1("SELECT * FROM storyboards WHERE id=?", (r["id"],))
+                    if sb_now:
+                        ensure_variants_for_storyboard(sb_now, drama_id)
+                except Exception:  # noqa: BLE001
+                    pass
         except Exception:  # noqa: BLE001
             continue
     return done

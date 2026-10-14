@@ -115,6 +115,20 @@ DDL: list[str] = [
       final_prompt TEXT, image_url TEXT, comic_image_url TEXT,
       is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0,
       created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS scene_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      scene_id INTEGER NOT NULL,
+      label TEXT NOT NULL, tags TEXT, change_desc TEXT,
+      final_prompt TEXT, image_url TEXT, comic_image_url TEXT,
+      is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS prop_variants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      prop_id INTEGER NOT NULL,
+      label TEXT NOT NULL, tags TEXT, change_desc TEXT,
+      final_prompt TEXT, image_url TEXT, comic_image_url TEXT,
+      is_default INTEGER DEFAULT 0, sort_order INTEGER DEFAULT 0,
+      created_at TEXT NOT NULL)""",
     # 场景 / 道具
     """CREATE TABLE IF NOT EXISTS scenes (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

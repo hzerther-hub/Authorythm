@@ -65,6 +65,8 @@ Z = {  # 中文(基准)
  "download_prompts": "下载提示词",
  "download_prompts_tip": "导出本项目所有剧集的分镜提示词(描述/视频提示词/氛围/旁白),按集分节",
  "no_content_yet": "(暂无内容)",
+ "variant_auto_created": "已自动建 {n} 条造型变体(分镜里的外观变化)",
+ "variant_open_dialog": "打开造型变体",
  "batch_redo": "重画所有",
  "batch_redo_tip": "覆盖已有 image_url,按项目设置里的视觉风格(如 3D)重新生成(会消耗 token)",
  "batch_redo_kind": "重画{kind}",
