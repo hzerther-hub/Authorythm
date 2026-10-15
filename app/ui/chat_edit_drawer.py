@@ -26,17 +26,84 @@ from ..core import taskmgr as _TM
 from . import widgets as W
 
 
+# 聊天 vs 改图:用 JEV 给一句指令打分,按主流意图分流。
+# JevClient.decide() 失败时返回 None(软建议器契约)—— fallback 直接走 edit。
+_JEV_INTENT_QUESTIONS = {
+    "intent": {
+        "type": "choice",
+        "instructions": "用户想让 chat-edit 助手做什么?",
+        "criteria": {
+            "edit": "用户想修改这张图片(改色/裁剪/滤镜/加水印/去字/扩图等)",
+            "chat": "用户想聊天、要建议、问问题、解释概念或跟改图无关的请求",
+        },
+    },
+}
+
+# 路由结果常量
+_INTENT_EDIT = "edit"
+_INTENT_CHAT = "chat"
+
+
+# ── /help 帮助文案 ──
+# 按**实际实现**分类,不是拍脑袋写的:
+#   ① 白名单:正则确定性命中,零延迟、结果稳定(photocraft_bridge._WL_RULES)
+#   ② 文字编辑:走 TextReplaceSkill,需要多模态模型定位文字
+#   ③ 兜底:白名单没命中时交给 LLM 自由理解,措辞/命令不保证完全一致
+_HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车执行)。
+
+【色彩 · 白名单,最稳】
+改成黑白 / 改为黑白 / 黑白化 / 去色
+亮度+30   亮度-20
+对比+15   饱和度-40
+曝光+10   鲜艳度-30
+反色 / 反相 / 负片
+
+【几何 · 白名单】
+顺时针旋转90 / 右转90
+逆时针旋转90 / 左转90
+水平翻转 / 水平镜像 / 左右翻转
+垂直翻转 / 上下翻转
+旋转180 / 转180 / 倒过来
+
+【滤镜 · 白名单】
+高斯模糊 5 / 模糊5 / 模糊一下
+轻微模糊 / 轻度模糊 / 柔焦一下
+运动模糊
+锐化 / 清晰一些
+强力锐化 / 更锐利
+
+【文字编辑 · 需要识图,稍慢】
+把「影星传媒」改成「歌星」      ← 推荐加引号
+把"CHAMPION"换成"TITLE"
+将标题改为副标题
+去掉图片上的文字 / 去除水印 / 删除字幕
+
+【兜底 · LLM 自由理解,措辞不保证一致】
+上面没列的说法(比如「做成复古港风」「把天空换成夕阳」)会交给 AI 理解后
+转成 PhotoCraft 命令,能跑但结果不如白名单稳定。可以用更具体的描述提高命中率。
+
+提示:数字是强度参数,可正可负(亮度+30 比 亮度30 更明确);
+      「重抽」/「撤销」这类操作请直接点气泡里的图片,会弹出「改图」面板,
+      里面能裁剪/旋转/精调/滤镜/水印/尺寸/AI 修补,并支持撤销。"""
+
+
 # ── 气泡 ──
 
 class ChatEditMessage(QFrame):
     """单条消息气泡 —— 用户/助手两种风格。"""
 
     def __init__(self, role: str, content: str, steps: list[Step] | None = None,
-                 result_image: Optional[str] = None, parent=None):
+                 result_image: Optional[str] = None, parent=None,
+                 on_image_edit=None):
         super().__init__(parent)
         self.role = role
         self._steps = steps or []
         self._result_image = result_image
+        # 帮助气泡(/help):内容长,宽度上限单独放宽,见 _bubble_max_w
+        self._is_help = bool(content) and content.startswith("可以用下面这些说法")
+        # 点结果图 → 弹「改图」对话框。回调由 ChatEditPanel 注入(气泡自己
+        # 拿不到面板的"保存后同步当前图"逻辑)。None 时退回只看不改。
+        self._on_image_edit = on_image_edit
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(6)
@@ -63,7 +130,10 @@ class ChatEditMessage(QFrame):
         text = QLabel(content or "")
         text.setWordWrap(True)
         text.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        text.setStyleSheet("font-size:13px; line-height:1.5;")
+        # 帮助气泡用等宽字体,命令清单的冒号/缩进才能对齐,方便照着抄
+        text.setStyleSheet(
+            "font-size:12px; line-height:1.55; font-family:Consolas,Menlo,monospace;"
+            if self._is_help else "font-size:13px; line-height:1.5;")
         bl.addWidget(text)
 
         # 助手:执行的命令
@@ -135,22 +205,26 @@ class ChatEditMessage(QFrame):
             lay.addStretch(1)
 
     def _bubble_max_w(self) -> int:
-        """气泡最大宽度 = 聊天区可视宽的 72%。
+        """气泡最大宽度 = 聊天区可视宽的 72%(帮助气泡放宽到 94%)。
 
         **不能**用 self.parentWidget().width():用户消息被包在一个 wrap QFrame 里
         (右对齐用),而 wrap 的宽度又由 msg 的 sizeHint 决定 —— 互相依赖,实测两边
         一起塌到最小值,气泡变成一条竖条、中文逐字折行(见 _append_message_widget)。
         这里向上找真正的聊天区容器(_hist_host)或退回 self.width()。
+
+        帮助气泡内容很长(几十行命令清单),按 72% 排会拉出屏幕外;识别到 help
+        气泡就放宽,让它接近整行宽、命令清单一屏能看完。
         """
+        ratio = 0.94 if self._is_help else 0.72
         node = self
         while node is not None:
             if getattr(node, "objectName", lambda: "")() == "chatHistHost":
                 w = node.width()
                 if w > 0:
-                    return max(240, int(w * 0.72))
+                    return max(240, int(w * ratio))
             node = node.parentWidget()
         avail = self.width()
-        return max(240, int(avail * 0.72)) if avail > 0 else 520
+        return max(240, int(avail * ratio)) if avail > 0 else 520
 
     def resizeEvent(self, e):
         """父宽变化时同步刷新气泡宽度上限。"""
@@ -184,6 +258,17 @@ class ChatEditMessage(QFrame):
         self._apply_bubble_width()
 
     def _view_large(self, path: str):
+        """点气泡里的结果图 → 弹「改图」对话框(裁剪/旋转/精调/滤镜/水印/尺寸/AI 修补)。
+
+        原先是 ImageViewerDialog(只能看不能改)。聊天改图里的图是**会话产物**,
+        不属于任何角色/场景/道具资产,所以 target=None —— 改完保存即下载,
+        不写回资产表。改完的结果由面板的回调同步成"当前图",可以接着继续改。
+
+        回调未注入(理论上不会发生)时退回只看不改,不让点击无响应。
+        """
+        if self._on_image_edit is not None:
+            self._on_image_edit(path)
+            return
         from .asset_dialogs import ImageViewerDialog
         ImageViewerDialog(self, path, Path(path).name).exec()
 
@@ -367,7 +452,7 @@ class ChatEditPanel(QWidget):
         bot = QHBoxLayout()
         bot.setSpacing(6)
         self.input = QPlainTextEdit()
-        self.input.setPlaceholderText("例如:改成黑白 / 亮度+30 / 高斯模糊 5")
+        self.input.setPlaceholderText("例如:改成黑白 / 亮度+30 / 高斯模糊 5(或输入 /help 看全部写法)")
         self.input.setFixedHeight(64)
         self.input.setStyleSheet("font-size:13px;")
         bot.addWidget(self.input, 1)
@@ -550,15 +635,55 @@ class ChatEditPanel(QWidget):
         self._save_btn_refresh()
 
     def _view_thumb(self):
-        """点击顶部缩略图 → 弹出大图查看器(复用 ImageViewerDialog)。
+        """点击顶部缩略图 → 弹「改图」对话框。
 
-        与 ChatEditMessage 气泡里的图片点击同套机制,行为一致。
+        与气泡里的图片点击走同一个入口(_open_image_edit),行为一致:
+        裁剪/旋转/精调/滤镜/水印/尺寸/AI 修补,改完应用回会话当前图。
         """
         if not self._current_image or not Path(self._current_image).exists():
             return
-        from .asset_dialogs import ImageViewerDialog
-        ImageViewerDialog(self, self._current_image,
-                          Path(self._current_image).name).exec()
+        self._open_image_edit(self._current_image)
+
+    def _open_image_edit(self, path: str):
+        """弹「改图」对话框处理一张会话图。
+
+        target={"type": "session"}:会话里的图是**工作副本**,用户要的是
+        「改完接着用」,不是存到磁盘 —— 所以点「应用」直接回写当前图,
+        不弹下载框。也**不写回任何资产表**(聊天产物不属于角色/场景/道具,
+        写进去会污染资产库)。
+        """
+        from .image_edit_dialog import open_image_edit
+        open_image_edit(self, path, target={"type": "session"},
+                        title=f"{tr('改图')} · {Path(path).name}",
+                        on_saved=self._on_image_edited)
+
+    def _on_image_edited(self, saved_url: str):
+        """改图保存后:同步成"当前图",刷新缩略图与保存按钮。
+
+        只更新 _current_image 而不追加消息气泡 —— 用户是在已有图上微调,
+        再插一条"已按…修图"会让对话流被编辑记录刷屏。
+        """
+        if not saved_url:
+            return
+        self._current_image = saved_url
+        self._render_thumb()
+        self._save_btn_refresh()
+        if self._session_id:
+            from ..core import db as _db
+            _db.touch_chat_session(self._session_id, current_image=saved_url)
+        from .toast import ok
+        ok(tr("改图已保存,可继续在会话里修改"))
+
+    def _append_help(self):
+        """往对话流里追加一条「可用写法」帮助气泡。
+
+        内容按**实际实现**列,不是拍脑袋写的:白名单那批是零延迟确定性命中,
+        文字编辑那批走 TextReplaceSkill,其余交给 LLM 自由理解(标注为「兜底」,
+        措辞不保证完全一致)。用等宽字体块排版,方便直接复制。
+        """
+        self._append_message_widget("user", "/help", None, None)
+        self._append_message_widget("assistant", _HELP_TEXT, None, None)
+        self.status_lab.setText(tr("chat_edit_help_tip"))
 
     def _save_btn_refresh(self):
         enable = (self._current_image is not None
@@ -581,7 +706,9 @@ class ChatEditPanel(QWidget):
                               scroll: bool = True):
         # 去掉底部 stretch 再插,插完再加回
         stretch = self.hist_lay.takeAt(self.hist_lay.count() - 1).widget()
-        msg = ChatEditMessage(role, content, steps=steps, result_image=result_image, parent=self.hist_host)
+        msg = ChatEditMessage(role, content, steps=steps, result_image=result_image,
+                              parent=self.hist_host,
+                              on_image_edit=self._open_image_edit)
         if role == "user":
             # 右对齐:用 spacer 推右
             row = QHBoxLayout()
@@ -604,11 +731,55 @@ class ChatEditPanel(QWidget):
         sb.setValue(sb.maximum())
 
     # ── 发送 ──
+    def _chat_reply(self, user_text: str, in_path: str, llm_id, mode: str) -> dict:
+        """JEV 判定为 chat 意图 → 调文本 LLM 给建议/解释,不调 PhotoCraft。
+
+        系统提示把当前图像文件名 + 用户原句打包,让 LLM 知道是「看着哪张图聊天」。
+        失败/异常都按 error 返回(done 回调统一兜底)。
+        """
+        from ..ai import text_client as _tc
+        from ..ai.image_client import _ref_data_url
+        sys_p = (
+            "你是 chat-edit 助手的聊天分支。当前用户的图片已经在会话里,"
+            "他们只想问建议、解释概念、或者跟改图无关的问题 —— "
+            "【不要】调用任何工具、不要再尝试修改图片,"
+            "【不要】给出修改命令(step/cmd/参数)。用 1-3 句中文直接回答。"
+        )
+        user_prompt = f"用户消息: {user_text}"
+        image_urls = None
+        try:
+            if in_path and Path(in_path).exists():
+                d = _ref_data_url(in_path)
+                if d:
+                    image_urls = [d]
+        except Exception:  # noqa: BLE001
+            image_urls = None
+        try:
+            content = _tc.chat(user_prompt, system=sys_p, config_id=llm_id,
+                              temperature=0.6, max_tokens=600, timeout=60,
+                              image_urls=image_urls)
+            return {
+                "kind": "chat",
+                "user_text": user_text,
+                "content": (content or "").strip() or "(空回复)",
+                "engine_label": "chat",
+            }
+        except _tc.AIError as exc:
+            return {"error": str(exc)[:240], "user_text": user_text,
+                    "engine_label": "chat"}
+
     def _send(self):
         if self._busy:
             return
         text = self.input.toPlainText().strip()
         if not text:
+            return
+        # /help(以及 ?/help/help)→ 直接把支持的写法列出来,不走改图引擎。
+        # 放在最前面是因为它不需要当前图 —— 用户往往就是「不知道能写什么」
+        # 才问的,此时可能还没加载图。
+        if text.lstrip().strip("/").lower() in ("help", "?", "帮助", "h"):
+            self.input.clear()
+            self._append_help()
             return
         if not self._current_image or not Path(self._current_image).exists():
             self.status_lab.setText(tr("chat_edit_msg_image_missing"))
@@ -633,11 +804,30 @@ class ChatEditPanel(QWidget):
         sess_id = self._session_id
 
         def job(tid):
-            # ── 批量:分析 → N 个方案 → 逐个执行 ──
-            # 用户说「先分析...再 N 个方案分别执行」时走这里:LLM 看图给 N 个
-            # 单条可执行 prompt,然后每个 prompt 都当独立 user_text 跑一遍单步
-            # 逻辑(复用 _execute_single)。结果以 {"kind": "batch", "results":[...]}
-            # 回给 done 回调,UI 拆成多个气泡显示。
+            # ── JEV 意图路由:先问一句「用户想聊天还是改图」 ──
+            # edit → 走原本 Whitelist + LLM IntentParser + PhotoCraft CLI
+            # chat → 走文本 LLM 纯聊天回复(给建议/解释/问答),不动图
+            # JEV 未配/挂了 → fallback edit(沿用旧行为,0 回归)
+            from ..ai.jev_client import JevClient
+            intent = _INTENT_EDIT   # 默认 edit
+            try:
+                client = JevClient()
+                if client.is_configured():
+                    # 把用户文本 + 当前图(若有)拼成 state,再喂判定问题
+                    state = f"用户消息: {text}"
+                    if self._current_image:
+                        state += f"\n当前图: {Path(self._current_image).name}"
+                    res = client.decide(state, _JEV_INTENT_QUESTIONS) or {}
+                    answer = (res.get("answers") or {}).get("intent", _INTENT_EDIT)
+                    intent = _INTENT_CHAT if str(answer).strip().lower() == _INTENT_CHAT else _INTENT_EDIT
+            except Exception:  # noqa: BLE001
+                intent = _INTENT_EDIT
+
+            # chat 路径:不动图,直接调文本 LLM 给建议
+            if intent == _INTENT_CHAT:
+                return self._chat_reply(text, str(in_path), llm_id, mode)
+
+            # edit 路径:走原本逻辑(批量 / 单步)
             from ..ai.photocraft_bridge import (_wants_batch_analysis,
                                                  _wants_batch_n, analyze_and_plan)
             if _wants_batch_analysis(text):
@@ -674,7 +864,7 @@ class ChatEditPanel(QWidget):
                 text, str(in_path), sess_id, llm_id, mode, tid)
 
         def done(tid, result, error):
-            """job 跑完的统一回调(单步 / 批量都走这里)。"""
+            """job 跑完的统一回调(单步 / 批量 / chat 都走这里)。"""
             self._set_busy(False)
             if error:
                 self._append_message_widget(
@@ -682,6 +872,12 @@ class ChatEditPanel(QWidget):
                     None, None)
                 return
             r = result or {}
+            # JEV chat 路径:不动图,只追加一条文字建议气泡
+            if r.get("kind") == "chat":
+                content = r.get("content") or "(空回复)"
+                self._append_message_widget("assistant", content, None, None)
+                self.status_lab.setText("💬 chat · " + tr(r.get("engine_label") or "ready"))
+                return
             if r.get("empty"):
                 note = r.get("note") or tr("chat_edit_msg_no_steps")
                 self._append_message_widget("assistant", note, None, None)

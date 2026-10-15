@@ -15,6 +15,9 @@ comic_image_url(不覆盖原图)。
 from __future__ import annotations
 
 import io
+import os
+import subprocess
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -240,13 +243,38 @@ class ImageEditDialog(QDialog):
 
         tools.addStretch(1)
         hrow = QHBoxLayout()
+        # 「应用」:把当前所有未固化操作(精调滑杆 + 滤镜)一次性落到画面上,
+        # 然后清空控件,作为链式编辑的下一轮起点 —— 不用分别点「应用调整」+「应用滤镜」两次。
+        apply_all = QPushButton(tr("应用"))
+        apply_all.setToolTip("把当前精调和滤镜一次性落到画面,作为下一轮编辑的起点")
+        apply_all.clicked.connect(self._apply_all)
+        hrow.addWidget(apply_all)
         undo = QPushButton(tr("撤销"))
         undo.clicked.connect(self._undo)
         hrow.addWidget(undo)
+        # 「外部打开」:PhotoCraft 桌面端打开当前图,改完自动同步回来(写入 _current
+        # 图层)。需要先在设置里填好 PhotoCraft 安装路径,否则按钮置灰。
+        from ..ai import photocraft_bridge as _pcb
+        self._open_ext_btn = QPushButton(tr("外部打开"))
+        self._open_ext_btn.setToolTip(tr("open_external_photocraft_tip"))
+        pc_ok = bool(_pcb.resolve_app_path() or _pcb.resolve_cli_path())
+        self._open_ext_btn.setEnabled(pc_ok)
+        if not pc_ok:
+            self._open_ext_btn.setToolTip(self._open_ext_btn.toolTip() + " —— " + tr("open_external_no_pccraft"))
+        self._open_ext_btn.clicked.connect(self._open_external_editor)
+        hrow.addWidget(self._open_ext_btn)
         dl = QPushButton(tr("下载"))
         dl.clicked.connect(self._download)
         hrow.addWidget(dl)
-        save = QPushButton(tr("保存" + ("" if self.target else "(下载到本地)")))
+        # 按钮文案按模式区分:资产=「保存」写回;会话=「应用」接着用;
+        # 独立工具=「保存(下载到本地)」会弹文件框
+        if self.target.get("type") == "session":
+            _save_label = tr("应用")
+        elif self.target:
+            _save_label = tr("保存")
+        else:
+            _save_label = tr("保存(下载到本地)")
+        save = QPushButton(_save_label)
         save.setObjectName("primary")
         save.clicked.connect(self._save)
         hrow.addWidget(save)
@@ -349,6 +377,53 @@ class ImageEditDialog(QDialog):
             s_.blockSignals(True)
             s_.setValue(100)
             s_.blockSignals(False)
+
+    def _apply_all(self):
+        """一键应用:精调滑杆 + 当前滤镜一次性落到画面,作为下一轮编辑起点。
+
+        用途:用户拖完滑杆 + 选完滤镜后,不必分别点「应用调整」「应用滤镜」;
+        点「应用」直接落到当前画面,控件复位(滑杆回 100、滤镜回「无」),
+        用户可以接着在已应用画面上继续做下一轮修改。
+        """
+        # 1) 精调滑杆(等同 _apply_adjust,但不弹 toast —— toast 留给「应用」一次)
+        b = self.brightness.value() / 100.0
+        c = self.contrast.value() / 100.0
+        s = self.saturation.value() / 100.0
+        if (b, c, s) != (1.0, 1.0, 1.0):
+            self._apply(lambda im: self._enhance(im, b, c, s))
+            self._adjust_base = self.current.copy()
+        # 2) 当前滤镜 —— 复用 _apply_filter 的 lambda(不弹 toast)
+        if self.filter_combo.currentIndex() != 0:
+            name = self.filter_combo.currentText()
+            def fn(im):
+                rgb = im.convert("RGB")
+                if name == tr("黑白"):
+                    return rgb.convert("L").convert("RGB")
+                if name == tr("复古"):
+                    sepia = rgb.convert("L").convert("RGB")
+                    r, g, b = sepia.split()
+                    return Image.merge("RGB", (r.point(lambda v: min(255, int(v * 1.07))),
+                                               g, b.point(lambda v: int(v * 0.85))))
+                if name == tr("冷调"):
+                    r, g, b = rgb.split()
+                    return Image.merge("RGB", (r.point(lambda v: int(v * 0.92)), g, b.point(lambda v: min(255, int(v * 1.08)))))
+                if name == tr("暖调"):
+                    r, g, b = rgb.split()
+                    return Image.merge("RGB", (r.point(lambda v: min(255, int(v * 1.08))), g, b.point(lambda v: int(v * 0.92))))
+                if name == tr("锐化"):
+                    return rgb.filter(ImageFilter.UnsharpMask(radius=2, percent=120))
+                if name == tr("柔焦"):
+                    return rgb.filter(ImageFilter.GaussianBlur(2))
+                return rgb
+            self._apply(fn)
+        # 3) 控件复位(滑杆回中、滤镜回「无」,作为下一轮起点)
+        for s_ in (self.brightness, self.contrast, self.saturation):
+            s_.blockSignals(True)
+            s_.setValue(100)
+            s_.blockSignals(False)
+        self.filter_combo.blockSignals(True)
+        self.filter_combo.setCurrentIndex(0)
+        self.filter_combo.blockSignals(False)
 
     def _apply_filter(self):
         name = self.filter_combo.currentText()
@@ -621,6 +696,74 @@ class ImageEditDialog(QDialog):
             self._adjust_base = self.current.copy()
             self._render()
 
+    def _open_external_editor(self):
+        """外部打开:用 PhotoCraft 桌面端编辑当前图,改完自动同步回来。
+
+        复用 PhotoCraftWatcher(三路监听 + mtime+size 双检),与 chat-edit 的
+        「✋ 我手动改」同套机制 —— 监听当前 self.current 的 PNG 副本,保存即更新。
+        """
+        from .photocraft_watcher import PhotoCraftWatcher
+        from ..ai import photocraft_bridge as _pcb
+        import os, tempfile, shutil
+
+        app_path = _pcb.resolve_app_path()
+        if not app_path:
+            from .toast import err as _err
+            _err(tr("open_external_no_pccraft"))
+            return
+
+        # 把当前图保存到临时目录,PhotoCraft 打开这个临时文件
+        tmpdir = Path(tempfile.gettempdir()) / "pydrama_edit"
+        tmpdir.mkdir(parents=True, exist_ok=True)
+        tmpfile = tmpdir / f"edit_{uuid.uuid4().hex[:8]}.png"
+        self.current.convert("RGB").save(str(tmpfile), "PNG")
+
+        # 复用 watcher 实例(同一个 dialog 只跑一个)
+        if not hasattr(self, "_pc_watcher") or self._pc_watcher is None:
+            self._pc_watcher = PhotoCraftWatcher(self)
+            self._pc_watcher.changed.connect(self._on_external_save)
+        self._pc_watcher.stop()
+        ok, err = self._pc_watcher.watch(str(tmpfile))
+        if not ok:
+            from .toast import err as _err
+            _err(err)
+            return
+
+        # 启动 PhotoCraft
+        try:
+            subprocess.Popen([app_path, str(tmpfile.resolve())], close_fds=True)
+        except Exception as exc:
+            from .toast import err as _err
+            _err(str(exc)[:200])
+            return
+
+        # 按钮变 busy,提示用户改完保存会同步
+        self._open_ext_btn.setEnabled(False)
+        self._open_ext_btn.setText(tr("外部打开") + " · 等待同步…")
+        from .toast import ok as _ok
+        _ok("PhotoCraft 已打开 · 改完保存会自动同步回此处")
+
+    def _on_external_save(self, new_path: str):
+        """PhotoCraft 保存触发:把外部编辑器改好的图同步到当前图层。
+
+        同时把 self.current 替换成新图 —— 用户接着点「保存」就直接写回资产 / 下载,
+        不需要再点「应用」键把外部改动落地。
+        """
+        try:
+            from PIL import Image as _PILImage
+            new_img = _PILImage.open(new_path).convert("RGB")
+            self.current = new_img
+            self._adjust_base = new_img.copy()
+            self._history.append(new_img.copy())
+            self._render()
+            self._open_ext_btn.setEnabled(True)
+            self._open_ext_btn.setText(tr("外部打开"))
+            from .toast import ok
+            ok(f"已同步 PhotoCraft 修改:{Path(new_path).name}")
+        except Exception as exc:
+            from .toast import err
+            err(str(exc)[:200])
+
     def _download(self):
         path, _ = QFileDialog.getSaveFileName(self, tr("下载"), f"{self.current_name}.png", "PNG (*.png)")
         if not path:
@@ -629,7 +772,12 @@ class ImageEditDialog(QDialog):
         ok(tr("已下载到本地"))
 
     def _save(self):
-        """写回资产(有 target)或下载(独立模式);新文件不覆盖原图(对齐参考 onPanelSave)。"""
+        """写回资产(有 target)或下载(独立模式);新文件不覆盖原图(对齐参考 onPanelSave)。
+
+        target.type == "session" 是聊天改图专用:产物存 static/images/,**不弹下载框**
+        (会话里的图本来就是工作副本,用户要的是"改完接着用",不是存到磁盘),
+        由调用方的 on_saved 回调接管(把新图同步成会话当前图)。
+        """
         out_dir = config.STATIC_DIR / "images"
         out_dir.mkdir(parents=True, exist_ok=True)
         import uuid
@@ -643,6 +791,8 @@ class ImageEditDialog(QDialog):
             db.ex(f"UPDATE {table} SET {col}=?, updated_at=? WHERE id=?",
                   (url, db.now(), t["id"]))
             ok(tr("已写回资产图"))
+        elif t and t.get("type") == "session":
+            ok(tr("已应用到当前图,可继续在会话里修改"))
         else:
             path, _ = QFileDialog.getSaveFileName(self, tr("下载"), f"{self.current_name}_edited.png", "PNG (*.png)")
             if path:

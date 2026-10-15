@@ -187,8 +187,16 @@ def generate_image(prompt: str, out_name: str | None = None,
     people = 画面应有的人物数(漫画格=绑定角色数),>1 时守卫措辞切到「恰好 N 人」,
     否则双人格子会收到「只许一个人」的自相矛盾指令、模型可能随机删掉第二个角色。
     """
-    from .prompt_guards import apply_image_quality_guard, build_image_negative_guard
+    from .prompt_guards import (apply_image_quality_guard,
+                               build_image_negative_guard, REFERENCE_LOCK_GUARD)
     prompt = prompt if skip_guard else apply_image_quality_guard(prompt, people)
+    # 参考图锁:有 reference 时,显式告诉模型「N 号参考图就是 N 号人物」,
+    # 避免模型按 prompt 文本自己脑补外貌(实测 sb 60 绑了陈默参考图,
+    # 模型却出了个 POLO 少年 —— 没有这句锁它就不看图)。
+    # 幂等(带 marker,二次调用不重复追加);没 reference 就跳过。
+    if not skip_guard and reference_images:
+        from .prompt_guards import _append_guard, REFERENCE_LOCK_MARKER
+        prompt = _append_guard(prompt, REFERENCE_LOCK_GUARD, REFERENCE_LOCK_MARKER)
     negative = build_image_negative_guard(people) if not skip_guard else None
     if extra_negative:
         # 追加而非替换:改图场景要额外压制"凭空多出来的人",但不能把全局守卫

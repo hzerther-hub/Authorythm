@@ -94,3 +94,35 @@ def get_shot_reference_images(sb: dict, limit: int | None = None) -> list[str]:
 
 def get_shot_reference_index_map(sb: dict, limit: int | None = None) -> dict[str, int]:
     """name -> 序号(1 起),同名取首次出现者。"""
+    out: dict[str, int] = {}
+    for i, item in enumerate(build_shot_reference_list(sb, limit), start=1):
+        n = (item.get("name") or "").strip()
+        if n and n not in out:
+            out[n] = i
+    return out
+
+
+def resolve_video_prompt_refs(text: str, sb: dict, limit: int | None = None) -> str:
+    """分镜提示词里 `@名字` → `@图片N` 序号替换。
+
+    名字按长度降序匹配(长的先替),避免短名误命中前缀:角色「赵雷」+「赵雷涛」,
+    `@赵雷涛` 必须先替成 `@图片N`,否则 `@赵雷` 抢先替换后剩下的「涛」就孤立了。
+
+    顺序来自 build_shot_reference_list() —— 与 reference_image_urls 序号严格对齐,
+    保证 `@图片N` 永远等于 reference_image_urls[N-1](修过 refs.py 注释里那条
+    67adf7a 序号错位 bug)。
+
+    没匹配上的 `@名字` 原样保留 —— 让上游(视频模型)拿到可读名字,而不是被
+    静默吞掉的 `@图片99` 之类。
+    """
+    if not text:
+        return text
+    idx_map = get_shot_reference_index_map(sb, limit)
+    if not idx_map:
+        return text
+    # 按名字长度降序,长名先替
+    for name in sorted(idx_map.keys(), key=len, reverse=True):
+        # 转义正则元字符(中文名字常见,但防御一下)
+        esc = re.escape(name)
+        text = re.sub(rf"@{esc}", f"@图片{idx_map[name]}", text)
+    return text

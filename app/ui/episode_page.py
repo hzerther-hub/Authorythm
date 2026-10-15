@@ -15,10 +15,10 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QPoint, QRect, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPainter, QPolygon, QFont, QColor, QPixmap
 from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
-                               QGridLayout, QHBoxLayout, QSizePolicy,
+                               QGridLayout, QHBoxLayout, QMenu, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter,
-                               QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+                               QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget)
 
 from .confirm import ask
 from ..ai import face_swap, image_client, registry, tts_client, video_client
@@ -59,6 +59,12 @@ PROGRESS_STEPS = [("raw", "stage_script"), ("assets", "stage_assets"),
                   ("storyboard", "stage_video"), ("comic", "stage_comic")]
 
 REF_TAB_KEYS = {"character": "chars", "scene": "scenes", "prop": "props"}
+
+# 资产网格列数 —— **单一真相源**。改这里一处即可,不要在别处再写死数字:
+#   1. _reload_assets 决定每行放几张
+#   2. _panel_assets 构造期 setColumnStretch 的循环范围(漏了会让最后一列
+#      默认吃剩余宽度,表现为「卡片挤左边 + 右侧大片空白」)
+ASSET_GRID_COLS = 5
 
 
 class _MergeTick(QTimer):
@@ -2248,7 +2254,9 @@ class EpisodePage(QWidget):
 
         # ── 工具条 .prod-section-bar:胶囊页签 + 就绪计数 + 右侧动作区 ──
         bar = QHBoxLayout()
-        bar.setSpacing(7)
+        # 间距压到 3(原 7):11 个按钮横排时 7px 的缝把整条撑到接近两行宽,
+        # 在宽屏上又和左右留白一起显得「散」(用户标的蓝框)。
+        bar.setSpacing(3)
         seg = QFrame()
         seg.setObjectName("segWrap")
         seg_lay = QHBoxLayout(seg)
@@ -2271,70 +2279,149 @@ class EpisodePage(QWidget):
         bar.addWidget(seg)
         self.asset_stat = C.mono_tag("")
         bar.addWidget(self.asset_stat)
-        bar.addStretch(1)
-        # 图片模型下拉放到工具条最前面:先选模型,再做重提/批量等操作
-        # 图片模型统一用顶栏那一个,资产页不再重复放(原先两处同步、容易让人困惑)
+        # 不用 addStretch(1):那会把按钮群整体推到右边,在宽屏上于页签与按钮
+        # 之间留出一大段空档(用户标的蓝框里最显眼的「间距」)。改为固定 12px
+        # 的短间隔,按钮紧跟页签,整条工具条紧凑靠左。
+        bar.addSpacing(12)
+
+        # ── 同类操作收进下拉 ──
+        # 用户反馈工具条按钮太多(12 个横排,窄窗口后半截被省略、宽窗口又散成一片)。
+        # 按蓝框分 4 组:重提 / 批量 / 重画 / 补图,各收成一个「▾」下拉。
+        # 「清空资产」保持独立按钮 —— 不可逆操作不该藏在菜单里。
+        def _menu_btn(text: str, tip: str = "") -> tuple[QToolButton, QMenu]:
+            tb = QToolButton()
+            tb.setText(text)
+            tb.setToolTip(tip or text)
+            tb.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+            tb.setCursor(Qt.PointingHandCursor)
+            tb.setStyleSheet(
+                "QToolButton{border:1px solid #e4e7ec;border-radius:6px;"
+                "background:#fff;color:#4e5969;padding:4px 10px;font-size:12px;}"
+                "QToolButton:hover{background:#fef3e8;border-color:#f3c9a4;color:#1f2329;}"
+                "QToolButton:disabled{background:#f7f8fa;color:#c0c6cf;border-color:#e8eaef;}"
+                "QToolButton::menu-indicator{width:0px;}")
+            menu = QMenu(tb)
+            tb.setMenu(menu)
+            return tb, menu
+
+        class _MenuBusy:
+            """等待态代理:按钮进菜单后不在布局上,原来的 WaitingButton 转圈看不见。
+
+            把 busy/idle 转投到**可见的下拉按钮**上(变灰 + 显示「生成中」),
+            同时锁住菜单里对应的 action,防止重复点。
+            """
+
+            def __init__(self, tb: QToolButton, actions: list | None = None):
+                self.tb = tb
+                self._acts = list(actions or ())
+                self._orig = tb.text()
+
+            def busy(self, _text: str = ""):
+                self.tb.setEnabled(False)
+                self.tb.setText("⠋ " + tr("in_progress"))
+                for a in self._acts:
+                    a.setEnabled(False)
+
+            def idle(self):
+                self.tb.setEnabled(True)
+                self.tb.setText(self._orig)
+                for a in self._acts:
+                    a.setEnabled(True)
+
+            def setVisible(self, on: bool):
+                self.tb.setVisible(on)
+
+        kind_label = {"characters": "角色", "scenes": "场景", "props": "道具"}
+        # 切 tab(常规/漫画)时要整体隐显这 4 个下拉
+        self._asset_toolbar_menus: list[QToolButton] = []
+
+        # ── 重提 ──
         self._extract_btns = {}
+        tb_re, m_re = _menu_btn(tr("re_extract_menu"), tr("re_extract_menu_tip"))
+        _re_acts = []
         for kind, key in (("characters", "re_extract_chars"), ("scenes", "re_extract_scenes"),
                           ("props", "re_extract_props")):
-            b = QPushButton(tr(key))
-            b.setCursor(Qt.PointingHandCursor)
-            b.clicked.connect(lambda _=False, k=kind: self._extract(k))
-            self._extract_btns[kind] = b
-            bar.addWidget(b)
-        self.extract_all_btn = W.primary_btn(tr("extract"))
-        self.extract_all_btn.clicked.connect(lambda: self._extract("all"))
-        bar.addWidget(self.extract_all_btn)
+            act = m_re.addAction(tr(key))
+            act.triggered.connect(lambda _=False, k=kind: self._extract(k))
+            _re_acts.append(act)
+        m_re.addSeparator()
+        act = m_re.addAction(tr("extract"))
+        act.triggered.connect(lambda: self._extract("all"))
+        _re_acts.append(act)
+        self._extract_menu = _MenuBusy(tb_re, _re_acts)
+        for kind in ("characters", "scenes", "props"):
+            self._extract_btns[kind] = self._extract_menu
+        self.extract_all_btn = self._extract_menu
+        bar.addWidget(tb_re)
+        self._asset_toolbar_menus.append(tb_re)
+        # ── 清空 ──(红色,独立按钮 —— 不可逆)
         self.clear_assets_btn = QPushButton(tr("清空资产"))
         self.clear_assets_btn.setToolTip(tr("清空本集角色/场景/道具,可重新提取生成"))
         self.clear_assets_btn.setCursor(Qt.PointingHandCursor)
         self.clear_assets_btn.setStyleSheet(
             "QPushButton{border:1px solid #f0b4b4;border-radius:6px;color:#e5484d;"
-            "background:#fff5f5;padding:3px 10px;font-size:12px;}"
+            "background:#fff5f5;padding:4px 10px;font-size:12px;}"
             "QPushButton:hover{background:#ffe9e9;}")
         self.clear_assets_btn.clicked.connect(self._clear_assets)
         bar.addWidget(self.clear_assets_btn)
+        self._asset_toolbar_menus.append(self.clear_assets_btn)
         divider = QFrame()
         divider.setFrameShape(QFrame.VLine)
         divider.setFixedHeight(18)
         bar.addWidget(divider)
+
+        # ── 批量出图 ──
         self._batch_btns = {}
-        for kind, key in (("characters", "batch_chars"), ("scenes", "batch_scenes"),
-                          ("props", "batch_props")):
-            b = WaitingButton(tr(key))
-            b.clicked.connect(lambda _=False, k=kind: self._batch_images(k))
-            self._batch_btns[kind] = b
-            bar.addWidget(b)
-        # 重画单类:覆盖已有 image_url,按项目设置风格(如 3D)重出。
-        # 与原「批量 X」对齐命名(都是 kind 级),不再误用「重画所有」字样。
-        self._batch_redo_btns: dict[str, WaitingButton] = {}
-        kind_label = {"characters": "角色", "scenes": "场景", "props": "道具"}
+        tb_gen, m_gen = _menu_btn(tr("batch_menu"), tr("batch_menu_tip"))
+        _gen_acts = []
         for kind in ("characters", "scenes", "props"):
-            b = WaitingButton("⟳ " + tr("batch_redo_kind").format(kind=kind_label[kind]))
-            b.setToolTip(tr("batch_redo_kind_tip").format(kind=kind_label[kind]))
-            b.clicked.connect(lambda _=False, k=kind: self._batch_redo_images(k))
-            self._batch_redo_btns[kind] = b
-            bar.addWidget(b)
-        # 补图单类:只生 image_url 为空的资产生图(不覆盖已有图)。
-        # 用户场景:之前只生了一半,想把缺的补上;不需要重画已有的。
-        # 与「重画 X」按钮紧挨放,选哪个一目了然。
-        self._batch_fill_btns: dict[str, WaitingButton] = {}
+            act = m_gen.addAction(tr({"characters": "batch_chars", "scenes": "batch_scenes",
+                                      "props": "batch_props"}[kind]))
+            act.triggered.connect(lambda _=False, k=kind: self._batch_images(k))
+            _gen_acts.append(act)
+            self._batch_btns[kind] = _MenuBusy(tb_gen, _gen_acts)
+        bar.addWidget(tb_gen)
+        self._asset_toolbar_menus.append(tb_gen)
+        # ── 重画(覆盖已有)──
+        self._batch_redo_btns = {}
+        tb_redo, m_redo = _menu_btn("⟳ " + tr("batch_redo_menu"),
+                                    tr("batch_redo_menu_tip"))
+        _redo_acts = []
         for kind in ("characters", "scenes", "props"):
-            b = WaitingButton("+ " + tr("batch_fill_missing_kind").format(kind=kind_label[kind]))
-            b.setToolTip(tr("batch_fill_missing_tip").format(kind=kind_label[kind]))
-            b.clicked.connect(lambda _=False, k=kind: self._batch_fill_missing(k))
-            self._batch_fill_btns[kind] = b
-            bar.addWidget(b)
-        # 「重画全部」:一次性刷三种,字面意义清楚。
-        self.batch_redo_all_btn = WaitingButton(tr("batch_redo_all"))
-        self.batch_redo_all_btn.setToolTip(tr("batch_redo_all_tip"))
-        self.batch_redo_all_btn.clicked.connect(self._batch_redo_all)
-        bar.addWidget(self.batch_redo_all_btn)
-        # 「补图全部」:只刷 image_url 为空的资产,不覆盖已有图(省 token)。
-        self.batch_fill_all_btn = WaitingButton(tr("batch_fill_missing_all"))
-        self.batch_fill_all_btn.setToolTip(tr("batch_fill_missing_all_tip"))
-        self.batch_fill_all_btn.clicked.connect(self._batch_fill_missing_all)
-        bar.addWidget(self.batch_fill_all_btn)
+            act = m_redo.addAction(tr("batch_redo_kind").format(kind=kind_label[kind]))
+            act.setToolTip(tr("batch_redo_kind_tip").format(kind=kind_label[kind]))
+            act.triggered.connect(lambda _=False, k=kind: self._batch_redo_images(k))
+            _redo_acts.append(act)
+            self._batch_redo_btns[kind] = _MenuBusy(tb_redo, _redo_acts)
+        m_redo.addSeparator()
+        act = m_redo.addAction(tr("batch_redo_all"))
+        act.setToolTip(tr("batch_redo_all_tip"))
+        act.triggered.connect(self._batch_redo_all)
+        _redo_acts.append(act)
+        self.batch_redo_all_btn = _MenuBusy(tb_redo, _redo_acts)
+        bar.addWidget(tb_redo)
+        self._asset_toolbar_menus.append(tb_redo)
+        # ── 补图(只补空缺)──
+        self._batch_fill_btns = {}
+        tb_fill, m_fill = _menu_btn("+ " + tr("batch_fill_menu"),
+                                    tr("batch_fill_menu_tip"))
+        _fill_acts = []
+        for kind in ("characters", "scenes", "props"):
+            act = m_fill.addAction(tr("batch_fill_missing_kind").format(kind=kind_label[kind]))
+            act.setToolTip(tr("batch_fill_missing_tip").format(kind=kind_label[kind]))
+            act.triggered.connect(lambda _=False, k=kind: self._batch_fill_missing(k))
+            _fill_acts.append(act)
+            self._batch_fill_btns[kind] = _MenuBusy(tb_fill, _fill_acts)
+        m_fill.addSeparator()
+        act = m_fill.addAction(tr("batch_fill_missing_all"))
+        act.setToolTip(tr("batch_fill_missing_all_tip"))
+        act.triggered.connect(self._batch_fill_missing_all)
+        _fill_acts.append(act)
+        self.batch_fill_all_btn = _MenuBusy(tb_fill, _fill_acts)
+        bar.addWidget(tb_fill)
+        self._asset_toolbar_menus.append(tb_fill)
+        # 尾部留白:按钮不拉伸,剩余宽度空在右侧
+        bar.addStretch(1)
         lay.addLayout(bar)
 
         # 漫画资产工具条(仅 comic 模式可见)—— 仿分镜工作台 batch_video_btn 的「工具条最右 primary」放法
@@ -2375,12 +2462,24 @@ class EpisodePage(QWidget):
             grid.setContentsMargins(0, 0, 0, 0)
             # 卡片间距归零(用户反馈卡与卡之间留白过大):#assetCard 自带
             # 1px 边框 + 卡片内 8px padding,视觉分组已经够了,再叠 grid 间距
-            # 会让 4 列挤在中间、左右大片空白被放大
+            # 会让 4 列挤在中间、左右大片空白被放大。
             grid.setSpacing(0)
+            # 列不拉伸:grid 默认每列等分父宽,列会被撑开,卡片挤在左边、
+            # 右侧留一大块空白(用户标的「红间距」就是这个)。每列 stretch=0
+            # → 列宽 = 卡片实际宽,grid_host 的 sizeHint = N×210,多余宽度
+            # 只落在 grid_host 右侧,卡片彼此紧贴。
+            # **必须按实际列数遍历**:硬编码 range(4) 会漏掉第 5 列,那一列
+            # 默认吃剩余宽度 —— 表现为「一行 4 张挤左边 + 右侧大片空白」。
+            for col in range(ASSET_GRID_COLS):
+                grid.setColumnStretch(col, 0)
             # 关键:不设这行,grid_host 的 sizeHint 只取布局"最小"尺寸,容器被压到
             # 几十 px,13 张角色卡只剩一张露头,其余全被裁掉(看着像"没变高")
             grid.setSizeConstraint(QLayout.SetMinimumSize)
-            n_lay.addWidget(grid_host)
+            # grid_host 不吃满父宽:默认 addWidget(stretch=1) 会把它拉到与
+            # scroll viewport 同宽,grid 再按列平分 → 每列 268px、卡片之间留
+            # 58px 缝(用户标的「红间距」)。stretch=0 + AlignLeft 让容器宽度
+            # 只取 sizeHint(N × ASSET_CARD_W),卡片紧贴排满,多余宽度空在右侧。
+            n_lay.addWidget(grid_host, 0, Qt.AlignLeft | Qt.AlignTop)
             self.asset_sections[kind] = {"grid": grid, "host": grid_host, "empty": None}
         self.asset_empty = C.empty_state("🔍", tr("asset_empty_title"), tr("asset_empty_desc"))
         n_lay.addWidget(self.asset_empty)
@@ -2402,9 +2501,11 @@ class EpisodePage(QWidget):
             hl.setSpacing(6)
             grid = QGridLayout()
             grid.setContentsMargins(0, 0, 0, 0)
-            # 与常规资产网格一致:卡片间距归零
+            # 与常规资产网格一致:卡片间距归零 + 列不拉伸(漫画资产是 2 列)
             grid.setHorizontalSpacing(0)
             grid.setVerticalSpacing(0)
+            for col in range(2):
+                grid.setColumnStretch(col, 0)
             hl.addLayout(grid)
             c_lay.addWidget(host)
             self.comic_asset_sections[kind] = {"grid": grid, "host": host}
@@ -2419,19 +2520,9 @@ class EpisodePage(QWidget):
         """常规资产 / 漫画资产(对齐 .asset-view-tabs)。"""
         self._asset_mode = mode
         self.asset_stack.setCurrentIndex(0 if mode == "regular" else 1)
-        for b in self._extract_btns.values():
-            b.setVisible(mode == "regular")
-        self.extract_all_btn.setVisible(mode == "regular")
-        for b in self._batch_btns.values():
-            b.setVisible(mode == "regular")
-        for b in getattr(self, "_batch_redo_btns", {}).values():
-            b.setVisible(mode == "regular")
-        for b in getattr(self, "_batch_fill_btns", {}).values():
-            b.setVisible(mode == "regular")
-        if hasattr(self, "batch_redo_all_btn"):
-            self.batch_redo_all_btn.setVisible(mode == "regular")
-        if hasattr(self, "batch_fill_all_btn"):
-            self.batch_fill_all_btn.setVisible(mode == "regular")
+        # 工具条同类操作已收进 4 个下拉,切 tab 时整体隐显这一组即可
+        for tb in getattr(self, "_asset_toolbar_menus", []):
+            tb.setVisible(mode == "regular")
         self._comic_bar.setVisible(mode == "comic")
         self._reload_assets()
 
@@ -2607,11 +2698,10 @@ class EpisodePage(QWidget):
             warn(tr("extract_running"))
             return
         self._extract_running = True
-        btns = [b for b in self.findChildren(QPushButton)
-                if b.text() in (tr("extract_assets"), tr("re_extract_chars"),
-                                tr("re_extract_scenes"), tr("re_extract_props"))]
-        for b in btns:
-            b.setEnabled(False)
+        # 同类按钮已收进「重提」下拉,锁下拉本体 + 菜单内全部 action
+        menu_busy = getattr(self, "_extract_menu", None)
+        if menu_busy:
+            menu_busy.busy(tr("in_progress"))
 
         def job(tid):
             return extract_pipe.extract_assets(self.episode_id,
@@ -2620,11 +2710,8 @@ class EpisodePage(QWidget):
 
         def done(tid, result, error):
             self._extract_running = False
-            for b in btns:
-                try:
-                    b.setEnabled(True)
-                except RuntimeError:
-                    pass
+            if menu_busy:
+                menu_busy.idle()
             if error:
                 err(error)
                 return
@@ -2642,7 +2729,7 @@ class EpisodePage(QWidget):
         if not getattr(self, "asset_sections", None):
             return
         from . import episode_cards as C
-        cols = {kind: 4 for kind in self.asset_sections}   # 用户指定固定 4 列
+        cols = {kind: ASSET_GRID_COLS for kind in self.asset_sections}
         # 列表只显示「本集已关联」的资产(INNER JOIN episode_X),不再是整个项目
         # 的资产 —— 「清空资产」要的就是去掉本集关联,改这里后点了立刻看得见
         # 列表清空。其它集还在用的角色会留在它自己的列表里,不会跟着被清。
@@ -3514,16 +3601,37 @@ class EpisodePage(QWidget):
         self.sb_ff_img.setFixedSize(190, 150)
         self.sb_ff_img.setAlignment(Qt.AlignCenter)
         self.sb_ff_img.setObjectName("firstFrameImg")
+        self.sb_ff_img.setCursor(Qt.PointingHandCursor)
+        self.sb_ff_img.setToolTip(tr("点击查看大图"))
+        self.sb_ff_img.mousePressEvent = lambda _e: self._view_first_frame_large()
         ff_grid.addWidget(self.sb_ff_img)
         ff_right = QVBoxLayout()
         ff_right.setSpacing(3)
         ff_rt = W.muted(tr("first_frame_used_refs"))
         ff_rt.setObjectName("inspectorLabel")
         ff_right.addWidget(ff_rt)
-        self.sb_ff_refs_row = QHBoxLayout()
+        # 参考一行 + 横向滚动(超出时拖滚动条看剩余 —— 单行展示,避免挤爆右栏)
+        from PySide6.QtWidgets import QScrollArea
+        self.sb_ff_refs_scroll = QScrollArea()
+        self.sb_ff_refs_scroll.setWidgetResizable(True)
+        self.sb_ff_refs_scroll.setFrameShape(QFrame.NoFrame)
+        self.sb_ff_refs_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.sb_ff_refs_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 高度跟内容走:卡片 46px + padding ~6 → 52px 起步,不写死。
+        # 之前固定 80px 撑得首帧面板过高,即便 0 张参考也占 80px。
+        self.sb_ff_refs_scroll.setMinimumHeight(52)
+        self.sb_ff_refs_scroll.setMaximumHeight(64)
+        self.sb_ff_refs_scroll.setStyleSheet(
+            "QScrollArea{border:none;background:transparent;}"
+            "QScrollBar:horizontal{height:6px;}")
+        self.sb_ff_refs_host = QWidget()
+        self.sb_ff_refs_row = QHBoxLayout(self.sb_ff_refs_host)
+        self.sb_ff_refs_row.setContentsMargins(0, 0, 0, 0)
         self.sb_ff_refs_row.setSpacing(6)
-        ff_right.addLayout(self.sb_ff_refs_row)
-        ff_right.addStretch(1)
+        self.sb_ff_refs_row.addStretch(1)
+        self.sb_ff_refs_scroll.setWidget(self.sb_ff_refs_host)
+        ff_right.addWidget(self.sb_ff_refs_scroll)
+        ff_right.addStretch(1)        # 卡片少时不要把整个 ff_grid 撑到 150px
         ff_grid.addLayout(ff_right, 1)
         ff_lay.addLayout(ff_grid)
         ff_act = QHBoxLayout()
@@ -3697,12 +3805,18 @@ class EpisodePage(QWidget):
         self.sb_history_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.sb_history_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.sb_history_scroll.setStyleSheet("QScrollArea{border:none;background:transparent;}")
-        self.sb_history_scroll.setFixedHeight(108)
+        # 滚动区 = 卡片固定高 + 横向滚动条。主题里滚动条 height:10,
+        # 再留 2px。只给卡片高(之前是 88)时,条一出现就把 viewport 压到卡片以下,
+        # widgetResizable 会把缩略图纵向压扁。
+        self.sb_history_scroll.setFixedHeight(C.VideoHistoryCard.CARD_H + 12)
         self.sb_history_row_host = QWidget()
         self.sb_history_row = QHBoxLayout(self.sb_history_row_host)
         self.sb_history_row.setContentsMargins(0, 0, 0, 0)
         self.sb_history_row.setSpacing(6)
         self.sb_history_row.addStretch(1)
+        # 显式顶部对齐:右栏被父布局拉高时,QHBoxLayout 默认 AlignTop 不变,
+        # 但有些 Qt 版本下 sizePolicy 会被滚出去,这里再钉一次。
+        self.sb_history_row.setAlignment(Qt.AlignTop)
         self.sb_history_scroll.setWidget(self.sb_history_row_host)
         hl3.addWidget(self.sb_history_scroll)
         self.sb_history.setVisible(False)
@@ -4094,6 +4208,11 @@ class EpisodePage(QWidget):
             f"{self._video_model_name()} · {self._ep['resolution'] or '720p'} · {int(r['duration'] or 10)}s")
         self.sb_action_btn.setText(tr("redraw") if state == "done" else
                                    (tr("in_progress") if state == "pending" else tr("generate")))
+        # pending 时进入 spin 等待态(其它「重画」「合成」按钮同款),而不是只切文字。
+        if state == "pending":
+            self.sb_action_btn.busy("")
+        else:
+            self.sb_action_btn.idle()
         self.sb_action_btn.setEnabled(state != "pending")
         self.sb_stop_btn.setVisible(state == "pending")
         self._render_video_history()
@@ -4566,8 +4685,14 @@ class EpisodePage(QWidget):
             state = tr("ref_ok") if (is_bound and has_img) else (
                 tr("ref_no_image") if not has_img else tr("ref_unbound"))
             # 整卡点击切换绑定状态 —— 用户要求「选中资产用橙框,点击资产可以加入,再点击取消」
+            # 缩略图单独点击 → 弹出大图查看(不动绑定状态);空图(占位符)不传 on_click
+            on_view = None
+            if row.get("image_url"):
+                url = row["image_url"]
+                on_view = (lambda u=url: self._view_ref_large(u))
             card = C.RefCard(row.get("image_url"), self._ref_placeholder(kind), name,
                              tr(REF_TAB_KEYS[kind]), state,
+                             on_click=on_view,
                              on_generate=(lambda _id=row["id"]: self._goto_assets(_id))
                              if (is_bound and not has_img) else None,
                              on_toggle=(lambda _rid=row["id"], _k=kind: self._toggle_ref_bind(_rid, _k)))
@@ -4579,6 +4704,16 @@ class EpisodePage(QWidget):
         self.sb_ref_count.setText(tr("bound_n", len(bound), len(rows)))
         for k, b in self._ref_tab_btns.items():
             b.setText(f"{tr(REF_TAB_KEYS[k])} {len(self._ref_rows(k))}")
+
+    def _view_ref_large(self, url: str):
+        """参考素材缩略图点击 → 弹出大图查看(不动绑定状态)。
+
+        复用 ImageViewerDialog,与 chat-edit 缩略图点击同套机制。
+        """
+        if not url:
+            return
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, url, tr("preview")).exec()
 
     def _toggle_ref_bind(self, row_id: int, kind: str):
         """点击资产卡 → 切换与当前分镜的绑定状态(已绑则解,未绑则加)。"""
@@ -4777,6 +4912,8 @@ class EpisodePage(QWidget):
         """刷新首帧预览区:图 / 空态、状态徽标、本次用到的参考、按钮可用性。"""
         from ..pipeline import refs as refs_mod
         url = (r.get("first_frame_image") or "").strip()
+        # 缓存给 _view_first_frame_large(点击缩略图用)
+        self._sb_ff_url = url
         if url:
             self.sb_ff_img.setPixmap(W.pixmap_from_media(url, 190, 150))
         else:
@@ -4827,6 +4964,18 @@ class EpisodePage(QWidget):
             return
         from .asset_dialogs import ImageViewerDialog
         ImageViewerDialog(self, url).exec()
+
+    def _view_first_frame_large(self):
+        """首帧预览大图点击 → 弹 ImageViewerDialog 放大查看。
+
+        与 ChatEditMessage、RefCard 共享同套机制(都是 → ImageViewerDialog)。
+        """
+        # 拿当前 pixmap 的原始 URL(从 self.sb_ff_img tooltip 或独立保存字段取)
+        url = getattr(self, "_sb_ff_url", "") or ""
+        if not url:
+            return
+        from .asset_dialogs import ImageViewerDialog
+        ImageViewerDialog(self, url, tr("first_frame_preview")).exec()
 
     def _toggle_ref_bind(self, item: dict):
         """点参考图文字 → 切换绑定状态。
@@ -4941,6 +5090,13 @@ class EpisodePage(QWidget):
             if error:
                 err("▣ 首帧失败:" + str(error)[:280])
             self._reload_storyboard()
+            # 关键:首帧生成后 _reload_storyboard 只刷新了任务列表 + 播放器,
+            # 不刷「首帧预览」区 —— 用户必须切别的分镜再切回来才能看见新图。
+            # 这里直接重渲当前选中分镜的首帧面板,实时同步。
+            if self._sb_id == sb_id:
+                srow = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+                if srow:
+                    self._render_first_frame(dict(srow))
         TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _compose_i2v(self, sb_id: int):
@@ -5226,10 +5382,21 @@ class EpisodePage(QWidget):
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
 
     def _one_video(self, sb_id: int):
-        # 首帧预审门控:有首帧但未确认 → 提示先确认(避免盲烧钱);老数据 approved 不受影响
+        # 首帧预审门控:有首帧但未确认 → 提示先确认(避免盲烧钱);老数据 approved 不受影响。
+        # 文案按实际状态分三种,原先统一报「请先生成首帧图」会让人以为图没生成 ——
+        # 实际多数情况是「图已生成、等你点确认」。
         ist = self._sb_image_status(sb_id)
-        if ist in ("pending_review", "generating", "failed"):
-            warn(tr("请先生成首帧图并确认") + f"(当前: {ist})")
+        if ist == "generating":
+            warn(tr("首帧图正在生成中,请等它完成后再出视频"))
+            return
+        if ist == "failed":
+            warn(tr("首帧生成失败,请先重新生成首帧图"))
+            return
+        if ist == "pending_review":
+            num = (db.q1("SELECT storyboard_number FROM storyboards WHERE id=?", (sb_id,))
+                   or {}).get("storyboard_number", sb_id)
+            warn(tr("首帧图已生成但还没确认 —— 请在左侧任务列表点这一行的「确认出视频」")
+                 + tr("确认后才允许烧视频额度") + f"(镜号 #{int(num)})")
             return
         self._gen_video_job(sb_id)
 
@@ -5493,6 +5660,9 @@ class EpisodePage(QWidget):
         # 不用等后台线程真正跑起来(status 由 _gen_one_video 再写一次,值相同)
         db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
         self._render_task_list(self._sb_rows())
+        # 立刻刷新徽标 + 当前选中分镜的视频面板 —— 否则「生成中 1」不会
+        # 立刻出现在左侧胶囊,主线程后续 done 才更新的话用户看到的就是「点完没反应」。
+        self._update_metric_pills()
         if self._sb_id == sb_id:
             srow = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
             if srow:
@@ -5655,7 +5825,8 @@ class EpisodePage(QWidget):
         lay.setContentsMargins(10, 8, 12, 10)
         lay.setSpacing(8)
         bar = QHBoxLayout()
-        bar.setSpacing(7)
+        # 与常规资产工具条同款间距(3),两个 tab 切换时视觉不跳
+        bar.setSpacing(3)
         bar.addWidget(QLabel(tr("comic")))
         self.comic_panel_tag = C.mono_tag("")
         bar.addWidget(self.comic_panel_tag)
@@ -6242,10 +6413,12 @@ class EpisodePage(QWidget):
     def _shot_card(self, r: dict) -> QWidget:
         """镜头卡:16:9 缩略 + #NN + 时长 + 勾选框 + 预览键 + 排序输入 + 描述 + 状态点
         (对齐 .exp-card:选中后缩略上冒出序号框,输 N 与第 N 位互换)。"""
+        from .braille import BrailleSpinner
         card = W.make_card()
         card.setMinimumWidth(200)
         sid = r["id"]
         vid = r["video_url"] or r["composed_video_url"]
+        is_processing = (r.get("status") == "processing")
         lay = QVBoxLayout(card)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)

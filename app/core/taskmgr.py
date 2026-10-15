@@ -290,11 +290,37 @@ class TaskManager(QObject):
 
     @staticmethod
     def ep_video_stats(episode_id: int) -> dict:
+        """本集视频任务的实时统计。
+
+        关键:processing 行只算「5 分钟内动过的」,否则把孤儿(进程被杀但
+        没走完 finish_task 路径)的也算成「生成中」,胶囊点进去空操作
+        (没有 worker 在跑,「停止」按钮也没法触发)。
+
+        孤儿行顺手在这里归位为 failed —— 下一轮 STARTED 信号来了就一致。
+        """
+        from datetime import datetime, timedelta
         rows = db.q(
             "SELECT status, COUNT(*) c FROM sys_task WHERE episode_id=? AND type='video' GROUP BY status",
             (episode_id,))
         stats = {r["status"]: r["c"] for r in rows}
-        return {"processing": stats.get("processing", 0),
+        processing = stats.get("processing", 0)
+        if processing:
+            # 5 分钟没动过的 processing 行 → 视为孤儿
+            cutoff = (datetime.utcnow() - timedelta(minutes=5)).isoformat() + "Z"
+            orphans = db.q(
+                "SELECT id FROM sys_task WHERE episode_id=? AND type='video' "
+                "AND status='processing' AND updated_at<?",
+                (episode_id, cutoff))
+            if orphans:
+                ids = ",".join(str(o[0]) for o in orphans)
+                db.ex(
+                    f"UPDATE sys_task SET status='failed', "
+                    f"error_msg='孤儿任务(进程异常退出),自动归位', updated_at=? "
+                    f"WHERE id IN ({ids}) AND status='processing'",
+                    (datetime.utcnow().isoformat() + "Z",))
+                processing -= len(orphans)
+                stats["failed"] = stats.get("failed", 0) + len(orphans)
+        return {"processing": processing,
                 "completed": stats.get("completed", 0),
                 "failed": stats.get("failed", 0)}
 

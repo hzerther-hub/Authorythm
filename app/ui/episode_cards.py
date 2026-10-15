@@ -42,8 +42,9 @@ def mono_tag(text: str) -> QLabel:
     return lab
 
 
-# 三类资产卡统一尺寸(对齐参考项目 character-asset-grid 的 230-260px 卡片)
-ASSET_CARD_W = 250
+# 三类资产卡统一尺寸。5 列布局:210×5 + 4×0 间距 ≈ 1050px,常见 1280 宽窗口
+# 一屏放得下,比之前 250×4 密度高约 30%(用户反馈「间距变小、一行五个」)。
+ASSET_CARD_W = 210
 
 
 def _snug_card(card: QFrame):
@@ -294,6 +295,14 @@ class CoverBox(QFrame):
             img = QLabel()
             img.setObjectName("coverInner")
             img.setAlignment(Qt.AlignCenter)
+            # 水平方向用 Ignored:QLabel 的 minimumSizeHint = pixmap 宽度(不缩),
+            # 一张 320px 的图能把 ASSET_CARD_W=210 的卡片顶到几百 px,
+            # 5 列布局直接失效(卡片挤左边 + 右侧大片空白)。
+            # **垂直方向必须留 Preferred**:也设 Ignored 会让 grid 把高度按
+            # 比例砍半(实测 CoverBox 180 高、label 只拿到 90),图片只占上半
+            # 部分、下面留一块空白(用户蓝框标的就是它)。
+            img.setMinimumWidth(0)
+            img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             img.setPixmap(W.pixmap_cover_media(url, w, h))   # 铺满裁切,与参考一致
             if on_click:
                 img.setCursor(Qt.PointingHandCursor)
@@ -366,7 +375,17 @@ def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
     lay.addLayout(lab_row)
     body = body_lab
     body.setObjectName("finalText")
-    body.setWordWrap(False)
+    # **必须换行**。此前 setWordWrap(False),一段 300 字的英文提示词把
+    # minimumSizeHint 顶到 1718px,反过来把整张卡撑到同样宽度 —— 5 列布局
+    # 因此完全失效(卡片挤左边 + 右侧大片空白)。限 2 行,超出省略。
+    body.setWordWrap(True)
+    body.setMinimumWidth(0)
+    body.setMaximumHeight(34)          # 2 行 × 17px 行高
+    body.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+    fm = body.fontMetrics()
+    body.setToolTip((text or "")[:600] or placeholder)
+    _elided = fm.elidedText((text or "")[:300] or placeholder, Qt.ElideRight, 400)
+    body.setText(_elided)
     if on_edit:
         box.setCursor(Qt.PointingHandCursor)
         box.mousePressEvent = lambda _e: on_edit()
@@ -435,7 +454,7 @@ class CharacterAssetCard(QFrame):
         # 卡片默认展示常规版,因为常规版是给视频生成当 first_frame 用的(用户主要需求)。
         # 用户要看漫画版时切换到「漫画资产」tab 即可。
         cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
-        cover = CoverBox(cover_url, 320, 180, "☺",
+        cover = CoverBox(cover_url, ASSET_CARD_W - 16, 180, "☺",
                          badge=(labels["cover_done"] if cover_url
                                 else labels["cover_todo"]),
                          badge_state="ready" if cover_url else "todo",
@@ -468,51 +487,53 @@ class CharacterAssetCard(QFrame):
             l = QLabel(f"{lab}:{v[:22]}{'…' if len(v) > 22 else ''}")
             l.setObjectName("muted")
             l.setToolTip(v)
-            summary.addWidget(l)
+            # QLabel 默认 minimumSizeHint = 完整文字宽,「样貌:35岁中国男性,黑色短寸
+            # 发际线略高…」会撑到 291px 并把整卡顶宽(5 列布局失效)。
+            # Ignored + 按实际宽度省略号,既不撑卡片也保留 hover 看全文。
+            l.setMinimumWidth(0)
+            l.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            summary.addWidget(l, 1)
         lay.addLayout(summary)
-        # 按钮排成一行(用户要求):图绘/文绘/上传/换脸 + 删除 横向排布,
-        # 用 QHBoxLayout 而不是 QGridLayout —— 网格在窄卡片里会被压成竖排单字。
-        # 风格统一:橙色 outline(品牌色 #f97316),hover 浅橙填充,与项目主调一致;
-        # 删除按钮浅红 outline 与其它按钮同款但颜色区别。
-        btns = QHBoxLayout()
-        btns.setSpacing(4)
-        btns.setContentsMargins(0, 0, 0, 0)
+        # 按钮排 2 行(5 列布局后单卡净宽只有 194px,6 个按钮挤一行会把文字压成
+        # 「en_ima」这种竖排残字)。3 + 3 分两行,每行按钮有 ~60px,文字完整。
         gen_btns = []      # 文绘/图绘两键:生成中变盲文旋转字(apply_asset_busy)
-        # 5 个按钮一行横排:统一高度 26px,等宽 1 份 (共 5 份 + 1 份删除 = 6 份)
-        for text, tip, cb, enabled, is_gen in (
-            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True, True),
-            (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True, True),
-            (labels["upload"], labels["upload_tip"], on_upload, True, False),
-            (labels["face_swap"], labels["face_swap_tip"], on_face_swap, True, False),
-        ):
+        _BTN_QSS = (
+            "QPushButton{font-size:11px;padding:3px 2px;"
+            "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
+            "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
+            "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
+        specs = [
+            (labels["gen_image"], labels["gen_image_tip"], on_gen_image, True),
+            (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),
+            (labels["upload"], labels["upload_tip"], on_upload, False),
+        ]
+        if on_face_swap:
+            specs.append((labels["face_swap"], labels["face_swap_tip"], on_face_swap, False))
+        if on_delete:
+            specs.append((tr("delete"), tr("删除该资产"), on_delete, False))
+        btns = QGridLayout()
+        btns.setSpacing(3)
+        btns.setContentsMargins(0, 0, 0, 0)
+        for i, (text, tip, cb, is_gen) in enumerate(specs):
             b = QPushButton(text)
             b.setToolTip(tip)
-            b.setEnabled(enabled)
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setMinimumWidth(0)
+            # QPushButton 默认 minimumSizeHint = 文字宽 + padding,「上传」「换脸」
+            # 在 210px 卡里排 3 列会把 minimumSizeHint 累加到 300+,反过来撑大卡片。
+            # 显式压到 0 让 Expanding 生效,文字放不下时由 QSS 省略。
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             b.setStyleSheet(
-                "QPushButton{font-size:11px;padding:3px 4px;"
-                "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
-                "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
-                "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
+                ("QPushButton{font-size:11px;padding:3px 2px;"
+                 "border:1px solid #fecaca;border-radius:6px;background:#fff5f5;color:#b91c1c;}"
+                 "QPushButton:hover{background:#fee2e2;border-color:#ef4444;}")
+                if (cb is on_delete) else _BTN_QSS)
             if cb:
                 b.clicked.connect(lambda _=False, c=cb: c())
             if is_gen:
                 gen_btns.append((b, text))
-            btns.addWidget(b, 1)
-        if on_delete:                      # 删除按钮同款 outline 但红色,与生成按钮区分
-            db = QPushButton(tr("delete"))
-            db.setToolTip(tr("删除该资产"))
-            db.setCursor(Qt.PointingHandCursor)
-            db.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-            db.setMinimumWidth(0)
-            db.setStyleSheet(
-                "QPushButton{font-size:11px;padding:3px 4px;"
-                "border:1px solid #fecaca;border-radius:6px;background:#fff5f5;color:#b91c1c;}"
-                "QPushButton:hover{background:#fee2e2;border-color:#ef4444;}")
-            db.clicked.connect(lambda _=False: on_delete())
-            btns.addWidget(db, 1)
+            btns.addWidget(b, i // 3, i % 3)
         lay.addLayout(btns)
         if on_variants:
             var = QPushButton(labels["variants"])
@@ -540,7 +561,7 @@ class AssetCard(QFrame):
         has = bool(row.get("image_url"))
         # 封面占满卡宽:image_url(常规 / 3D)优先,漫画镜像 fallback。
         cover_url = (row.get("image_url") or "").strip() or (row.get("comic_image_url") or "").strip()
-        cover = CoverBox(cover_url, 320, (180 if kind == "scene" else 240),
+        cover = CoverBox(cover_url, ASSET_CARD_W - 16, (180 if kind == "scene" else 240),
                          "⌖" if kind == "scene" else "▣",
                          badge=labels["cover_done"] if cover_url else labels["cover_todo"],
                          badge_state="ready" if cover_url else "todo",
@@ -597,6 +618,10 @@ class AssetCard(QFrame):
             b.setCursor(Qt.PointingHandCursor)
             b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             b.setMinimumWidth(0)
+            # QPushButton 默认 minimumSizeHint = 文字宽 + padding,「上传」「换脸」
+            # 在 210px 卡里排 3 列会把 minimumSizeHint 累加到 300+,反过来撑大卡片。
+            # 显式压到 0 让 Expanding 生效,文字放不下时由 QSS 省略。
+            b.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
             b.setStyleSheet(BTN_QSS)
             b.setEnabled(enabled)
             if cb:
@@ -969,6 +994,9 @@ class VideoHistoryCard(QFrame):
     """历史视频卡:96×54 抽帧缩略 + 时间 + 当前/预览角标 + 下载/删除键
     (对齐参考项目 .video-history-item)。"""
 
+    # 4+4 内边距 + 54 缩略 + 3 间距 + 20 底栏图标键 + 上下 1.5px 边框
+    CARD_H = 90
+
     def __init__(self, thumb_path: str | None, time_label: str, *, current: bool = False,
                  previewing: bool = False, on_preview=None, on_download=None, on_delete=None):
         super().__init__()
@@ -976,6 +1004,10 @@ class VideoHistoryCard(QFrame):
         self.setProperty("current", "1" if current else "0")
         self.setProperty("previewing", "1" if previewing else "0")
         self.setCursor(Qt.PointingHandCursor)
+        # 高度锁死:父级滚动区一旦比内容矮(横向滚动条会吃掉一截),
+        # Preferred 策略会把 16:9 缩略图纵向压扁。
+        self.setFixedHeight(self.CARD_H)
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(3)

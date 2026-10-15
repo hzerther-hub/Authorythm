@@ -69,6 +69,10 @@ def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | N
       @名字 先解析成可读名字,不要把 @ 标记直接喂给出图模型;
     - 带上本镜参考图(角色形象/场景),人物相貌与场景陈设才能对上;
     - 明确要求出场人物全部入画、按描述站位,禁止空镜/背影/黑帧开场。
+
+    people 数:**以 storyboard_characters 实际绑定为准**,不再从 @名字 正则猜
+    (实测 sb 60 绑了 3 角色但头行只露 1 个名字 → 旧逻辑给 people=1 → 模型
+    按 1 人生图,跟 3 张参考图打架,出 2 个「陈默」或者干脆空镜)。
     """
     sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
     if not sb:
@@ -81,14 +85,74 @@ def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | N
     head = lines[0] if lines else ""
     seg = next((ln for ln in lines[1:] if re.match(r"^\[\d", ln)), "")
     opening = "。".join(x for x in (head, seg) if x)[:600] or resolved[:400]
-    opening = opening.replace("@", "")
-    people = 1
-    for ln in (head,):
-        m = re.findall(r"[@、,，]\s*([^\s@、,，。]+)", ln or "")
-        people = max(1, min(6, len(m))) if m else 1
-    prompt = (f"{style}。开场定场帧:按下面镜头描述生成视频第一帧画面,必须是包含出场人物与场景环境的"
+    # 实际绑定的角色数 —— 以这个为准
+    n_chars = db.q1(
+        "SELECT COUNT(*) c FROM storyboard_characters WHERE storyboard_id=?",
+        (storyboard_id,))["c"]
+    if n_chars:
+        people = min(6, max(1, n_chars))
+    else:
+        # 没绑角色 → 退化到正则猜(空镜/纯场景/纯道具的情况)
+        m = re.findall(r"[@、,，]\s*([^\s@、,，。]+)", head or "")
+        people = max(1, min(6, len(m))) if m else 0  # 0 = 空镜
+
+    # 关键:在 prompt 里把「图 N」和「角色真名」绑死 —— 这是底部 guard 文字约束
+    # 拉不动的根本原因。ag 模型拿到的就是裸图列表,prompt 不告诉它「图 1 是谁」,
+    # 它就按自己想象混 —— 实测陈默(平头中年)给出一个长发男,就是混了张雯的图。
+    # 做法:在 prompt 开头显式列「人物 N(图 N)= 角色名」,模型既能在 prompt 里读到
+    # 绑定关系,也更倾向于按 prompt 文字而非自己脑补。
+    sb_dict = dict(sb)
+    from . import refs as refs_mod
+    ref_meta = refs_mod.build_shot_reference_list(sb_dict)
+    char_bindings: list[str] = []
+    for i, item in enumerate(ref_meta, start=1):
+        if item.get("kind") == "character" and item.get("name"):
+            char_bindings.append(f"人物图{i}={item['name']}")
+    identity_lines = []
+    for i, b in enumerate(char_bindings):
+        identity_lines.append(
+            f"- {b}: 严格按图 {i+1} 的五官、发型、体型、年龄、服装、配饰 —— 禁止模型自由改动。"
+        )
+    if char_bindings:
+        identity_block = (
+            "【人物身份锁定 / 严格按参考图外貌生成】\n"
+            + "\n".join(identity_lines)
+            + "\n(注意:图 1 是首位参考 = 主角本人,头发/服装/体型以它为准。)"
+        )
+    else:
+        identity_block = ""
+    # 去掉裸 @:让 prompt 用「图 1(陈默)」这种绑定写法,而不是只剩数字
+    opening_with_names = opening
+    if char_bindings:
+        # 把 @图片1 → 图1(陈默),@图片2 → 图2(张雯)…
+        # 用 build_shot_reference_list 顺序(和 reference_images 一一对应)
+        for i, item in enumerate(ref_meta, start=1):
+            if item.get("kind") == "character" and item.get("name"):
+                opening_with_names = opening_with_names.replace(
+                    f"@图片{i}", f"图{i}({item['name']})")
+        # 残留的 @数字 兜底
+        opening_with_names = opening_with_names.replace("@", "")
+    # 横/竖屏指令:参数 size 在 agnes 那边会被翻译成 9:16 比例,
+    # 但 prompt 里不写明模型常按横屏习惯构图(横构图人物居中、远处留天空)。
+    # 这里再写一遍画幅 + 竖屏构图特征,让模型先想清楚再画。
+    aspect = _drama_aspect_of(episode_id)
+    is_vertical = aspect in ("9:16", "3:4")
+    is_horizontal = aspect in ("16:9", "4:3", "21:9")
+    if is_vertical:
+        layout_hint = (
+            f"【画幅】本图为竖屏构图({aspect}),主体人物居中或略偏下,上下方向留更多空间 —— "
+            f"竖屏不要横构图:不要把人物放在画面两侧,不要让背景横向延展。"
+        )
+    elif is_horizontal:
+        layout_hint = (
+            f"【画幅】本图为横屏构图({aspect}),主体人物居中或略偏左,左右方向留更多空间。"
+        )
+    else:
+        layout_hint = f"【画幅】本图为 {aspect} 构图。"
+    prompt = (f"{style}。{identity_block}\n{layout_hint}\n"
+              f"开场定场帧:按下面镜头描述生成视频第一帧画面,必须是包含出场人物与场景环境的"
               f"完整画面 —— 人物全部入画、按描述站位,景别与运镜起点一致,不许空镜、背影、剪影或黑帧。\n"
-              f"{opening}\n电影质感,构图完整")
+              f"{opening_with_names}\n电影质感,构图完整")
     ref_list = collect_reference_images(episode_id, storyboard_id)
     # 首帧必须按项目画幅出图 —— 这是竖屏能不能落地的**决定性一环**:
     # 视频侧只要带了 first_frame 就走 keyframe 模式(优先级高于 reference),

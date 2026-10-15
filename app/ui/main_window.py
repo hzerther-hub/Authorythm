@@ -111,7 +111,17 @@ class MainWindow(QMainWindow):
         lang_btn.setStyleSheet(icon_font)
         lang_btn.setToolTip(tr("lang_short"))
         lang_btn.clicked.connect(self._switch_language)
-        for b in (theme_btn, settings_btn, lang_btn):
+        # 「?」服务依赖说明 —— 列出未就绪的核心服务(文本/图片/视频/配音/换脸/JEV/PhotoCraft)
+        # 点开一个 dialog,每行可点跳到设置页;统一 i18n key,所有语言都对得上
+        help_btn = QPushButton("?")
+        help_btn.setObjectName("headerIconBtn")
+        help_btn.setFixedSize(32, 32)
+        help_btn.setStyleSheet("font-family:'Segoe UI Symbol','Microsoft YaHei UI';"
+                                "font-size:18px; font-weight:700; padding:0;")
+        help_btn.setToolTip(tr("install_help"))
+        help_btn.setCursor(Qt.PointingHandCursor)
+        help_btn.clicked.connect(self._show_install_help)
+        for b in (theme_btn, settings_btn, lang_btn, help_btn):
             nav_lay.addWidget(b)
         tlay.addWidget(nav_wrap)
         from .braille import BrailleSpinner, BrailleBar
@@ -122,6 +132,7 @@ class MainWindow(QMainWindow):
         tlay.addWidget(theme_btn)
         tlay.addWidget(settings_btn)
         tlay.addWidget(lang_btn)
+        tlay.addWidget(help_btn)
         root.addWidget(top)
 
         # AI 服务未就绪横幅(缺 text/image/video 任一即显示,点此去设置)
@@ -527,6 +538,141 @@ class MainWindow(QMainWindow):
     def _open_settings(self):
         dlg = SettingsDialog(self, on_language_changed=self._on_language_changed,
                              on_theme_changed=self._apply_theme_cb)
+        dlg.exec()
+        self._refresh_ai_banner()
+
+    def _show_install_help(self):
+        """「?」按钮 → 列出所有需要安装/配置的服务,以及哪些没就绪。
+
+        设计要点:
+        - 7 类服务全覆盖(text/image/video/tts/faceswap/jev/photocraft),
+          不止 AI 厂商配置 —— PhotoCraft 桌面端这种**本地工具**也列,
+          因为它是聊天改图的核心依赖;
+        - 已就绪的标 ✓(淡绿),未就绪标 ✗(红);
+        - 每行可点 → 跳到设置页(未就绪行才跳转,避免对已配置项做无效跳转);
+        - 标题/说明/按钮文案全部走 tr(),多语言同步。
+        """
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        from PySide6.QtCore import Qt
+        from ..ai.registry import readiness, SVC_CN_LABEL
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle(tr("install_help_title"))
+        dlg.resize(520, 420)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(18, 16, 18, 12)
+        lay.setSpacing(10)
+
+        head = QLabel(tr("install_help_title"))
+        head.setStyleSheet("font-size:15px; font-weight:700;")
+        lay.addWidget(head)
+        intro = QLabel(tr("install_help_intro"))
+        intro.setWordWrap(True)
+        intro.setStyleSheet("color:#666;")
+        lay.addWidget(intro)
+
+        # 已就绪状态映射(从 readiness() 取)
+        try:
+            ready = {st: status == "ok" for st, status, _ in readiness()}
+        except Exception:  # noqa: BLE001
+            ready = {}
+
+        # 所有服务行:逐项 → label + 状态 + 行可点跳转
+        rows = [
+            ("text",       "svc_text",       "set_text"),
+            ("image",      "svc_image",      "set_image"),
+            ("video",      "svc_video",      "set_video"),
+            ("tts",        "svc_tts",        "set_tts"),
+            ("faceswap",   "svc_faceswap",   "set_faceswap"),
+            ("jev",        "svc_jev",        "set_jev"),
+        ]
+        for st, label_key, _tab in rows:
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            name = QLabel(f"● {tr(label_key)}")
+            name.setStyleSheet("font-size:13px;")
+            row.addWidget(name, 1)
+            is_ready = ready.get(st, False)
+            if is_ready:
+                status = QLabel("✓")
+                status.setStyleSheet("color:#16a34a; font-weight:700;")
+            else:
+                status = QLabel("✗ 未配置")
+                status.setStyleSheet("color:#dc2626;")
+            status.setFixedWidth(60)
+            status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            row.addWidget(status)
+            if not is_ready:
+                # 未就绪行可点 → 跳设置 tab
+                btn = QPushButton(tr("open_settings"))
+                btn.setCursor(Qt.PointingHandCursor)
+                btn.clicked.connect(lambda _=False, s=st: (dlg.accept(), self._open_settings_for(s)))
+                row.addWidget(btn)
+            lay.addLayout(row)
+
+        # PhotoCraft 桌面端单独一行 —— 检测逻辑跟 readiness() 不同(它不查表),
+        # 直接读 db 的 photocraft_install_dir + photocraft_cli_path
+        from ..core import db as _db
+        from ..ai import photocraft_bridge as _pcb
+        pc_ok = bool(_pcb.resolve_app_path() or _pcb.resolve_cli_path())
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        name = QLabel(f"● {tr('svc_photocraft')}")
+        name.setStyleSheet("font-size:13px;")
+        row.addWidget(name, 1)
+        if pc_ok:
+            status = QLabel("✓")
+            status.setStyleSheet("color:#16a34a; font-weight:700;")
+        else:
+            status = QLabel("✗ 未安装")
+            status.setStyleSheet("color:#dc2626;")
+        status.setFixedWidth(60)
+        status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(status)
+        if not pc_ok:
+            hint = QLabel(tr("svc_install_hint"))
+            hint.setStyleSheet("color:#888; font-size:11px;")
+            hint.setWordWrap(True)
+            lay.addLayout(row)
+            lay.addWidget(hint)
+            btn = QPushButton(tr("open_settings"))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False: (dlg.accept(), self._open_settings()))
+            lay.addWidget(btn)
+        else:
+            lay.addLayout(row)
+
+        # 关闭按钮
+        lay.addStretch(1)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        close = QPushButton(tr("u_cancel"))
+        close.clicked.connect(dlg.reject)
+        btns.addWidget(close)
+        lay.addLayout(btns)
+        dlg.exec()
+
+    def _open_settings_for(self, svc_type: str):
+        """点某行「未就绪」按钮 → 跳到 SettingsDialog 的对应服务 tab。"""
+        # SettingsDialog 用 tabWidget + tabsNav,索引顺序是固定的:
+        # 0=AI 服务(总览) 1=文本 2=图片 3=视频 4=配音 5=换脸 6=PhotoCraft 7=Jev 8=通用 9=主题 10=关于
+        tab_idx = {"text": 1, "image": 2, "video": 3, "tts": 4,
+                   "faceswap": 5, "jev": 7}.get(svc_type, 0)
+        try:
+            self._open_settings_with_tab(tab_idx)
+        except AttributeError:
+            # 旧 SettingsDialog 没带 tab 跳转 → 退到普通打开
+            self._open_settings()
+
+    def _open_settings_with_tab(self, tab_idx: int):
+        """开 SettingsDialog 并跳到指定 tab。"""
+        from .settings_dialog import SettingsDialog
+        dlg = SettingsDialog(self, on_language_changed=self._on_language_changed,
+                             on_theme_changed=self._apply_theme_cb)
+        try:
+            dlg.tabs_nav.setCurrentRow(tab_idx)
+        except Exception:  # noqa: BLE001
+            pass
         dlg.exec()
         self._refresh_ai_banner()
 

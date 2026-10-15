@@ -60,15 +60,21 @@ from .photocraft_bridge import (
 # 把X改成Y / 把X换成Y / 把X替换为Y / 将X改为Y / X变Y
 # 注意:引号(中英全角半角「"'『')和非引号两种都允许;非引号版本会贪婪,
 #       所以先匹配引号版本。
+# 「把影星改成歌星」这种**不带引号的「把…改成…」是最常见说法**,此前漏了这条
+# 无引号规则(只有带引号的改成 / 带引号的换成),导致它整句落空返回 None。
 _REPLACE_PATTERNS = [
     re.compile(r"""把\s*[「"'『""](.+?)[」"'』""]\s*改成\s*[「"'『""](.+?)[」"'』""]"""),
     re.compile(r"""把\s*[「"'『""](.+?)[」"'』""]\s*换成\s*[「"'『""](.+?)[」"'』""]"""),
     re.compile(r"""把\s*[「"'『""](.+?)[」"'』""]\s*替换为\s*[「"'『""](.+?)[」"'』""]"""),
     re.compile(r"""把\s*['"](.+?)['"]\s*改成\s*['"]?(.+?)['"]?$"""),
     re.compile(r"""把\s*(.+?)\s*改成\s*['"](.+?)['"]$"""),
+    # 无引号「把X改成Y」——(.+?) 非贪婪 + $ 锚定,不会吞掉后面的修饰语
+    re.compile(r"""把\s*(.+?)\s*改成\s*(.+?)$"""),
     re.compile(r"""把\s*(.+?)\s*换成\s*(.+?)$"""),
     re.compile(r"""把\s*(.+?)\s*替换为\s*(.+?)$"""),
+    re.compile(r"""把\s*(.+?)\s*变为\s*(.+?)$"""),
     re.compile(r"""将\s*(.+?)\s*改为\s*(.+?)$"""),
+    re.compile(r"""将\s*(.+?)\s*换成\s*(.+?)$"""),
     re.compile(r"""(.+?)\s*变(?:成|为)\s*(.+?)$"""),
 ]
 
@@ -76,6 +82,182 @@ _REPLACE_PATTERNS = [
 _REMOVE_PATTERNS = [
     re.compile(r"去掉|去除|删除|抹掉|清除|消除|擦掉|擦除|遮掉|去请|除掉|移除|消掉|remove|erase|clean"),
 ]
+
+# ── 插入文字 ──
+# 「加上文字X」/「添加X」/「插入X」/「写上X」/「标注X」/「打上X」
+# 关键约束(见 parse_insert_intent 的说明):必须**先剥离样式与位置修饰**,
+# 否则「加入文字到最中间 大夏 黄色黑色边框 50px」会把 "到最中间 大夏 黄色..."
+# 整段当成要写的文字内容。
+_INSERT_VERBS = ("加上", "加一行", "加入", "添加", "插入", "写上", "写入", "标注",
+                 "打上", "印上", "放上", "贴上", "补上", "写个", "加上文字")
+_INSERT_STYLE_VERBS = ("加上文字", "添加文字", "插入文字", "写上文字", "加文字")
+
+# 样式修饰词:命中就说明「之后/之前」的部分不是文字内容
+_STYLE_TOKENS = (
+    "字体", "字号", "大小", "颜色", "黄色", "黑色", "红色", "蓝色", "绿色",
+    "白色", "灰色", "紫色", "橙色", "粉色", "青色", "棕色", "金色", "银色",
+    "边框", "描边", "描边颜色", "底色", "背景色", "加粗", "粗体", "阴影",
+    "居中", "中间", "正中", "顶部", "底部", "左上", "右上", "左下", "右下",
+    "上边", "下边", "左边", "右边", "上方", "下方", "左", "右",
+    "px", "pt", "像素", "号字",
+)
+_POSITION_WORDS = ("中间", "正中", "居中", "顶部", "底部", "左上", "右上",
+                   "左下", "右下", "上边", "下边", "左边", "右边", "上方", "下方")
+
+# 颜色名 → RGB
+_NAMED_COLORS = {
+    "黄": (255, 220, 0), "黄色": (255, 220, 0), "金": (255, 200, 0),
+    "金黄": (255, 200, 0), "gold": (255, 200, 0), "yellow": (255, 220, 0),
+    "黑": (0, 0, 0), "黑色": (0, 0, 0), "black": (0, 0, 0),
+    "白": (255, 255, 255), "白色": (255, 255, 255), "white": (255, 255, 255),
+    "红": (220, 30, 30), "红色": (220, 30, 30), "red": (220, 30, 30),
+    "蓝": (40, 90, 220), "蓝色": (40, 90, 220), "blue": (40, 90, 220),
+    "绿": (30, 160, 60), "绿色": (30, 160, 60), "green": (30, 160, 60),
+    "灰": (130, 130, 130), "灰色": (130, 130, 130), "gray": (130, 130, 130),
+    "紫": (150, 60, 200), "紫色": (150, 60, 200), "purple": (150, 60, 200),
+    "橙": (255, 140, 20), "橙色": (255, 140, 20), "orange": (255, 140, 20),
+    "粉": (255, 150, 190), "粉色": (255, 150, 190), "pink": (255, 150, 190),
+    "青": (0, 180, 180), "青色": (0, 180, 180), "cyan": (0, 180, 180),
+    "棕": (120, 80, 40), "棕色": (120, 80, 40), "brown": (120, 80, 40),
+    "银": (190, 190, 190), "银色": (190, 190, 190), "silver": (190, 190, 190),
+}
+
+
+def parse_insert_intent(text: str) -> dict | None:
+    """把「加文字到某处 / 某颜色 / 某字号」解析成结构化渲染参数。
+
+    返回 dict:{action:"insert", content, position, size, color, border_color,
+    has_border, bold};不是插入意图返回 None。
+
+    为什么不能直接把动词后面的全部当文字内容:
+    「加入文字到最中间  大夏  黄色黑色边框  50px」里,真正的文字内容只有
+    「大夏」,后面全是位置/颜色/边框/字号修饰。所以策略是:
+      1. 先按空白/顿号切成片段;
+      2. 含样式词或纯数值的片段判为修饰并丢弃;
+      3. 剩下的首个片段当文字内容;
+      4. 修饰信息从**整句**里正则抽取(不依赖片段顺序,用户可能先说字号后说颜色)。
+    """
+    t = (text or "").strip()
+    if not t:
+        return None
+    low = t.lower()
+    # 必须有插入动词;「写上」「标注」这类词太泛,要求同时出现"文字/字/文本"或引号
+    has_verb = any(v in t for v in _INSERT_VERBS) or any(v in low for v in _INSERT_VERBS)
+    has_text_word = any(w in t for w in ("文字", "文本", "字", "标题", "水印"))
+    if not has_verb or not (has_text_word or any(c in t for c in "「『\"'")):
+        return None
+
+    # ── 从整句抽样式 ──
+    size = None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:px|pt|像素|号字|号)", t, re.I)
+    if m:
+        size = int(float(m.group(1)))
+    # 「大号/小号」这类相对描述
+    if size is None:
+        if re.search(r"超大|特大", t):
+            size = 120
+        elif re.search(r"大号|加大|大字", t):
+            size = 80
+        elif re.search(r"小号|小字|缩小", t):
+            size = 24
+
+    color = None
+    border_color = None
+    for name, rgb in _NAMED_COLORS.items():
+        if name in t:
+            if "边框" in t and _color_near_word(t, name, ("边框", "描边", "边")):
+                border_color = rgb
+            elif color is None:
+                color = rgb
+    # 16 进制
+    m = re.search(r"#([0-9a-fA-F]{6})\b", t)
+    if m and color is None:
+        color = tuple(int(m.group(1)[i:i + 2], 16) for i in (0, 2, 4))
+    has_border = any(w in t for w in ("边框", "描边", "黑框", "白框", "外框"))
+
+    position = None
+    for w in _POSITION_WORDS:
+        if w in t:
+            position = w
+            break
+    if position is None and re.search(r"正中|居中|中间", t):
+        position = "中间"
+
+    # ── 抽文字内容:按分隔符切片段,丢掉含样式词 / 纯数值的 ──
+    content = _extract_insert_content(t)
+    if not content:
+        return None
+
+    return {
+        "action": "insert",
+        "content": content,
+        "position": position or "中间",
+        "size": size,
+        "color": color,
+        "border_color": border_color,
+        "has_border": has_border,
+        "bold": bool(re.search(r"加粗|粗体|bold", low)),
+    }
+
+
+def _color_near_word(text: str, name: str, anchors: tuple[str, ...]) -> bool:
+    """颜色名后面(同片段内)紧跟「边框/描边」时,判定为边框色而非文字色。"""
+    for i in [m.start() for m in re.finditer(re.escape(name), text)]:
+        tail = text[i + len(name): i + len(name) + 12]
+        if any(a in tail for a in anchors):
+            return True
+    return False
+
+
+def _strip_insert_verb(t: str) -> str:
+    """去掉开头的插入动词(含「加入文字」「加上文字」这类复合写法)。"""
+    out = t
+    for v in sorted(_INSERT_STYLE_VERBS, key=len, reverse=True):
+        if out.startswith(v):
+            out = out[len(v):]
+            break
+    else:
+        for v in sorted(_INSERT_VERBS, key=len, reverse=True):
+            if out.startswith(v):
+                out = out[len(v):]
+                break
+    return out.strip()
+
+
+def _extract_insert_content(t: str) -> str:
+    """从整句里挖出要写的文字内容。
+
+    步骤:剥动词 → 切片段 → 逐个剔除样式片段 → 取第一个剩下的当内容。
+    引号内的内容直接采纳(用户最明确的表达)。
+    """
+    # 引号优先:「加上文字『大夏』黄色边框」→ 大夏
+    m = re.search(r"[「『\"']([^」』\"']{1,40})[」』\"']", t)
+    if m:
+        return m.group(1).strip()
+
+    body = _strip_insert_verb(t)
+    body = re.sub(r"^(?:在|到|至|给)\s*", "", body)
+    # 「文字」「文本」这类名词不是内容
+    body = re.sub(r"^(?:一行|个|一段|一行字)?\s*(?:文字|文本|字|标题|水印)\s*", "", body)
+    body = body.lstrip("：: 　,，、")
+
+    # 切成片段(空白/顿号/逗号/加号分隔)
+    parts = [p for p in re.split(r"[\s,，、;；|]+", body) if p]
+    for part in parts:
+        # 纯数值 → 字号
+        if re.fullmatch(r"\d+(\.\d+)?(px|pt)?", part, re.I):
+            continue
+        # 含「到/在 + 位置词」→ 位置修饰
+        if re.fullmatch(r"(到|在|至|于)?\s*(最)?\s*(中间|正中|居中|顶部|底部|左上|右上|左下|右下|上边|下边|左边|右边|上方|下方)", part):
+            continue
+        # 含样式词 → 样式修饰
+        if any(tok in part for tok in _STYLE_TOKENS):
+            continue
+        # 太长的片段多半是描述而非文字内容
+        if len(part) > 30:
+            continue
+        return part.strip()
+    return ""
 
 
 def parse_intent(text: str) -> tuple[str, str, str] | None:
@@ -281,7 +463,10 @@ class TextReplaceSkill:
         # 2) 渲染新字(仅当 render_new=True)
         if render_new and new_text:
             try:
-                self._render_new_text(str(out), regions, new_text, str(out))
+                # 字色要从**抹字前的原图**采(image_path),不是抹完的 out ——
+                # 否则采到的是区域中心的背景色,新字渲染成近黑,看着像没替换成功。
+                self._render_new_text(str(out), regions, new_text, str(out),
+                                      color_sample_from=str(p))
             except Exception as exc:  # noqa: BLE001
                 # 渲染失败 ≠ 整体失败,产物图(已抹字)仍可用
                 return TextEditResult(
@@ -301,11 +486,13 @@ class TextReplaceSkill:
                               info=info, engine=engine, regions=regions)
 
     def _render_new_text(self, image_path: str, regions: list[dict],
-                         new_text: str, out_path: str) -> None:
+                         new_text: str, out_path: str,
+                         color_sample_from: str | None = None) -> None:
         """在 regions[0] 的位置上画 new_text,字体大小按 region 高度估算。
 
-        颜色取 region 中心像素(常见杂志/海报字色),描 1px 黑边以贴合"原字是
-        描边字"的常见样式。
+        字色采样源用 color_sample_from(默认 image_path)。**必须是抹字之前的
+        原图** —— 传抹字后的图会采到"区域中心的背景色"(深蓝底 → 字渲染成近黑,
+        看着像没替换成功)。调用方 _replace_one_region 负责把原图路径传进来。
         """
         from PIL import Image, ImageDraw, ImageFont
         try:
@@ -340,27 +527,43 @@ class TextReplaceSkill:
         tx = x1 + (rw - tw) // 2
         ty = y1 + (rh - th) // 2
 
-        # 取 region 中心像素作主色(常见杂志字色 = 区域中心背景色)
+        # 取字色:在 region 内找**最亮的像素**(原文字通常是高对比前景色),
+        # 而不是"中心像素" —— 中心可能落在笔画空隙/背景上。
+        sample_src = color_sample_from or image_path
+        text_color = (20, 20, 20)
         if cv2 is not None:
-            arr = cv2.imread(image_path, cv2.IMREAD_COLOR)
+            arr = cv2.imread(sample_src, cv2.IMREAD_COLOR)
             if arr is not None:
                 h, w = arr.shape[:2]
-                cx = max(0, min(w - 1, (x1 + x2) // 2))
-                cy = max(0, min(h - 1, (y1 + y2) // 2))
-                bgr = arr[cy, cx]
-                text_color = (int(bgr[2]), int(bgr[1]), int(bgr[0]))
-            else:
-                text_color = (20, 20, 20)
-        else:
-            text_color = (20, 20, 20)
-
+                xa, xb = max(0, min(w - 1, x1)), max(0, min(w - 1, x2))
+                ya, yb = max(0, min(h - 1, y1)), max(0, min(h - 1, y2))
+                if xb > xa and yb > ya:
+                    patch = arr[ya:yb + 1, xa:xb + 1]
+                    # 转灰度取最亮点的位置,再取该点颜色
+                    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+                    idx = int(np.argmax(gray))
+                    py, px = divmod(idx, gray.shape[1])
+                    bgr = patch[py, px]
+                    cand = (int(bgr[2]), int(bgr[1]), int(bgr[0]))
+                    # 与 region 周边背景的亮度差:差太小说明这区域本来就是平的,
+                    # 采到的可能是背景 → 用黑色兜底更安全
+                    ring = arr[max(0, ya - 4):min(h, ya + 4),
+                               max(0, xa - 4):min(w, xa + 4)]
+                    if ring.size:
+                        bg_lum = float(ring.mean())
+                    else:
+                        bg_lum = 0.0
+                    if float(gray[py, px]) - bg_lum > 25:
+                        text_color = cand
+        # 描边:用比字色更深的同色系,而不是死黑(浅底深字时死黑很扎眼)
+        stroke_color = tuple(max(0, int(c * 0.45)) for c in text_color)
         # 描边(细一些;太粗会糊)
         stroke_w = max(1, font_size // 14)
         for dx in range(-stroke_w, stroke_w + 1):
             for dy in range(-stroke_w, stroke_w + 1):
                 if dx == 0 and dy == 0:
                     continue
-                draw.text((tx + dx, ty + dy), new_text, fill=(0, 0, 0), font=font)
+                draw.text((tx + dx, ty + dy), new_text, fill=stroke_color, font=font)
         draw.text((tx, ty), new_text, fill=text_color, font=font)
 
         img.save(out_path)

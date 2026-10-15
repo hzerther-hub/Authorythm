@@ -24,6 +24,8 @@ IMAGE_MARKER = "画面质量要求"
 VIDEO_MARKER = "视频质量要求"
 PERFORMANCE_MARKER = "表演要求"
 PACING_MARKER = "节奏要求"
+# 参考图锁的 marker:幂等关键字,二次调用不重复追加
+REFERENCE_LOCK_MARKER = "参考图外貌锁定"
 
 # 肢体完整性守卫(图与视频共用):视频模型在动态帧里更容易出现手部畸变、肢体分裂重组、人物数量漂移
 BODY_INTEGRITY_GUARD = (
@@ -150,6 +152,18 @@ def build_image_negative_guard(people: int = 1) -> str:
             "no character turnaround sheet in background, no reference photo in scene"
         )
     return IMAGE_NEGATIVE_GUARD
+
+
+# 参考图外貌锁定 —— 任何带 reference_images 的生图都会自动追加。
+# 实测不写这句时,模型把参考图当装饰,自己脑补人物外貌(用户截图里:
+# sb 60 绑了陈默参考图,出图却是穿 POLO 的少年,跟"带工牌的中年"完全不像)。
+# 提到 image_client 底层:任何用 image_client.generate_image 的调用方(分镜首帧、
+# 资产形象、聊天改图、漫画格……)都自动受益,不用每个调用方自己拼。
+REFERENCE_LOCK_GUARD = (
+    "参考图外貌锁定:本图随附的参考图 N 必须严格作为画面里人物 N 的外貌来源 —— "
+    "五官、发型、体型、年龄、服装、配饰、工牌/背包/伤痕/痣等所有人物特征,均按参考图 N 的实样。"
+    "禁止模型自由创作或脑补人物外貌;不要重新设计或修改形象。"
+)
 
 
 def apply_image_quality_guard(prompt: str, people: int = 1) -> str:

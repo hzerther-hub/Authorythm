@@ -222,7 +222,13 @@ def _build(p: dict) -> Step:
 
 _WL_RULES: list[_WhitelistRule] = [
     # ── 色彩调整 ──
-    _WhitelistRule(re.compile(r"去色|去彩|改成黑白|变黑白|黑白化|grayscale|desaturate"),
+    # 黑白:动词头必须覆盖「改成 / 改为 / 变 / 变成 / 转成 / 转 / 弄成 / 整成」。
+    # 此前只写了「改成黑白|变黑白」,用户打「改为黑白」「改为黑白色」全都落到
+    # LLM 兜底 —— 而 LLM 每次给的命令不一样(desaturate / blackWhite 调整图层 /
+    # 直接解析失败),表现为「同样的需求有时成功有时不成功」。
+    _WhitelistRule(re.compile(
+        r"(?:改成|改为|变为|变成|变|转成|转为|转|弄成|整成|搞成)\s*(?:黑白|黑白色|灰度图|黑白图)"
+        r"|黑白化|去色|去彩|grayscale|desaturate", re.I),
                      lambda m, v: _build({"cmd": "image.adjustments.desaturate",
                                           "reason": "去色"})),
     _WhitelistRule(re.compile(r"反色|反相|负片|底片|invert"),
@@ -985,9 +991,15 @@ def inpaint_regions_opencv(in_path: str, regions: list[dict], out_path: str,
                            radius: int = 3) -> tuple[bool, str]:
     """用 OpenCV cv2.inpaint(TELEA 算法)抹掉指定文字区域。
 
-    CLI 兜底:PhotoCraft 的 select.rect 选区状态不传递(实测),
-    后续 contentAwareFill 完全对不上字。cv2.inpaint 直接吃 mask,
-    算法速度够、抹中文小字、字幕、水印都干净。
+    掩膜策略(关键):**只抹文字笔画,不填满整个矩形**。
+    早先按"整个 region 外扩 20% 后填满矩形"送进 inpaint,72px 大字的区域
+    约 290×80 —— TELEA 要从边缘重建这么大一块连续内容,必然糊成一片(实测
+    替换后残留明显白痕)。现在改成:
+      1. 裁出 region 的 patch,用形态学开运算估背景(文字细、背景连成片);
+      2. patch 与背景差异超阈值的像素 = 笔画候选;
+      3. 候选做形态学膨胀,盖住字形抗锯齿边缘;
+      4. 只有当笔画覆盖率过高(说明这区域本来就是大块色块,阈值失效)时,
+         才退回"外扩后填满矩形"的保守做法。
 
     返回 (success, error)。
     """
@@ -1010,14 +1022,34 @@ def inpaint_regions_opencv(in_path: str, regions: list[dict], out_path: str,
         x1, y1 = int(r["x1"]), int(r["y1"])
         x2, y2 = int(r["x2"]), int(r["y2"])
         rw, rh = max(1, x2 - x1), max(1, y2 - y1)
-        # 外扩 20% + 6px,盖住字形抗锯齿边缘(跟 remove_text_by_inpaint 比例一致)
+        # 外扩 20% + 6px:LLM 给的包围盒通常比实际笔画略紧,先扩到一定余量
         gx = max(0, int(rw * 0.2)) + 6
         gy = max(0, int(rh * 0.2)) + 6
-        cv2.rectangle(mask,
-                      (max(0, x1 - gx), max(0, y1 - gy)),
-                      (min(w - 1, x2 + gx), min(h - 1, y2 + gy)),
-                      255, thickness=-1)
-    # TELEA = Fast Marching Method:速度够、对小区域干净
+        ax, ay = max(0, x1 - gx), max(0, y1 - gy)
+        bx, by = min(w - 1, x2 + gx), min(h - 1, y2 + gy)
+        patch = img[ay:by + 1, ax:bx + 1]
+        if patch.size == 0:
+            continue
+
+        strokes = _stroke_mask(patch, cv2, np)
+        if strokes is None:
+            # 检测不可用(区域太小/纯色)→ 退回填满矩形
+            cv2.rectangle(mask, (ax, ay), (bx, by), 255, thickness=-1)
+            continue
+        cover = float((strokes > 0).mean())
+        if cover > 0.55:
+            # 笔画占了区域一半以上:说明这不是"细字在连续背景上",而是整块色块,
+            # 阈值法已经把背景也判成文字了 → 保守退回填满矩形
+            cv2.rectangle(mask, (ax, ay), (bx, by), 255, thickness=-1)
+            continue
+        # 膨胀一次(3×3),把字形抗锯齿的灰边也圈进来,否则抹完留一圈残影
+        strokes = cv2.dilate(strokes, np.ones((3, 3), np.uint8), iterations=1)
+        mask[ay:by + 1, ax:bx + 1] |= strokes
+
+    if mask.max() == 0:
+        return False, "没有可抹除的文字笔画"
+
+    # TELEA = Fast Marching Method:速度够、对细笔画干净
     result = cv2.inpaint(img, mask, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
 
     out = Path(out_path)
@@ -1025,6 +1057,33 @@ def inpaint_regions_opencv(in_path: str, regions: list[dict], out_path: str,
     if not cv2.imwrite(str(out), result):
         return False, f"写出失败:{out_path}"
     return True, ""
+
+
+def _stroke_mask(patch, cv2, np):
+    """在 region patch 内定位文字笔画,返回 0/255 uint8 掩膜;定位不了返回 None。
+
+    思路:文字是**细而高对比**的结构,背景是**连通成片**的。
+      1. 灰度 + 高斯降噪;
+      2. 用 15×15 开运算(erode→dilate)抹掉比 15px 细的笔画,剩下的就是背景;
+      3. 原图与背景的差超阈值处 = 笔画。
+    阈值取 Otsu 自动定,不写死 —— 彩色图上文字与背景的亮度差可能只有 20,
+    也可能有 200,固定阈值必然一边漏字一边把背景吃掉。
+    """
+    if patch.shape[0] < 8 or patch.shape[1] < 8:
+        return None
+    gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
+    k = np.ones((15, 15), np.uint8)
+    # 开运算:先腐蚀后膨胀,细笔画(文字)被腐蚀掉,只留下连成片的背景
+    bg = cv2.morphologyEx(gray, cv2.MORPH_OPEN, k)
+    bg = cv2.GaussianBlur(bg, (5, 5), 0)
+    diff = cv2.absdiff(gray, bg)
+    # Otsu 自动阈值
+    _, strokes = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    # 阈值过低(灰底脏图)会整片选中 → 加绝对下限
+    if float(np.mean(strokes)) > 90:
+        return None
+    return strokes
 
 
 def remove_text(image_path: str, out_file: str | None = None,
