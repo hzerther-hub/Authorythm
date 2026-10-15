@@ -283,10 +283,12 @@ class SlateProductionHeader(QFrame):
 
     def update_info(self, *, drama_title: str, drama_id: int, ep_number: int,
                     take_done: int, take_total: int, scene: str,
-                    status: str = "pending", collab_on: bool = False):
+                    status: str = "pending", collab_on: bool = False,
+                    show_ep: bool = True):
         self._drama = (drama_title or "PROJECT").upper()
         self._project_no = f"PROJECT N°{int(drama_id or 0):04d}"
-        self._ep_label = f"EP{int(ep_number or 0):02d}"
+        # 复刻项目没有多集概念(那一行是建项目时的自动占位),别画 EP 段
+        self._ep_label = f"EP{int(ep_number or 0):02d}" if show_ep else ""
         if take_total > 0:
             self._take = f"TAKE {int(take_done):02d}/{int(take_total):02d}"
         else:
@@ -331,7 +333,8 @@ class SlateProductionHeader(QFrame):
         f.setLetterSpacing(QFont.PercentageSpacing, 110)
         p.setFont(f)
         p.setPen(QColor(SLATE_BAR_INK))
-        left_text = f"{self._project_no}   ·   {self._ep_label}   ·   {self._take}"
+        # EP 为空(复刻项目)时不能留下 "··" 这种空分隔符
+        left_text = "   ·   ".join(x for x in (self._project_no, self._ep_label, self._take) if x)
         p.drawText(QRect(stripe_w + 14, 0, w - stripe_w - 360, h),
                    Qt.AlignVCenter | Qt.AlignLeft, left_text)
         # 右侧 SCENE + collab + status dot
@@ -589,9 +592,13 @@ class StepNav(QWidget):
             states = [self._states.get(k, "pending") for k in keys]
             usable = any(s != "locked" for s in states)
             self._section_hidden[sid] = not usable
-            for k in keys:
-                self._btns[k].setVisible(usable or self._collapsed)
-                self._btns[k].setEnabled(self._states.get(k, "pending") != "locked")
+            for k, s in zip(keys, states):
+                # 单个 locked 的按钮直接隐藏,不只是 disabled —— 复刻项目没有
+                # 正文,「原始内容 / AI 改写 / 漫画」点了必然是空页或无结果,
+                # 摆在那里只会让人以为还有没做完的环节(实测用户被这个绕住)。
+                # 原来只有整段不可用才藏,段内混着 locked 的照常显示。
+                self._btns[k].setVisible(s != "locked" and (usable or self._collapsed))
+                self._btns[k].setEnabled(s != "locked")
             if not usable:
                 continue
             if sid == "export":                       # 导出段不标状态(对齐原版 'none')
@@ -623,8 +630,14 @@ class StepNav(QWidget):
 
 
 def _page_title(drama, ep) -> str:
-    """集页顶部标题:项目名 · 第N集 · 章节名(有则带上,与剧集卡一致)。"""
-    parts = [drama["title"], tr('episode_n').format(ep["episode_number"])]
+    """集页顶部标题:项目名 · 第N集 · 章节名(有则带上,与剧集卡一致)。
+
+    复刻项目只有一条片子、没有「第 N 集」的概念(内容来自参考视频拆解),
+    显示集号纯属噪音 —— 它那一集是建项目时自动插的占位行,不是用户建的剧集。
+    """
+    parts = [drama["title"]]
+    if (drama.get("work_type") if isinstance(drama, dict) else drama["work_type"]) != "video_clone":
+        parts.append(tr('episode_n').format(ep["episode_number"]))
     # ep 可能是 sqlite3.Row(无 .get),统一转 dict 取值
     ep = dict(ep) if not isinstance(ep, dict) else ep
     name = (ep.get("title") or "").strip()
@@ -773,10 +786,12 @@ class EpisodePage(QWidget):
             scene_label = tr(STEP_LABELS.get(self._step, "raw_content")).upper()
         except Exception:  # noqa: BLE001
             scene_label = "RAW"
+        self._is_clone = d["work_type"] == "video_clone"
         self.roll_header.update_info(
             drama_title=d["title"], drama_id=drama_id,
             ep_number=ep["episode_number"], take_done=sb_done, take_total=sb_total,
             scene=scene_label, status=ep_status,
+            show_ep=not self._is_clone,
         )
         # 小说项目收起制作/导出(可展开);宣传项目隐藏漫画
         self._apply_work_type_visibility()
@@ -791,7 +806,10 @@ class EpisodePage(QWidget):
         self._reload_storyboard()
         self._reload_comic()
         self._reload_export()
-        self._goto_step("raw")
+        # 复刻项目没有正文,raw/rewrite/comic 三步都被锁死 —— 落在 raw 会显示一个
+        # 永远 0 字的空编辑器(用户反馈"跳过来又变成小说那一套")。直接进分镜。
+        self._goto_step("storyboard" if (self._drama or {}).get("work_type") == "video_clone"
+                        else "raw")
 
     def _mk_model_combo(self) -> QComboBox:
         """顶栏模型下拉:按 AdjustToContents 自适应最长条目 —— 用户要求完整显示模型名,
@@ -912,6 +930,7 @@ class EpisodePage(QWidget):
                 take_done=0, take_total=0,
                 scene=scene_label,
                 status=(self._ep["status"] if self._ep else "pending") or "pending",
+                show_ep=not getattr(self, "_is_clone", False),
             )
             # 取 scene 部分之外的真实 TAKE 数字 —— 用一个轻 query
             try:
@@ -928,6 +947,7 @@ class EpisodePage(QWidget):
                     take_done=done, take_total=tot,
                     scene=scene_label,
                     status=(self._ep["status"] if self._ep else "pending") or "pending",
+                    show_ep=not getattr(self, "_is_clone", False),
                 )
             except Exception:  # noqa: BLE001
                 pass
@@ -1042,12 +1062,24 @@ class EpisodePage(QWidget):
         # 小说项目默认锁死制作段;用户展开制作流程后解除,否则点了展开也没用
         # (StepNav._refresh_sections 会把整段 locked 的按钮全藏掉)
         novel_open = work == "novel" and getattr(self, "_pipeline_expanded", False)
+        # 复刻项目(vide_clone)没有小说正文 —— 内容从参考视频拆解而来。
+        # raw/rewrite(原始内容 / AI 改写)对它毫无意义,原先只锁了 comic,
+        # 跳进工作台先看到的是一个 0 字的空剧本编辑器(实测截图)。
+        if work == "video_clone":
+            st = {}
+            for k in STEPS:
+                if k in ("raw", "rewrite", "comic"):
+                    st[k] = "locked"
+                elif k == "export":
+                    st[k] = "done" if "storyboard" in done_keys else "pending"
+                else:
+                    st[k] = "done" if k in done_keys else "pending"
+            return st
         st = {}
         for k in STEPS:
             if k in ("assets", "storyboard", "export") and work == "novel" and not novel_open:
                 st[k] = "locked"
-            elif k == "comic" and (work in ("promotion", "video_clone")
-                                   or (work == "novel" and not novel_open)):
+            elif k == "comic" and work in ("promotion", "video_clone"):
                 st[k] = "locked"
             elif k == "export":
                 st[k] = "done" if ("comic" in done_keys or "storyboard" in done_keys) else "pending"

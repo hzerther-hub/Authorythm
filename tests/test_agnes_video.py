@@ -356,3 +356,31 @@ def test_marker_matches_guard_prefix():
 
 def test_empty_prompt_gets_no_guards():
     assert apply_video_guards("") == ""
+
+
+# ── Agnes 生图端点:不能出现 /v1/v1 ─────────────────────────────────────
+
+def test_agnes_image_endpoint_has_no_double_v1():
+    """base_url 已被 normalize_base_url 补过 /v1,再拼一次就是 /v1/v1/images/generations。
+
+    实测踩过:HTTP 404 {"error":{"message":"Invalid URL (POST /v1/v1/images/generations)"}}
+    """
+    import inspect
+    from app.ai import image_client
+    src = inspect.getsource(image_client.generate_image)
+    # 端点拼接必须先判断 base_url 是否已以 /v1 结尾
+    assert '_b.endswith("/v1")' in src, "agnes 端点未做 /v1 前缀判重"
+    assert 'cfg["base_url"].rstrip("/") + "/v1/images/generations"' not in src, \
+        "agnes 端点仍在硬编码追加 /v1"
+
+
+def test_agnes_endpoint_url_is_correct_for_both_base_forms():
+    def _url(base: str) -> str:
+        b = base.rstrip("/")
+        return (b if b.endswith("/v1") else b + "/v1") + "/images/generations"
+    assert _url("https://apihub.agnes-ai.com") == \
+        "https://apihub.agnes-ai.com/v1/images/generations"
+    assert _url("https://apihub.agnes-ai.com/v1") == \
+        "https://apihub.agnes-ai.com/v1/images/generations"
+    assert "/v1/v1" not in _url("https://apihub.agnes-ai.com")
+    assert "/v1/v1" not in _url("https://apihub.agnes-ai.com/v1")

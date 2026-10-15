@@ -395,6 +395,9 @@ def init_db() -> None:
     "ALTER TABLE episodes ADD COLUMN duration REAL",
                 # 每条文本服务配置的最大输出 token(思考型模型需要给足,否则正文被截断)
                 "ALTER TABLE ai_service_configs ADD COLUMN max_tokens INTEGER",
+                # 上下文窗口长度:仅作提示/校验用(设置界面已有一个输入框,
+                # 但此前**没有对应的列**,填了存不进去 —— 与 max_tokens 成对存在)
+                "ALTER TABLE ai_service_configs ADD COLUMN ctx_tokens INTEGER",
                 # 造型变体:补排序位与漫画风格图(对齐原版 variant-resolution 的 is_default/sort_order
                 # tie-break,以及 comic.ts 的「variant.comicImageUrl 优先」取图优先级)
                 "ALTER TABLE character_variants ADD COLUMN sort_order INTEGER DEFAULT 0",

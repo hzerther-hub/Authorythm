@@ -27,6 +27,20 @@ from . import widgets as W
 STATE_OF = {"processing": ("pending", "in_progress"), "completed": ("done", "done"),
             "failed": ("failed", "failed"), "blocked": ("failed", "failed"),
             "pending": ("ready", "pending")}
+
+# 复刻(video-clone)链路的任务类型。sys_task.type 原样入库 clone_*,
+# 直接 tr() 会回退成英文键名,这里映射到已有 i18n 键或专用中文标签。
+TASK_TYPE_LABEL = {
+    "clone_analyze": "克隆 · AI 分镜",
+    "clone_understand": "克隆 · 整段直传拆解",
+    "clone_image": "克隆 · 生成首帧",
+    "clone_video": "克隆 · 生成视频",
+    "clone_presenter": "克隆 · 生成出镜模特",
+    "clone_replace_material": "克隆 · 替换素材",
+    "clone_redraw_all": "克隆 · 一键重绘",
+    "clone_merge": "克隆 · 合并成片",
+}
+
 # slate 状态点:不用 SaaS 的橘/绿/红三色,走 SLATE_ST_* 低饱和 —— 与启动台/工作台一致
 DOT_COLOR = {"pending": SLATE_ST_PROG, "done": SLATE_ST_DONE,
              "failed": SLATE_ST_FAIL, "ready": SLATE_MUTED}
@@ -259,7 +273,12 @@ class TaskDrawer(QWidget):
         lay.addWidget(thumb)
         main = QVBoxLayout()
         main.setSpacing(1)
-        name = QLabel(tr(r.get("type") or "task"))
+        # 复刻链路的任务类型带 clone_ 前缀,sys_task.type 原样入库,
+        # 直接 tr("clone_image") 会回退成英文键名 clone_image —— 先映射成中文标签。
+        # 未映射的(video/image/...)照旧走 tr(),由 i18n 自己决定回退。
+        _t = r.get("type") or "task"
+        _label = TASK_TYPE_LABEL.get(_t)
+        name = QLabel(_label if _label else tr(_t))
         name.setObjectName("taskName")
         name.setToolTip(name.text())
         name.setWordWrap(True)

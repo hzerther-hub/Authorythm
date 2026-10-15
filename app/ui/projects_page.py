@@ -215,6 +215,7 @@ class SlateStrip(QFrame):
 class ProjectCard(QFrame):
     open_requested = Signal(int)
     delete_requested = Signal(int, str)
+    settings_requested = Signal(int)   # 「⋯ → 项目设置」
     status_changed = Signal(int, str)
 
     # 视觉骨架:4px 圆角卡片,顶 30px 拍板条,封面 2:1,底约 142px 三段
@@ -475,12 +476,16 @@ class ProjectCard(QFrame):
 
     def _menu(self):
         m = QMenu(self)
-        a1 = m.addAction(tr("open_project"))
-        a2 = m.addAction(tr("delete_project"))
+        a_open = m.addAction(tr("open_project"))
+        a_set = m.addAction(tr("project_settings"))
+        m.addSeparator()
+        a_del = m.addAction(tr("delete_project"))
         act = m.exec(QCursor.pos())
-        if act == a1:
+        if act == a_open:
             self.open_requested.emit(self.drama_id)
-        elif act == a2:
+        elif act == a_set:
+            self.settings_requested.emit(self.drama_id)
+        elif act == a_del:
             self.delete_requested.emit(self.drama_id, self._title)
 
     def mousePressEvent(self, ev):
@@ -493,6 +498,7 @@ class ProjectCard(QFrame):
 
 class ProjectsPage(QWidget):
     open_drama = Signal(int)
+    settings_drama = Signal(int)   # 请 MainWindow 打开项目对应的页面
 
     def __init__(self):
         super().__init__()
@@ -651,6 +657,7 @@ class ProjectsPage(QWidget):
             card = ProjectCard(d)
             card.open_requested.connect(self.open_drama.emit)
             card.delete_requested.connect(self._delete)
+            card.settings_requested.connect(self._project_settings)
             card.status_changed.connect(self._set_status)
             self.grid.addWidget(card, i // cols, i % cols)
         if not shown:
@@ -770,6 +777,14 @@ class ProjectsPage(QWidget):
         except Exception as e:                              # noqa: BLE001
             err(f"写入失败:{e}")
 
+    def _project_settings(self, drama_id: int):
+        """「⋯ → 项目设置」:打开该项目并定位到设置区(模型/风格/资产)。
+
+        各类型的设置位置不同(复刻在 ClonePage、生孩子在分镜工作台),
+        这里统一交给 MainWindow 打开对应页面,再由页面自己滚动到设置行。
+        """
+        self.settings_drama.emit(drama_id)
+
     def _delete(self, drama_id: int, _title: str):
         from PySide6.QtWidgets import QMessageBox
         d = db.q1("SELECT title FROM dramas WHERE id=?", (drama_id,))
@@ -778,17 +793,46 @@ class ProjectsPage(QWidget):
         if not ask(self, tr("delete_project"), tr("confirm_delete_project", d["title"]),
                    danger=True):
             return
-        for t in ("episode_characters", "episode_scenes", "episode_props"):
-            db.ex(f"DELETE FROM {t} WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)", (drama_id,))
-        for t in ("storyboard_characters", "storyboard_props"):
-            db.ex(f"DELETE FROM {t} WHERE storyboard_id IN (SELECT id FROM storyboards WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?))", (drama_id,))
-        db.ex("DELETE FROM storyboards WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)", (drama_id,))
-        db.ex("DELETE FROM comic_panel_characters WHERE panel_id IN (SELECT id FROM comic_panels WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?))", (drama_id,))
-        db.ex("DELETE FROM comic_panels WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)", (drama_id,))
-        db.ex("DELETE FROM video_merges WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)", (drama_id,))
-        db.ex("DELETE FROM episodes WHERE drama_id=?", (drama_id,))
-        db.ex("DELETE FROM characters WHERE drama_id=?", (drama_id,))
-        db.ex("DELETE FROM scenes WHERE drama_id=?", (drama_id,))
-        db.ex("DELETE FROM props WHERE drama_id=?", (drama_id,))
-        db.ex("DELETE FROM dramas WHERE id=?", (drama_id,))
+        _delete_drama_cascade(drama_id)
         self.reload()
+
+
+def _delete_drama_cascade(drama_id: int) -> None:
+    """删项目及其全部级联数据。
+
+    顺序必须**从最外层往里删**(先子表后父表),反了会留下孤儿行:
+    character_variants 挂在 character 上、storyboard_scenes 挂在 storyboard 上,
+    父行没了子行就再也定位不到 —— 那些是角色/场景的变体图与绑定关系。
+
+    原实现漏了 comic_panel_scenes / comic_panel_props(只删了 *_characters):
+    漫画格删掉后场景道具绑定仍留在表里。同批补上的还有 storyboard_scenes 与
+    sys_task(生成任务记录,项目没了还挂着 processing 会被看门狗判成僵尸)。
+
+    ai_service_configs / style_presets / app_settings 是全局配置,不属于任何项目,不删。
+    """
+    eps = "SELECT id FROM episodes WHERE drama_id=?"
+    sbs = "SELECT id FROM storyboards WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)"
+    panels = "SELECT id FROM comic_panels WHERE episode_id IN (SELECT id FROM episodes WHERE drama_id=?)"
+    # 1) 最内层:挂在角色/场景/道具上的变体(父行即将被删)
+    db.ex("DELETE FROM character_variants WHERE character_id IN (SELECT id FROM characters WHERE drama_id=?)", (drama_id,))
+    db.ex("DELETE FROM scene_variants WHERE scene_id IN (SELECT id FROM scenes WHERE drama_id=?)", (drama_id,))
+    db.ex("DELETE FROM prop_variants WHERE prop_id IN (SELECT id FROM props WHERE drama_id=?)", (drama_id,))
+    # 2) 分镜/漫画格的各类绑定关系(三个子表都覆盖,不只 characters)
+    for t in ("storyboard_characters", "storyboard_props", "storyboard_scenes"):
+        db.ex(f"DELETE FROM {t} WHERE storyboard_id IN ({sbs})", (drama_id,))
+    for t in ("comic_panel_characters", "comic_panel_scenes", "comic_panel_props"):
+        db.ex(f"DELETE FROM {t} WHERE panel_id IN ({panels})", (drama_id,))
+    # 3) 剧集级绑定
+    for t in ("episode_characters", "episode_scenes", "episode_props"):
+        db.ex(f"DELETE FROM {t} WHERE episode_id IN ({eps})", (drama_id,))
+    # 4) 生成任务记录(留着会被僵尸看门狗按 processing 反复扫)
+    db.ex("DELETE FROM sys_task WHERE drama_id=?", (drama_id,))
+    # 5) 主体
+    db.ex(f"DELETE FROM storyboards WHERE episode_id IN ({eps})", (drama_id,))
+    db.ex(f"DELETE FROM comic_panels WHERE episode_id IN ({eps})", (drama_id,))
+    db.ex(f"DELETE FROM video_merges WHERE episode_id IN ({eps})", (drama_id,))
+    db.ex("DELETE FROM episodes WHERE drama_id=?", (drama_id,))
+    db.ex("DELETE FROM characters WHERE drama_id=?", (drama_id,))
+    db.ex("DELETE FROM scenes WHERE drama_id=?", (drama_id,))
+    db.ex("DELETE FROM props WHERE drama_id=?", (drama_id,))
+    db.ex("DELETE FROM dramas WHERE id=?", (drama_id,))

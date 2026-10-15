@@ -328,7 +328,13 @@ def generate_image(prompt: str, out_name: str | None = None,
 
     if provider == "agnes":
         # Agnes:提交任务 → 轮询 → 下载
-        submit = cfg["base_url"].rstrip("/") + "/v1/images/generations"
+        # base_url 已由 registry.normalize_base_url 规范化成带 /v1 的形式
+        # (agnes 缺 /v1 会被 Cloudflare 403),所以这里**不能再拼一次 /v1** ——
+        # 否则 URL 变成 /v1/v1/images/generations,上游回 404 Invalid URL。
+        # 兼容两种存量配置:带 /v1 的直接拼 /images/generations,
+        # 裸域名才补 /v1。
+        _b = cfg["base_url"].rstrip("/")
+        submit = (_b if _b.endswith("/v1") else _b + "/v1") + "/images/generations"
         tier, ratio = map_size_to_tier_ratio(size)
         # 对齐参考 agnes-image adapter:response_format=url + 平台级负面守卫
         # (禁围观者/复制人/畸形);negative 未传时用默认守卫

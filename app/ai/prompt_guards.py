@@ -56,10 +56,20 @@ VIDEO_QUALITY_GUARD = (
     "；画面里只出现提示词提到的人物，背景与门窗外没有路人围观或走动"
     "；被褥、床铺、桌椅下方没有多出的手臂、腿或身体；同一人物的发型、服装、配饰与随身道具在整段视频中"
     "保持一致，不与参考图里的其他角色换脸或融合五官"
+    # 产品侧:带货/复刻是本项目的视频主场景,产品变形是最高频的翻车点。
+    # 参照 video-clone-lite/references/seedance-knowledge.md 第六节负面词模板补入
+    # 「产品无穿模无变形 / 颜色校准无偏色」与画面稳定项(该文件列的 jittery motion、
+    # physics error 在跨帧视频里的权重高于纯画质词)
+    "；产品外形 1:1 还原参考图,没有穿模、变形、融化或忽大忽小,颜色与实物一致无偏色"
+    "；画面稳定,没有抖动、闪烁、重影或忽明忽暗"
     "；画面纯净，没有字幕、标题、水印、台标与 logo"
     "；cinematic live scene, single appearance of each character, no character turnaround sheet, "
     "no multi-view lineup, no side-by-side duplicates of the same person, one head per body, "
-    "no extra limbs under blankets, no onlookers in background, consistent outfit across frames"
+    "no extra limbs under blankets, no onlookers in background, consistent outfit across frames, "
+    # 英文负面 token 对多数平台权重高于中文同义词(见 AGENTS.md 供应商能力差异一节)
+    "low quality, blurry, deformed, mutated hands, extra limbs, bad anatomy, jittery motion, "
+    "physics error, face distortion, clothing glitch, watermark, text, logo, "
+    "no extra fingers, no asymmetrical features, product deformation, color shift"
 )
 
 # 表演守卫:压住模型对强情绪词(尖叫/嘶吼/痛哭)的放大,受惊降级为微反应
