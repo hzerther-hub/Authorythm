@@ -13,7 +13,9 @@
 🎬 **5 creative goals**: novel · short drama · comic · promotion (6 platforms × 6 formats) · viral-video clone
 🔧 **Six-stage pipeline**: raw text → AI rewrite → visual-story → storyboard → comic → merge & export
 🤖 **10 AI agents**: script rewriting, character/scene extraction, shot splitting, prompts, novel writing, planning, 6-dimension review, editing, comic split, promo copy — System Prompts fully editable
-🎙️ **Free Edge TTS read-aloud**: 16 languages × 2 genders = 32 Microsoft neural voices, no API key, no language packs, only needs internet. Project-level voice setting keeps the whole chapter consistent.
+🎙️ **Microsoft TTS read-aloud (free)**: 16 languages × 2 genders = 32 Edge neural voices, no API key, no language packs, only needs internet. Project-level voice setting keeps the whole chapter consistent. Configurable in Settings → Narration.
+💬 **Chat-edit image editing**: type Chinese commands like "改亮 30" / "改成黑白" → instant edit via PhotoCraft, plus PNG/text watermark with 9-position grid, opacity & stroke presets.
+📷 **PhotoCraft integration**: when installed (Settings → PhotoCraft), opens images in the desktop editor and auto-syncs edits back — chat panel and external editor stay in lockstep.
 🎨 **Cross-panel consistency**: batched comic generation uses chained keyframe feeding (each completed panel image feeds the next) plus `character_variants` multi-angle references, so characters and scenes stay stable across panels.
 
 ## 🚀 Quick start

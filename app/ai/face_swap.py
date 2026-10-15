@@ -68,7 +68,14 @@ def health(base: str | None = None, config_id: int | None = None) -> tuple[bool,
             return bool(ok_flag), f"{data.get('status', 'ok')} · {model}"
         return False, _utf8_text(resp, 200)
     except Exception as e:  # noqa: BLE001
-        return False, f"服务不可达({_base}):{e}"
+        # 本地服务没起是最常见的报错,直接把"怎么装/怎么启"指给用户,
+        # 免得只看到一句 Connection refused 不知道去哪下手。
+        hint = ""
+        if "127.0.0.1" in _base or "localhost" in _base:
+            hint = (" —— 本地换脸服务未启动。安装与启动步骤见 "
+                    "docs/换脸服务-安装与本地启动.md;"
+                    "或改用远程换脸(provider=remote-faceswap)")
+        return False, f"服务不可达({_base}):{e}{hint}"
 
 
 def swap_one(template_path: str | Path, source_path: str | Path,

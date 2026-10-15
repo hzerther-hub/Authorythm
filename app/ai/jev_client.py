@@ -20,6 +20,8 @@ import time
 import requests
 
 DEFAULT_BASE = "https://api.typesafe.ai"
+# 未配置时提示用:官网(申请 Access Key 的入口)
+JEV_URL = "https://typesafe.ai/"
 DEFAULT_MODEL = "jev-latest"
 DEFAULT_TIMEOUT_S = 8.0
 DEFAULT_CACHE_TTL_S = 5 * 60
@@ -134,9 +136,23 @@ class JevClient:
         return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:24]   # 截断即可,只要稳定
 
 
-def test_config(config_id: int | None = None) -> tuple[bool, str]:
-    """设置页「连接测试」。返回 (是否通过, 说明)。"""
-    client = JevClient(config_id=config_id)
+def test_config(config_id: int | dict | None = None) -> tuple[bool, str]:
+    """设置页「连接测试」。返回 (是否通过, 说明)。
+
+    config_id 既接受**配置 id(int)**,也接受**整行配置 dict** —— 设置页
+    ServiceDialog._test 把 `self._collect()` 的结果(一个 dict)当第一个位置参数
+    传进来,原先这里签名写的是 int,dict 一路传到 registry.default_config() 就被
+    当 SQL 参数绑 → "type 'dict' is not supported"。两种都兼容掉。
+    """
+    if isinstance(config_id, dict):
+        api_key = (config_id.get("api_key") or "").strip()
+        base_url = (config_id.get("base_url") or "").strip() or DEFAULT_BASE
+        model = (config_id.get("model") or "").strip() or DEFAULT_MODEL
+        if not api_key:
+            return False, f"未配置 API Key —— 申请入口:{JEV_URL}"
+        client = JevClient(api_key=api_key, base_url=base_url, model=model)
+    else:
+        client = JevClient(config_id=config_id)
     if not client.is_configured():
         return False, "未配置 API Key"
     res = client.ping()

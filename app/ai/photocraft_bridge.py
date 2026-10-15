@@ -21,6 +21,9 @@ from typing import Any
 
 from ..core import config, db
 
+# PhotoCraft 官方仓库 —— 未安装时 UI 直接给这个可点击链接,用户不用自己去搜
+PHOTOCRAFT_URL = "https://github.com/storytold/photocraft"
+
 
 # ── 可执行文件定位 ──
 
@@ -220,6 +223,21 @@ def _build(p: dict) -> Step:
     return Step(**p)
 
 
+def _photoFilterWarm(level: int = 30) -> int:
+    """photoFilter 的「暖色滤镜」索引(0~100,越大越橙黄)。
+    PhotoCraft CLI 文档里 photoFilter.color 是档位代码,不是 RGB —— 这里
+    沿用 `photocraft-cli photoFilter --list` 列出的暖档位经验值(0..100):
+      20=微暖, 50=日落, 80=怀旧, 100=深橙。
+    """
+    return max(20, min(100, 30 + int(level)))
+
+
+def _photoFilterCool(level: int = 30) -> int:
+    """photoFilter 的「冷色滤镜」索引。暖档位中心偏移到冷端 = 255 - warm。
+    """
+    return max(0, min(80, 80 - int(level)))
+
+
 _WL_RULES: list[_WhitelistRule] = [
     # ── 色彩调整 ──
     # 黑白:动词头必须覆盖「改成 / 改为 / 变 / 变成 / 转成 / 转 / 弄成 / 整成」。
@@ -305,6 +323,177 @@ _WL_RULES: list[_WhitelistRule] = [
     _WhitelistRule(re.compile(r"强力锐化|更锐利|强锐化"),
                      lambda m, v: _build({"cmd": "filter.sharpen.sharpenMore",
                                           "reason": "强力锐化"})),
+
+    # ── 色彩调整(扩展:色温/去雾/暗亮部/曲线/色阶/阈值/色平/海报化/单色)──
+    _WhitelistRule(re.compile(rf"色温\s*[+加]\s*({_NUMBER})|暖\s*([+加])\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.photoFilter",
+                                          "params": {"density": 100,
+                                                     "color": _photoFilterWarm(int(m.group(1) or m.group(3) or 30))},
+                                          "reason": f"暖 +{m.group(1) or m.group(3) or 30}"})),
+    _WhitelistRule(re.compile(rf"色温\s*[-减]\s*({_NUMBER})|冷\s*([+加])\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.photoFilter",
+                                          "params": {"density": 100,
+                                                     "color": _photoFilterCool(int(m.group(1) or m.group(3) or 30))},
+                                          "reason": f"冷 +{m.group(1) or m.group(3) or 30}"})),
+    _WhitelistRule(re.compile(r"去雾|除雾|雾散一点"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": 0.6, "offset": 0.05},
+                                          "reason": "去雾 +0.6/+0.05"})),
+    _WhitelistRule(re.compile(rf"暗部\s*[+加提]亮?\s*({_NUMBER})|阴影\s*[+加提]亮?\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": 0.3},
+                                          "reason": "暗部提亮"})),
+    _WhitelistRule(re.compile(rf"亮部\s*[-减压]暗?\s*({_NUMBER})|高光\s*[-减压]暗?\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": -0.3},
+                                          "reason": "亮部压暗"})),
+    _WhitelistRule(re.compile(rf"曝光\s*[-减]\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": -float(m.group(1))},
+                                          "reason": f"曝光 -{m.group(1)}"})),
+    _WhitelistRule(re.compile(r"曲线|s\s*形曲线|高对比曲线"),
+                     lambda m, v: _build({"cmd": "image.adjustments.curves",
+                                          "params": {"points": [[0, 0], [64, 48],
+                                                     [192, 212], [255, 255]]},
+                                          "reason": "S 形曲线"})),
+    _WhitelistRule(re.compile(r"色阶|直方图均衡|提色阶"),
+                     lambda m, v: _build({"cmd": "image.adjustments.levels",
+                                          "params": {"inBlack": 0, "inWhite": 255,
+                                                     "gamma": 1.0},
+                                          "reason": "色阶"})),
+    _WhitelistRule(re.compile(rf"阈值\s*({_NUMBER})|二值化\s*({_NUMBER})|黑白阈值"),
+                     lambda m, v: _build({"cmd": "image.adjustments.threshold",
+                                          "params": {"level": int(float(m.group(1) or m.group(2) or 128))},
+                                          "reason": f"阈值 {m.group(1) or m.group(2) or 128}"})),
+
+    # ── 模糊/锐化(扩展:USM/中值/表面模糊/智能锐化/动感模糊带角度)──
+    _WhitelistRule(re.compile(r"usm\s*锐化|usm\s*增强|usm\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "filter.sharpen.unsharpMask",
+                                          "params": {"amount": 150, "radius": 1.0, "threshold": 3},
+                                          "reason": "USM 锐化"})),
+    _WhitelistRule(re.compile(r"智能锐化|精细锐化|高级锐化"),
+                     lambda m, v: _build({"cmd": "filter.sharpen.unsharpMask",
+                                          "params": {"amount": 200, "radius": 1.5, "threshold": 2},
+                                          "reason": "智能锐化"})),
+    _WhitelistRule(re.compile(r"中值模糊|去椒盐|去噪点"),
+                     lambda m, v: _build({"cmd": "filter.noise.median",
+                                          "params": {"radius": 2},
+                                          "reason": "中值去噪"})),
+    _WhitelistRule(re.compile(r"磨皮|皮肤平滑|皮肤磨平|皮肤柔化"),
+                     lambda m, v: _build({"cmd": "filter.blur.surfaceBlur",
+                                          "params": {"radius": 5, "threshold": 15},
+                                          "reason": "磨皮 surfaceBlur"})),
+
+    # ── 噪声/扭曲/渲染(扩展)──
+    _WhitelistRule(re.compile(rf"加噪点\s*({_NUMBER})|胶片噪点\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "filter.noise.addNoise",
+                                          "params": {"amount": int(float(m.group(1) or m.group(2) or 10)),
+                                                     "distribution": "gaussian",
+                                                     "monochromatic": False},
+                                          "reason": f"加噪点 {m.group(1) or m.group(2) or 10}"})),
+    _WhitelistRule(re.compile(rf"旋转扭曲\s*({_NUMBER})|扭曲\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "filter.distort.twirl",
+                                          "params": {"angle": int(float(m.group(1) or m.group(2) or 30)),
+                                                     "radius": 200},
+                                          "reason": f"旋转扭曲 {m.group(1) or m.group(2) or 30}°"})),
+
+    # ── 画布/图像大小(扩展)──
+    _WhitelistRule(re.compile(r"裁剪\s*透明边|裁掉透明|trim\s*透明"),
+                     lambda m, v: _build({"cmd": "image.trim",
+                                          "params": {"basedOn": "transparent"},
+                                          "reason": "裁剪透明边"})),
+    _WhitelistRule(re.compile(r"调整为?\s*原始大小|回到原始|原始尺寸|复位"),
+                     lambda m, v: _build({"cmd": "image.imageSize",
+                                          "reason": "图像原始大小"})),
+
+    # ── 修复(扩展:补光/阴影/去红眼)──
+    _WhitelistRule(re.compile(r"提亮暗部|找回暗部|暗部找回"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": 0.5, "offset": 0.05},
+                                          "reason": "暗部找回 +0.5/+0.05"})),
+
+    # ── 自然语言别名(零参数命令)──
+    _WhitelistRule(re.compile(r"自动色阶|自动对比|自动色调"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": 0.0, "offset": 0.0},
+                                          "reason": "自动色调(中性曝光)"})),
+    _WhitelistRule(re.compile(r"暖色调|暖一点|暖一些|再暖"),
+                     lambda m, v: _build({"cmd": "image.adjustments.photoFilter",
+                                          "params": {"density": 80, "color": 122},
+                                          "reason": "暖色调"})),
+    _WhitelistRule(re.compile(r"冷色调|冷一点|冷一些|再冷"),
+                     lambda m, v: _build({"cmd": "image.adjustments.photoFilter",
+                                          "params": {"density": 80, "color": 82},
+                                          "reason": "冷色调"})),
+    _WhitelistRule(re.compile(rf"饱和度?\s*[+加]\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
+                                          "params": {"saturation": int(float(m.group(1)))},
+                                          "reason": f"饱和度 +{m.group(1)}"})),
+    _WhitelistRule(re.compile(rf"饱和度?\s*[-减]\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
+                                          "params": {"saturation": -int(float(m.group(1)))},
+                                          "reason": f"饱和度 -{m.group(1)}"})),
+    _WhitelistRule(re.compile(r"提饱和|加饱和|鲜艳一点|再饱和"),
+                     lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
+                                          "params": {"saturation": 25},
+                                          "reason": "提饱和 +25"})),
+    _WhitelistRule(re.compile(r"降饱和|减饱和|清淡一点|去饱和"),
+                     lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
+                                          "params": {"saturation": -25},
+                                          "reason": "降饱和 -25"})),
+    _WhitelistRule(re.compile(rf"对比\s*强|对比\s*拉满|高对比"),
+                     lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
+                                          "params": {"contrast": 50},
+                                          "reason": "对比 +50"})),
+    _WhitelistRule(re.compile(rf"对比\s*弱|对比\s*拉低|低对比|平对比"),
+                     lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
+                                          "params": {"contrast": -30},
+                                          "reason": "对比 -30"})),
+    _WhitelistRule(re.compile(r"提亮|亮一点|亮一些|再亮"),
+                     lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
+                                          "params": {"brightness": 25},
+                                          "reason": "亮度 +25"})),
+    _WhitelistRule(re.compile(r"压暗|暗一点|暗一些|再暗"),
+                     lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
+                                          "params": {"brightness": -25},
+                                          "reason": "亮度 -25"})),
+    _WhitelistRule(re.compile(rf"曝光\s*[+加]\s*({_NUMBER})|曝光\s*提高\s*({_NUMBER})"),
+                     lambda m, v: _build({"cmd": "image.adjustments.exposure",
+                                          "params": {"exposure": float(m.group(1) or m.group(2) or 0.5)},
+                                          "reason": f"曝光 +{m.group(1) or m.group(2) or 0.5}"})),
+    _WhitelistRule(re.compile(rf"鲜艳度\s*[+加]\s*({_NUMBER})|鲜艳点|更鲜艳"),
+                     lambda m, v: _build({"cmd": "image.adjustments.vibrance",
+                                          "params": {"vibrance": int(float(m.group(1) or 30))},
+                                          "reason": f"鲜艳度 +{m.group(1) or 30}"})),
+    _WhitelistRule(re.compile(r"清晰\s*一点|清晰一些|清楚点|锐一点|更清晰"),
+                     lambda m, v: _build({"cmd": "filter.sharpen.sharpen",
+                                          "reason": "清晰化"})),
+    _WhitelistRule(re.compile(r"运动模糊\s*(\d+)"),
+                     lambda m, v: _build({"cmd": "filter.blur.motionBlur",
+                                          "params": {"angle": 0, "distance": int(m.group(1) or 10)},
+                                          "reason": f"运动模糊 {m.group(1) or 10}px"})),
+    _WhitelistRule(re.compile(r"加饱和\s*(\d+)|加饱和度\s*(\d+)"),
+                     lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
+                                          "params": {"saturation": int(m.group(1) or m.group(2) or 20)},
+                                          "reason": f"饱和 +{m.group(1) or m.group(2) or 20}"})),
+    _WhitelistRule(re.compile(r"加鲜艳|再鲜艳|饱和度\s*高一些|色彩\s*浓一点"),
+                     lambda m, v: _build({"cmd": "image.adjustments.vibrance",
+                                          "params": {"vibrance": 30},
+                                          "reason": "鲜艳度 +30"})),
+    _WhitelistRule(re.compile(rf"模糊\s*({_NUMBER})\s*半径|模糊半径\s*({_NUMBER})|半径\s*({_NUMBER})\s*模糊"),
+                     lambda m, v: _build({"cmd": "filter.blur.gaussianBlur",
+                                          "params": {"radius": float(m.group(1) or m.group(2) or m.group(3) or 3)},
+                                          "reason": f"高斯模糊 r={m.group(1) or m.group(2) or m.group(3) or 3}"})),
+
+    # ── 自然语言名词短语(不依赖具体数字)──
+    _WhitelistRule(re.compile(r"胶片感|电影感|胶片色调"),
+                     lambda m, v: _build({"cmd": "image.adjustments.curves",
+                                          "params": {"points": [[0, 12], [64, 64], [192, 200], [255, 245]]},
+                                          "reason": "胶片感 S 曲线(高光柔+阴影暖)"})),
+    _WhitelistRule(re.compile(r"提高对比\s*层次|层次\s*分明|通透"),
+                     lambda m, v: _build({"cmd": "image.adjustments.curves",
+                                          "params": {"points": [[0, 5], [64, 50], [192, 215], [255, 250]]},
+                                          "reason": "S 曲线(提对比+层次)"})),
 ]
 
 
@@ -445,16 +634,32 @@ def _llm_command_catalog(cli: PhotocraftCLI) -> str:
         pass
 
     lines: list[str] = []
+    # 1) 精选(30 条常用)放最前 —— LLM 第一眼看到的就是高频命令,降低它对长尾的注意力分散
+    lines.append("【常用命令(按场景挑用,高频先看)】")
     for c in curated:
         lines.append(f"- `{c['id']}` ({c['label']}): {c['params']}")
+
+    # 2) 全量 CLI 命令注册表:不抽样,按桶分类全部给 LLM 看(实测 500+ 命令 ~25KB,
+    #    qwen/minimax 这类模型都吃得下)。分桶后 LLM 按"先选桶再选命令"两步走,
+    #    比 500 条平铺在一行里好读得多。
     if extra_ids:
-        # 折叠成一行,只许 LLM 当参考;主清单用上面的精选
-        sample = sorted(extra_ids)
-        if len(sample) > 80:
-            sample = sample[:80]
+        # 桶规则:取命令 id 的首段(image.adjustments.curves → "image", "adjustments")
+        # "image.adjustments.curves" → ("image", "adjustments", "curves")
+        # "filter.blur.gaussianBlur" → ("filter", "blur", "gaussianBlur")
+        buckets: dict[tuple[str, str], list[str]] = {}
+        for cid in extra_ids:
+            parts = cid.split(".")
+            if len(parts) >= 3:
+                bucket = (parts[0], parts[1])
+            else:
+                bucket = (parts[0], "_")
+            buckets.setdefault(bucket, []).append(cid)
         lines.append("")
-        lines.append("【其它 photocraft 已知命令(必要时可用,参数请严格按 schema)】")
-        lines.append("、".join(f"`{x}`" for x in sample))
+        lines.append("【全量命令注册表(按桶分块,需要查具体参数时再翻 schema)】")
+        for bucket in sorted(buckets):
+            ids = sorted(buckets[bucket])
+            lines.append(f"  · `{bucket[0]}.{bucket[1]}.*`({len(ids)}): " +
+                         "、".join(f"`{x}`" for x in ids))
     return "\n".join(lines)
 
 

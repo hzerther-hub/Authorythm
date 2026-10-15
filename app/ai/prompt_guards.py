@@ -24,6 +24,8 @@ IMAGE_MARKER = "画面质量要求"
 VIDEO_MARKER = "视频质量要求"
 PERFORMANCE_MARKER = "表演要求"
 PACING_MARKER = "节奏要求"
+CAMERA_MARKER = "镜头要求"
+CONSISTENCY_MARKER = "一致性要求"
 # 参考图锁的 marker:幂等关键字,二次调用不重复追加
 REFERENCE_LOCK_MARKER = "参考图外貌锁定"
 
@@ -171,11 +173,37 @@ def apply_image_quality_guard(prompt: str, people: int = 1) -> str:
     return _append_guard(prompt, build_image_quality_guard(people), IMAGE_MARKER)
 
 
+# 镜头语言守卫(对齐 Agnes 官方「提示词建议」第 3 项:镜头语言)。
+# 官方把「推拉摇移跟、固定镜头、景别」列为独立一项 —— 不显式写,视频模型默认
+# 固定机位 + 中景,短剧最需要的近景/过肩/跟拍就出不来。
+VIDEO_CAMERA_GUARD = (
+    "镜头要求：镜头运动与景别按提示词描述执行，没有指定时使用自然的跟随或缓慢推进；"
+    "人物说话时保持面部清晰可见的双人过肩或近景，不做无意义的大幅甩镜与快速变焦"
+)
+
+# 一致性守卫(对齐官方建议第 6 项:一致性要求)。
+# 视频模型跨帧最容易漂的就是人物相貌与场景陈设,而本项目每个镜头都绑了角色
+# 参考图(keyframe 模式下首帧已做身份锁定,这里说的是**运动过程中**不许漂)。
+VIDEO_CONSISTENCY_GUARD = (
+    "一致性要求：人物的五官、发型、体型、服装与随身道具在整段视频中保持不变，"
+    "不发生换脸、换装或年龄漂移；场景的陈设、材质与光照方向保持一致；"
+    "首帧与末帧属于同一时空的同一次连续拍摄"
+)
+
+
 def apply_video_guards(prompt: str) -> str:
-    """视频提示词统一追加质量 + 表演 + 节奏三层守卫(各自 marker 独立幂等)。"""
+    """视频提示词统一追加质量 + 表演 + 节奏 + 镜头 + 一致性五层守卫
+    (各自 marker 独立幂等)。
+
+    后两层对齐 Agnes 官方「提示词建议」的六段结构 —— 原先只有前三层,官方明确
+    单列的「镜头语言」与「一致性要求」两段缺失,视频模型拿不到就按默认固定机位
+    中景出片,且运动中的人物外貌会漂。
+    """
     out = _append_guard(prompt, VIDEO_QUALITY_GUARD, VIDEO_MARKER)
     out = _append_guard(out, VIDEO_PERFORMANCE_GUARD, PERFORMANCE_MARKER)
-    return _append_guard(out, VIDEO_PACING_GUARD, PACING_MARKER)
+    out = _append_guard(out, VIDEO_PACING_GUARD, PACING_MARKER)
+    out = _append_guard(out, VIDEO_CAMERA_GUARD, CAMERA_MARKER)
+    return _append_guard(out, VIDEO_CONSISTENCY_GUARD, CONSISTENCY_MARKER)
 
 
 def comic_people_prefix(people: int) -> str:

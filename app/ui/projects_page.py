@@ -8,15 +8,18 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
+
+from PIL import Image
 
 from PySide6.QtGui import QCursor, QPainter, QPolygon, QFont
-from PySide6.QtCore import Qt, Signal, QPoint, QRect
+from PySide6.QtCore import Qt, Signal, QPoint, QRect, QEvent
 from PySide6.QtWidgets import (QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from .confirm import ask
-from ..core import db
+from ..core import db, config
 from ..core.i18n import tr
 from ..core.theme import (SLATE_BAR, SLATE_BAR_INK, SLATE_BAR_DIM, SLATE_BG, SLATE_PAPER,
                           SLATE_MUTED, SLATE_HAIR, SLATE_HAIR_HV, SLATE_META, SLATE_STRIPE,
@@ -286,13 +289,36 @@ class ProjectCard(QFrame):
         cl.setContentsMargins(8, 8, 8, 8)
         self._thumb = drama.get("thumbnail") or ""
         if self._thumb:
+            # 封面高度:按图比例缩放,但**必须给底部信息区留出空间** ——
+            # 卡片 setFixedSize(CARD_W, CARD_H=348),信息区(标题/统计/状态)约 142px。
+            # 之前上限 498:竖版封面涨到 498 后信息区被挤出卡片可视区,点都点不到。
+            # 上限改为 CARD_H - STRIP_H - 信息区最小高度,再把比例钳制在合理范围:
+            # 上限 240(3:4 竖版图能显示大半,横版 2:1 图照旧 148 不受影响)。
+            img_path = config.media_url_to_path(self._thumb) \
+                if self._thumb.startswith(("/static/", "static/")) else Path(self._thumb)
+            img_w = img_h = 0
+            try:
+                if img_path.exists():
+                    with Image.open(img_path) as _p:
+                        img_w, img_h = _p.size
+            except Exception:  # noqa: BLE001
+                pass
+            if img_w > 0 and img_h > 0:
+                ratio = img_w / img_h
+                info_min = self.CARD_H - self.STRIP_H - self.COVER_H   # 信息区保底 ≈170
+                cover_max = self.CARD_H - self.STRIP_H - max(140, info_min - 30)
+                cover_h = max(self.COVER_H, min(int((self.CARD_W - 16) / ratio), cover_max))
+            else:
+                cover_h = self.COVER_H
+            cover.setFixedHeight(int(cover_h))
+
             img = _CoverLabel()
             img.setAlignment(Qt.AlignCenter)
-            # KeepAspectRatio:整图可见,缩到 (CARD_W-16, COVER_H-16) 合约束之内。
-            # 竖屏图会在左右留出米白 letterbox,横屏图在上下留;背景被 #slateCover 的
-            # 米色盖住,整体视觉一致。
+            # KeepAspectRatio(默认):完整可见,等比缩进框内;竖屏图在左右 letterbox,
+            # 横屏图在上下 letterbox —— 都不被裁,不变形,不变模糊
             img.setStyleSheet("background:transparent; border:none;")
-            img.setPixmap(W.pixmap_from_media(self._thumb, self.CARD_W - 16, self.COVER_H - 16))
+            img.setPixmap(W.pixmap_from_media(self._thumb, self.CARD_W - 16,
+                                              int(cover_h) - 16))
             img.setCursor(Qt.PointingHandCursor)
             img.clicked.connect(self._preview_cover)
             cl.addWidget(img)
@@ -316,17 +342,25 @@ class ProjectCard(QFrame):
         root.addWidget(cover)
 
         # ─── 主体 ───
+        # 底部信息区加一层近白半透明遮罩底:封面换了动态高度后,标题/统计可能
+        # 视觉上贴着封面下缘,浅色封面上黑字看不清(用户红框)。半透明白底
+        # 保证任何封面下都可读,同时不破坏 slate 卡的整体观感。
         body = QWidget()
-        body.setStyleSheet("background:transparent; border:none;")
+        body.setStyleSheet(
+            "background:rgba(250,249,246,0.92); border:none;"
+            "border-top:1px solid " + SLATE_HAIR + ";")
         bl = QVBoxLayout(body)
         bl.setContentsMargins(14, 9, 14, 10)
         bl.setSpacing(4)
         # 标题(标题行也用 Inter,故意不用 mono——保持层级)
+        # 之前 14px + maxHeight=38:长标题「两界穿梭·科技修仙」只能单行,右边裁掉
+        # 用户看着「…科技修」以为看不清 —— 实际是字号大+高度受限导致截断。
+        # 改 13px + maxHeight=54(3 行容纳空间),wordWrap=True 自动换行。
         title = QLabel(drama["title"])
         title.setObjectName("slateTitle")
         title.setWordWrap(True)
         title.setToolTip(drama["title"])
-        title.setMaximumHeight(38)
+        title.setMaximumHeight(54)
         bl.addWidget(title)
         # chip 行:type (mono) + 可选 imitated + 可选 风格名
         chips = QHBoxLayout()
@@ -559,11 +593,26 @@ class ProjectsPage(QWidget):
         self.grid.setAlignment(Qt.AlignTop | Qt.AlignLeft)
         self.scroll.setWidget(self.holder)
         root.addWidget(self.scroll, 1)
+        # 响应式重排:列数依赖 viewport 宽度,窗口拉伸/还原时必须重算,
+        # 否则只在启动/筛选时算一次,拖窄了还是老列数(用户:「应自适应,放多个项目」)
+        self._last_cols = 0
+        self.scroll.viewport().installEventFilter(self)
         self._new_cb = None
         self.reload()
 
     def set_new_callback(self, cb) -> None:
         self._new_cb = cb
+
+    def eventFilter(self, obj, ev):
+        """viewport 尺寸变化 → 列数变了才重排(防抖:只在列数真的改变时 reload,
+        否则拖动过程中每一帧都重建所有卡片,会卡)。"""
+        if obj is self.scroll.viewport() and ev.type() == QEvent.Resize:
+            gap = self.grid.spacing() or 0
+            avail = self.scroll.viewport().width() or 1200
+            want = max(1, (avail + gap) // (ProjectCard.CARD_W + gap))
+            if want != getattr(self, "_last_cols", 0):
+                self.reload()
+        return super().eventFilter(obj, ev)
 
     def _new_project(self):
         if self._new_cb:
@@ -590,7 +639,14 @@ class ProjectsPage(QWidget):
             shown.sort(key=lambda x: x["title"])
         else:
             shown.sort(key=lambda x: x.get("updated_at") or "", reverse=True)
-        cols = max(1, (self.scroll.viewport().width() or 1200) // 276)
+# 列数自适应:必须把 grid 间距算进去,否则算出的列数比实际放得下的多一行,
+        # 表现为「宽屏排成 5+1」(原式 viewport//276 只算卡宽、漏了 16px 间距:
+        # 1700//276=6,但 6×280+5×16=1760 > 1700,第 6 张必然换行)。
+        # 正确口径:(可用宽 + 间距) // (卡宽 + 间距),窗口拉宽/拉窄都会自动增减列。
+        _gap = self.grid.spacing() or 0
+        _avail = (self.scroll.viewport().width() or 1200)
+        cols = max(1, (_avail + _gap) // (ProjectCard.CARD_W + _gap))
+        self._last_cols = cols
         for i, d in enumerate(shown):
             card = ProjectCard(d)
             card.open_requested.connect(self.open_drama.emit)

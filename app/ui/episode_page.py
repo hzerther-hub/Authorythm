@@ -863,14 +863,23 @@ class EpisodePage(QWidget):
                 self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
 
     def _sync_res_tiers(self):
-        """分辨率档位随视频厂商联动(对齐原版 RESOLUTION_TIERS)。"""
+        """分辨率档位随视频厂商联动(对齐原版 RESOLUTION_TIERS)。
+
+        agnes 再按**型号**收窄:agnes-video-2.5-flash 官方锁死 720P(其它档位
+        HTTP 400),让用户挑了 1080P 却静默出 720P 属于不诚实 —— 直接不给他选。
+        """
         from ..ai.video_client import RESOLUTION_TIERS
         cid = self.video_model.currentData()
-        provider = None
+        provider = model = None
         if cid:
-            row = db.q1("SELECT provider FROM ai_service_configs WHERE id=?", (cid,))
-            provider = row["provider"] if row else None
+            row = db.q1("SELECT provider, model FROM ai_service_configs WHERE id=?", (cid,))
+            if row:
+                provider = row["provider"]
+                model = row["model"]
         tiers = RESOLUTION_TIERS.get(provider or "", ["480p", "720p", "1080p"])
+        if provider == "agnes":
+            from ..ai.agnes_video import DEFAULT_MODEL, size_tiers
+            tiers = list(size_tiers(model or DEFAULT_MODEL))
         cur = self.res_combo.currentText()
         self.res_combo.blockSignals(True)
         self.res_combo.clear()
@@ -1197,6 +1206,7 @@ class EpisodePage(QWidget):
         row.addWidget(self.novel_btn)
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         W.set_icon(self.batch_btn, "list")
+        self.batch_btn.setToolTip(tr("batch_write_tip"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
         self.review_badge = QPushButton("")
@@ -3655,6 +3665,72 @@ class EpisodePage(QWidget):
         ff_lay.addLayout(ff_act)
         el.addWidget(ff_frame)
 
+        # ── 尾帧(Agnes keyframe 模式能力)+ 随机种子──
+        # 尾帧默认不生成、不下发:官方规定 keyframe 模式会丢弃参考图,开了尾帧就等于
+        # 用「构图可控」换「角色一致性」。所以做成显式开关,由用户按镜头取舍。
+        lf_frame = QFrame()
+        lf_frame.setObjectName("paramCard")
+        lf_lay = QVBoxLayout(lf_frame)
+        lf_lay.setContentsMargins(10, 8, 10, 10)
+        lf_lay.setSpacing(6)
+        lf_head = QHBoxLayout()
+        lf_title = QLabel(tr("gen_last_frame"))
+        lf_title.setObjectName("inspectorLabel")
+        lf_head.addWidget(lf_title)
+        lf_head.addStretch(1)
+        self.sb_lf_clear_btn = W.icon_btn(
+            QStyle.StandardPixmap.SP_TrashIcon, tr("clear_last_frame"),
+            size=18, fallback="×")
+        self.sb_lf_clear_btn.clicked.connect(lambda _=False: self._clear_last_frame())
+        lf_head.addWidget(self.sb_lf_clear_btn)
+        lf_lay.addLayout(lf_head)
+        lf_row = QHBoxLayout()
+        lf_row.setSpacing(10)
+        self.sb_lf_img = QLabel()
+        self.sb_lf_img.setFixedSize(190, 150)
+        self.sb_lf_img.setAlignment(Qt.AlignCenter)
+        self.sb_lf_img.setObjectName("firstFrameImg")
+        self.sb_lf_img.setToolTip(tr("last_frame_hint"))
+        lf_row.addWidget(self.sb_lf_img)
+        lf_right = QVBoxLayout()
+        lf_right.setSpacing(6)
+        lf_hint = W.muted(tr("last_frame_hint"))
+        lf_hint.setWordWrap(True)
+        lf_hint.setObjectName("inspectorLabel")
+        lf_right.addWidget(lf_hint)
+        lf_right.addStretch(1)
+        lf_row.addLayout(lf_right, 1)
+        lf_lay.addLayout(lf_row)
+        lf_act = QHBoxLayout()
+        lf_act.setSpacing(6)
+        self.sb_lf_gen_btn = WaitingButton("▣ " + tr("gen_last_frame"))
+        self.sb_lf_gen_btn.setObjectName("ffAction")
+        self.sb_lf_gen_btn.setCursor(Qt.PointingHandCursor)
+        self.sb_lf_gen_btn.clicked.connect(lambda _=False: self._gen_last_frame(self._sb_id))
+        lf_act.addWidget(self.sb_lf_gen_btn)
+        lf_act.addStretch(1)
+        lf_lay.addLayout(lf_act)
+        el.addWidget(lf_frame)
+
+        # 随机种子:空 = 不固定;同 seed 可复现,便于同一镜头反复对比调参
+        seed_row = QHBoxLayout()
+        seed_row.setSpacing(6)
+        seed_lab = QLabel(tr("video_seed"))
+        seed_lab.setObjectName("inspectorLabel")
+        seed_row.addWidget(seed_lab)
+        self.sb_video_seed = QSpinBox()
+        self.sb_video_seed.setRange(0, 999999999)
+        self.sb_video_seed.setSpecialValueText("-")
+        self.sb_video_seed.setToolTip(tr("video_seed_hint"))
+        # Ignored 水平策略:spin 盒的 minimumSizeHint 会把整行撑宽,窄栏里必须压掉
+        self.sb_video_seed.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.sb_video_seed.setMaximumWidth(120)
+        self.sb_video_seed.valueChanged.connect(self._save_video_seed)
+        seed_row.addWidget(self.sb_video_seed)
+        seed_row.addWidget(W.muted(tr("video_seed_hint")))
+        seed_row.addStretch(1)
+        el.addLayout(seed_row)
+
         # 参考素材:角色 / 场景 / 道具 三个页签 —— 参考项目里它固定在检查器
         # 右列(video-inspector-refs 占 grid-column 2),与左列编辑区并排、各自滚动
         refs_col = QWidget()
@@ -4168,6 +4244,7 @@ class EpisodePage(QWidget):
         self._refresh_video_panel(r)
         self._render_setting_tags(r)
         self._render_first_frame(r)
+        self._render_last_frame(r)
         self._render_refs(r)
         self._render_bound_refs(r)
         self.sb_ai_prompt_btn.setEnabled(True)
@@ -4958,6 +5035,67 @@ class EpisodePage(QWidget):
         self.sb_ff_approve_btn.setEnabled(bool(url) and status != "approved")
         self.sb_ff_gen_btn.setEnabled(bool(self._sb_id))
 
+    def _render_last_frame(self, r: dict):
+        """刷新尾帧预览区:图 / 空态 + 按钮可用性 + seed 回填。
+
+        seed 用 spin 的 specialValueText("-") 表示「空」,所以回填时 0 归一到空态。
+        """
+        url = (r.get("last_frame_image") or "").strip()
+        self._sb_lf_url = url
+        if url:
+            self.sb_lf_img.setPixmap(W.pixmap_from_media(url, 190, 150))
+        else:
+            self.sb_lf_img.setPixmap(QPixmap())
+            self.sb_lf_img.setText(tr("no_last_frame"))
+            self.sb_lf_img.setAlignment(Qt.AlignCenter)
+        self.sb_lf_gen_btn.setEnabled(bool(self._sb_id))
+        self.sb_lf_clear_btn.setVisible(bool(url))
+        try:
+            self.sb_video_seed.blockSignals(True)
+            self.sb_video_seed.setValue(int(r.get("video_seed") or 0))
+        except (TypeError, ValueError):
+            self.sb_video_seed.setValue(0)
+        finally:
+            self.sb_video_seed.blockSignals(False)
+
+    def _save_video_seed(self, sb_id: int):
+        """spin 变化即落库。0 = 不固定(存 NULL,不下发)。"""
+        if not sb_id or not hasattr(self, "sb_video_seed"):
+            return
+        val = self.sb_video_seed.value()
+        db.ex("UPDATE storyboards SET video_seed=?, updated_at=? WHERE id=?",
+              (val or None, db.now(), sb_id))
+
+    def _clear_last_frame(self):
+        """清除尾帧:删记录并立刻重渲,让本镜回到纯首帧模式。"""
+        if not self._sb_id:
+            return
+        db.ex("UPDATE storyboards SET last_frame_image='', updated_at=? WHERE id=?",
+              (db.now(), self._sb_id))
+        srow = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
+        if srow:
+            self._render_last_frame(dict(srow))
+
+    def _gen_last_frame(self, sb_id: int):
+        from ..pipeline import shot_tools
+        btn = getattr(self, "sb_lf_gen_btn", None)
+        if btn is not None and hasattr(btn, "busy"):
+            btn.busy(tr("in_progress"))
+        def job(tid):
+            return shot_tools.generate_last_frame(self.episode_id, sb_id,
+                                                   config_id=self.image_model.currentData())
+        def done(tid, result, error):
+            if btn is not None and hasattr(btn, "idle"):
+                btn.idle()
+            if error:
+                err("▣ 尾帧失败:" + str(error)[:280])
+            self._reload_storyboard()
+            if self._sb_id == sb_id:
+                srow = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+                if srow:
+                    self._render_last_frame(dict(srow))
+        TASKMGR.submit("image", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
+
     def _preview_reference_image(self, url: str):
         """点参考图缩略图 → 弹大图预览。"""
         if not url:
@@ -5107,8 +5245,12 @@ class EpisodePage(QWidget):
         db.ex("UPDATE storyboards SET status='processing' WHERE id=?", (sb_id,))
         res = self.res_combo.currentText()
         def job(tid):
-            return shot_tools.compose_from_image(self.episode_id, sb_id, res,
-                                                 config_id=self.video_model.currentData())
+            # on_progress 在 worker 线程里被调用,只能写库/发信号,
+            # 绝不能碰 Qt 控件(set_task_progress 内部 emit,消费方在主线程)
+            return shot_tools.compose_from_image(
+                self.episode_id, sb_id, res,
+                config_id=self.video_model.currentData(),
+                on_progress=lambda pct: TASKMGR.set_task_progress(tid, pct))
         def done(tid, result, error):
             if btn is not None and hasattr(btn, "idle"):
                 btn.idle()
@@ -5571,6 +5713,36 @@ class EpisodePage(QWidget):
     def _drama_aspect(self) -> str:
         return getattr(self, "_drama_aspect_ratio", "9:16")
 
+    def _warn_agnes_params(self, sb: dict, res: str | None) -> None:
+        """生成前体检:把「会被 Agnes 静默改写」的参数如实告诉用户。
+
+        只在 provider=agnes 时检查 —— 其它厂商没有这些档位约束。
+        非模态提示:批量生成时弹框会卡死整批,一个对照都不弹又等于没提示。
+        """
+        try:
+            from ..ai import registry
+            from ..ai.agnes_video import adapt_seconds, is_flash, normalize_aspect_ratio
+            from ..core.taskmgr import on_main
+            cfg = registry.default_config("video", getattr(self, "_video_cfg_id", None))
+            if (cfg or {}).get("provider") != "agnes":
+                return
+            model = cfg.get("model") or ""
+            notes: list[str] = []
+            _secs, wanted = adapt_seconds(int(sb.get("duration") or 8))
+            if wanted:
+                notes.append(tr("agnes_dur_clamped").format(wanted))
+            aspect = self._drama_aspect()
+            _ratio, note = normalize_aspect_ratio(aspect, res)
+            if note:
+                notes.append(note)
+            if is_flash(model) and (res or "").strip().upper() != "720P":
+                notes.append(tr("agnes_flash_720p"))
+            if not notes:
+                return
+            on_main(lambda: warn(tr("agnes_param_adjusted") + ": " + "；".join(notes)))
+        except Exception:  # noqa: BLE001
+            pass      # 体检失败绝不能挡住生成
+
     def _gen_one_video(self, sb_id: int, res: str | None = None,
                        config_id: int | None = None,
                        image_cfg: int | None = None) -> str:
@@ -5593,6 +5765,7 @@ class EpisodePage(QWidget):
             from ..core import db as _db
             style = _db.style_prompt(_db.drama_style(self.drama_id))
             prompt = f"{style}。{prompt}" if prompt else style
+            self._warn_agnes_params(sb, res)
             ref_list = shot_tools.collect_reference_images(self.episode_id, sb_id)
             # 无首帧先补一张「有景物有人物」的定场帧再生成 —— 纯文生视频
             # 开场常是黑帧/空镜,成片第一眼没有画面(用户要求第一帧必须带景带人)
@@ -5606,11 +5779,15 @@ class EpisodePage(QWidget):
                 first_frame = str(config.media_url_to_path(shot_tools.generate_first_frame(
                     self.episode_id, sb_id,
                     config_id=image_cfg if image_cfg is not None else self.image_model.currentData())))
+            last_frame = str(config.media_url_to_path(sb["last_frame_image"])) \
+                if (sb["last_frame_image"] or "").strip() else None
             path, _p = video_client.generate_video(
                 prompt[:1500], resolution=res, duration=int(sb["duration"] or 8),
                 first_frame=first_frame, reference_images=ref_list,
                 config_id=config_id if config_id is not None else self.video_model.currentData(),
-                aspect_ratio=self._drama_aspect())
+                aspect_ratio=self._drama_aspect(),
+                last_frame=last_frame,
+                seed=(sb["video_seed"] if "video_seed" in sb.keys() else None) or None)
             # 用户在跑的过程中点了「停止生成」→ 丢弃这次结果,别把已归位的状态再写回去
             if sb_id in self._cancelled_sb:
                 self._cancelled_sb.discard(sb_id)

@@ -414,12 +414,18 @@ def _synthesize_volc(text: str, voice: str, cfg: dict,
 
 
 def test_config(cfg: dict) -> tuple[bool, str]:
-    """连通性探针:发真实最小合成(2 字),因为 submit 空体会回 500 导致永远测试不通过。"""
+    """连通性探针:发真实最小合成(2 字),因为 submit 空体会回 500 导致永远测试不通过。
+
+    config_id 用 `cfg.get("id")` 而不是 `cfg["id"]`:设置页 **弹窗**里的「测试配置」
+    传的是 `ServiceDialog._collect()` 的结果,那个 dict **不带 id**(新增配置时更是
+    根本没有),下标取值直接 KeyError → 弹窗里点测试永远失败(列表页传整行才有 id)。
+    None 是安全的:synthesize 内部会按优先级挑默认 TTS 配置。
+    """
     voice = cfg.get("model") or ""
     if not voice or voice.upper().startswith("BV"):
         voice = DEFAULT_VOICE
     try:
-        p = synthesize("你好", voice=voice, config_id=cfg["id"])
+        p = synthesize("你好", voice=voice, config_id=cfg.get("id"))
         p.unlink(missing_ok=True)
         return True, "OK(真实合成验证通过)"
     except Exception as e:  # noqa: BLE001

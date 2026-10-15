@@ -23,8 +23,8 @@ from pathlib import Path
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
-                               QHBoxLayout, QLabel, QMessageBox, QPushButton,
-                               QSlider, QVBoxLayout, QWidget)
+                               QGridLayout, QHBoxLayout, QLabel, QMessageBox,
+                               QPushButton, QSlider, QVBoxLayout, QWidget)
 
 from ..core import config, db
 from ..core.i18n import tr
@@ -48,6 +48,20 @@ CROP_PRESETS = [
 ]
 
 FILTERS = ["无", "黑白", "复古", "冷调", "暖调", "锐化", "柔焦"]
+
+# 水印预设(用户点一下即填好文字 + 颜色 + 字号 + 位置)
+# 只给「文字水印」用;图片水印不涉及字体/文字,预设下拉对图片类型无意义。
+# 每项:文字 / (R,G,B) / 字号%(占图高) / 位置(归一化) / 是否竖排
+_WM_PRESETS = {
+    "右下角·白": ("© 版权声明", (255, 255, 255), 5, (0.86, 0.92), False),
+    "右下角·半透明": ("© 版权声明", (255, 255, 255), 5, (0.86, 0.92), False),
+    "居中大字·白": ("样片", (255, 255, 255), 14, (0.5, 0.5), False),
+    "居中大字·描边": ("样片", (240, 240, 240), 14, (0.5, 0.5), False),
+    "右上角·红": ("禁止转载", (230, 60, 60), 6, (0.88, 0.1), False),
+    "左下角·黄": ("内部资料", (255, 210, 60), 6, (0.1, 0.9), False),
+    "右侧竖排": ("机密", (255, 255, 255), 6, (0.94, 0.5), True),
+    "左侧竖排": ("机密", (255, 255, 255), 6, (0.06, 0.5), True),
+}
 
 
 class ImageEditDialog(QDialog):
@@ -94,6 +108,8 @@ class ImageEditDialog(QDialog):
         self.wm_color = QColor(Qt.white)
         # 多水印:「加水印」把当前参数存为一个条目,支持多个共存;竖排逐字竖着排
         self.wm_items: list[dict] = []
+        # 图片水印:选中的本地图片路径(空 = 未选)
+        self._wm_image_file: str = ""
         self.preview.mousePressEvent = self._wm_press
         self.preview.mouseMoveEvent = self._wm_move
         self.preview.mouseReleaseEvent = self._wm_release
@@ -151,6 +167,31 @@ class ImageEditDialog(QDialog):
         tools.addWidget(apply_f)
 
         tools.addWidget(self._section_label(tr("文字水印")))
+        # ── 水印类型:文字 / 图片 ──
+        # 用户可选用文字还是图片当水印。两者参数不同(文字有字体/竖排,图片有
+        # 缩放/形状),所以做成互斥切换,各自显示自己的参数行。
+        type_row = QHBoxLayout()
+        type_row.setSpacing(6)
+        type_row.addWidget(QLabel(tr("水印类型")))
+        self.wm_type = QComboBox()
+        self.wm_type.addItem(tr("文字水印"), "text")
+        self.wm_type.addItem(tr("图片水印"), "image")
+        self.wm_type.currentIndexChanged.connect(self._on_wm_type)
+        type_row.addWidget(self.wm_type, 1)
+        tools.addLayout(type_row)
+
+        # ── 预设样式(点一下即填好文字+颜色+字号+位置)──
+        preset_row = QHBoxLayout()
+        preset_row.setSpacing(4)
+        preset_row.addWidget(QLabel(tr("水印预设")))
+        self.wm_preset = QComboBox()
+        self.wm_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        for name in _WM_PRESETS:
+            self.wm_preset.addItem(name, name)
+        self.wm_preset.currentIndexChanged.connect(self._apply_wm_preset)
+        preset_row.addWidget(self.wm_preset, 1)
+        tools.addLayout(preset_row)
+
         self.wm_text = QWidget()
         wl = QVBoxLayout(self.wm_text)
         wl.setContentsMargins(0, 0, 0, 0)
@@ -199,6 +240,31 @@ class ImageEditDialog(QDialog):
         self.wm_size.valueChanged.connect(self._on_wm_size)
         self._sync_wm_color_btn()
 
+        # ── 图片水印参数(切到「图片水印」时显示)──
+        self.wm_image_box = QWidget()
+        il = QVBoxLayout(self.wm_image_box)
+        il.setContentsMargins(0, 0, 0, 0)
+        il.setSpacing(6)
+        pick_row = QHBoxLayout()
+        pick_row.setSpacing(6)
+        pick_row.addWidget(QLabel(tr("水印图片")))
+        self.wm_image_path = QLabel(tr("未选择图片"))
+        self.wm_image_path.setObjectName("muted")
+        pick_row.addWidget(self.wm_image_path, 1)
+        pick_img = QPushButton(tr("选择图片…"))
+        pick_img.setCursor(Qt.PointingHandCursor)
+        pick_img.clicked.connect(self._pick_wm_image)
+        pick_row.addWidget(pick_img)
+        il.addLayout(pick_row)
+        irow = QHBoxLayout()
+        irow.setSpacing(6)
+        irow.addWidget(QLabel(tr("图片大小")))
+        self.wm_img_size = self._slider(irow, "", 5, 60, 20, compact=True)
+        irow.addStretch(1)
+        il.addLayout(irow)
+        self.wm_image_box.setVisible(False)
+        tools.addWidget(self.wm_image_box)
+
         wrow = QHBoxLayout()
         self.wm_opacity = self._slider(wrow, tr("透明度"), 10, 100, 80, compact=True)
         add_wm = QPushButton(tr("add_watermark_item"))
@@ -210,6 +276,30 @@ class ImageEditDialog(QDialog):
         clear_wm.clicked.connect(self._clear_watermarks)
         wrow.addWidget(clear_wm)
         tools.addLayout(wrow)
+
+        # ── 水印位置:九宫格快捷 ──
+        # 预览上可以拖,但拖拽对"文字 / 图片"两类水印都要先手上有水印才生效;
+        # 这里给 9 个归一化坐标按钮(0.1/0.5/0.9),点一下即定位,文字图片通用。
+        pos_row = QHBoxLayout()
+        pos_row.setSpacing(6)
+        pos_row.addWidget(QLabel(tr("水印位置")))
+        grid = QWidget()
+        gl = QGridLayout(grid)
+        gl.setContentsMargins(0, 0, 0, 0)
+        gl.setSpacing(2)
+        self._pos_btns: dict[tuple[float, float], QPushButton] = {}
+        for r, fy in enumerate((0.12, 0.5, 0.88)):
+            for c, fx in enumerate((0.12, 0.5, 0.88)):
+                b = QPushButton()
+                b.setFixedSize(22, 22)
+                b.setCursor(Qt.PointingHandCursor)
+                b.setToolTip(f"{int(fx*100)}%, {int(fy*100)}%")
+                b.clicked.connect(lambda _=False, x=fx, y=fy: self._set_wm_pos(x, y))
+                gl.addWidget(b, r, c)
+                self._pos_btns[(fx, fy)] = b
+        pos_row.addWidget(grid)
+        pos_row.addStretch(1)
+        tools.addLayout(pos_row)
         tools.addWidget(self.wm_text)
 
         tools.addWidget(self._section_label(tr("尺寸")))
@@ -449,7 +539,10 @@ class ImageEditDialog(QDialog):
             return rgb
         self._apply(fn)
 
-    def _on_wm_size(self, v: int):
+    def _on_wm_size(self, v: int | None = None):
+        # v 可省:预设/程序化设置 size 时会直接调本方法刷新百分比标签
+        if v is None:
+            v = self.wm_size.value()
         self.wm_size_lab.setText(f"{v}%")
         self._render()
 
@@ -467,8 +560,25 @@ class ImageEditDialog(QDialog):
         return ImageFont.load_default()
 
     def _wm_snapshot(self) -> dict:
-        """当前控件状态 → 一个水印条目。"""
-        return {"text": self.wm_input.text().strip(),
+        """当前控件状态 → 一个水印条目。
+
+        kind="text" 时带字体/文字/竖排;kind="image" 时带图片路径 + 缩放百分比。
+        两种共用 color / size_pct / opacity / pos,渲染时按 kind 分派。
+        """
+        kind = self.wm_type.currentData() or "text"
+        if kind == "image":
+            return {"kind": "image",
+                    "text": "",
+                    "image": self._wm_image_file or "",
+                    "color": self.wm_color,
+                    "font_file": "",
+                    "size_pct": self.wm_img_size.value(),
+                    "opacity": self.wm_opacity.value() / 100.0,
+                    "pos": self.wm_pos,
+                    "vertical": False}
+        return {"kind": "text",
+                "text": self.wm_input.text().strip(),
+                "image": "",
                 "color": self.wm_color,
                 "font_file": self.wm_font.currentData() or "",
                 "size_pct": self.wm_size.value(),
@@ -476,8 +586,71 @@ class ImageEditDialog(QDialog):
                 "pos": self.wm_pos,
                 "vertical": self.wm_vertical.isChecked()}
 
-    def _draw_one_wm(self, layer_draw, im_size, it, font_of):
-        """在 layer 上画一个水印;竖排 = 逐字向下排。中心对齐 pos。"""
+    def _on_wm_type(self, _idx: int = 0):
+        """切换文字/图片水印:显示对应的参数块,并刷新预览。"""
+        kind = self.wm_type.currentData() or "text"
+        self.wm_image_box.setVisible(kind == "image")
+        self.wm_text.setVisible(kind == "text")
+        # 预设只对文字有意义(图片水印没有字体/文字内容)
+        self.wm_preset.setEnabled(kind == "text")
+        self._render()
+
+    def _set_wm_pos(self, fx: float, fy: float):
+        """九宫格按钮:设置水印归一化位置。"""
+        self.wm_pos = (fx, fy)
+        self._sync_pos_btns()
+        self._render()
+
+    def _sync_pos_btns(self):
+        """高亮当前所处九宫格位置(误差内算命中)。"""
+        for (fx, fy), b in getattr(self, "_pos_btns", {}).items():
+            hit = abs(fx - self.wm_pos[0]) < 0.02 and abs(fy - self.wm_pos[1]) < 0.02
+            b.setStyleSheet(
+                "QPushButton{background:#f97316;border:1px solid #f97316;border-radius:4px;}"
+                if hit else
+                "QPushButton{background:#fff;border:1px solid #dcdad3;border-radius:4px;}"
+                "QPushButton:hover{border-color:#f97316;}")
+
+    def _apply_wm_preset(self, _idx: int = 0):
+        """点预设:把文字/颜色/字号/位置/竖排一次性填好。"""
+        name = self.wm_preset.currentData()
+        p = _WM_PRESETS.get(name or "")
+        if not p:
+            return
+        text, rgb, size_pct, pos, vertical = p
+        self.wm_input.setText(text)
+        from PySide6.QtGui import QColor as _QC
+        self.wm_color = _QC(*rgb)
+        self._sync_wm_color_btn()
+        self.wm_size.setValue(int(size_pct))
+        self._on_wm_size()
+        self.wm_vertical.setChecked(bool(vertical))
+        self.wm_pos = pos
+        self._sync_pos_btns()
+        self._render()
+
+    def _pick_wm_image(self):
+        from PySide6.QtWidgets import QFileDialog as _QFD
+        path, _ = _QFD.getOpenFileName(
+            self, tr("选择水印图片"), "",
+            tr("图片文件 (*.png *.jpg *.jpeg *.webp *.bmp);;所有文件 (*.*)"))
+        if not path:
+            return
+        self._wm_image_file = path
+        from pathlib import Path as _Path
+        self.wm_image_path.setText(_Path(path).name)
+        self._render()
+
+    def _draw_one_wm(self, layer_draw, im_size, it, font_of, layer=None):
+        """在 layer 上画一个水印;竖排 = 逐字向下排。中心对齐 pos。
+
+        按 it["kind"] 分派:图片水印需要 layer 图对象(alpha_composite 贴图),
+        文字只靠 ImageDraw。layer 缺省时退化为只画文字。
+        """
+        if (it.get("kind") or "text") == "image":
+            if layer is not None:
+                self._wm_paste_image(layer, im_size, it)
+            return
         text = it["text"]
         px = max(10, int(im_size[1] * it["size_pct"] / 100.0))
         font = font_of(it["font_file"], px)
@@ -497,15 +670,51 @@ class ImageEditDialog(QDialog):
             layer_draw.text((cx, cy), text, font=font, anchor="mm",
                             fill=fill, stroke_width=stroke, stroke_fill=sf)
 
+    def _wm_paste_image(self, layer, im_size, it):
+        """把一张图片水印贴到 layer_draw 所在的 layer 上,按 pos 中心对齐。
+
+        ImageDraw 没有贴图 API,只能拿到 layer_draw 的底层图再 paste 回去;
+        这里用 layer_draw.im 直接操作(PIL 的 Draw.im 是核心图像对象)。
+        size_pct = 图片高度占原图高的百分比,保持宽高比。
+        """
+        path = it.get("image") or ""
+        if not path:
+            return
+        try:
+            from PIL import Image as _Img
+            p = config.media_url_to_path(path) if str(path).startswith(
+                ("/static/", "static/")) else __import__("pathlib").Path(path)
+            if not p.exists():
+                return
+            wm = _Img.open(p).convert("RGBA")
+        except Exception:  # noqa: BLE001 —— 图片读不了就跳过,别拖垮整张图
+            return
+        target_h = max(8, int(im_size[1] * it["size_pct"] / 100.0))
+        scale = target_h / max(1, wm.height)
+        target_w = max(1, int(wm.width * scale))
+        wm = wm.resize((target_w, target_h), _Img.LANCZOS)
+        alpha = int(255 * it["opacity"])
+        if alpha < 255:
+            # 整体透明度:改 alpha 通道,不碰 RGB(避免半透明时颜色发灰)
+            a = wm.getchannel("A").point(lambda v: int(v * alpha / 255))
+            wm.putalpha(a)
+        cx = int(im_size[0] * it["pos"][0])
+        cy = int(im_size[1] * it["pos"][1])
+        left = cx - target_w // 2
+        upper = cy - target_h // 2
+        # layer 是调用方传下来的 RGBA 图(ImageDraw 只管画点线,贴图要用图对象)。
+        # alpha_composite 天然按 alpha 混合,不需要额外遮罩;目标区域越界自动裁剪。
+        layer.alpha_composite(wm, dest=(left, upper))
+
     def _draw_wm(self, im):
         """画**全部**已加入的水印条目 + 正在编辑的这条(实时预览)。"""
         layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
         draw = ImageDraw.Draw(layer)
         for it in self.wm_items:
-            self._draw_one_wm(draw, im.size, it, self._wm_font_of_file)
+            self._draw_one_wm(draw, im.size, it, self._wm_font_of_file, layer)
         # 正在编辑的这条只在预览时叠加;提交后由 wm_items 渲染,避免画两遍
-        if self.wm_input.text().strip() and self._wm_editing_live:
-            self._draw_one_wm(draw, im.size, self._wm_snapshot(), self._wm_font_of_file)
+        if self._has_pending_wm() and self._wm_editing_live:
+            self._draw_one_wm(draw, im.size, self._wm_snapshot(), self._wm_font_of_file, layer)
         out = im.convert("RGBA")
         out.alpha_composite(layer)
         return out
@@ -521,10 +730,19 @@ class ImageEditDialog(QDialog):
                     continue
         return ImageFont.load_default()
 
+    def _has_pending_wm(self) -> bool:
+        """当前控件上是否有一条"还没加入"的待生效水印(文字或图片任一)。"""
+        if (self.wm_type.currentData() or "text") == "image":
+            return bool(self._wm_image_file)
+        return bool(self.wm_input.text().strip())
+
     def _add_watermark_item(self):
         """把当前参数存为一个水印条目(加入后可改参数再加下一个)。"""
-        text = self.wm_input.text().strip()
-        if not text:
+        if (self.wm_type.currentData() or "text") == "image":
+            if not self._wm_image_file:
+                err(tr("请先选择水印图片"))
+                return
+        elif not self.wm_input.text().strip():
             err(tr("cover_text_required"))
             return
         self.wm_items.append(self._wm_snapshot())
@@ -539,7 +757,7 @@ class ImageEditDialog(QDialog):
         """提交:已加入的条目 + 正在编辑的这条,一次画定。"""
         self.wm_dragging = False
         items = list(self.wm_items)
-        if self.wm_input.text().strip():
+        if self._has_pending_wm():
             items.append(self._wm_snapshot())
         if not items:
             err(tr("cover_text_required"))
@@ -549,7 +767,7 @@ class ImageEditDialog(QDialog):
             layer = Image.new("RGBA", im.size, (0, 0, 0, 0))
             draw = ImageDraw.Draw(layer)
             for it in items:
-                self._draw_one_wm(draw, im.size, it, self._wm_font_of_file)
+                self._draw_one_wm(draw, im.size, it, self._wm_font_of_file, layer)
             out = im.convert("RGBA")
             out.alpha_composite(layer)
             return out
@@ -805,9 +1023,9 @@ class ImageEditDialog(QDialog):
     def _render(self):
         im = self.current.convert("RGB")
         im.thumbnail((680, 620), Image.LANCZOS)
-        # 水印实时预览:输入有文字就叠加显示(未提交),拖动位置/换色/换字体即时可见。
+        # 水印实时预览:有待生效水印(文字或图片)就叠加显示(未提交),拖动位置/换色/换字体即时可见。
         # preview_scale = 缩略图高 / 实际高,把字号比例换算到缩略图坐标系。
-        if self.wm_input.text().strip():
+        if self._has_pending_wm() or self.wm_items:
             try:
                 im = self._draw_wm(im).convert("RGB")
             except Exception:  # noqa: BLE001 —— 预览叠加失败不拖垮正常渲染

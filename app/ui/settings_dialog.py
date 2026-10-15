@@ -1128,9 +1128,17 @@ class ServiceCard(QFrame):
         else:
             lay.addWidget(W.muted(tr("no_models_yet")))
 
-        base = QLabel(cfg.get("base_url") or "")
+        # base_url 做成可点击链接:用户看到服务地址后常要直接开浏览器看控制台/文档
+        _url = (cfg.get("base_url") or "").strip()
+        if _url.startswith(("http://", "https://")):
+            base = QLabel(f'<a href="{_url}">{_url}</a>')
+            base.setOpenExternalLinks(True)
+            base.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            base.setCursor(Qt.PointingHandCursor)
+        else:
+            base = QLabel(_url)
         base.setObjectName("muted")
-        base.setToolTip(base.text())
+        base.setToolTip(_url or tr("未配置 Base URL"))
         lay.addWidget(base)
 
         # 动作行
@@ -1267,6 +1275,7 @@ class ServiceDialog(QDialog):
         test_btn = QPushButton(tr("测试配置"))
         test_btn.setStyleSheet("QPushButton{color:#e0794b;border:none;font-weight:700;}")
         test_btn.clicked.connect(self._test)
+        self._test_btn = test_btn          # _test 里要用它做等待态(禁用+改文案)
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
         save = W.primary_btn(tr("保存"))
@@ -1379,11 +1388,49 @@ class ServiceDialog(QDialog):
                 "settings": self.settings_edit.toPlainText().strip()}
 
     def _test(self):
+        """连接测试。
+
+        必须**丢到后台线程**跑:网络请求要 5~30s,原先在主线程同步发,界面直接
+        冻结 —— 用户点「测试配置」后按钮毫无变化、标签空白,看起来就是"点了
+        没反应"(实测 DeepSeek 最明显)。现在:按钮进等待态 → 后台跑 →
+        回调回主线程刷新标签。
+        """
+        if getattr(self, "_testing", False):
+            return
         cfg = self._collect()
-        ok, msg = TESTERS[cfg["service_type"]](
-            {"service_type": cfg["service_type"], "provider": cfg["provider"],
-             "base_url": cfg["base_url"], "api_key": cfg["api_key"], "model": cfg["model"]})
-        self.test_lab.setText(("✅ " if ok else "❌ ") + msg[:200])
+        tester = TESTERS.get(cfg["service_type"])
+        if not tester:
+            self.test_lab.setText(tr("❌ 该服务类型不支持测试"))
+            return
+        payload = {"service_type": cfg["service_type"], "provider": cfg["provider"],
+                   "base_url": cfg["base_url"], "api_key": cfg["api_key"],
+                   "model": cfg["model"]}
+        self._testing = True
+        btn = getattr(self, "_test_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText(tr("测试中…"))
+        self.test_lab.setText(tr("⏳ 正在测试,请稍候…"))
+
+        def job(_tid):
+            try:
+                return tester(payload)
+            except Exception as exc:  # noqa: BLE001
+                return False, f"{type(exc).__name__}: {str(exc)[:200]}"
+
+        def done(_tid, result, error):
+            self._testing = False
+            if btn is not None:
+                btn.setEnabled(True)
+                btn.setText(tr("测试配置"))
+            if error:
+                self.test_lab.setText("❌ " + str(error)[:200])
+                return
+            ok, msg = result if isinstance(result, tuple) else (False, str(result))
+            self.test_lab.setText(("✅ " if ok else "❌ ") + msg[:200])
+
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.submit("prompt", job, done, detail=tr("test"))
 
     def _save(self):
         data = self._collect()

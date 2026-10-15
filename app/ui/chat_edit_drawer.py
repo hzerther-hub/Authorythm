@@ -15,11 +15,12 @@ from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QToolButton,
+    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QVBoxLayout, QWidget,
 )
 
 from ..ai.photocraft_bridge import ChatEditEngine, Step
+from ..ai.photocraft_bridge import PHOTOCRAFT_URL
 from ..core import db
 from ..core.i18n import tr
 from ..core import taskmgr as _TM
@@ -81,6 +82,10 @@ _HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车�
 【兜底 · LLM 自由理解,措辞不保证一致】
 上面没列的说法(比如「做成复古港风」「把天空换成夕阳」)会交给 AI 理解后
 转成 PhotoCraft 命令,能跑但结果不如白名单稳定。可以用更具体的描述提高命中率。
+
+【Microsoft TTS · 剧集旁白】
+本面板只动图,不动声音 —— 旁白合成在剧集工作台右栏点 🔊 试听,
+Edge TTS / 火山 TTS 在「设置 → 配音」里挑,跟着剧集语气跑。
 
 提示:数字是强度参数,可正可负(亮度+30 比 亮度30 更明确);
       「重抽」/「撤销」这类操作请直接点气泡里的图片,会弹出「改图」面板,
@@ -320,16 +325,34 @@ class ChatEditPanel(QWidget):
         manual_btn.clicked.connect(self._start_manual_edit)
         self.manual_btn = manual_btn
         top.addWidget(manual_btn)
-        desktop_btn = W.svg_icon_btn("open_external", "打开 PhotoCraft 桌面端", size=26)
+        # 「打开 PhotoCraft 桌面端」。
+        # 原先用 svg_icon_btn("open_external"),但 icons.ALIAS 里**没有这一项**,
+        # icon() 找不到 SVG 返回空 QIcon → 渲染成一个纯白方块(用户截图里
+        # 「我手动改」右边那个白框)。改用已有的 image 图标 + 「PhotoCraft」文字。
+        desktop_btn = QPushButton(" PhotoCraft")
+        desktop_btn.setIcon(W.svg_icon("image", size=14))
+        desktop_btn.setToolTip("打开 PhotoCraft 桌面端")
+        desktop_btn.setCursor(Qt.PointingHandCursor)
+        desktop_btn.setStyleSheet(
+            "QPushButton{border:1px solid #e4e7ec;border-radius:6px;"
+            "background:#fff;color:#4e5969;padding:4px 10px;font-size:12px;}"
+            "QPushButton:hover{background:#fef3e8;border-color:#f3c9a4;color:#1f2329;}")
         desktop_btn.clicked.connect(self._open_desktop)
         top.addWidget(desktop_btn)
-        settings_btn = W.svg_icon_btn("settings", tr("chat_edit_to_settings"), size=26)
+        # 调色板图标(原是齿轮):PhotoCraft 本身就是图像编辑工具,用「palette」图标
+        # 比齿轮更贴合本面板属性 —— 齿轮总让人想到系统设置,跟这里跳到
+        # PhotoCraft 配置入口的语义对不上。
+        settings_btn = W.svg_icon_btn("palette", tr("chat_edit_to_settings"), size=26)
         settings_btn.clicked.connect(self.needSettings.emit)
         top.addWidget(settings_btn)
         root.addLayout(top)
 
         self.status_lab = W.muted("")
         self.status_lab.setStyleSheet("font-size:11px;")
+        # 未就绪时(PhotoCraft 没装)把状态栏变成可点击链接,直接跳 GitHub 下载页 ——
+        # 只显示「未配置」的话用户不知道去哪装
+        self.status_lab.setOpenExternalLinks(True)
+        self.status_lab.setTextInteractionFlags(Qt.TextBrowserInteraction)
         root.addWidget(self.status_lab)
 
         # 未配置时的内嵌配置入口(替代下面整张工作台 —— 抽屉本身就是稀缺空间,
@@ -340,7 +363,14 @@ class ChatEditPanel(QWidget):
         cc_lay.setSpacing(6)
         cc_title = W.h2(tr("chat_edit_setup_title"))
         cc_lay.addWidget(cc_title)
-        cc_lay.addWidget(W.muted(tr("chat_edit_cli_missing")))
+        # 未装 PhotoCraft 时,除了"去设置配目录",再给一个官方下载链接
+        cc_dl = QLabel(
+            f'没装?到 <a href="{PHOTOCRAFT_URL}">GitHub 官方仓库</a> 下载,'
+            f'解压后把目录填到下面。')
+        cc_dl.setOpenExternalLinks(True)
+        cc_dl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        cc_dl.setObjectName("muted")
+        cc_lay.addWidget(cc_dl)
         cc_dir_row = QHBoxLayout()
         cc_dir_row.setSpacing(4)
         self.cc_dir_edit = QLineEdit()
@@ -448,6 +478,172 @@ class ChatEditPanel(QWidget):
         root.addWidget(scroll, 1)
         self._scroll = scroll
 
+        # 水印行:模式(文字/PNG) + 输入控件(随模式切换) + 9 宫格位置 + 加水印按钮
+        # 用法:选文字 → 输字 → 选位置 → 点加水印
+        #      选 PNG  → 选文件 → 选位置 → 点加水印(PNG 透明通道会保留)
+        wm_row = QHBoxLayout()
+        wm_row.setSpacing(4)
+        # 模式:文字 / PNG 图片
+        self.wm_mode = QComboBox()
+        self.wm_mode.addItem("📝 " + tr("chat_watermark_text"), "text")
+        self.wm_mode.addItem("🖼  PNG", "image")
+        self.wm_mode.currentIndexChanged.connect(self._on_wm_mode_changed)
+        wm_row.addWidget(self.wm_mode)
+        # 文字模式输入 + 图片模式输入(QStackedWidget 互斥显示)
+        from PySide6.QtWidgets import QStackedWidget, QColorDialog
+        from PySide6.QtGui import QColor
+        self.wm_stack = QStackedWidget()
+        # 文字页(双行:输入行 + 样式行[预设/描边宽/描边色/主色])
+        text_page = QWidget()
+        text_vlay = QVBoxLayout(text_page)
+        text_vlay.setContentsMargins(0, 0, 0, 0)
+        text_vlay.setSpacing(2)
+        text_input_row = QHBoxLayout()
+        text_input_row.setSpacing(0)
+        self.wm_input = QLineEdit()
+        self.wm_input.setPlaceholderText(tr("chat_watermark_text"))
+        self.wm_input.setMaxLength(40)
+        self.wm_input.setClearButtonEnabled(True)
+        text_input_row.addWidget(self.wm_input)
+        text_vlay.addLayout(text_input_row)
+        # 样式行:预设 + 描边宽 + 描边色 + 主色
+        # 选预设会自动套用「描边宽/描边色/主色」三件套,后续用户手动调会覆盖预设
+        text_style_row = QHBoxLayout()
+        text_style_row.setSpacing(4)
+        # 预设:默认值(None=中心像素反相)、Logo 白/Logo 黑/印章红/高亮黄
+        self.wm_preset = QComboBox()
+        self._wm_presets = [
+            ("默认（中心反相）", None),
+            ("Logo 白（白字黑边）",
+             {"main": (255, 255, 255, 230), "stroke": (0, 0, 0, 200), "width": 1}),
+            ("Logo 黑（黑字白边）",
+             {"main": (20, 20, 20, 220), "stroke": (255, 255, 255, 180), "width": 1}),
+            ("印章红（红字白边）",
+             {"main": (220, 30, 30, 235), "stroke": (255, 255, 255, 200), "width": 2}),
+            ("高亮黄（黄字黑边）",
+             {"main": (255, 220, 0, 240), "stroke": (0, 0, 0, 200), "width": 1}),
+        ]
+        for label, _val in self._wm_presets:
+            self.wm_preset.addItem(label)
+        self.wm_preset.currentIndexChanged.connect(self._apply_wm_preset)
+        text_style_row.addWidget(self.wm_preset)
+        # 字体:从 intro.list_fonts() 列系统字体(去掉 .ttc/.otf 后缀的可读名)
+        # 默认选第一项;用户改了之后,加水印时优先用用户选的中文字体(否则退到硬编码链)
+        from ..pipeline import intro as _intro
+        self.wm_font = QComboBox()
+        self._wm_fonts = _intro.list_fonts()
+        for f in self._wm_fonts:
+            self.wm_font.addItem(f["name"], f["file"])
+        if self._wm_fonts:
+            self.wm_font.setCurrentIndex(0)
+        self.wm_font.setToolTip("文字字体(取系统能扫到的 .ttf/.otf/.ttc)")
+        self.wm_font.setMinimumWidth(96)
+        text_style_row.addWidget(self.wm_font)
+        # 描边宽(像素)—— 加显式「宽 N」标签,跟 QSpinBox 一起看才不歧义
+        stroke_lbl = QLabel("宽")
+        stroke_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        text_style_row.addWidget(stroke_lbl)
+        self.wm_stroke_w = QSpinBox()
+        self.wm_stroke_w.setRange(0, 6)
+        self.wm_stroke_w.setValue(1)
+        self.wm_stroke_w.setSuffix("px")
+        self.wm_stroke_w.setFixedWidth(58)
+        self.wm_stroke_w.setToolTip("描边宽度(0=无描边)")
+        text_style_row.addWidget(self.wm_stroke_w)
+        # 透明度(0-100%,默认 100 = 不透明;PNG 模式缩放 RGBA alpha,
+        # 文字模式按比例缩放主色/描边色的 alpha)
+        opa_lbl = QLabel("透")
+        opa_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        text_style_row.addWidget(opa_lbl)
+        self.wm_opacity = QSpinBox()
+        self.wm_opacity.setRange(10, 100)
+        self.wm_opacity.setValue(100)
+        self.wm_opacity.setSuffix("%")
+        self.wm_opacity.setFixedWidth(72)
+        self.wm_opacity.setToolTip("水印透明度(10~100,数字越小越透)")
+        text_style_row.addWidget(self.wm_opacity)
+        # 描边色 + 主色按钮:之前 28x22 太窄,用户点不上;改成 36x24 + 文字「色」
+        # 让点击区够大,按钮底色就是当前色,鼠标移上去 tooltip 显完整说明
+        for color_attr, label, pick_method, default_name in (
+                ("wm_stroke_color", "描", "_pick_wm_stroke_color", "#000000"),
+                ("wm_main_color",   "字", "_pick_wm_main_color",   "#ffffff"),
+        ):
+            btn = QPushButton(label)
+            btn.setFixedSize(36, 24)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.setStyleSheet(
+                f"background:{default_name}; border:1px solid rgba(128,128,128,160);"
+                f"border-radius:3px; font-size:10px; color:#1f2329; padding:0;")
+            btn.clicked.connect(getattr(self, pick_method))
+            setattr(self, color_attr, btn)
+            text_style_row.addWidget(btn)
+        text_vlay.addLayout(text_style_row)
+        self.wm_stack.addWidget(text_page)
+        # 初始化颜色按钮的填色:默认预设(中心反相)不给具体色,先给一个默认色
+        self._wm_stroke_qc = QColor(0, 0, 0, 200)
+        self._wm_main_qc = QColor(255, 255, 255, 230)
+        self._sync_wm_color_btns()
+        # 给两个颜色按钮加 tooltip 完整说明(按钮小,只能显示短文字)
+        self.wm_stroke_color.setToolTip(tr("watermark_stroke_color") + " — 点击弹颜色选择器")
+        self.wm_main_color.setToolTip(tr("watermark_main_color") + " — 点击弹颜色选择器")
+        # 图片页
+        img_page = QWidget()
+        img_lay = QHBoxLayout(img_page)
+        img_lay.setContentsMargins(0, 0, 0, 0)
+        img_lay.setSpacing(4)
+        self.wm_file_btn = QPushButton("📁 " + tr("chat_watermark_pick"))
+        self.wm_file_btn.setCursor(Qt.PointingHandCursor)
+        self.wm_file_btn.clicked.connect(self._pick_wm_image)
+        img_lay.addWidget(self.wm_file_btn)
+        self.wm_file_lab = QLabel(tr("chat_watermark_no_file"))
+        self.wm_file_lab.setStyleSheet("color:#94a3b8; font-size:11px;")
+        self.wm_file_lab.setToolTip("")
+        img_lay.addWidget(self.wm_file_lab, 1)
+        img_lay.addStretch(1)
+        self.wm_stack.addWidget(img_page)
+        wm_row.addWidget(self.wm_stack, 1)
+        # 宽度(两模式共用):
+        #   文字模式 = 字号占图短边的百分比(40% / 100 = 图短边 0.4 倍字号)
+        #   图片模式 = 水印图宽度占图短边的百分比(20% / 100 = 图短边 0.2 倍宽)
+        # 默认 12% —— 用户实测反馈「20% 看起来占了图的一半」,小点更不抢戏
+        width_lbl = QLabel("宽")
+        width_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        wm_row.addWidget(width_lbl)
+        self.wm_scale = QSpinBox()
+        self.wm_scale.setRange(3, 80)
+        self.wm_scale.setValue(12)
+        self.wm_scale.setSuffix("%")
+        self.wm_scale.setFixedWidth(64)            # 加宽 6px,「N%」更完整可见
+        self.wm_scale.setToolTip("水印占图短边的百分比(文字=字号;PNG=宽度)")
+        wm_row.addWidget(self.wm_scale)
+        # 9 宫格位置(与文字/图片共用)
+        self.wm_pos = QComboBox()
+        for label, x, y in (
+                ("左上", 0.08, 0.10), ("中上", 0.5, 0.06), ("右上", 0.92, 0.10),
+                ("左中", 0.06, 0.5),  ("正中", 0.5, 0.5),  ("右中", 0.94, 0.5),
+                ("左下", 0.08, 0.92), ("中下", 0.5, 0.94), ("右下", 0.92, 0.92),
+        ):
+            self.wm_pos.addItem(label, (x, y))
+        self.wm_pos.setCurrentIndex(8)
+        wm_row.addWidget(self.wm_pos)
+        root.addLayout(wm_row)
+
+        # 加水印按钮单独一行 —— 设置项(模式/文字/PNG/宽度/位置)挤一行,
+        # 按钮独占下一行,按下后「模式+文字/PNG+宽度+位置」整体生效;视觉上更清楚
+        # 这是个主操作,不该跟下拉挤一起。
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        self.wm_btn = QPushButton("💧 " + tr("chat_watermark_apply"))
+        self.wm_btn.setCursor(Qt.PointingHandCursor)
+        self.wm_btn.setFixedHeight(28)
+        self.wm_btn.setObjectName("primary")
+        self.wm_btn.clicked.connect(self._add_watermark)
+        btn_row.addWidget(self.wm_btn)
+        btn_row.addStretch(1)
+        root.addLayout(btn_row)
+        # 记录当前 PNG 路径(QStackedWidget 内 file_lab 显示)
+        self._wm_image_path: str | None = None
+
         # 底部:输入框 + 发送 + 保存
         bot = QHBoxLayout()
         bot.setSpacing(6)
@@ -488,6 +684,10 @@ class ChatEditPanel(QWidget):
     # ── 状态 ──
     def _refresh_status(self):
         ok, txt = self._engine.status_text()
+        # 未就绪 → 文案里带可点击的 GitHub 下载链接
+        if not ok:
+            txt = (f'PhotoCraft 未就绪 —— '
+                   f'<a href="{PHOTOCRAFT_URL}">点击前往 GitHub 下载</a>')
         self.status_lab.setText(txt)
         from ..ai.photocraft_bridge import resolve_cli_path
         path = resolve_cli_path()
@@ -781,11 +981,11 @@ class ChatEditPanel(QWidget):
             self.input.clear()
             self._append_help()
             return
+        # chat-edit 整面板就是围着当前图转的,不管聊天还是改图都要先选图 —— 用户实测
+        # 反馈「聊天还是要有图片」(没图发任何指令都不知拿啥说/改啥)。worker 里 JEV
+        # 路由前先在主线程拦掉,无图直接报 chat_edit_msg_image_missing。
         if not self._current_image or not Path(self._current_image).exists():
             self.status_lab.setText(tr("chat_edit_msg_image_missing"))
-            return
-        if not self._engine.ready:
-            self.status_lab.setText(tr("chat_edit_cli_missing"))
             return
 
         # 显示用户气泡
@@ -823,9 +1023,15 @@ class ChatEditPanel(QWidget):
             except Exception:  # noqa: BLE001
                 intent = _INTENT_EDIT
 
-            # chat 路径:不动图,直接调文本 LLM 给建议
+            # chat 路径:不动图,直接调文本 LLM 给建议(不检查图存在)
             if intent == _INTENT_CHAT:
                 return self._chat_reply(text, str(in_path), llm_id, mode)
+
+            # edit 路径:必须有图。JEV 已判定为改图,若用户没选图就明确报错
+            if not in_path or not Path(in_path).exists():
+                return {"empty": True,
+                        "note": tr("chat_edit_msg_image_missing"),
+                        "user_text": text}
 
             # edit 路径:走原本逻辑(批量 / 单步)
             from ..ai.photocraft_bridge import (_wants_batch_analysis,
@@ -1102,6 +1308,212 @@ class ChatEditPanel(QWidget):
         else:
             self.send_btn.setText(tr("chat_edit_send"))
 
+    # ── 水印 ──
+    def _add_watermark(self):
+        """用 PIL 给当前图加水印(文字或 PNG),产物就地替换 current_image + 弹助手气泡。
+
+        模式路由:
+          - 文字:取 wm_input 文字 → 按 wm_scale% 算字号(图短边 × scale%) → 烙字
+          - PNG :取 _wm_image_path 图 → 按 wm_scale% 算宽(图短边 × scale%) → alpha 叠加
+        设置项共用 wm_scale,模式切换不影响;两个模式的尺寸语义不同:
+          - 文字 → 字号(图短边的 X% 倍字号,例如 20% 就是图短边的 0.2 倍字号)
+          - PNG  → 水印图显示宽(图短边的 X% 倍像素)
+        """
+        if not self._current_image or not Path(self._current_image).exists():
+            self.status_lab.setText(tr("chat_edit_msg_image_missing"))
+            return
+        mode = self.wm_mode.currentData() or "text"
+        scale_pct = max(self.wm_scale.value(), 3)
+        fx, fy = self.wm_pos.currentData()
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+        except ImportError:
+            self.status_lab.setText("Pillow 未安装")
+            return
+        try:
+            im = Image.open(self._current_image).convert("RGB")
+        except Exception as exc:
+            self.status_lab.setText(str(exc)[:160])
+            return
+        Wd, Hd = im.size
+        short = min(Wd, Hd)
+        # 主 overlay 同主图大小(图片模式还要在下面粘水印图)
+        overlay = Image.new("RGBA", im.size, (0, 0, 0, 0))
+
+        if mode == "image":
+            # PNG 水印:按 wm_scale% 缩放,保持 PNG 透明通道
+            if not self._wm_image_path or not Path(self._wm_image_path).exists():
+                self.status_lab.setText(tr("chat_watermark_no_file"))
+                return
+            wm_pil = Image.open(self._wm_image_path)
+            if wm_pil.mode != "RGBA":
+                wm_pil = wm_pil.convert("RGBA")
+            target_w = max(8, int(short * scale_pct / 100))
+            ratio = target_w / max(1, wm_pil.width)
+            target_h = max(8, int(wm_pil.height * ratio))
+            wm_pil = wm_pil.resize((target_w, target_h), Image.LANCZOS)
+            # 透明度:把 RGBA 的 alpha 通道按 wm_opacity% 缩放
+            opa_pct = self.wm_opacity.value()
+            if opa_pct < 100 and wm_pil.mode == "RGBA":
+                # alpha_composite 会保留 alpha;此处直接乘系数
+                r, g, b, a = wm_pil.split()
+                a = a.point(lambda v: int(v * opa_pct / 100))
+                wm_pil = Image.merge("RGBA", (r, g, b, a))
+            # 按 9 宫格锚点对齐(以 wm_pil 实际宽高对齐 fx,fy)
+            x = max(0, int((Wd - wm_pil.width) * fx))
+            y = max(0, int((Hd - wm_pil.height) * fy))
+            overlay.alpha_composite(wm_pil, dest=(x, y))
+        else:
+            # 文字水印:与 image_edit_dialog._add_watermark_item 一致
+            text = self.wm_input.text().strip()
+            if not text:
+                self.status_lab.setText(tr("chat_watermark_no_text"))
+                return
+            # 字号 = 图短边 × scale%(用户统一控制 width 即可,无需另设字号)
+            size = max(10, min(int(short * scale_pct / 100), 256))
+            # 字体优先级:用户选 > 硬编码链 > default
+            font = None
+            user_font = self.wm_font.currentData()
+            if user_font:
+                try:
+                    font = ImageFont.truetype(str(user_font), size)
+                except (OSError, ValueError):
+                    font = None
+            if font is None:
+                for cand in ("msyh.ttc", "msyh.ttf", "simhei.ttf", "simsun.ttc",
+                             "PingFang.ttc", "NotoSansCJK-Regular.ttc",
+                             "arial.ttf", "DejaVuSans.ttf"):
+                    try:
+                        font = ImageFont.truetype(cand, size)
+                        break
+                    except OSError:
+                        continue
+            if font is None:
+                font = ImageFont.load_default()
+            d = ImageDraw.Draw(overlay)
+            try:
+                tb = d.textbbox((0, 0), text, font=font)
+                tw, th = tb[2] - tb[0], tb[3] - tb[1]
+            except Exception:  # noqa: BLE001
+                tw, th = int(size * len(text) * 0.6), int(size * 1.2)
+            x = max(0, int((Wd - tw) * fx))
+            y = max(0, int((Hd - th) * fy))
+            # 描边宽:用户控件优先;预设或默认 1px
+            # 描边宽 = 字号 × 比例(跟 Photoshop 习惯一致:大字号描边粗)
+            sw = max(1, size // 14) if self.wm_preset.currentData() is None else self.wm_stroke_w.value()
+            sw = max(sw, 0)
+            # 主色 + 描边色:选「默认(中心反相)」时按图中心像素算,
+            # 选预设时按预设给的 RGBA,手动调主/描边色按钮时按按钮色
+            preset_data = self._wm_presets[self.wm_preset.currentIndex()][1]
+            if preset_data is None:
+                # 默认:中心像素反相
+                try:
+                    center = im.getpixel((Wd // 2, Hd // 2))
+                    if isinstance(center, tuple):
+                        center = center[:3]
+                except Exception:  # noqa: BLE001
+                    center = (255, 255, 255)
+                lum = 0.299 * center[0] + 0.587 * center[1] + 0.114 * center[2]
+                main = (255, 255, 255, 230) if lum < 128 else (20, 20, 20, 220)
+                stroke = (0, 0, 0, 200) if lum >= 128 else (255, 255, 255, 180)
+            else:
+                # 预设或手动:用按钮当前色(预设应用时已同步按钮色)
+                # alpha 按 wm_opacity% 缩放(100%=全不透明,越小越透)
+                opa_pct = self.wm_opacity.value()
+                ma = int(self._wm_main_qc.alpha() * opa_pct / 100)
+                sa = int(self._wm_stroke_qc.alpha() * opa_pct / 100)
+                main = (self._wm_main_qc.red(), self._wm_main_qc.green(),
+                        self._wm_main_qc.blue(), ma)
+                stroke = (self._wm_stroke_qc.red(), self._wm_stroke_qc.green(),
+                          self._wm_stroke_qc.blue(), sa)
+            if sw > 0:
+                for dx in range(-sw, sw + 1):
+                    for dy in range(-sw, sw + 1):
+                        if dx == 0 and dy == 0:
+                            continue
+                        d.text((x + dx, y + dy), text, font=font, fill=stroke)
+            d.text((x, y), text, font=font, fill=main)
+
+        # 合成 → 保存到 static/processed/wm_<uuid>.png → 写库 current_image
+        from ..core import config as _cfg
+        import uuid
+        out_dir = _cfg.STATIC_DIR / "processed"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"wm_{uuid.uuid4().hex[:8]}.png"
+        Image.alpha_composite(im.convert("RGBA"), overlay).convert("RGB").save(out)
+        url = _cfg.path_to_media_url(out)
+        # 更新会话:current_image 替换 + 写库
+        self._current_image = str(out)
+        if self._session_id:
+            db.touch_chat_session(self._session_id, current_image=url)
+        self._render_thumb()
+        self._save_btn_refresh()
+        # 弹助手气泡
+        if mode == "image":
+            tag_text = f"💧 PNG 水印:{Path(self._wm_image_path).name}"
+        else:
+            tag_text = f"💧 加水印:{text}"
+        self._append_message_widget("user", tag_text, None, None)
+        self._append_message_widget(
+            "assistant",
+            f"{tr('chat_watermark_done')} ({self.wm_pos.currentText()})",
+            None, str(out))
+        if mode == "text":
+            self.wm_input.clear()
+        from .toast import ok
+        ok(tr("chat_watermark_done"))
+
+    def _pick_wm_image(self):
+        """选 PNG 水印文件,支持透明 PNG 优先(RGBA 通道保留)。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("chat_watermark_pick"), "",
+            "PNG (*.png);;所有图片 (*.png *.jpg *.jpeg *.webp)")
+        if not path:
+            return
+        self._wm_image_path = path
+        self.wm_file_lab.setText(Path(path).name)
+        self.wm_file_lab.setToolTip(path)
+
+    def _apply_wm_preset(self, _idx: int):
+        """选预设 → 同步描边宽 + 主色 + 描边色三个手动控件(用户后续可调覆盖)。"""
+        preset = self._wm_presets[_idx][1] if 0 <= _idx < len(self._wm_presets) else None
+        if preset is None:
+            # 「默认」:不动手动控件,保留用户上次调的值;_add_watermark 走中心反相
+            return
+        # 描边宽
+        self.wm_stroke_w.setValue(int(preset.get("width", 1)))
+        # 主色 + 描边色 → 同步 QColor 内部态 + 按钮底色
+        mr, mg, mb, ma = preset.get("main", (255, 255, 255, 230))
+        self._wm_main_qc = self._wm_main_qc.__class__(mr, mg, mb, ma)
+        sr, sg, sb, sa = preset.get("stroke", (0, 0, 0, 200))
+        self._wm_stroke_qc = self._wm_stroke_qc.__class__(sr, sg, sb, sa)
+        self._sync_wm_color_btns()
+
+    def _sync_wm_color_btns(self):
+        """把 _wm_main_qc / _wm_stroke_qc 同步到两个按钮的 background,做色块。"""
+        self.wm_main_color.setStyleSheet(
+            f"background:{self._wm_main_qc.name()}; border:1px solid rgba(128,128,128,120);"
+            f"border-radius:3px;")
+        self.wm_stroke_color.setStyleSheet(
+            f"background:{self._wm_stroke_qc.name()}; border:1px solid rgba(128,128,128,120);"
+            f"border-radius:3px;")
+
+    def _pick_wm_main_color(self):
+        c = QColorDialog.getColor(self._wm_main_qc, self, tr("watermark_main_color"))
+        if c.isValid():
+            self._wm_main_qc = c
+            self._sync_wm_color_btns()
+
+    def _pick_wm_stroke_color(self):
+        c = QColorDialog.getColor(self._wm_stroke_qc, self, tr("watermark_stroke_color"))
+        if c.isValid():
+            self._wm_stroke_qc = c
+            self._sync_wm_color_btns()
+
+    def _on_wm_mode_changed(self, _idx: int):
+        """模式切换:文字 ↔ PNG,同步 QStackedWidget 当前页 + 按钮状态。"""
+        self.wm_stack.setCurrentIndex(_idx)
+
     # ── 跳转 / 桌面端 ──
     def _save_to_main(self):
         if not self._current_image or not Path(self._current_image).exists():
@@ -1118,7 +1530,8 @@ class ChatEditPanel(QWidget):
             except Exception as exc:  # noqa: BLE001
                 self.status_lab.setText(str(exc)[:200])
         else:
-            self.status_lab.setText(tr("chat_edit_cli_missing"))
+            self.status_lab.setText(
+                f'PhotoCraft 未就绪 —— <a href="{PHOTOCRAFT_URL}">点击前往 GitHub 下载</a>')
 
     # ── 内嵌配置卡(未配 PhotoCraft 时显示) ──
 
@@ -1243,12 +1656,8 @@ class ChatEditDrawer(QWidget):
         title.setStyleSheet("font-weight:600; font-size:13px;")
         hl.addWidget(title)
         hl.addStretch(1)
-        self.fold_btn = QToolButton()
-        self.fold_btn.setText("▶")
-        self.fold_btn.setCursor(Qt.PointingHandCursor)
-        self.fold_btn.setToolTip("折叠")
-        self.fold_btn.clicked.connect(self.fold_requested)
-        hl.addWidget(self.fold_btn)
+        # 原先这里有个「▶ 折叠」按钮,但 fold_requested 是空实现、外部也没有任何
+        # 连接(全仓库仅此一处定义),点了没反应 —— 纯装饰,已移除。
         root.addWidget(head)
 
         self.panel = ChatEditPanel(self)
@@ -1256,7 +1665,3 @@ class ChatEditDrawer(QWidget):
 
     def set_image(self, path: str):
         self.panel.set_image(path)
-
-    def fold_requested(self):
-        # 留作外部 hook(主窗口收到后收起抽屉)
-        pass

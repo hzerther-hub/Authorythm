@@ -32,7 +32,10 @@ RESOLUTION_TIERS: dict[str, list[str]] = {
     "volcengine": ["480p", "720p"],
     "minimax": ["768P", "2K"],
     "aliyun": ["480P", "720P", "1080P"],
-    "agnes": ["720P", "1080P"],
+    # agnes 的 size 只认 720P/1080P/1K/2K 四个档位字符串(传像素值直接 400)。
+    # 完整档位表见 agnes_video.SIZE_TIERS_FULL;UI 侧还会按型号再收窄
+    # (flash 锁死 720P,见 episode_page._sync_res_tiers)。
+    "agnes": ["720P", "1080P", "1K", "2K"],
     "xiaoyunque": ["480p", "720p", "1080p"],
 }
 
@@ -66,11 +69,37 @@ _IMAGE_MIME = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
 # 8 张满配 base64 后请求体可达 36MB —— 上游极易撞体积上限,提交阶段也会慢到超时。
 # 生图链路早按参考项目口径压到 768px(image_client._ref_data_url),视频链路此前漏了这一步。
 _UPLOAD_MAX_SIDE = 768
+_UPLOAD_QUALITY = 68
+
+# agnes 例外:官方给参考图的额度很宽(单图 <15MB、整请求 <50MB、单边 256–5760px,
+# 参考图本身不计费),沿用 768px 等于把画质上限白扔一半 —— 首帧只有 768px 时,出
+# 1080P/2K 的画面必然发糊,而首帧细节基本决定整段成片的清晰度。这里按**实际下发
+# 的 size 档位**给长边(官方 16:9 输出像素:720P=1280 / 1080P=1920 / 2K=2560,
+# 1K 固定 1024x1024),质量提到 q82。
+# 实测体积(1920x1080 源图,纯高频噪声 = JPEG 最坏情况,真实照片远小于此):
+#   768/q68 → 79KB/张  |  1280/q82 → 483KB/张  |  1920/q82 → 1.35MB/张
+# 8 张满配 base64 约 14MB,仍在 50MB 总额度内,且单张远低于 15MB 上限。
+_UPLOAD_PROFILE_AGNES: dict[str, tuple[int, int]] = {
+    "720P": (1280, 82), "1080P": (1920, 82), "1K": (1024, 82), "2K": (2560, 82)}
 _data_url_cache: dict = {}
 
 
-def _upload_bytes(path: Path, mime: str) -> bytes:
-    """上传用字节:图片等比缩进 _UPLOAD_MAX_SIDE 的框内、**统一转 JPEG**。
+def _upload_profile(cfg: dict, resolution: str | None) -> tuple[int, int]:
+    """参考图内联压缩档位 (长边上限, JPEG 质量)。agnes 按目标档位给足,其余厂商维持 768/q68。
+
+    档位走 agnes_video.effective_size:flash 选了 1080P 会被钳到 720P,此时首帧
+    压到 1280 就够,压到 1920 只是白撑请求体。
+    """
+    if (cfg.get("provider") or "").strip().lower() == "agnes":
+        from .agnes_video import DEFAULT_MODEL, effective_size
+        tier = effective_size(cfg.get("model") or DEFAULT_MODEL, resolution)
+        return _UPLOAD_PROFILE_AGNES.get(tier, _UPLOAD_PROFILE_AGNES["720P"])
+    return _UPLOAD_MAX_SIDE, _UPLOAD_QUALITY
+
+
+def _upload_bytes(path: Path, mime: str,
+                  max_side: int | None = None, quality: int | None = None) -> bytes:
+    """上传用字节:图片等比缩进 max_side 的框内、**统一转 JPEG**。
 
     对齐参考项目 backend/src/utils/storage.ts 的 compressImageAsDataUrl:
       sharp(...).resize({width:768,height:768,fit:'inside',withoutEnlargement:true})
@@ -79,7 +108,12 @@ def _upload_bytes(path: Path, mime: str) -> bytes:
     原图(中位 3.3MB),8 张满配 base64 可达 36MB。
 
     缩不动 / 非图片 / 解码失败时回退原文件字节,绝不因压缩失败而丢图。
+
+    max_side / quality 缺省走全局 768/q68;agnes 由 _upload_profile 按目标 size 档位
+    传入更大的框(见该函数上方注释)。
     """
+    side = max_side or _UPLOAD_MAX_SIDE
+    q = quality or _UPLOAD_QUALITY
     if not mime.startswith("image/"):
         return path.read_bytes()
     try:
@@ -95,9 +129,9 @@ def _upload_bytes(path: Path, mime: str) -> bytes:
                 im = bg
             elif im.mode != "RGB":
                 im = im.convert("RGB")
-            im.thumbnail((_UPLOAD_MAX_SIDE, _UPLOAD_MAX_SIDE), Image.LANCZOS)  # inside + 不放大
+            im.thumbnail((side, side), Image.LANCZOS)  # inside + 不放大
             buf = io.BytesIO()
-            im.save(buf, "JPEG", quality=68, optimize=True)
+            im.save(buf, "JPEG", quality=q, optimize=True)
             return buf.getvalue()
     except Exception:  # noqa: BLE001
         return path.read_bytes()
@@ -110,7 +144,8 @@ def _has_alpha(im) -> bool:
         return False
 
 
-def _fetch_remote_as_data_url(url: str) -> str | None:
+def _fetch_remote_as_data_url(url: str, max_side: int | None = None,
+                              quality: int | None = None) -> str | None:
     """远程参考图 → 下载后压缩成 data URL(对齐参考项目 fetchImageAsCompressedDataUrl)。
 
     只在下载确实失败时返回 None,由调用方决定丢弃或原样透传 —— 对 Agnes 来说
@@ -132,15 +167,17 @@ def _fetch_remote_as_data_url(url: str) -> str | None:
                 fmt = (probe.format or "PNG").upper()
             mime = {"JPEG": "image/jpeg", "PNG": "image/png", "WEBP": "image/webp",
                     "GIF": "image/gif", "BMP": "image/bmp"}.get(fmt, "image/png")
-            return (f"data:{mime};base64," + base64.b64encode(_upload_bytes(tmp, mime)).decode())
+            return (f"data:{mime};base64," + base64.b64encode(
+                _upload_bytes(tmp, mime, max_side, quality)).decode())
         finally:
             tmp.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
         return None
 
 
-def _local_to_data_url(path: str | Path) -> str:
-    """本地图片 → 压缩 data URL(缩进 768 框内,统一 JPEG q68,见 _upload_bytes)。
+def _local_to_data_url(path: str | Path, max_side: int | None = None,
+                       quality: int | None = None) -> str:
+    """本地图片 → 压缩 data URL(默认缩进 768 框内,统一 JPEG q68,见 _upload_bytes)。
 
     已是 data: / http(s): 的原样透传 —— 前者不重复编码,后者交给调用方决定
     (Agnes 接受公网 URL 作为合法媒体)。非图片文件(音视频)退回 octet-stream。
@@ -155,13 +192,16 @@ def _local_to_data_url(path: str | Path) -> str:
     if not p.exists():
         return text
     st = p.stat()
-    key = (str(p), st.st_mtime_ns, st.st_size)
+    # 压缩档位进缓存 key:同一张图按 720P 与按 2K 下发是两段不同的 data URL,
+    # 漏掉会导致先小后大被小的那份命中缓存,画质白提。
+    key = (str(p), st.st_mtime_ns, st.st_size, max_side or 0, quality or 0)
     hit = _data_url_cache.get(key)
     if hit is not None:
         return hit
     mime = _IMAGE_MIME.get(p.suffix.lower(), "application/octet-stream")
     if mime.startswith("image/"):
-        url = "data:image/jpeg;base64," + base64.b64encode(_upload_bytes(p, mime)).decode()
+        url = "data:image/jpeg;base64," + base64.b64encode(
+            _upload_bytes(p, mime, max_side, quality)).decode()
     else:
         url = f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
     if len(_data_url_cache) >= 32:      # 批量逐镜会反复用同一批图,小缓存即可命中
@@ -185,7 +225,9 @@ def _poll(fetch_status, interval: int, rounds: int) -> str:
 def generate_video(prompt: str, resolution: str = "720p", duration: int | None = None,
                    first_frame: str | None = None, config_id: int | None = None,
                    reference_images: list[str] | None = None,
-                   aspect_ratio: str | None = None) -> tuple[Path, str]:
+                   aspect_ratio: str | None = None,
+                   last_frame: str | None = None, seed=None,
+                   on_progress=None) -> tuple[Path, str]:
     """文生视频 / 图生视频(first_frame 本地路径)。
 
     reference_images:@角色 形象参考图本地路径列表(角色一致性)。
@@ -193,6 +235,15 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     —— 不传时 seedance 默认出 1:1 方图,竖屏项目全变方块,必须显式下发。
     agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
     返回 (本地路径, provider)。
+
+    last_frame / seed / on_progress 是为 agnes 官方文档能力加的**全可选**参数:
+    只有 agnes 会真正用它们,其余 provider 忽略(其余分支照旧)。不传 = 行为与
+    加这些参数之前完全一致,现有 3 个调用点无需改动。
+
+    last_frame 有一处**必须知道的行为**:agnes 官方规定 keyframe 模式禁止同时带
+    images/audios/videos。所以一旦下发尾帧,整镜就进 keyframe 模式,参考图不再下发,
+    角色一致性只能靠首帧/尾帧本身(首帧是身份锁定的,见 shot_tools.generate_first_frame)。
+    seed 同 seed 可复现,便于对比调参。
 
     **平台级质量守卫**:prompt 统一追加视频质量要求 + 表演克制 + 节奏三层守卫(各自 marker 幂等)。
     视频模型对肢体畸形与强情绪词(尖叫/嘶吼/痛哭)都天生放大,需在平台层压住;
@@ -209,7 +260,9 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
     base = cfg["base_url"].rstrip("/")
-    refs = [_local_to_data_url(r) for r in (reference_images or [])][:4]
+    # 参考图/首帧的内联压缩档位:agnes 按目标 size 档位给足长边,其余厂商维持 768/q68
+    max_side, quality = _upload_profile(cfg, resolution)
+    refs = [_local_to_data_url(r, max_side, quality) for r in (reference_images or [])][:4]
 
     # 提交 + 轮询整体走重试包装:永久错误立即失败,限流/队列满按长预算退避,
     # 上游给了 retry_at 时间戳就睡到那一刻(最多跟 2 次)。
@@ -218,11 +271,14 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     return _generate_with_retry(
         lambda: _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                                first_frame, refs, config_id, reference_images or [],
-                               aspect_ratio))
+                               aspect_ratio, max_side, quality,
+                               last_frame, seed, on_progress))
 
 
 def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
-                   first_frame, refs, config_id, reference_images, aspect_ratio=None):
+                   first_frame, refs, config_id, reference_images, aspect_ratio=None,
+                   max_side=None, quality=None,
+                   last_frame=None, seed=None, on_progress=None):
     """按 provider 分发一次(不含重试)。"""
     provider = cfg["provider"]
     if provider == "volcengine":
@@ -234,7 +290,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             body["content"].append({"type": "image_url", "image_url": {"url": ref},
                                     "role": "reference_image"})
         if first_frame:
-            body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame)}})
+            body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame, max_side, quality)}})
         resp = requests.post(_ark_url(base, "/contents/generations/tasks"), json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
@@ -255,7 +311,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
     if provider == "minimax":
         body = {"model": cfg["model"], "prompt": prompt}
         if first_frame:
-            body["first_frame_image"] = _local_to_data_url(first_frame)
+            body["first_frame_image"] = _local_to_data_url(first_frame, max_side, quality)
         resp = requests.post(f"{base}/video_generation", json=body, headers=headers, timeout=120)
 
         def check2():
@@ -289,19 +345,23 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
         return _download(url), provider
 
     if provider == "agnes":
-        # 对齐参考项目 agnes-video.ts(当前版):POST /v1/videos、mode 按 model 版本映射
-        # (v2.0→ti2vid,素材进 first_frame/image_url/images)、素材上限、flash 仅 720P、
+        # 对齐参考项目 agnes-video.ts + 官方文档:POST /v1/videos、mode 按 model 版本映射
+        # (v2.0→ti2vid,素材进 first_frame/image_url/images)、素材上限、size 只认
+        # 720P/1080P/1K/2K 档位(flash 锁死 720P,由 effective_size 钳制)、
         # 轮询走 {origin}/agnesapi?video_id=&model_name=(不在 /v1 下)、成片地址取顶层 url
         from .agnes_video import generate_agnes
         url_v = generate_agnes(cfg, base, headers, prompt=prompt, resolution=resolution,
                                duration=duration, first_frame=first_frame,
+                               last_frame=last_frame,
                                reference_images=reference_images,
-                               aspect_ratio=aspect_ratio)
+                               aspect_ratio=aspect_ratio, seed=seed,
+                               ref_side=max_side, ref_quality=quality,
+                               on_progress=on_progress)
         return _download(url_v), provider
 
     if provider == "runninghub":
         return _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
-                                    first_frame, refs, config_id)
+                                    first_frame, refs, config_id, max_side, quality)
 
     if provider == "xiaoyunque":
         # 小云雀要原始本地路径(上传换 asset_id),不能传 data URL,故传 reference_images 原列表
@@ -364,7 +424,7 @@ def _rh_find_video_url(node, depth: int = 0):
 
 
 def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
-                         first_frame, refs, config_id):
+                         first_frame, refs, config_id, max_side=None, quality=None):
     import json as _json
     model_key = (cfg["model"] or "").strip()
     spec = RUNNINGHUB_MODELS.get(model_key)
@@ -376,7 +436,7 @@ def _generate_runninghub(cfg, base, headers, prompt, resolution, duration,
         raise AIError(f"RunningHub 参考素材超限:图片≤{spec['img']}")
     # 首帧图 unshift 到首位,保持「第一张参考图锁脸」语义
     if first_frame:
-        d_url = _local_to_data_url(first_frame)
+        d_url = _local_to_data_url(first_frame, max_side, quality)
         if d_url not in imgs:
             imgs.insert(0, d_url)
     if not imgs and not prompt.strip():

@@ -121,8 +121,67 @@ class _BatchProgressDialog(QDialog):
         if not self.page:
             return
         done = getattr(self.page, "_batch_done", 0)
-        if done:
-            self.update_progress(done, self.total)
+        # 原来只在 done 非 0 时才刷新 → 第 1 章还没写完的那几分钟里
+        # 窗内进度条/阶段/章节列表全是初始空值,看着像卡死。
+        # 现在无条件刷新,并渲染章节列表(逐章一行:进行中 / 已完成 / 待写)。
+        self.update_progress(done, self.total)
+        self._refresh_chapter_rows()
+
+    def _refresh_chapter_rows(self):
+        """按当前进度重画章节行:每章一行,标注「已完成 / 进行中 / 待写」。
+
+        之前 self.rows 建好后**没有任何代码往里填**,中间那块滚动区永远是
+        空白(用户反馈"批量生成没有内容")。
+        """
+        if not self.page:
+            return
+        ids = list(getattr(self.page, "_batch_ids", []) or [])
+        if not ids:
+            return
+        done = int(getattr(self.page, "_batch_done", 0) or 0)
+        # 状态字符串变了才重建,避免每 1s 心跳都把行全删了重加(闪)
+        sig = (tuple(ids), done)
+        if getattr(self, "_rows_sig", None) == sig:
+            return
+        self._rows_sig = sig
+        from ..core import db as _db
+        while self.rows.count():
+            it = self.rows.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        for i, ep_id in enumerate(ids):
+            ep = _db.q1("SELECT episode_number, title, length(coalesce(content,'')) L FROM episodes WHERE id=?", (ep_id,))
+            if not ep:
+                continue
+            no, title, L = ep["episode_number"], (ep["title"] or ""), ep["L"]
+            # done 是"已完成章数",前面 done 章已过;当前正在写的是第 done+1 章
+            if i < done:
+                mark, color = "✓ 已完成", "#16a34a"
+            elif i == done:
+                stage = self.page._chapter_running_stage(ep_id) or ""
+                mark = "✍️ 进行中"
+                if stage:
+                    mark = mark + "  ·  " + tr(STAGE_CN.get(stage, stage))
+                color = "#f97316"
+            else:
+                mark, color = "待写", "#a8b0bb"
+            row = QWidget()
+            hl = QHBoxLayout(row)
+            hl.setContentsMargins(8, 4, 8, 4)
+            hl.setSpacing(8)
+            num = W.muted(f"第 {no} 章")
+            num.setFixedWidth(64)
+            hl.addWidget(num)
+            t = QLabel(title or "")
+            t.setStyleSheet(f"font-size:12px; color:{color};")
+            t.setToolTip(title or "")
+            hl.addWidget(t, 1)
+            st = W.muted(mark)
+            st.setStyleSheet(f"font-size:11px; color:{color};")
+            hl.addWidget(st)
+            hl.addWidget(W.muted(f"{L} 字"))
+            self.rows.addWidget(row)
 
     # 进度
     def update_progress(self, done: int, total: int):
@@ -142,9 +201,19 @@ class _BatchProgressDialog(QDialog):
     def _refresh_stage(self):
         if not self.page:
             return
-        ids = getattr(self.page, "_batch_ids", [])
+        ids = getattr(self.page, "_batch_ids", []) or []
         cur = next((i for i in ids if self.page._chapter_running_stage(i)), None)
-        self.stage_lab.setText(tr('当前阶段:{}').format(tr(STAGE_CN.get(cur, cur))) if cur else "")
+        if cur:
+            self.stage_lab.setText(
+                tr('当前阶段:{}').format(tr(STAGE_CN.get(cur, cur))))
+            return
+        # 没有 processing 任务时不留白:给出明确的下一步,否则「空标签」和
+        # 「卡住了」在界面上长得一模一样
+        done = int(getattr(self.page, "_batch_done", 0) or 0)
+        if done >= self.total:
+            self.stage_lab.setText(tr("完成"))
+        elif done == 0 and ids:
+            self.stage_lab.setText(tr("准备中… 正在启动模型"))
 
     # 伏笔台账
     def _toggle_ledger(self, on: bool):

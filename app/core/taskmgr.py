@@ -48,6 +48,42 @@ def get_stage(task_id: int) -> str:
     return (jload_safe(row["params"] if row else None)).get("stage", "")
 
 
+def set_task_progress(task_id: int, percent: int) -> None:
+    """写 sys_task.progress 并发 progress 信号(0-100)。
+
+    sys_task.progress 这一列建表时就有,此前从未被写过 —— 视频任务最长等 50 分钟,
+    界面上只有一个转圈,用户无法区分「在排队」和「卡死了」。Agnes 轮询响应带
+    官方 progress 字段(见 agnes_video.parse_poll_response),这里把它落到列上。
+
+    信号只 emit 不连 UI 消费方时是安全的:worker 线程 emit,谁连谁在主线程收到。
+    失败只记日志,不阻断生成。
+    """
+    try:
+        pct = max(0, min(100, int(percent)))
+    except (TypeError, ValueError):
+        return
+    try:
+        db.ex("UPDATE sys_task SET progress=?, updated_at=? WHERE id=?",
+              (pct, db_now(), task_id))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        _signals().progress.emit(task_id, pct)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _signals() -> "TaskSignals":
+    """取全局 TaskSignals 单例(延迟导入避免与 QApplication 初始化顺序耦合)。"""
+    global _SIGNALS
+    if _SIGNALS is None:
+        _SIGNALS = TaskSignals()
+    return _SIGNALS
+
+
+_SIGNALS: "TaskSignals | None" = None
+
+
 def jload_safe(raw):
     try:
         v = json.loads(raw or "{}")

@@ -103,11 +103,52 @@ MODEL_CHOICES: dict[str, list[str]] = {
 }
 
 
+def normalize_base_url(service_type: str, provider: str, base_url: str) -> str:
+    """补齐各厂商要求的 API 版本前缀,避免用户手填漏掉导致 404/403。
+
+    为什么需要:每家的版本段位置不一样,填错/漏填的表现完全不同 ——
+      - 火山方舟  缺 `/api/v3` → **空 body 的 404**(网关层就挡了,连不到应用)
+      - Agnes     缺 `/v1`      → Cloudflare HTML 拦截页 403
+    而填了 `/v1` 后再让客户端拼一次,又会变成 `/v1/v1/...`。
+
+    规则按 (service_type, provider) 走,不是所有厂商一刀切:
+      - volcengine + 非 tts → 必须 `/api/v3`(火山方舟统一)
+      - agnes                → 必须 `/v1`(图片硬编码拼 `/v1/images/generations`)
+      - 其它(openai/deepseek/minimax/…):用户填什么就是什么 —— 这些厂商
+        有 OpenAI 兼容(`/v1`)也有原生(`/api/coding/paas/v4`、
+        `token-plan…maas.aliyuncs.com` 无版本段),猜错反而更糟。
+
+    **tts 单独排除**:豆包语音走 `openspeech.bytedance.com` 的火山语音自有
+    协议(websocket + v3 签名),与方舟的 `/api/v3` REST 完全不是一回事,
+    补前缀会直接把 base 改坏。
+    """
+    url = (base_url or "").strip().rstrip("/")
+    if not url:
+        return url
+    if service_type == "tts":
+        return url                      # 语音协议各厂商独立,不猜前缀
+    suffix = ""
+    if provider == "volcengine" and "/api/v3" not in url:
+        suffix = "/api/v3"
+    elif provider == "agnes" and "/v1" not in url:
+        suffix = "/v1"
+    return url + suffix if suffix else url
+
+
 def list_configs(service_type: str | None = None) -> list:
     if service_type:
-        return db.q("SELECT * FROM ai_service_configs WHERE service_type=? ORDER BY is_default DESC, priority DESC, id",
+        rows = db.q("SELECT * FROM ai_service_configs WHERE service_type=? ORDER BY is_default DESC, priority DESC, id",
                     (service_type,))
-    return db.q("SELECT * FROM ai_service_configs ORDER BY service_type, is_default DESC, id")
+    else:
+        rows = db.q("SELECT * FROM ai_service_configs ORDER BY service_type, is_default DESC, id")
+    # 返回前统一补前缀 —— 调用方(各 client)拿到的就是规范化的 URL。
+    # 只在内存里改,不写库:存量配置保持用户原样,新建/编辑时才落规范化值。
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["base_url"] = normalize_base_url(d["service_type"], d.get("provider", ""), d.get("base_url", ""))
+        out.append(d)
+    return out
 
 
 def add_config(service_type: str, provider: str, base_url: str, model: str,
@@ -121,6 +162,8 @@ def add_config(service_type: str, provider: str, base_url: str, model: str,
     elif not db.q1("SELECT id FROM ai_service_configs WHERE service_type=?", (service_type,)):
         is_default = True  # 该类型第一条配置自动设为默认
     import json as _json
+    # 落库前补 API 版本前缀(火山 /api/v3、Agnes /v1),见 normalize_base_url
+    base_url = normalize_base_url(service_type, provider, base_url)
     return db.ex(
         "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,max_tokens,created_at,updated_at)"
         " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?)",
@@ -135,7 +178,14 @@ def update_config(cid: int, **fields) -> None:
     sets, vals = [], []
     for k in ("provider", "base_url", "api_key", "model", "remark"):
         if k in fields and fields[k] is not None:
-            sets.append(f"{k}=?"); vals.append(fields[k])
+            v = fields[k]
+            # 改 provider 时要按新 provider 重新判定要不要补前缀(换厂商了规则就变)
+            if k == "base_url":
+                row = db.q1("SELECT service_type, provider FROM ai_service_configs WHERE id=?", (cid,))
+                st = (row["service_type"] if row else "") or fields.get("service_type", "")
+                pv = fields.get("provider") or (row["provider"] if row else "")
+                v = normalize_base_url(st, pv or "", v)
+            sets.append(f"{k}=?"); vals.append(v)
     if "settings" in fields:                     # 本地生图扩展设置(JSON 字符串;空串存 NULL)
         sets.append("settings=?")
         vals.append(fields["settings"] or None)
@@ -288,17 +338,34 @@ def check_ready(service_type: str, config_id: int | None = None) -> dict:
 
 
 def readiness() -> list[tuple[str, str, str]]:
-    """全局就绪概览:[(服务类型, 状态文案, 原因)],供 UI 横幅展示。"""
+    """全局就绪概览:[(服务类型, 状态文案, 原因)],供 UI 横幅/安装帮助弹窗展示。
+
+    覆盖**全部 6 类**:text / image / video / tts / faceswap / jev。
+    原先只遍历前三类,而主窗口「?」安装帮助弹窗按 6 行渲染,对取不到的
+    service_type 用 `ready.get(st, False)` 兜底 → tts / faceswap / jev
+    **永远显示「✗ 未配置」**,哪怕配好且测试通过(用户实测:豆包配音和 JEV
+    都正常,却都标红)。PhotoCraft 不在此列 —— 它是本地工具不查配置表,
+    由 main_window 单独探测。
+    """
     out = []
-    for st in ("text", "image", "video"):
+    for st in ("text", "image", "video", "tts", "faceswap", "jev"):
         try:
             cfg = check_ready(st)
             out.append((st, "ok", f"{cfg.get('remark') or cfg['provider']}/{cfg['model']}"))
         except NotConfigured as e:
             out.append((st, "missing", e.reason))
+        except Exception as e:  # noqa: BLE001 —— 探测本身出错也归 missing,别炸横幅
+            out.append((st, "missing", str(e)[:120]))
     return out
 
 
 def missing_services() -> list[str]:
-    """缺失的核心服务类型(文本/图片/视频),空=齐备。"""
-    return [st for st, status, _ in readiness() if status != "ok"]
+    """缺失的服务类型,空=齐备。
+
+    **只算 text/image/video 三类核心** —— 顶部横幅是「AI 未就绪」提示,不该把
+    换脸/配音/JEV 这些可选能力也报成「AI 服务未配置完整」(用户看到会很莫名:
+    明明能出图,却提示 AI 没配好)。它们的状态在「?」安装帮助弹窗里单独展示。
+    """
+    core = {"text", "image", "video"}
+    return [st for st, status, _ in readiness()
+            if st in core and status != "ok"]

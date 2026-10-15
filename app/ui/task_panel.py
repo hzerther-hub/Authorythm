@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabe
 from datetime import datetime
 
 from ..core.i18n import tr
+from ..core import db
 from ..core.taskmgr import TASKMGR
 from ..core.theme import (SLATE_ASSET_QSS, SLATE_BAR, SLATE_HAIR, SLATE_MUTED,
                           SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_FAIL,
@@ -158,7 +159,48 @@ class TaskDrawer(QWidget):
         root.addWidget(aside)
 
         TASKMGR.updated.connect(self.reload)
+        # 进度信号:上游每变一次百分比就重跑一次 reload() 代价太大
+        #(全量 destroy+insert 100 行),所以只把这一行原地换掉
+        self._connect_progress_signal()
         self.reload()
+
+    def _connect_progress_signal(self):
+        """把 taskmgr 的全局 progress 信号接到本面板的局部刷新。"""
+        from ..core.taskmgr import _signals
+        try:
+            sig = _signals()
+            sig.progress.connect(self._on_progress, Qt.QueuedConnection)
+        except Exception:  # noqa: BLE001
+            pass      # 没有信号通道时退回「只有转圈」的旧行为,不影响生成
+
+    def _on_progress(self, task_id: int, _pct: int):
+        """只重渲受影响的那一行;找不到(不在本集/已滑出列表)就整表刷新兜底。"""
+        try:
+            row = db.q1("SELECT * FROM sys_task WHERE id=?", (task_id,))
+            if not row:
+                return
+            r = dict(row)
+            if self.episode_id and r.get("episode_id") != self.episode_id:
+                return
+            state, label = STATE_OF.get(r.get("status") or "processing",
+                                        ("pending", tr("in_progress")))
+            # 进度变化频率远高于任务增删,整表刷新在 100 行规模下会明显卡顿
+            self._patch_row(r["id"], state, label, _pct)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _patch_row(self, task_id: int, state: str, label: str, pct: int = 0):
+        """只换这一行的状态文字;行不在列表里(滑出 limit 或还没渲染)退回整表刷新。"""
+        widget = getattr(self, "_row_by_id", {}).get(task_id)
+        if widget is None:
+            self.reload()
+            return
+        widget._pct = max(0, min(100, int(pct or 0)))
+        for lab in widget.findChildren(QLabel):
+            if lab.objectName() == "taskState":
+                pv = widget._pct
+                lab.setText(f"{label} {pv}%" if pv > 0 else label)
+                return
 
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
@@ -173,11 +215,14 @@ class TaskDrawer(QWidget):
             if w:
                 w.deleteLater()
         counts = {"pending": 0, "done": 0, "failed": 0, "ready": 0}
+        # 行 → 任务 id 的索引:progress 信号按 id 定位行做局部刷新,避免整表重建
+        self._row_by_id = {}
         for r in rows:
             state, label = STATE_OF.get(r["status"], ("ready", r["status"]))
             counts[state] = counts.get(state, 0) + 1
-            self.list_lay.insertWidget(self.list_lay.count() - 1,
-                                       self._task_row(dict(r), state, label))
+            widget = self._task_row(dict(r), state, label)
+            self._row_by_id[r["id"]] = widget
+            self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
         self.list_lay.addStretch(1)
         if not rows:
             self.list_lay.insertWidget(0, C.empty_state(
@@ -243,9 +288,26 @@ class TaskDrawer(QWidget):
                 tr("error_detail"), t, parent=self.window())
             main.addWidget(er)
         lay.addLayout(main, 1)
+        # 生成中的任务把官方 progress 百分比拼在状态词后面 ——
+        # 否则 50 分钟的等待里用户只能看到一个转圈,分不清排队还是卡死
+        pct = r.get("progress")
+        if state == "pending":
+            try:
+                pv = int(pct or 0)
+            except (TypeError, ValueError):
+                pv = 0
+            if pv > 0:
+                label = f"{label} {pv}%"
         state_lab = QLabel(label)
+        state_lab.setObjectName("taskState")
         state_lab.setStyleSheet(f"color:{DOT_COLOR.get(state, '#86909c')}; font-size:11px;")
         lay.addWidget(state_lab)
+        # 供 _on_progress 局部刷新:记住这行的百分比与所属任务 id
+        row.setProperty("taskId", r.get("id"))
+        try:
+            row._pct = int(pct or 0)
+        except (TypeError, ValueError):
+            row._pct = 0
         return row
 
 class BigPlayerDialog(QDialog):

@@ -537,8 +537,8 @@ QFrame#slateCard { background: """ + SLATE_PAPER + """; border: 1px solid """ + 
   border-radius: 4px; }
 QFrame#slateCard:hover { border-color: """ + SLATE_HAIR_HV + """; border-width: 1px; }
 QFrame#slateCover { background: """ + SLATE_BG + """; border: none; border-bottom: 1px solid """ + SLATE_HAIR + """; }
-QLabel#slateTitle { color: """ + SLATE_META + """; font-size: 14px; font-weight: 600;
-  letter-spacing: 0.2px; }
+QLabel#slateTitle { color: """ + SLATE_META + """; font-size: 13px; font-weight: 600;
+  letter-spacing: 0.1px; }
 QLabel#slateMeta { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;
   font-size: 11px; letter-spacing: 0.3px; }
 QLabel#slateMetaDim { color: """ + SLATE_MUTED + """; font-family: """ + MONO_STACK + """;

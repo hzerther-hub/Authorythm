@@ -168,6 +168,88 @@ def generate_first_frame(episode_id: int, storyboard_id: int, config_id: int | N
     return url
 
 
+def generate_last_frame(episode_id: int, storyboard_id: int,
+                        config_id: int | None = None) -> str:
+    """生成尾帧图并写 storyboards.last_frame_image;返回 /static URL。
+
+    尾帧给 Agnes 的 keyframe 模式约束**结束构图与过渡**,短剧的转场/运镜由此可控。
+    与 generate_first_frame 的差别只有一处关键:取**最后一个**时间段而不是开场段,
+    且必须已经存在首帧 —— 尾帧是「首帧之后到达的状态」,没有首帧时无从对照。
+
+    身份锁定块与画幅指令完全复用首帧的写法:keyframe 模式下 Agnes 会丢弃参考图
+    (官方规则:keyframe 禁止同时带 images/audios/videos),所以人物相貌只能靠
+    **提示词里锁死**,尾帧与首帧各生成一次,两次都必须锁同样的身份。
+    """
+    sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
+    if not sb:
+        raise RuntimeError("分镜不存在")
+    if not (sb["first_frame_image"] or "").strip():
+        raise RuntimeError("请先生成首帧,再生成尾帧")
+    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    style = db.style_prompt(db.drama_style(ep["drama_id"]))
+    resolved = resolve_prompt(dict(sb)) or (sb["content"] or "")[:300]
+
+    # 尾段 = 最后一个 [n-m秒] 分段;没有分段标记就用整段描述
+    lines = [ln.strip() for ln in resolved.splitlines() if ln.strip()]
+    segs = [ln for ln in lines if re.match(r"^\[\d", ln)]
+    head = lines[0] if lines else ""
+    ending = segs[-1] if segs else resolved[-400:]
+
+    n_chars = db.q1(
+        "SELECT COUNT(*) c FROM storyboard_characters WHERE storyboard_id=?",
+        (storyboard_id,))["c"]
+    people = min(6, max(1, n_chars)) if n_chars else 0
+
+    sb_dict = dict(sb)
+    from . import refs as refs_mod
+    ref_meta = refs_mod.build_shot_reference_list(sb_dict)
+    char_bindings: list[str] = []
+    for i, item in enumerate(ref_meta, start=1):
+        if item.get("kind") == "character" and item.get("name"):
+            char_bindings.append(f"人物图{i}={item['name']}")
+    if char_bindings:
+        identity_block = (
+            "【人物身份锁定 / 严格按参考图外貌生成】\n"
+            + "\n".join(
+                f"- {b}: 严格按图 {i + 1} 的五官、发型、体型、年龄、服装、配饰 —— 禁止模型自由改动。"
+                for i, b in enumerate(char_bindings))
+            + "\n(注意:图 1 是首位参考 = 主角本人,头发/服装/体型以它为准。"
+              "本图是视频的**最后一帧**,必须与首帧保持同一人物、同一场景、同一服装。)"
+        )
+    else:
+        identity_block = ""
+
+    ending_with_names = ending
+    for i, item in enumerate(ref_meta, start=1):
+        if item.get("kind") == "character" and item.get("name"):
+            ending_with_names = ending_with_names.replace(
+                f"@图片{i}", f"图{i}({item['name']})")
+    ending_with_names = ending_with_names.replace("@", "")
+
+    aspect = _drama_aspect_of(episode_id)
+    if aspect in ("9:16", "3:4"):
+        layout_hint = (f"【画幅】本图为竖屏构图({aspect}),主体人物居中或略偏下 —— "
+                       f"竖屏不要横构图:不要把人物放在画面两侧。")
+    elif aspect in ("16:9", "4:3", "21:9"):
+        layout_hint = f"【画幅】本图为横屏构图({aspect}),主体人物居中或略偏左。"
+    else:
+        layout_hint = f"【画幅】本图为 {aspect} 构图。"
+
+    prompt = (f"{style}。{identity_block}\n{layout_hint}\n"
+              f"收场定帧:这是视频的**最后一帧**画面,动作已经走到末段、即将结束 —— "
+              f"不是开场画面,不要画成起始状态。场景与人物必须与首帧完全一致,只推进到结束状态。\n"
+              f"前情:{head}\n末段动作:{ending_with_names}\n电影质感,构图完整")
+    ref_list = collect_reference_images(episode_id, storyboard_id)
+    size = _aspect_to_size(aspect)
+    out, _p = image_client.generate_image(prompt, out_name=f"lf_{storyboard_id}.png",
+                                          config_id=config_id, reference_images=ref_list,
+                                          people=people, size=size)
+    url = config.path_to_media_url(out)
+    db.ex("UPDATE storyboards SET last_frame_image=?, updated_at=? WHERE id=?",
+          (url, db.now(), storyboard_id))
+    return url
+
+
 def _extract_dialogue(text: str) -> str:
     lines = re.findall(r"「([^」]+)」|「([^」]+)」", text or "")
     merged = " / ".join(a or b for a, b in lines)[:220]
@@ -207,8 +289,13 @@ def burn_subtitle(storyboard_id: int) -> str:
 
 
 def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "720p",
-                       config_id: int | None = None) -> str:
-    """图生视频:用首帧图生成镜头视频(无首帧则先生成),写 video_url。"""
+                       config_id: int | None = None,
+                       on_progress=None) -> str:
+    """图生视频:用首帧图生成镜头视频(无首帧则先生成),写 video_url。
+
+    尾帧与 seed 都从 storyboards 行上读,不额外加参数 —— 调用点(按钮/批量)本来就
+    只传 shot_id,让 DB 成为这两个可选参数的真相源,免得两条路径各记一份。
+    """
     sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
     if not sb:
         raise RuntimeError("分镜不存在")
@@ -228,12 +315,16 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
     # 项目画幅透传(对齐参考 record.aspectRatio):不传 seedance 默认 1:1,竖屏项目全变方图
     d_row = db.q1("""SELECT d.aspect_ratio FROM dramas d JOIN episodes e ON e.drama_id=d.id
                      WHERE e.id=?""", (episode_id,))
+    last = (sb["last_frame_image"] or "").strip()
     path, _provider = video_client.generate_video(
         prompt[:1500], resolution=resolution,
         duration=int(sb["duration"] or 8),
         first_frame=config.media_url_to_path(first), reference_images=ref_list,
         config_id=config_id,
-        aspect_ratio=(d_row["aspect_ratio"] if d_row else None) or None)
+        aspect_ratio=(d_row["aspect_ratio"] if d_row else None) or None,
+        last_frame=config.media_url_to_path(last) if last else None,
+        seed=(sb["video_seed"] if "video_seed" in sb.keys() else None) or None,
+        on_progress=on_progress)
     db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
           (config.path_to_media_url(path), db.now(), storyboard_id))
     return config.path_to_media_url(path)
