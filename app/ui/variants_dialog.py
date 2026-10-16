@@ -72,6 +72,15 @@ class VariantsDialog(QDialog):
 
     def _row(self, r: dict) -> QWidget:
         box = W.make_card()
+        # Director's Slate:variant 行 4px 圆角 + 细灰边 + hover 时边变黑,
+        # 与启动台 SlateStrip 同一卡片语言保持一致
+        box.setObjectName("variantRow")
+        box.setStyleSheet(
+            "QFrame#variantRow{background:#FFFFFF; border:1px solid #DCDAD3;"
+            "border-radius:4px;}"
+            "QFrame#variantRow:hover{border-color:#0E0F12;}"
+            "QFrame#variantRow QLabel{background:transparent;}"
+        )
         lay = QHBoxLayout(box)
         lay.setContentsMargins(10, 8, 10, 8)
         img = QLabel()

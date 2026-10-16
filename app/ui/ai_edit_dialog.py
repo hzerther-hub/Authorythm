@@ -55,7 +55,15 @@ class AiEditDialog(QDialog):
             preview.setPlainText(sel if len(sel) <= 400 else sel[:400] + "…")
             preview.setReadOnly(True)
             preview.setMaximumHeight(110)
-            preview.setStyleSheet("background:rgba(128,128,128,25);")
+            # Director's Slate:预览框统一 slate 风(米白底 + 1px 灰边 + 4px 圆角),
+            # 与其他输入控件保持一致;替代原 25% 灰底(对比度低)
+            preview.setObjectName("aiEditPreview")
+            preview.setStyleSheet(
+                "QPlainTextEdit#aiEditPreview{background:#F5F4EF;"
+                "border:1px solid #DCDAD3; border-radius:3px;"
+                "color:#6B727A; font-family:ui-monospace,Menlo,Consolas,monospace;"
+                "font-size:11px; padding:6px 8px;}"
+            )
             root.addWidget(QLabel(tr("选中片段预览")))
             root.addWidget(preview)
 

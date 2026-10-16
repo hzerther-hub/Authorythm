@@ -156,6 +156,19 @@ class MaskEraseDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(title or tr("擦除区域"))
         self.resize(860, 720)
+        # Director's Slate:容器与工具按钮统一 slate 风(笔刷 28px + 橡皮/撤销/清空按钮)
+        self.setObjectName("maskEraseDialog")
+        self.setStyleSheet(
+            "QDialog#maskEraseDialog{background:#F5F4EF;}"
+            "QSlider::groove:horizontal{background:#E4E1D7; height:4px; border-radius:2px;}"
+            "QSlider::handle:horizontal{background:#0E0F12; width:14px; height:14px;"
+            "margin:-5px 0; border-radius:7px;}"
+            "QPushButton{background:transparent; border:1px solid #DCDAD3;"
+            "border-radius:3px; color:#6B727A;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+            "letter-spacing:0.5px; padding:0 12px; min-height:26px;}"
+            "QPushButton:hover{border-color:#0E0F12; color:#0E0F12;}"
+        )
         root = QVBoxLayout(self)
         self.canvas = MaskCanvas(image_bytes, self)
         root.addWidget(self.canvas, 1)

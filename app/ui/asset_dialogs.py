@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
                                QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
                                QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
@@ -519,23 +519,134 @@ class AudioPreviewDialog(QDialog):
         super().closeEvent(ev)
 
 
-class ImageViewerDialog(QDialog):
-    """大图查看器(点击图片放大)。"""
-    def __init__(self, parent, url: str | None, title: str = ""):
+class _RemoteImg(QThread):
+    """后台取远程图。取完 emit QPixmap 回主线程。"""
+    got = Signal(object)
+
+    def __init__(self, url: str, w: int, h: int, parent=None):
         super().__init__(parent)
+        self._url, self._w, self._h = url, w, h
+
+    def run(self):
+        from PySide6.QtGui import QPixmap as _QP
+        try:
+            import requests
+            r = requests.get(self._url, timeout=20)
+            if r.status_code != 200 or not r.content:
+                return
+            pm = _QP()
+            if not pm.loadFromData(r.content):
+                return
+            dpr = W._ui_dpr() if hasattr(W, "_ui_dpr") else 1.0
+            pm = pm.scaled(int(self._w * dpr), int(self._h * dpr),
+                           Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pm.setDevicePixelRatio(dpr)
+            self.got.emit(pm)
+        except Exception:  # noqa: BLE001 —— 取图失败不该让预览窗口打不开
+            return
+
+
+class ImageViewerDialog(QDialog):
+    """大图查看器(点击图片放大)。
+
+    confirm_text 为 None 时只有「关闭」(原有行为,现有 8 处调用不变);
+    传了字符串则额外显示一个确认按钮,点它走 accept() 并置 used=True ——
+    搜图弹窗用它实现"先放大看清楚,再决定用不用"。
+    """
+    def __init__(self, parent, url: str | None, title: str = "",
+                 confirm_text: str | None = None,
+                 extra_text: str | None = None, on_extra=None):
+        super().__init__(parent)
+        self.used = False
+        self._on_extra = on_extra
+        self._img_label = None
         self.setWindowTitle(title or tr("预览"))
         self.resize(760, 620)
         root = QVBoxLayout(self)
         img = QLabel()
         img.setAlignment(Qt.AlignCenter)
-        img.setPixmap(W.pixmap_from_media(url, 700, 540))
+        self._img_label = img
+        remote = bool(url) and str(url).startswith(("http://", "https://"))
+        if remote:
+            # 搜图预览传的是远程 URL。**不能**靠 pm.isNull() 判断要不要远程加载 ——
+            # pixmap_from_media 对认不出的路径会返回一块**非 null 的灰色占位**,
+            # 拿 isNull() 当条件会让这个分支永远进不去,窗口里就只剩灰块(实测踩过)。
+            img.setPixmap(W.pixmap_from_media(None, 700, 540))
+        else:
+            img.setPixmap(W.pixmap_from_media(url, 700, 540))
+        # 起线程补一次网络取图;不阻塞主线程 —— 图库响应可能好几秒,
+        # 同步下会让窗口"点了没反应"。
+        if remote:
+            self._th = _RemoteImg(url, 700, 540, self)
+            # 注意:这里**不能**在 lambda 里 deleteLater 掉线程对象 ——
+            # got 信号正是从它身上 emit 的,一删就把仍在投递的信号链断了,
+            # 结果是"线程跑完了但图没贴上",窗口里留一块灰占位(实测踩过)。
+            self._th.got.connect(img.setPixmap)
+            self._th.finished.connect(self._on_remote_done)
+            self._th.start()
         root.addWidget(img, 1)
         close = W.primary_btn(tr("close"))
-        close.clicked.connect(self.accept)
+        close.clicked.connect(self.reject)
         row = QHBoxLayout()
+        if extra_text and on_extra:
+            ex = QPushButton(extra_text)
+            W.set_icon(ex, "magic")
+            ex.setToolTip(tr("把这张图转成项目画风,转完可以直接使用"))
+            ex.clicked.connect(self._on_extra_clicked)
+            row.addWidget(ex)
+        if confirm_text:
+            use = W.primary_btn(confirm_text)
+            use.clicked.connect(self._on_use)
+            row.addWidget(use)
         row.addStretch(1)
         row.addWidget(close)
         root.addLayout(row)
+
+    def _on_extra_clicked(self):
+        if self._on_extra:
+            self._on_extra(self)
+
+    def show_local_image(self, path: str):
+        """换画风完成后原地刷新显示 —— 避免用户还要自己关窗重开。"""
+        if self._img_label is not None:
+            self._img_label.setPixmap(W.pixmap_from_media(path, 700, 540))
+        th = getattr(self, "_th", None)
+        if th is not None and th.isRunning():
+            th.quit()
+            th.wait(2000)
+        self._th = None
+
+    def _on_use(self):
+        self.used = True
+        self.accept()
+
+    def _on_remote_done(self):
+        self._th = None      # 线程自然结束,断开引用让 Qt 回收
+
+    def _stop_thread(self):
+        """停掉取图线程。
+
+        `quit()` 对阻塞在 `requests.get` 里的 `run()` **无效**(事件循环根本没
+        机会转),必须 `terminate()` 兜底,否则关窗时 QThread 会被带着跑着析构,
+        报 "QThread: Destroyed while thread is still running"。
+        """
+        th = getattr(self, "_th", None)
+        if th is not None and th.isRunning():
+            th.quit()
+            if not th.wait(2000):
+                th.terminate()
+                th.wait(500)
+        self._th = None
+
+    def done(self, r):
+        # 「使用这张」/「关闭」走 done() 而不是 closeEvent(),两条路径都要停线程,
+        # 否则点完按钮弹窗一关就报线程还在跑。
+        self._stop_thread()
+        super().done(r)
+
+    def closeEvent(self, e):
+        self._stop_thread()
+        super().closeEvent(e)
 
 
 class AssetDetailDialog(QDialog):
@@ -546,8 +657,11 @@ class AssetDetailDialog(QDialog):
 
     KINDS = {"character": ("characters", tr("chars")), "scene": ("scenes", tr("scenes")), "prop": ("props", tr("props"))}
 
-    def __init__(self, parent, kind: str, row: dict, on_changed=None):
+    def __init__(self, parent, kind: str, row: dict, on_changed=None,
+                 drama_id: int | None = None):
         super().__init__(parent)
+        # props/characters 两张表不带 drama_id,换画风要靠它取项目当前画风
+        self.drama_id = drama_id if drama_id is not None else row.get("drama_id")
         self.kind = kind
         self.table = self.KINDS[kind][0]
         self.row = row
@@ -674,6 +788,14 @@ class AssetDetailDialog(QDialog):
             restore_btn.setToolTip(tr("还原到最早擦除前的原图"))
             restore_btn.clicked.connect(self._restore_original)
             footer.addWidget(restore_btn)
+            # 换画风:刻意做成手动两步(生成预览 → 看图 → 才替换),不自动落库。
+            # 实测图生图会往画面里加原图没有的人物/元素,一键替换会毁掉用户资产。
+            conv_btn = QPushButton(tr("换画风"))
+            W.set_icon(conv_btn, "magic")
+            conv_btn.setToolTip(tr(
+                "把现有形象图转成项目画风或指定画风。先生成预览,满意才替换原图。"))
+            conv_btn.clicked.connect(self._open_style_convert)
+            footer.addWidget(conv_btn)
             # 去背景(换脸边车 rembg /remove;可用性探针决定置灰)
             if self._bg_available():
                 bg_btn = QPushButton(tr("去背景"))
@@ -692,6 +814,33 @@ class AssetDetailDialog(QDialog):
         for b in (upload, gen_img, save, close):
             footer.addWidget(b)
         root.addLayout(footer)
+
+    def _open_style_convert(self):
+        """打开换画风弹窗。accepted 才写回 image_url —— 用户点「取消」原图不动。"""
+        from .style_convert_dialog import StyleConvertDialog
+        from .toast import err as _err
+        from ..ai import image_client
+        from ..pipeline import style_convert as SC
+
+        # 提前拦一道:不支持参考图的 provider 会凭空生成一张无关的图,
+        # 与其跑完才发现,不如现在就说清楚(省一次 API 和一次误导)。
+        try:
+            cfg = image_client.registry.check_ready("image", None)
+        except Exception as exc:  # noqa: BLE001
+            _err(str(exc)[:160])
+            return
+        if not image_client.supports_reference_images(cfg["provider"]):
+            _err(tr("换画风需要支持参考图的图像模型(agnes/local/comfyui/sdwebui/fooocus),"
+                    "当前是「{p}」——请到顶栏切换图像模型").format(p=cfg["provider"]))
+            return
+
+        dlg = StyleConvertDialog(self.row["id"], self.table, self.drama_id, parent=self)
+        if dlg.exec() == QDialog.Accepted and dlg.result_path:
+            SC.apply_result(self.row["id"], self.table, dlg.result_path)
+            if self._on_changed:
+                self._on_changed()
+            self._reload_after_edit()
+            self.accept()
 
     def _open_image_edit(self):
         from .image_edit_dialog import open_image_edit

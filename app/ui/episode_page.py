@@ -839,8 +839,12 @@ class EpisodePage(QWidget):
             combo.blockSignals(True)
             combo.clear()
             combo.addItem(tr("configured"), None)
-            for r in registry.list_configs(stype):
-                combo.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
+            # 每条配置的**每个**模型各出一项:设置页里 deepseek 有 v4-pro/flash 两个、
+            # agnes-image 有三个型号、minimax 有五个,原先只显示默认值,其余全选不到。
+            # 当前模型存 UserRole,_on_pick_model 据此把选择写回配置的 model 列。
+            # 用 W.add_item:跨 PySide6 版本都稳(早期 addItem 不返回 idx)
+            for ent in registry.model_entries(stype):
+                W.add_item(combo, ent["label"], ent["config_id"], user_data=ent["model"])
             # 恢复上次选择(全局记忆)
             saved = db.get_setting(f"yihao.model.{stype}")
             if saved:
@@ -878,6 +882,12 @@ class EpisodePage(QWidget):
         cid = combo.currentData()
         if cid:
             db.set_setting(f"yihao.model.{stype}", str(cid))
+            # 把所选模型写回这条配置的 model 列:调用链只认 config_id,
+            # 模型名从库里读,不改这里的话选了 deepseek-flash 也还是跑 v4-pro。
+            model = combo.currentData(Qt.UserRole)
+            if model and registry.select_model(int(cid), str(model)):
+                # 型号变了,分辨率档位之类依赖具体型号的限制要重算
+                self._sync_res_tiers()
         # 集级锁定回写
         ep = getattr(self, "_ep", None)
         if ep:
@@ -2957,7 +2967,8 @@ class EpisodePage(QWidget):
         table = {"characters": "character", "scenes": "scene", "props": "prop"}[kind]
         def _open():
             from .asset_dialogs import AssetDetailDialog
-            AssetDetailDialog(self, table, dict(r), on_changed=self._reload_assets).exec()
+            AssetDetailDialog(self, table, dict(r), on_changed=self._reload_assets,
+                              drama_id=self.drama_id).exec()
         return _open
 
     def _refresh_asset_model_combo(self):

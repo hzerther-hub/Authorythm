@@ -23,6 +23,7 @@ from .new_project_dialog import NewProjectDialog
 from .project_page import ProjectPage
 from .projects_page import ProjectsPage
 from .settings_dialog import SettingsDialog
+from .dashboard_widget import DashboardWidget
 from . import widgets as W
 
 
@@ -78,14 +79,20 @@ class MainWindow(QMainWindow):
         nav_lay.setSpacing(2)
         self.nav_btns: dict[str, QPushButton] = {}
         # 换脸/合并不再放顶部导航:换脸收进角色资产卡(图片处),合并收进制作台导出面板
-        # 「图片处理」排在「项目」之后:AI 改图是独立工具,不依赖具体项目
-        # 聊天改图作为侧栏(splitter)存在,不在顶部导航占位 —— 顶栏 💬 按钮只在
-        # 图片处理页打开抽屉,抽屉只在那页可见,可拖动调宽度。
-        self._nav_defs = [("projects", "▦", "nav_projects"),
-                          ("imageproc", "◑", "nav_image_process"),
+        # 「图片处理」页已下线(commit 「图片处理功能全移到聊天改图」):它的批量能力
+        # —— 多图/目录/URL 来源、指令批处理、本地超分与多规格导出、结果对照 ——
+        # 整块搬进「聊天改图」页的批量折叠区(image_batch_panel.BatchImagePanel)。
+        # 两边都是「对一张图下指令改它」,拆两页只会让用户在 A 页选图再点 💬 送到 B 页。
+        self._nav_defs = [("dashboard", "◉", "nav_dashboard"),
+                          ("projects", "▦", "nav_projects"),
                           ("chatedit", "💬", "chat_edit_nav")]
+        # Director's Slate:Dashboard 用硬编码"仪表盘",不依赖 i18n key;
+        # 其他 3 个有 key。后续如要本地化,在 app/core/i18n.py + ui_strings.py
+        # 15 语言表里加 nav_dashboard 条目,这里再切回 tr(label_key)。
+        LABEL_OVERRIDE = {"dashboard": "仪表盘"}
         for key, icon, label_key in self._nav_defs:
-            b = QPushButton(f"{icon}  {tr(label_key)}")
+            label_text = LABEL_OVERRIDE.get(key) or tr(label_key)
+            b = QPushButton(f"{icon}  {label_text}")
             b.setObjectName("navSeg")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -150,8 +157,11 @@ class MainWindow(QMainWindow):
         root.addWidget(self.banner)
         self._refresh_ai_banner()
 
-        # 页面栈(图片处理 / 聊天改图 各自独立 tab,不再共用 splitter)
+        # 页面栈(各页独立 tab,不再共用 splitter)
         self.stack = QStackedWidget()
+        # Director's Slate:dashboard 作为 nav index 0 —— app 进首页不再直跳
+        # 到启动台,而是看一屏总览(最近项目 / 任务池 / 服务 / 本周统计)
+        self.dashboard = DashboardWidget()
         self.projects_page = ProjectsPage()
         self.project_page = ProjectPage()
         self.episode_page = EpisodePage()
@@ -160,17 +170,14 @@ class MainWindow(QMainWindow):
         from .merger_tool_page import MergerToolPage
         self.face_swap_page = FaceSwapPage()
         self.merger_page = MergerToolPage()
-        from .image_process_page import ImageProcessPage
         from .chat_edit_drawer import ChatEditDrawer
-        self.image_process_page = ImageProcessPage()
-        self.chat_edit_page = ChatEditDrawer(self)            # 独立 tab,与图片处理并列
-        for p in (self.projects_page, self.project_page, self.episode_page, self.clone_page,
-                  self.face_swap_page, self.merger_page, self.image_process_page,
+        # 独立 tab。原来的 ImageProcessPage(图片处理)已下线,批量改图现在是
+        # 这个抽屉里的折叠区,见 chat_edit_drawer.ChatEditPanel.batch_panel。
+        self.chat_edit_page = ChatEditDrawer(self)
+        for p in (self.dashboard, self.projects_page, self.project_page, self.episode_page, self.clone_page,
+                  self.face_swap_page, self.merger_page,
                   self.chat_edit_page):
             self.stack.addWidget(p)
-
-        # 「图片处理」页 → 聊天改图页(独立 tab,免得另起炉灶)
-        self.image_process_page.chatRequested.connect(self.open_chat_with_image)
 
         root.addWidget(self.stack, 1)         # 页面栈占中央,stretch=1 撑满
 
@@ -192,8 +199,7 @@ class MainWindow(QMainWindow):
         self.episode_page.back_requested.connect(self._back_to_project)
         self.clone_page.back_requested.connect(self._back_to_projects)
         self.clone_page.open_workbench_requested.connect(self._enter_episode)
-        # 聊天抽屉 ↔ 图片处理页:来源/结果点 💬 → 抽屉加载;抽屉保存 → 结果区新增
-        self.image_process_page.chatRequested.connect(self.open_chat_with_image)
+        # 聊天抽屉保存成品 → 落到同页批量区的结果行(原「图片处理」页没了)
         self.chat_edit_page.imageSaved.connect(self._on_chat_image_saved)
         self.chat_edit_page.needSettings.connect(self._open_settings)
         self.chat_edit_page.openDesktopApp.connect(self._open_photocraft_desktop)
@@ -246,7 +252,13 @@ class MainWindow(QMainWindow):
         """
         QTimer.singleShot(0, self._rebuild_ui)
 
-    _PAGE_KINDS = ["projects", "project", "episode", "clone", "face_swap", "merger", "imageproc", "chatedit"]
+    # 下标与 self.stack 的 addWidget 顺序严格一一对应 —— _rebuild_ui 靠它把
+    # 「当前页」翻译回页面种类。「imageproc」下线后已从本表移除。
+    # dashboard 必须在首位:它是栈里的第 0 页,漏了会让全表右移一位,
+    # 切语言时把首页当成 projects 重建,直接把用户从 dashboard 弹到项目页。
+    # _make_page("dashboard") 返回 None,_rebuild_ui 走「原地刷顶栏」分支,符合预期。
+    _PAGE_KINDS = ["dashboard", "projects", "project", "episode", "clone",
+                   "face_swap", "merger", "chatedit"]
 
     def _make_page(self, kind: str):
         """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。"""
@@ -275,7 +287,7 @@ class MainWindow(QMainWindow):
 
     _PAGE_ATTR = {
         "projects": "projects_page", "project": "project_page", "episode": "episode_page",
-        "imageproc": "image_process_page", "chatedit": "chat_edit_page",
+        "chatedit": "chat_edit_page",
     }
 
     def _swap_page(self, kind: str, new) -> None:
@@ -357,7 +369,6 @@ class MainWindow(QMainWindow):
         for k, b in self.nav_btns.items():
             page = {"projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
                     "merger": getattr(self, "merger_page", None),
-                    "imageproc": getattr(self, "image_process_page", None),
                     "chatedit": getattr(self, "chat_edit_page", None)}.get(k)
             if page is not None:
                 b.setChecked(cur is page)
@@ -380,9 +391,8 @@ class MainWindow(QMainWindow):
         """切换:项目列表(导航胶囊)/ 换脸·合并工具(资产卡与导出面板的入口)。"""
         self._ensure_fresh(key)
         page = {"projects": self.projects_page,
-                "imageproc": self.image_process_page,
-                # 聊天改图是独立 tab(commit ff48962 加的 nav 按钮),必须在这张表里
-                # 登记 —— 漏了会让 _goto 拿到 None 直接 return,点按钮没反应
+                # 聊天改图是独立 tab,必须在这张表里登记 —— 漏了会让 _goto 拿到 None
+                # 直接 return,点按钮没反应。它同时是原「图片处理」页的新归宿。
                 "chatedit": getattr(self, "chat_edit_page", None),
                 "face_swap": getattr(self, "face_swap_page", None),
                 "merger": getattr(self, "merger_page", None)}.get(key)
@@ -516,25 +526,18 @@ class MainWindow(QMainWindow):
         self._goto("chatedit")
 
     def open_chat_with_image(self, path: str):
-        """图片处理页的来源/结果缩略图点「发送」时调用:
-        切到聊天改图 tab 并加载图(自动新会话)。
-        """
+        """外部(资产卡等)送一张图进聊天改图:切 tab 并作为会话当前图。"""
         self._goto("chatedit")
         self.chat_edit_page.set_image(path)
 
     def _on_chat_image_saved(self, out_path: str):
-        """抽屉里点「保存到结果区」:在当前页(若为图片处理页)加入结果。"""
-        cur = self.stack.currentWidget()
-        if cur is self.image_process_page:
-            self.image_process_page.add_chat_result(out_path)
-            from .toast import ok
-            ok(tr("chat_edit_saved"))
-        else:
-            # 切到图片处理页让用户看到
-            self._goto("imageproc")
-            self.image_process_page.add_chat_result(out_path)
-            from .toast import ok
-            ok(tr("chat_edit_saved"))
+        """抽屉里点「保存到结果区」:成品落到同页批量区的结果行。
+
+        原先这条路径是写进独立的「图片处理」页;那个页下线后成品没地方可去,
+        统一停在 ChatEditPanel 的批量区里,导出目录与批处理共用同一个。
+        """
+        self._goto("chatedit")
+        self.chat_edit_page.add_external_result(out_path)
 
     def _open_photocraft_desktop(self):
         from ..ai.photocraft_bridge import resolve_app_path

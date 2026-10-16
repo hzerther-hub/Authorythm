@@ -649,7 +649,6 @@ def test_novel_plan_dialog_constructs(qapp_stub):
 # ── 全书章数不得被生成结果覆盖 ─────────────────────────────────────────
 
 def test_chapter_count_not_overwritten_by_generated_count(tmp_path, monkeypatch):
-    import time
     """用户设的 999 章不能被自己跑出来的 60 章覆盖。
 
     现场:`total_episodes` 同时表示「集数」和「全书章数」,而
@@ -657,18 +656,27 @@ def test_chapter_count_not_overwritten_by_generated_count(tmp_path, monkeypatch)
     于是用户设 999 → 生成 60 章 → 下次打开对话框只剩 60,设定永久丢失。
     章数必须存在 novel_meta.chapter_count,与集数字段分开。
     """
-    import os
-    os.environ["YIHAO_DATA_DIR"] = str(tmp_path / "cc")
-    import importlib
     from app.core import db as _db
-    importlib.reload(_db)
-    _db.init_db()
     import json as _json
-    _new_id = 880000 + int(time.time()) % 90000
+
+    # 隔离必须改 `config.DB_PATH`,不能只设 YIHAO_DATA_DIR 环境变量 ——
+    # config 在**导入时**就把 DATA_DIR 算成 DB_PATH 了,之后再改环境变量完全无效;
+    # 而 db.get_db() 连的正是 config.DB_PATH。原写法只 reload 了 db 没 reload
+    # config,于是每次跑测试都往 data/yihao.sqlite3(用户真实库)塞一条名为
+    # 「T」的 novel 项目,用户删掉还会再出现 —— id 落在 88 万~97 万区间。
+    # 同文件的 test_delete_drama_cascades_all_related_tables 用的就是这个写法。
+    monkeypatch.setattr(_db.config, "DB_PATH", tmp_path / "planchain.sqlite3")
+    old = getattr(_db._local, "conn", None)
+    if old is not None:
+        old.close()
+    _db._local.conn = None
+    _db.init_db()
+
+    # init_db 会灌一份种子数据并占用 id=1,所以自建这条要用别的 id
+    _new_id = 990001
     _db.ex("INSERT INTO dramas(id,title,work_type,status,total_episodes,novel_meta,"
-           "created_at,updated_at) VALUES(?,'T','novel','pending',60,?,?,?)",
-           (880000 + int(time.time()) % 90000, _json.dumps({"chapter_count": 999}),
-            _db.now(), _db.now()))
+           "created_at,updated_at) VALUES(?,'plan-scale-test','novel','pending',60,?,?,?)",
+           (_new_id, _json.dumps({"chapter_count": 999}), _db.now(), _db.now()))
     from app.pipeline import novel as nv
     n, _w = nv._plan_scale(_new_id, None, None)
     assert n == 999, f"章数被回落成 {n},用户设的 999 丢失"

@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
-"""图片处理(AI 改图)页:选素材 → 输入指令 → 批量出图到输出目录。
+"""批量改图工作台(原「图片处理」页的内容,现内嵌在聊天改图面板里)。
 
-与 ImageEditDialog 的分工:那个是**手动编辑器**(裁剪/调色/滤镜/水印/去背景,
+为什么搬到聊天改图:两件事本来就是同一件事的两面 —— 都是「对一张图下指令改它」。
+拆成两个页面时用户要先在 A 页选图、再点 💬 送到 B 页,来回跳。现在 A 直接没了,
+批量能力(多图/目录/URL 来源、指令批处理、本地超分与多规格导出、结果对照)收进
+ChatEditPanel 的「批量处理」折叠区,单张图的精修继续走聊天流。
+
+与 ImageEditDialog 的分工不变:那个是**手动编辑器**(裁剪/调色/滤镜/水印/去背景,
 全是 PIL 确定性操作);这里是**指令驱动**的 AI 改图 —— 「去掉图片上的人物」
 「把图里的中文换成英文」这类语义修改,走图生图(原图作参考图 + 指令作提示词)。
 
@@ -34,6 +39,17 @@ IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 # 就会跑几十分钟,用户只能干等。超出的直接拒绝并提示,而不是闷头跑。
 MAX_BATCH = 20
 
+# 本地像素处理用的投放画幅(与 pipeline/img_adjust.DELIVERY_SIZES 对齐)。
+# 这里只列 UI 常量,实际尺寸在 pipeline 里,避免两处各写一份对不上。
+IMG_DELIVERY_ITEMS = [
+    ("9:16", "9:16 抖音全屏"),
+    ("3:4", "3:4 小红书竖版"),
+    ("1:1", "1:1 方形"),
+    ("4:5", "4:5 Instagram 竖版"),
+    ("16:9", "16:9 B站横屏"),
+    ("4:3", "4:3 小红书横版"),
+]
+
 
 def build_edit_prompt(instr: str, people: int = 1) -> str:
     """把用户的一条指令扩写成「受约束的编辑」提示词。
@@ -65,51 +81,53 @@ def build_edit_prompt(instr: str, people: int = 1) -> str:
 
 
 # 改图场景专用负面词:压制"凭空多出来的人"。不进全局守卫 —— 全局加 "men" 会在
-# 生成男性角色时误伤,所以只在这个页面 opt-in 追加。
+# 生成男性角色时误伤,所以只在这个面板 opt-in 追加。
 EDIT_NEGATIVE = ("extra people, additional people, background characters, bystanders, "
                  "onlookers, crowd, audience, ghost, transparent figure, blurry face in "
                  "background, extra heads, duplicated person")
 
 
-class ImageProcessPage(QWidget):
-    """AI 改图工作台。"""
+class BatchImagePanel(QWidget):
+    """批量改图工作台(嵌在 ChatEditPanel 里,不单独占一个导航页)。
 
-    # 主窗口订阅该信号 → 转发给 ChatEditDrawer 加载图并打开抽屉
-    chatRequested = Signal(str)
+    Signals:
+        sendToChat(str)  — 用户点缩略图上的 💬:把这张图设为聊天的「当前图」
+        openDesktop(str) — 用户点 🖥:交给聊天面板的 PhotoCraft 接力流程
+        resultReady(list) — 一轮批处理跑完,items = [(原图, 成品或 None, 报错或 None)]
+        resultAdded(str) — 外部(聊天保存)塞进来一张成品,只更新结果区
+    """
+
+    sendToChat = Signal(str)
+    openDesktop = Signal(str)
+    resultReady = Signal(list)
+    resultAdded = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._sources: list[str] = []          # 本地路径 / 远程 URL 混合
         self._busy = False
         self._src_widgets: list = []           # 处理中要禁用的来源控件(_build 里登记)
-        # PhotoCraft 手动改监听(每个图都用同一个 watcher 实例 —— 复用 stop+watch)
-        self._pc_watcher = None
         self._build()
         self._reload_models()
         self._reset_output_dir()
+        # 先渲染一次空的来源区。原页面在 _build 里塞了个 "no_source" 占位 label,
+        # 搬过来时漏了 —— 结果列表空着,用户进来看到一片白不知道该干嘛。
+        self._render_sources()
 
     # ── 界面 ──
     def _build(self):
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 10, 14, 12)
-        root.setSpacing(10)
-        # 让 splitter 能把它压到 388(用户偏好宽度);内容超出走垂直滚动
-        self.setMinimumWidth(388)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
 
-        # 顶部:标题 + 文本模型 / 图像模型(对齐剧集页顶栏的写法)
+        # 顶部:图像模型(改图只有图像侧需要它;文本模型那一栏原页面挂着但从没被读过)
         top = QHBoxLayout()
-        top.setSpacing(8)
-        title = W.h2(tr("image_process"))
-        top.addWidget(title)
-        top.addStretch(1)
-        top.addWidget(QLabel(tr("text_svc") + ":"))
-        self.text_model = self._mk_combo()
-        top.addWidget(self.text_model)
-        top.addWidget(QLabel(tr("image_svc") + ":"))
+        top.setSpacing(6)
+        top.addWidget(W.muted(tr("image_svc") + ":"))
         self.image_model = self._mk_combo()
         self.image_model.setToolTip(tr("image_model_ref_tip"))
         self.image_model.currentIndexChanged.connect(self._on_image_model_changed)
-        top.addWidget(self.image_model)
+        top.addWidget(self.image_model, 1)
         root.addLayout(top)
 
         # 来源
@@ -142,6 +160,10 @@ class ImageProcessPage(QWidget):
         url_add.clicked.connect(self._add_url)
         url_row.addWidget(self.url_edit, 1)
         url_row.addWidget(url_add)
+        # 图库搜图入口:搜到图点一下就下载到本地并加进来源列表,与「添加文件」同一条路
+        stock_btn = W.svg_icon_btn("search", tr("从图库搜参考图"), 16)
+        stock_btn.clicked.connect(self._search_stock)
+        url_row.addWidget(stock_btn)
         sl.addLayout(url_row)
 
         self.src_host = QWidget()
@@ -151,11 +173,9 @@ class ImageProcessPage(QWidget):
         src_scroll = QScrollArea()
         src_scroll.setWidgetResizable(True)
         src_scroll.setFrameShape(QFrame.NoFrame)
-        src_scroll.setFixedHeight(320)
+        src_scroll.setFixedHeight(220)
         src_scroll.setWidget(self.src_host)
         sl.addWidget(src_scroll)
-        self.src_empty = W.muted(tr("no_source"))
-        self.src_lay.addWidget(self.src_empty)
         root.addWidget(src_card)
 
         # 结果区:处理完成后在这里直接看效果,而不是只弹一句「成功」。
@@ -179,14 +199,13 @@ class ImageProcessPage(QWidget):
         self.res_lay.setContentsMargins(0, 0, 0, 0)
         self.res_lay.setSpacing(8)
         self.res_lay.addStretch(1)
-        self.res_empty = W.muted(tr("no_result"))
-        self.res_lay.addWidget(self.res_empty)
+        self.res_lay.addWidget(W.muted(tr("no_result")))
         res_scroll = QScrollArea()
         res_scroll.setWidgetResizable(True)
         res_scroll.setFrameShape(QFrame.NoFrame)
         res_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         res_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        res_scroll.setFixedHeight(168)
+        res_scroll.setFixedHeight(150)
         res_scroll.setWidget(self.res_host)
         rl2.addWidget(res_scroll)
         self.res_card.setVisible(False)
@@ -214,7 +233,7 @@ class ImageProcessPage(QWidget):
 
         self.instr = QPlainTextEdit()
         self.instr.setPlaceholderText(tr("image_instr_hint"))
-        self.instr.setFixedHeight(88)
+        self.instr.setFixedHeight(72)
         fl.addWidget(self.instr)
 
         # 画面人数:写进提示词当硬约束。原来固定 people=1,遇到"去掉人物"这类
@@ -223,23 +242,18 @@ class ImageProcessPage(QWidget):
         prow.setSpacing(6)
         prow.addWidget(QLabel(tr("people_count")))
         self.people_combo = QComboBox()
-        for n in (1, 2, 3):
+        for n in (0, 1, 2, 3):
             self.people_combo.addItem(f"{n} {tr('people_unit')}", n)
         self.people_combo.setToolTip(tr("people_count_tip"))
+        self.people_combo.setCurrentIndex(1)
         prow.addWidget(self.people_combo)
         prow.addStretch(1)
         fl.addLayout(prow)
 
         act = QHBoxLayout()
         self.status_lab = W.muted("")
+        self.status_lab.setWordWrap(True)
         act.addWidget(self.status_lab, 1)
-        # 「发送到聊天修图」:把第一张选中的图送进 ChatEditDrawer 新会话,
-        # 主窗口订阅 chatRequested 信号 → 打开抽屉 + 加载图。
-        self.chat_send_btn = QPushButton("💬 " + tr("send_to_chat_edit"))
-        self.chat_send_btn.setToolTip(tr("send_to_chat_edit_tip"))
-        self.chat_send_btn.setCursor(Qt.PointingHandCursor)
-        self.chat_send_btn.clicked.connect(self._send_to_chat)
-        act.addWidget(self.chat_send_btn)
         # 必须用 WaitingButton:W.primary_btn 返回的是普通 QPushButton,**没有
         # .busy() 方法** —— 在 TASKMGR.submit 之前就 AttributeError,任务永远提交
         # 不出去;而且 _busy 已置 True,之后再点全被 return 挡掉(表现为按钮都不能按)。
@@ -247,7 +261,40 @@ class ImageProcessPage(QWidget):
         self.run_btn.clicked.connect(self._run)
         act.addWidget(self.run_btn)
         fl.addLayout(act)
+
+        # ── 本地处理(不调模型、不花钱、纯像素运算)──
+        # 上面的「开始处理」要走生图模型,批量 100 张就是 100 次计费;
+        # 超分/多规格导出这类纯像素活没必要浪费额度,这里单独给一条路。
+        local = QHBoxLayout()
+        local.setSpacing(4)
+        local.addWidget(W.muted(tr("local_ops") + ":"))
+        self.upscale_scale = QComboBox()
+        for s_ in ("2", "3", "4"):
+            self.upscale_scale.addItem(f"{s_}×", float(s_))
+        local.addWidget(self.upscale_scale)
+        # 投放画幅:超分时用不到,这里做默认占位(超分分支不读它)
+        self.delivery_combo = QComboBox()
+        for r_, lab in IMG_DELIVERY_ITEMS:
+            self.delivery_combo.addItem(lab, r_)
+        self.delivery_combo.setVisible(False)
+        local.addWidget(self.delivery_combo)
+        # 操作种类:超分 / 多规格导出
+        self.local_op = QComboBox()
+        self.local_op.addItem(tr("upscale"), "upscale")
+        self.local_op.addItem(tr("export_delivery"), "delivery")
+        self.local_op.setToolTip(tr("local_ops_tip"))
+        self.local_op.currentIndexChanged.connect(self._sync_local_params)
+        local.addWidget(self.local_op)
+        b_act = WaitingButton(tr("local_do"), primary=True)
+        self.local_btn = b_act
+        b_act.clicked.connect(self._run_local)
+        local.addWidget(b_act)
+        local.addStretch(1)
+        fl.addLayout(local)
         root.addWidget(foot_card)
+
+        self.status_lab.setText("")
+        self._sync_local_params()
 
     @staticmethod
     def _section(text: str) -> QLabel:
@@ -265,13 +312,12 @@ class ImageProcessPage(QWidget):
 
     # ── 数据 ──
     def _reload_models(self):
-        for combo, stype in ((self.text_model, "text"), (self.image_model, "image")):
-            combo.blockSignals(True)
-            combo.clear()
-            combo.addItem(tr("configured"), None)
-            for r in registry.list_configs(stype):
-                combo.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
-            combo.blockSignals(False)
+        self.image_model.blockSignals(True)
+        self.image_model.clear()
+        self.image_model.addItem(tr("configured"), None)
+        for r in registry.list_configs("image"):
+            self.image_model.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
+        self.image_model.blockSignals(False)
 
     def _reset_output_dir(self):
         d = config.STATIC_DIR / "processed"
@@ -319,27 +365,22 @@ class ImageProcessPage(QWidget):
                 self._sources.append(p)
         self._render_sources()
 
+    def _search_stock(self):
+        """从图库(Unsplash/Pexels/Pixabay)搜参考图,选中的直接进来源列表。"""
+        from .stock_photo_dialog import StockPhotoDialog
+        dlg = StockPhotoDialog(self)
+        if dlg.exec() == QDialog.Accepted and dlg.local_path:
+            self._add_paths([dlg.local_path])
+
     def _clear(self):
         self._sources.clear()
         self._render_sources()
 
-    def _send_to_chat(self):
-        """把当前选中列表的第一张图送进 ChatEditDrawer 新会话。
-
-        主窗口通过 `chatRequested = Signal(str)` 订阅 → 转发给 drawer.set_image。
-        自动新开会话,便于用户立刻输入修图指令多轮对话。
-        """
-        if not self._sources:
-            from .toast import err
-            err(tr("no_images_to_chat"))
+    def _send_to_chat(self, path: str):
+        """把一张图交给聊天流当「当前图」(由 ChatEditPanel 接住)。"""
+        if not path:
             return
-        first = self._sources[0]
-        # URL 直接发,本地路径转 file:// 兼容某些 drawer 实现
-        from app.core import config as _cfg
-        path = first if first.startswith(("file://", "/", "http")) else first
-        self.chatRequested.emit(path)
-        from .toast import ok
-        ok(tr("image_sent_to_chat"))
+        self.sendToChat.emit(path)
 
     def _render_sources(self):
         while self.src_lay.count():
@@ -387,41 +428,29 @@ class ImageProcessPage(QWidget):
                 b.setFixedSize(30, 22)
                 b.setCursor(Qt.PointingHandCursor)
                 b.setToolTip(tr(tip))
-                b.setStyleSheet(
-                    "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
-                    "border-radius:4px;color:#1f2329;font-size:11px;padding:0;}"
-                    "QPushButton:hover{background:#f97316;color:#ffffff;}")
+                b.setStyleSheet(_float_btn_qss())
                 b.clicked.connect(lambda _=False, x=str(s), f=cb: f(x))
                 bar.addWidget(b)
-            # 在 PhotoCraft 桌面端打开 → 改完自动加进结果 + 替换来源
+            # 在 PhotoCraft 桌面端打开 → 改完自动同步(交回聊天面板的接力流程)
             pc_btn = QPushButton("🖥")
             pc_btn.setFixedSize(30, 22)
             pc_btn.setCursor(Qt.PointingHandCursor)
-            pc_btn.setToolTip("在 PhotoCraft 里打开,改完自动同步回此处")
-            pc_btn.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
-                "border-radius:4px;color:#1f2329;font-size:12px;padding:0;}"
-                "QPushButton:hover{background:#f97316;color:#ffffff;}")
-            pc_btn.clicked.connect(lambda _=False, x=str(s): self._open_in_photocraft(x))
+            pc_btn.setToolTip("在 PhotoCraft 里打开,改完自动同步回会话")
+            pc_btn.setStyleSheet(_float_btn_qss())
+            pc_btn.clicked.connect(lambda _=False, x=str(s): self.openDesktop.emit(x))
             bar.addWidget(pc_btn)
-            # PhotoCraft 聊天修图入口
+            # 送进聊天当当前图 —— 聊天改图面板就是接住方
             cb_btn = QPushButton("💬")
             cb_btn.setFixedSize(30, 22)
             cb_btn.setCursor(Qt.PointingHandCursor)
             cb_btn.setToolTip(tr("chat_edit_open_drawer"))
-            cb_btn.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
-                "border-radius:4px;color:#1f2329;font-size:12px;padding:0;}"
-                "QPushButton:hover{background:#f97316;color:#ffffff;}")
-            cb_btn.clicked.connect(lambda _=False, x=str(s): self.chatRequested.emit(x))
+            cb_btn.setStyleSheet(_float_btn_qss())
+            cb_btn.clicked.connect(lambda _=False, x=str(s): self.sendToChat.emit(x))
             bar.addWidget(cb_btn)
             rm = W.svg_icon_btn("close", "", size=22)
             rm.setCursor(Qt.PointingHandCursor)
             rm.setToolTip(tr("u_delete"))
-            rm.setStyleSheet(
-                "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
-                "border-radius:4px;color:#4e5969;font-size:12px;padding:0;}"
-                "QPushButton:hover{background:#dc2626;color:#ffffff;}")
+            rm.setStyleSheet(_float_btn_qss("#4e5969", "#dc2626"))
             rm.clicked.connect(lambda _=False, x=str(s): self._remove_one(x))
             bar.addWidget(rm)
             hl.addLayout(bar)
@@ -498,7 +527,7 @@ class ImageProcessPage(QWidget):
             cap.setToolTip(str(e) if e else str(src))
             cap_row.addWidget(cap, 1)
             if out:
-                # 聊天继续修(把 out 再次丢进抽屉)
+                # 接着在聊天里改(把 out 设为会话当前图)
                 cb = QPushButton("💬")
                 cb.setFixedSize(22, 18)
                 cb.setCursor(Qt.PointingHandCursor)
@@ -507,7 +536,7 @@ class ImageProcessPage(QWidget):
                     "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
                     "border-radius:3px;color:#1f2329;font-size:11px;padding:0;}"
                     "QPushButton:hover{background:#f97316;color:#ffffff;}")
-                cb.clicked.connect(lambda _=False, x=out: self.chatRequested.emit(x))
+                cb.clicked.connect(lambda _=False, x=out: self.sendToChat.emit(x))
                 cap_row.addWidget(cb)
             wrap = QFrame()
             wrap.setLayout(cap_row)
@@ -515,18 +544,17 @@ class ImageProcessPage(QWidget):
             self.res_lay.insertWidget(self.res_lay.count() - 1, cell)
         self.res_lay.addStretch(1)
 
-    def add_chat_result(self, out_path: str, src_for_label: str | None = None):
-        """被聊天抽屉调用:把对话产生的成品图加入结果区,左侧素材同步替换。"""
+    def add_result(self, out_path: str, src_for_label: str | None = None):
+        """外部塞进来一张成品(聊天面板点「保存到结果区」):只更新结果区。
+
+        与 add_source_result 的区别:后者是「链式编辑」—— 还会把来源列表里的原图
+        换成成品,从外部进来的图不属于任何来源,不该改来源。
+        """
         if not out_path or not Path(out_path).exists():
             return
         src = src_for_label or (self._sources[-1] if self._sources else out_path)
         self._render_results([(src, out_path, None)])
-        # 把成品作为最新素材替换左侧
-        if src and src in self._sources:
-            self._replace_source(src, out_path)
-        elif not self._sources:
-            self._sources.append(out_path)
-            self._render_sources()
+        self.resultAdded.emit(out_path)
 
     def _open_edit(self, path: str):
         """打开改图对话框(裁剪/旋转/翻转/调色/滤镜/水印/尺寸/去背景)。
@@ -539,56 +567,6 @@ class ImageProcessPage(QWidget):
         if dlg.exec() == QDialog.Accepted and getattr(dlg, "saved_url", None):
             self._render_results([(path, dlg.saved_url, None)])
             self._replace_source(path, dlg.saved_url)  # 左侧素材指向最新版
-
-    def _open_in_photocraft(self, path: str):
-        """🖥 在 PhotoCraft 桌面端打开 → 改完自动同步回此处(加进结果 + 替换来源)。
-
-        与 chat-edit 页的「✋ 我手动改」共用 PhotoCraftWatcher 组件(mtime+size
-        双检 + 1.5s polling),失败(未装/未配置)给红色 toast,成功不动弹窗,
-        用户改完保存会异步把成品塞进结果区。
-        """
-        # 远程 URL / 不存在的本地路径:跳过
-        if not path or not Path(path).exists() or path.startswith(("http://", "https://")):
-            from .toast import warn
-            warn("PhotoCraft 只能打开本地文件,先下载到本地")
-            return
-        from .photocraft_watcher import PhotoCraftWatcher
-        if self._pc_watcher is None:
-            self._pc_watcher = PhotoCraftWatcher(self)
-            self._pc_watcher.changed.connect(self._on_photocraft_saved)
-        self._pc_watcher.stop()
-        ok, err = self._pc_watcher.watch(path)
-        if not ok:
-            from .toast import err as _err
-            _err(err)
-            return
-        from .toast import ok as _ok
-        _ok("PhotoCraft 已打开 · 改完保存会自动同步")
-
-    def _on_photocraft_saved(self, new_path: str):
-        """PhotoCraftWatcher 回调:把改好的图并入结果区 + 替换来源(链式编辑)。
-
-        与 _open_edit / _open_patch 的「保存即同步」行为一致 —— 但这里是异步的
-        (PhotoCraft 在桌面端保存后 1.5s 内被 polling 捕到),所以用户切走干别的也
-        不影响下次回到图片处理页看到结果。
-        """
-        # 找原 path(可能 watcher 解析过 resolve())
-        old_path = self._pc_watcher.current_path if self._pc_watcher else None
-        if not old_path or old_path not in self._sources:
-            # fallback:找与 new_path 同名(改后扩展名可能变)的来源
-            new_name = Path(new_path).name
-            for s in list(self._sources):
-                if Path(s).name == new_name and s in self._sources:
-                    old_path = s
-                    break
-        if not old_path:
-            old_path = new_path
-        # 加进结果区
-        self._render_results([(old_path, new_path, None)])
-        # 替换来源(链式编辑的入口)
-        self._replace_source(old_path, new_path)
-        from .toast import ok
-        ok(f"已同步 PhotoCraft 修改:{Path(new_path).name}")
 
     def _replace_source(self, old: str, new: str):
         """用处理后的文件替换来源列表里的原条目。
@@ -656,7 +634,6 @@ class ImageProcessPage(QWidget):
     def _image_provider_name(self) -> str:
         cid = self.image_model.currentData()
         if cid is None:
-            from ..ai import registry
             lst = registry.list_configs("image")
             cid = lst[0]["id"] if lst else None
         if cid is None:
@@ -733,6 +710,92 @@ class ImageProcessPage(QWidget):
             r = result or {}
             ok(tr("process_done").format(r.get("done", 0), r.get("total", 0)))
             self._render_results(r.get("items") or [])
+            self.resultReady.emit(r.get("items") or [])
+            fails = r.get("fails") or []
+            self.status_lab.setText(tr("process_failed_n", len(fails)) if fails else "")
+            for f in fails[:3]:
+                err(str(f)[:180])
+
+        TASKMGR.submit("image", job, done, detail=tr("image_process"))
+
+    def _sync_local_params(self):
+        """切操作时只显示用得上的参数控件,免得一堆控件摆在那儿不知道干嘛。"""
+        is_up = self.local_op.currentData() == "upscale"
+        self.upscale_scale.setVisible(is_up)
+        self.delivery_combo.setVisible(not is_up)
+
+    def _run_local(self):
+        """本地像素处理:对全部来源图跑同一套操作(超分 / 多规格导出)。
+
+        与「开始处理」的区别:那条走生图模型,每张都计费;这条纯 Pillow+numpy,
+        不调任何接口,批量几百张也无所谓。
+
+        走 TASKMGR 串行执行,逐张留痕(与 _run 同一套结果渲染)。
+        """
+        if self._busy:
+            return
+        if not self._sources:
+            err(tr("no_source"))
+            return
+        if len(self._sources) > MAX_BATCH:
+            err(tr("batch_capped").format(MAX_BATCH))
+            return
+        from ..pipeline import img_adjust as IA
+        op = self.local_op.currentData()
+        if op == "upscale":
+            scale = self.upscale_scale.currentData()
+            ratios = None
+        else:
+            scale = None
+            ratios = [self.delivery_combo.currentData()]
+        out_dir = Path(self.out_edit.text().strip()) / "local"
+        try:
+            out_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            err(e)
+            return
+
+        self._busy = True
+        self.local_btn.busy(tr("local_in_progress"))
+        self._set_source_enabled(False)
+        srcs = list(self._sources)
+        total = len(srcs)
+
+        def job(tid):
+            items, done_n, fails = [], 0, []
+            for i, s in enumerate(srcs):
+                _TM.set_stage(tid, f"{i + 1}/{total}")
+                self._set_progress(i, total, Path(str(s)).name)
+                try:
+                    if op == "upscale":
+                        stem = Path(str(s)).stem
+                        out = IA.upscale(s, out_dir / f"{stem}_up{Path(str(s)).suffix}",
+                                         scale=scale)
+                    else:
+                        # 多规格:一张源图出一个文件,用最后一路径作为主产物
+                        outs = IA.export_delivery(s, out_dir / Path(str(s)).stem, ratios)
+                        out = outs[0]
+                    items.append((s, out, None))
+                    done_n += 1
+                except Exception as exc:  # noqa: BLE001
+                    msg = str(exc)[:120]
+                    items.append((s, None, msg))
+                    fails.append(f"{Path(str(s)).name}: {msg[:60]}")
+            return {"done": done_n, "total": total, "out_dir": str(out_dir),
+                    "fails": fails, "items": items}
+
+        def done(tid, result, error):
+            self._busy = False
+            self.local_btn.idle()
+            self._set_source_enabled(True)
+            if error:
+                self.status_lab.setText("")
+                err(error)
+                return
+            r = result or {}
+            ok(tr("process_done").format(r.get("done", 0), r.get("total", 0)))
+            self._render_results(r.get("items") or [])
+            self.resultReady.emit(r.get("items") or [])
             fails = r.get("fails") or []
             self.status_lab.setText(tr("process_failed_n", len(fails)) if fails else "")
             for f in fails[:3]:
@@ -782,3 +845,15 @@ class ImageProcessPage(QWidget):
         finally:
             if tmp and Path(tmp).exists():
                 Path(tmp).unlink(missing_ok=True)
+
+
+# 缩略图上浮动小按钮的统一外观(白底 + 灰边,hover 变橙/红)。原来每个按钮各抄一遍,
+# 抄到最后一个发现删除键和别的按钮长得一模一样,分不清哪个是哪个。
+# 用函数而不是 str.format:QSS 里到处是花括号,format 会把 `{background:...}`
+# 当成字段名解析,运行到点击才 KeyError —— 写完当场点一下才炸出来。
+def _float_btn_qss(color: str = "#1f2329", hover: str = "#f97316") -> str:
+    return (
+        "QPushButton{background:rgba(255,255,255,225);border:1px solid rgba(128,128,128,90);"
+        f"border-radius:4px;color:{color};font-size:12px;padding:0;}}"
+        f"QPushButton:hover{{background:{hover};color:#ffffff;}}"
+    )

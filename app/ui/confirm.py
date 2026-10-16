@@ -41,19 +41,31 @@ class ConfirmDialog(QDialog):
         root.setContentsMargins(20, 18, 20, 16)
         root.setSpacing(14)
 
+        # Director's Slate:容器 + 标题统一收口,跟其他 dialog 同一视觉;
+        # 危险操作保留红色边框(danger=True 不动),normal 切到米白边 + 4px 圆角
+        self.setObjectName("confirmDialog")
+
         if title:
             t = QLabel(title)
-            t.setObjectName("h2")
+            t.setObjectName("confirmTitle")
             t.setWordWrap(True)
+            t.setStyleSheet(
+                "QLabel#confirmTitle{font-family:ui-monospace,Menlo,Consolas,monospace;"
+                "font-size:11px; font-weight:700; letter-spacing:2.5px; color:#0E0F12;}"
+            )
             root.addWidget(t)
 
         m = QLabel(message)
+        m.setObjectName("confirmMsg")
         m.setWordWrap(True)
         m.setTextInteractionFlags(Qt.TextSelectableByMouse)
         m.setStyleSheet(
-            f"background:{DANGER_BG if danger else NORMAL_BG};"
+            f"QLabel#confirmMsg{{background:{DANGER_BG if danger else NORMAL_BG};"
             f"border:1px solid {DANGER_BORDER if danger else NORMAL_BORDER};"
-            f"border-radius:10px; padding:12px;")
+            f"border-radius:4px; padding:12px;"
+            f"font-family:'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;"
+            f"font-size:13px; color:#1F2329;}}"
+        )
         root.addWidget(m)
 
         row = QHBoxLayout()

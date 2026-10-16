@@ -175,3 +175,85 @@ docs/          分析报告/计划/过程/截图
 延续原版 CC BY-NC-SA 4.0。FFmpeg 以子进程调用,其 GPL/LGPL 许可不影响本项目。
 
 ---
+## 📖 小说生成逻辑与「小说策划与设定」的作用
+
+### 概览
+
+pydrama 小说(`work_type=novel`)项目的生成走 `app/pipeline/novel.py`,核心是**两次 AI 调用链**:
+1. **策划与设定**:`NovelPlanDialog`(`app/ui/novel_dialogs.py`)让用户写 4 块设定 → `AI 起草 → 保存到 dramas 表`
+2. **章节生成**:`generate_chapters_batched` → `write_chapter_with_review` → **LangGraph 审校循环**
+
+### 标题 / 描述 / 创意 三件套
+
+| 字段 | 来源 | 用途 |
+|---|---|---|
+| **title** | dramas 表 / 用户手动 | 文件名 / 启动台展示 / 全部 prompt 锚点 |
+| **intro** | `novel_meta.intro`,用户输入,`AI 自动续写` | 章节 prompt 上下文 → 模特接到"项目是什么" |
+| **genre** | `novel_meta.genre`,用户选 | 章节 prompt `style:` 前缀注入,影响写作风格 |
+
+### 「小说策划与设定」在生成小说中的作用
+
+`NovelPlanDialog` 让用户填 **4 块设定**,每块都是**独立的 AI 起草任务**,但有 PREREQ 依赖:
+
+```
+PREREQ 依赖:
+  outline  (总纲)   ─── 地基,没总纲后面都写不出来
+       ↓
+  world    (世界观)  ─── 在总纲划定的边界内展开
+       ↓
+  contract (故事合约) ─── 人称 / 视角 / 风格 / 硬约束
+       ↓
+  volume   (分卷战略) ─── 把总纲切成卷
+```
+
+#### 4 块设定的内容与作用
+
+| 块 | 存储位置 | 章节生成时怎么用 |
+|---|---|---|
+| **outline 总纲** | dramas.novel_outline | 注入章节 prompt → "项目走向" + 主要角色 + 冲突 |
+| **world 世界观** | dramas.novel_world | 注入 → 时间 / 地理 / 法规 / 习俗,character 落点不能破 |
+| **contract 合约** | dramas.novel_contract | 注入 → POV / 文学性 / 文风 / 硬约束 |
+| **volume 分卷战略** | dramas.novel_volume | 注入 → 当前章节在卷中的位置 + 卷的整体走向 |
+
+加上用户`plan_novel(drama_id, idea, ...)`输入的 idea (`novel_meta.intro` 当 prompt 种子),
+→ 这 5 个上下文共同组成每次章节生成时的 prompt 上下文,缺一个章节就会"风格漂"。
+
+### 章节生成 + 审校流程(C.1 + C.2)
+
+`write_chapter_with_review` (在 `app/pipeline/novel.py:918`)现在内部走 `run_novel_review_loop`,
+`run_novel_review_loop` (在 `app/agents/novel_review_flow.py`)有 5 个节点:
+
+```
+   ┌──────────┐    ┌─────────┐
+   │  WRITER  │───▶│ CRITIC  │
+   └──────────┘    └────┬────┘
+                       │
+       ┌───────────────┼────────────────┐
+       ▼               ▼                ▼
+  ┌─ REPAIR ─┐   ┌─ COMPRESSOR  ┐  ┌─ END ┐
+  │   ▲      │   │   (terminal) │  │      │
+  └─JEV──────┘   └───────────────┘  └──────┘
+```
+
+- **WRITER**:调 `write_chapter(episode_id, ...)` → 落库 sys_task.stage=`writing`
+- **CRITIC**:调 `review_chapter(episode_id, ...)` → 六维审校(连贯 / 节奏 / 文笔 / 角色 / 设定 / 调性)
+  - `overall=pass` → **OK** 进 compressor
+  - `overall=fix` + 1-4 issues → **revise** 进 repair
+  - `overall=fix` + ≥5 issues → **rewrite** 回 writer(整章重写更划算)
+  - cycle ≥ `max_cycles`(默认 3)→ **giveup** 强退
+- **REPAIR**:`run_agent("novel_editor", ...)` 生成修复版正文 → 落库
+- **JEV GATE**:调 `jev_gate().client.decide(...)` 检查**连续性**
+  - `<0.5` 不连续 → **rewrite** 回 writer
+  - `≥0.5` 通过 → **pass** 再 critic 一轮
+  - 未配 / 异常 → 透传(走 critic)
+- **COMPRESSOR**:终态,把通过的 draft 推 `final`,调用方入库
+
+### LangGraph vs Fallback 双轨
+
+| 模式 | 触发 | 价值 |
+|---|---|---|
+| **Fallback**(默认) | `LangGraph` 没装 | 同样的节点函数直接 cycle loop 跑,行为等价 |
+| **LangGraph 真图** | `pip install langgraph` | 自动切到 StateGraph 调度 + 可挂 LangSmith trace + `interrupt_before=["jev_gate"]` 中途暂停 |
+
+切换零代码:`pip install langgraph` 即可。其他 13 个 README 看本节开头 → 文档链向完整章节。
+

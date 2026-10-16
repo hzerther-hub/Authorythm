@@ -29,14 +29,44 @@ from .toast import err, ok as ok_toast
 
 from ..ai.jev_client import test_config as jev_test  # noqa: E402
 
+
+def _stockphoto_test(cfg: dict) -> tuple[bool, str]:
+    """图库连接测试。test_source 只认库里已启用的一行,而设置页测的是**表单里
+    还没保存**的值 —— 所以先按 provider 认出来直接测,别指望库里已经有。"""
+    from ..ai import stock_photo as sp
+    prov = (cfg.get("provider") or "").strip().lower()
+    if prov not in sp.SOURCE_ORDER:
+        return False, "未知的图库类型"
+    key = (cfg.get("api_key") or "").strip()
+    if not key:
+        return False, "未填 API Key"
+    try:
+        fn = sp._searcher_for(prov)
+        if fn is None:
+            return False, "未实现的适配器"
+        got = fn(key, "test", 1, 3)
+    except Exception as exc:  # noqa: BLE001
+        resp = getattr(exc, "response", None)
+        code = resp.status_code if resp is not None else None
+        if code in (401, 403):
+            return False, "API Key 无效或已失效 — 到 key 官网重新申请"
+        if code:
+            return False, f"HTTP {code}"
+        return False, f"{type(exc).__name__}: {str(exc)[:120]}"
+    return True, f"可用 · 命中 {len(got)} 张"
+
+
 TESTERS = {"text": text_test, "image": img_test, "video": video_test,
-           "tts": tts_test, "faceswap": fs_mod.test_config, "jev": jev_test}
+           "tts": tts_test, "faceswap": fs_mod.test_config, "jev": jev_test,
+           "stockphoto": _stockphoto_test}
 SVC_LABEL = {"text": "text_svc", "image": "image_svc", "video": "video_svc",
-             "tts": "tts_svc", "faceswap": "faceswap_svc", "jev": "jev_svc"}
+             "tts": "tts_svc", "faceswap": "faceswap_svc", "jev": "jev_svc",
+             "stockphoto": "stockphoto_svc"}
 SVC_DESC = {"text": "svc_text_desc", "image": "svc_image_desc",
             "video": "svc_video_desc", "tts": "svc_tts_desc",
             "faceswap": "本地或远程 InsightFace 换脸服务(角色形象换脸/换脸工具页)",
-            "jev": "状态台账门控(TypeSafe AI):长篇连续性自动判读。未配置时台账照常维护,只是不做矛盾判定"}
+            "jev": "状态台账门控(TypeSafe AI):长篇连续性自动判读。未配置时台账照常维护,只是不做矛盾判定",
+            "stockphoto": "免费图库检索(Unsplash/Pexels/Pixabay):仅用于「图片处理」「聊天改图」搜参考图,不参与任何生成"}
 
 
 class SettingsDialog(QDialog):
@@ -421,8 +451,101 @@ class SettingsDialog(QDialog):
         self.pc_cli_edit.editingFinished.connect(self._save_pc_cli)
 
         lay.addWidget(pc)
+        lay.addWidget(self._build_stockphoto_card())
         lay.addStretch(1)
         return w
+
+    # 三个免费图库的 key 与「AI 服务 → 图库」是**同一份**配置
+    # (ai_service_configs, service_type='stockphoto'),两处任改其一即可,
+    # 这里只是给「图片处理 / 聊天改图」这类入口一个就近的修改位置。
+    STOCK_SOURCES = [
+        ("unsplash", "Unsplash", "https://api.unsplash.com", "search/photos"),
+        ("pexels", "Pexels", "https://api.pexels.com", "v1/search"),
+        ("pixabay", "Pixabay", "https://pixabay.com", "api/"),
+    ]
+
+    def _build_stockphoto_card(self) -> QWidget:
+        card = W.make_card()
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(14, 14, 14, 14)
+        cl.setSpacing(8)
+        cl.addWidget(W.h2(tr("图库")))
+        cl.addWidget(W.muted(tr("stockphoto_general_desc")))
+
+        self._stock_edits: dict[str, QLineEdit] = {}
+        self._stock_status: dict[str, QLabel] = {}
+        for prov, name, base, model in self.STOCK_SOURCES:
+            row = QHBoxLayout()
+            row.setSpacing(6)
+            row.addWidget(W.muted(f"{name}:"))
+            edit = QLineEdit()
+            cfg = db.q1("SELECT id, api_key FROM ai_service_configs "
+                        "WHERE service_type='stockphoto' AND provider=?", (prov,))
+            edit.setText((cfg["api_key"] if cfg else "") or "")
+            edit.setPlaceholderText(tr("API Key"))
+            edit.editingFinished.connect(lambda p=prov: self._save_stock_key(p))
+            row.addWidget(edit, 1)
+            btn = QPushButton(tr("测试"))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, p=prov: self._test_stock_key(p))
+            row.addWidget(btn)
+            cl.addLayout(row)
+            st = W.muted("")
+            cl.addWidget(st)
+            self._stock_edits[prov] = edit
+            self._stock_status[prov] = st
+        return card
+
+    def _save_stock_key(self, provider: str):
+        key = (self._stock_edits[provider].text() or "").strip()
+        cfg = db.q1("SELECT id FROM ai_service_configs "
+                    "WHERE service_type='stockphoto' AND provider=?", (provider,))
+        if cfg:
+            db.ex("UPDATE ai_service_configs SET api_key=?, updated_at=? WHERE id=?",
+                  (key, db.now(), cfg["id"]))
+        else:
+            base = dict((p, (b, m)) for p, _n, b, m in self.STOCK_SOURCES)[provider]
+            registry.add_config("stockphoto", provider, base[0], base[1],
+                                api_key=key, remark=f"{provider} 免费图库")
+        self._stock_status[provider].setText(tr("已保存"))
+
+    def _test_stock_key(self, provider: str):
+        """真发一次搜索请求验鉴权 —— 图库 key 最常见的问题就是过期。"""
+        from ..ai import stock_photo as sp
+        self._save_stock_key(provider)          # 先落盘,再测库里的值
+        self._stock_status[provider].setText(tr("测试中…"))
+
+        def job(tid):
+            row = db.q1("SELECT provider, api_key FROM ai_service_configs "
+                        "WHERE service_type='stockphoto' AND provider=? "
+                        "AND is_active=1", (provider,))
+            key = (row["api_key"] or "").strip() if row else ""
+            if not key:
+                return False, tr("未填 API Key")
+            try:
+                fn = sp._searcher_for(provider)
+                if fn is None:
+                    return False, tr("未实现的适配器")
+                got = fn(key, "test", 1, 3)
+            except Exception as exc:  # noqa: BLE001
+                resp = getattr(exc, "response", None)
+                code = resp.status_code if resp is not None else None
+                if code in (401, 403):
+                    return False, tr("API Key 无效或已失效,请重新申请")
+                if code:
+                    return False, f"HTTP {code}"
+                return False, f"{type(exc).__name__}: {str(exc)[:100]}"
+            return True, tr("可用 · 命中 {n} 张").format(n=len(got))
+
+        def done(tid, result, error):
+            ok_, msg = result if isinstance(result, tuple) else (False, str(error or ""))
+            lab = self._stock_status.get(provider)
+            if lab:
+                lab.setText(msg)
+            (ok_toast if ok_ else err)(msg)
+
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.submit("image", job, done)
 
     def _pick_photocraft_dir(self):
         from PySide6.QtWidgets import QFileDialog
@@ -966,9 +1089,14 @@ class ModelChipsEditor(QWidget):
 
     def _render(self):
         self.flow.clear()
+        from ..ai.registry import is_vision_model
         for i, m in enumerate(list(self.models)):
-            chip = QPushButton(m + (tr("  默认") if i == 0 else ""))
-            chip.setToolTip(tr("点击置顶设为默认"))
+            # 多模态模型标注一下:复刻/图片编辑要读图,选纯文本模型只会拿到胡话。
+            vis = is_vision_model(m)
+            chip = QPushButton(m + (tr("  默认") if i == 0 else "")
+                               + (tr("  多模态") if vis else ""))
+            chip.setToolTip(tr("多模态模型,可读图/读视频") if vis
+                            else tr("纯文本模型,不能读图"))
             chip.setStyleSheet(
                 "QPushButton{border-radius:12px; padding:3px 10px; font-size:12px;}"
                 + ("QPushButton{background:#f97316;color:white;font-weight:700;border:none;}"

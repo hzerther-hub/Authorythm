@@ -73,6 +73,21 @@ class CoverPanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(6)
+        # Director's Slate:CoverPanel 容器与缩略图、按钮收口到 slate 风
+        self.setObjectName("coverPanel")
+        self.setStyleSheet(
+            "QWidget#coverPanel{background:transparent;}"
+            "QLineEdit{background:#FFFFFF; border:1px solid #DCDAD3;"
+            "border-radius:3px; padding:6px 10px;"
+            "font-family:'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;"
+            "font-size:12px; color:#1F2329;}"
+            "QLineEdit:focus{border-color:#0E0F12;}"
+            "QPushButton#coverGenBtn{background:#0E0F12; border:1px solid #0E0F12;"
+            "border-radius:3px; color:#F5F4EF; padding:7px 18px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px;"
+            "letter-spacing:1.5px; font-weight:700;}"
+            "QPushButton#coverGenBtn:hover{background:#1F2128; border-color:#1F2128;}"
+        )
 
         head = QHBoxLayout()
         intro = W.muted(tr("项目封面:AI 生成竖版封面;有角色/场景资产时自动以资产图为参考,保证与正片一致"))
@@ -90,6 +105,7 @@ class CoverPanel(QWidget):
         self.img.setFixedSize(150, 200)  # 3:4
         self.img.setAlignment(Qt.AlignCenter)
         self.img.setStyleSheet("border:1px solid rgba(128,128,128,60);border-radius:8px;background:#f7f8fa;")
+        self.img.setObjectName("coverThumb")
         self.img.setPixmap(W.pixmap_from_media(d["thumbnail"] if d else None, 146, 196))
         self.img.mousePressEvent = lambda _e: CoverPreviewDialog(self, self._url, d["title"] if d else "",
                                         self.drama_id).exec()
@@ -99,6 +115,7 @@ class CoverPanel(QWidget):
         self.prompt = QLineEdit()
         self.prompt.setPlaceholderText(tr("封面提示词(留空则按项目标题/简介/画风自动生成)"))
         gen = WaitingButton(tr("⟳ 生成封面"), primary=True)
+        gen.setObjectName("coverGenBtn")
         gen.clicked.connect(self._generate)
         self.gen_btn = gen
         add_text = QPushButton(tr("T " + tr("cover_add_text")))

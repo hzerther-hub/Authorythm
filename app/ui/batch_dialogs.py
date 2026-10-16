@@ -72,6 +72,17 @@ class _BatchProgressDialog(QDialog):
         self.total = max(1, total)
         self.setWindowTitle(tr("批量生成小说"))
         self.resize(560, 480)
+        # Director's Slate:批次进度 dialog 容器 + 标签统一 slate 字(mono caps),
+        # 嵌入 _SegmentBar 的三段颜色(成功绿/失败红/进行中暗琥珀)
+        self.setObjectName("batchDialog")
+        self.setStyleSheet(
+            "QDialog#batchDialog{background:#F5F4EF;}"
+            "QPushButton{background:transparent; border:1px solid #DCDAD3;"
+            "border-radius:3px; color:#6B727A;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+            "letter-spacing:0.5px; padding:0 12px; min-height:26px;}"
+            "QPushButton:hover{border-color:#0E0F12; color:#0E0F12;}"
+        )
         root = QVBoxLayout(self)
 
         self.bar = _SegmentBar()

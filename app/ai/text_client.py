@@ -88,6 +88,14 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          json_mode: bool = False, timeout: int = 300,
          image_urls: list[str] | None = None) -> str:
     cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
+    # 传了图但模型不是多模态 → 先说清楚再发:纯文本模型收下 image_url 后
+    # 通常不会报错,而是回一句凭空编的描述(实测复刻的产品描述/人物外貌全是
+    # 胡话,却一路走到生图才暴露)。这里只提示不拦 —— 名字判定只是启发式,
+    # 万一标错了不该把用户的活儿挡下来。
+    if image_urls and not registry.is_vision_model(cfg.get("model")):
+        print(f"[text] ⚠ 模型 {cfg.get('model')!r} 不是多模态,却收到 "
+              f"{len(image_urls)} 个媒体文件;返回内容很可能与素材无关。"
+              f"在「设置 → AI 服务」里换一个带「多模态」标记的模型。", flush=True)
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if cfg.get("api_key"):

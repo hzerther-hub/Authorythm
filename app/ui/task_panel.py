@@ -128,18 +128,39 @@ class TaskDrawer(QWidget):
 
         head = QFrame()
         head.setObjectName("taskHead")
+        # Director's Slate:拍板风 head —— 黑底浅米字 + mono letter-spacing
+        # 在 SLATE_ASSET_QSS 之外补一条覆盖,避免污染其他 dialog
+        head.setStyleSheet(
+            "#taskHead{background:transparent; border-bottom:1px solid #DCDAD3;}"
+            "QLabel#taskHeadTitle{color:#0E0F12; font-family:ui-monospace,Menlo,Consolas,monospace;"
+            "font-size:13px; font-weight:700; letter-spacing:1.5px;}"
+            "QLabel#taskHeadMeta{color:#6B727A; font-family:ui-monospace,Menlo,Consolas,monospace;"
+            "font-size:10px; letter-spacing:0.5px;}"
+            "QPushButton#taskCloseBtn{border:none; background:transparent;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:14px;"
+            "color:#6B727A; border-radius:3px; padding:0 8px; min-height:24px;}"
+            "QPushButton#taskCloseBtn:hover{background:#0E0F12; color:#F5F4EF;}"
+        )
         hl = QVBoxLayout(head)
         hl.setContentsMargins(16, 14, 14, 12)
         hl.setSpacing(2)
         top = QHBoxLayout()
         t = QLabel(tr("gen_task_list"))
-        t.setObjectName("taskTitle")
+        t.setObjectName("taskHeadTitle")    # Director's Slate:hit the override above
         top.addWidget(t)
         top.addStretch(1)
         refresh = QPushButton("⟳ " + tr("refresh"))
+        refresh.setStyleSheet(
+            "QPushButton{border:1px solid #DCDAD3; border-radius:3px;"
+            "background:transparent; color:#6B727A;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+            "letter-spacing:0.5px; padding:0 10px; min-height:24px;}"
+            "QPushButton:hover{border-color:#0E0F12; color:#0E0F12;}"
+        )
         refresh.clicked.connect(self.reload)
         top.addWidget(refresh)
         close = W.svg_icon_btn("close", "", size=28)
+        close.setObjectName("taskCloseBtn")
         close.setFixedWidth(28)
         close.setStyleSheet("border:none; background:transparent;")
         close.clicked.connect(lambda: self.closed.emit(self))

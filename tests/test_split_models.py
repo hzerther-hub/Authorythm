@@ -175,14 +175,18 @@ def test_merge_chapters_keeps_existing_volumes(monkeypatch):
         row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (did,))
         return [int(c["number"]) for c in db.jload(row["novel_chapters"], []) or []]
 
-    set_chapters(range(1, 61))                    # 已有第 1-60 章(其它卷的)
-    nv._merge_chapters(did, [{"number": i, "title": f"N{i}", "goal": "g",
-                              "events": "e", "cliffhanger": "c"}
-                             for i in range(1, 41)])   # 再生成第 1-40 章
-    got = get_chapters()
-    assert len(got) == 60, f"原有 60 章被覆盖了,现在只有 {len(got)} 章"
-    assert got == list(range(1, 61)), f"章号不对:{got[:5]}…"
-    db.ex("DELETE FROM dramas WHERE id=?", (did,))
+    try:
+        set_chapters(range(1, 61))                # 已有第 1-60 章(其它卷的)
+        nv._merge_chapters(did, [{"number": i, "title": f"N{i}", "goal": "g",
+                                  "events": "e", "cliffhanger": "c"}
+                                 for i in range(1, 41)])  # 再生成第 1-40 章
+        got = get_chapters()
+        assert len(got) == 60, f"原有 60 章被覆盖了,现在只有 {len(got)} 章"
+        assert got == list(range(1, 61)), f"章号不对:{got[:5]}…"
+    finally:
+        # 清理必须放 finally:放断言之后的话,断言一失败这条测试项目就永远
+        # 留在用户真实库里了(表现为「删掉的项目又出现」)。
+        db.ex("DELETE FROM dramas WHERE id=?", (did,))
 
 
 def test_merge_chapters_same_number_overwrites(monkeypatch):
@@ -191,12 +195,14 @@ def test_merge_chapters_same_number_overwrites(monkeypatch):
     did = (int(_t.time() * 1000) % 900000 + 700001)
     db.ex("INSERT INTO dramas (id, title, created_at, updated_at) VALUES (?,?,?,?)",
           (did, "覆盖测试", db.now(), db.now()))
-    db.ex("UPDATE dramas SET novel_chapters=? WHERE id=?",
-          (json.dumps([{"number": 1, "title": "旧", "goal": "g", "events": "e",
-                        "cliffhanger": "c"}], ensure_ascii=False), did))
-    nv._merge_chapters(did, [{"number": 1, "title": "新", "goal": "g",
-                              "events": "e", "cliffhanger": "c"}])
-    row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (did,))
-    got = db.jload(row["novel_chapters"], []) or []
-    assert len(got) == 1 and got[0]["title"] == "新", "同章号没被新结果覆盖"
-    db.ex("DELETE FROM dramas WHERE id=?", (did,))
+    try:
+        db.ex("UPDATE dramas SET novel_chapters=? WHERE id=?",
+              (json.dumps([{"number": 1, "title": "旧", "goal": "g", "events": "e",
+                            "cliffhanger": "c"}], ensure_ascii=False), did))
+        nv._merge_chapters(did, [{"number": 1, "title": "新", "goal": "g",
+                                  "events": "e", "cliffhanger": "c"}])
+        row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (did,))
+        got = db.jload(row["novel_chapters"], []) or []
+        assert len(got) == 1 and got[0]["title"] == "新", "同章号没被新结果覆盖"
+    finally:
+        db.ex("DELETE FROM dramas WHERE id=?", (did,))   # 同上:必须 finally

@@ -3,6 +3,10 @@
 
 打开抽屉 → 加载图(本地图/远程 URL) → 输入中文 → 引擎命中 → 渲染产物。
 会话存 SQLite(`chat_edit_sessions` / `chat_edit_messages`)以便恢复。
+
+原「图片处理」页(独立导航 tab)已下线,它的批量能力(多图来源 / 指令批处理 /
+本地超分与多规格导出 / 结果对照)整块收进本面板的「批量处理」折叠区 ——
+见 `image_batch_panel.BatchImagePanel`。
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ from typing import Optional
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QComboBox, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
+    QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QLayout, QLineEdit,
     QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
     QVBoxLayout, QWidget,
 )
@@ -342,11 +346,23 @@ class ChatEditPanel(QWidget):
         title = W.h2(tr("chat_edit_panel"))
         top.addWidget(title)
         top.addStretch(1)
+        # 「查询图片」下移到图片区域那一行(挨着「新增」「重置」)—— 都是
+        # "加载一张图"的入口,放在一起才符合使用顺序(没图 → 选/搜 → 改)。
+        self.b_stock = QPushButton(tr("查询图片"))
+        self.b_stock.setObjectName("primary")
+        self.b_stock.setCursor(Qt.PointingHandCursor)
+        self.b_stock.setToolTip("从 Unsplash / Pexels / Pixabay 搜参考图,选中后作为本次改图的源图")
+        self.b_stock.clicked.connect(self._search_stock)
+        # 不要在这里调 _refresh_status():self.status_lab 要到下面创建,
+        # 提前调会 AttributeError 让整个应用起不来。
+
         manual_btn = QPushButton("✋ " + tr("chat_edit_manual"))
         manual_btn.setObjectName("primary")
         manual_btn.setCursor(Qt.PointingHandCursor)
         manual_btn.setToolTip(tr("chat_edit_manual_tip"))
-        manual_btn.clicked.connect(self._start_manual_edit)
+        # 用 lambda 吃掉 clicked 的 bool 参数:_start_manual_edit 的第一个形参是
+        # 「改哪张图」,直接 connect 会把 checked=False 当路径传进去
+        manual_btn.clicked.connect(lambda _=False: self._start_manual_edit())
         self.manual_btn = manual_btn
         top.addWidget(manual_btn)
         # 「打开 PhotoCraft 桌面端」。
@@ -358,9 +374,11 @@ class ChatEditPanel(QWidget):
         desktop_btn.setToolTip("打开 PhotoCraft 桌面端")
         desktop_btn.setCursor(Qt.PointingHandCursor)
         desktop_btn.setStyleSheet(
-            "QPushButton{border:1px solid #e4e7ec;border-radius:6px;"
-            "background:#fff;color:#4e5969;padding:4px 10px;font-size:12px;}"
-            "QPushButton:hover{background:#fef3e8;border-color:#f3c9a4;color:#1f2329;}")
+            "QPushButton{border:1px solid #0E0F12;border-radius:3px;"
+            "background:transparent;color:#0E0F12;padding:4px 12px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace;font-size:11px;"
+            "font-weight:700;letter-spacing:1px;}"
+            "QPushButton:hover{background:#0E0F12;color:#F5F4EF;}")
         desktop_btn.clicked.connect(self._open_desktop)
         top.addWidget(desktop_btn)
         # 调色板图标(原是齿轮):PhotoCraft 本身就是图像编辑工具,用「palette」图标
@@ -369,6 +387,17 @@ class ChatEditPanel(QWidget):
         settings_btn = W.svg_icon_btn("palette", tr("chat_edit_to_settings"), size=26)
         settings_btn.clicked.connect(self.needSettings.emit)
         top.addWidget(settings_btn)
+        # ── 批量处理(原「图片处理」页整块搬进来的)的折叠开关 ──
+        # 默认折叠:这面板的主线是「一张图 + 一句话」的对话流,批量工作台是重工具,
+        # 铺开会把聊天区挤没。折叠按钮常驻,需要时一键展开。
+        self.batch_toggle = QPushButton("🗂 " + tr("批量处理"))
+        self.batch_toggle.setObjectName("batchToggle")
+        self.batch_toggle.setCheckable(True)
+        self.batch_toggle.setCursor(Qt.PointingHandCursor)
+        self.batch_toggle.setToolTip(
+            "多图 / 目录 / URL 批量改图、本地超分与多规格导出(原「图片处理」页)")
+        self.batch_toggle.toggled.connect(self._on_batch_toggle)
+        top.addWidget(self.batch_toggle)
         root.addLayout(top)
 
         self.status_lab = W.muted("")
@@ -378,6 +407,22 @@ class ChatEditPanel(QWidget):
         self.status_lab.setOpenExternalLinks(True)
         self.status_lab.setTextInteractionFlags(Qt.TextBrowserInteraction)
         root.addWidget(self.status_lab)
+
+        self.batch_host = QWidget()
+        batch_lay = QVBoxLayout(self.batch_host)
+        batch_lay.setContentsMargins(0, 0, 0, 0)
+        batch_lay.setSpacing(6)
+        from .image_batch_panel import BatchImagePanel
+        self.batch_panel = BatchImagePanel()
+        # 缩略图 💬 → 把这张图设为会话当前图,接着在聊天里多轮改
+        self.batch_panel.sendToChat.connect(self._on_batch_send_to_chat)
+        # 缩略图 🖥 → 复用本面板的 PhotoCraft 接力(watcher / 同步回会话都在这里)
+        self.batch_panel.openDesktop.connect(self._start_manual_edit)
+        # 一轮批处理跑完 → 追加一条助手气泡,让结果在对话流里留痕
+        self.batch_panel.resultReady.connect(self._on_batch_result_ready)
+        batch_lay.addWidget(self.batch_panel)
+        self.batch_host.setVisible(False)
+        root.addWidget(self.batch_host)
 
         # 未配置时的内嵌配置入口(替代下面整张工作台 —— 抽屉本身就是稀缺空间,
         # 让 ta 先配通 CLI 才能继续聊)
@@ -454,8 +499,15 @@ class ChatEditPanel(QWidget):
         b_pick = QPushButton(tr("u_add"))
         b_pick.setObjectName("primary")
         b_pick.setCursor(Qt.PointingHandCursor)
+        b_pick.setToolTip(tr("从本机选择图片"))
         b_pick.clicked.connect(self._pick_image)
         row2.addWidget(b_pick)
+        # 「查询图片」也加进来(原本在标题栏那一排,移到图片区更贴近「加载源图」语义)
+        row2.addWidget(self.b_stock)
+        row2.addStretch(1)
+        # 「重置到原图」和「新增」在这一行:三个按钮原本挤在缩略图右侧,
+        # 各自被拉成 408px 一整排(用户截图里「新增」那条黑带占了半屏)。
+        # 现在新增固定最小宽、不参与拉伸,重置跟着新增走。
         b_reset = QPushButton(tr("chat_edit_reset"))
         b_reset.setCursor(Qt.PointingHandCursor)
         b_reset.clicked.connect(self._reset_current)
@@ -534,7 +586,10 @@ class ChatEditPanel(QWidget):
         # 选预设会自动套用「描边宽/描边色/主色」三件套,后续用户手动调会覆盖预设
         text_style_row = QHBoxLayout()
         text_style_row.setSpacing(4)
-        # 预设:默认值(None=中心像素反相)、Logo 白/Logo 黑/印章红/高亮黄
+        # 预设:默认值(None=中心像素反相)。每项 = (标签, {main, stroke, width})。
+        # main/stroke 是 RGBA,alpha 越低越通透 —— 压在画面上的水印不宜太实,
+        # 230 左右是"看得清但不抢戏"的档位;140 上下用于大图压角。
+        # width=0 表示无描边(仅靠主色对比度,可读性依赖底图明暗)。
         self.wm_preset = QComboBox()
         self._wm_presets = [
             ("默认（中心反相）", None),
@@ -546,6 +601,20 @@ class ChatEditPanel(QWidget):
              {"main": (220, 30, 30, 235), "stroke": (255, 255, 255, 200), "width": 2}),
             ("高亮黄（黄字黑边）",
              {"main": (255, 220, 0, 240), "stroke": (0, 0, 0, 200), "width": 1}),
+            ("简约灰（灰字无描边）",
+             {"main": (140, 140, 140, 190), "stroke": (0, 0, 0, 0), "width": 0}),
+            ("半透白（大图压角）",
+             {"main": (255, 255, 255, 140), "stroke": (0, 0, 0, 120), "width": 1}),
+            ("深蓝（品牌冷色）",
+             {"main": (30, 60, 140, 225), "stroke": (255, 255, 255, 190), "width": 1}),
+            ("墨绿（古风茶饮）",
+             {"main": (22, 70, 52, 230), "stroke": (240, 235, 210, 190), "width": 2}),
+            ("描边加粗（防裁剪）",
+             {"main": (255, 255, 255, 240), "stroke": (0, 0, 0, 255), "width": 3}),
+            ("霓虹粉（潮流短视频）",
+             {"main": (255, 60, 130, 235), "stroke": (255, 255, 255, 200), "width": 2}),
+            ("暗红（沉稳影视感）",
+             {"main": (150, 25, 30, 230), "stroke": (235, 225, 210, 200), "width": 2}),
         ]
         for label, _val in self._wm_presets:
             self.wm_preset.addItem(label)
@@ -693,6 +762,50 @@ class ChatEditPanel(QWidget):
         bot.addLayout(send_col)
         root.addLayout(bot)
 
+        # Director's Slate:chat_edit_panel 容器级 QSS —— 把 SaaS 橙 #f97316
+        # (从 LIGHT_QSS 默认 #primary{background:#f97316} 继承) 强制收回拍板黑,
+        # 输入框 / 普通按钮统一 slate 风(米白底 + 拍板边 + 拍板黑 hover)。
+        self.setObjectName("chatEditPanel")
+        self.setStyleSheet(
+            "QWidget#chatEditPanel QPushButton#primary{"
+            "background:#0E0F12; border:1px solid #0E0F12; border-radius:3px;"
+            "color:#F5F4EF; padding:6px 18px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace;"
+            "font-size:11px; font-weight:700; letter-spacing:1.5px;"
+            "}"
+            "QWidget#chatEditPanel QPushButton#primary:hover{"
+            "background:#1F2128; border-color:#1F2128;"
+            "}"
+            "QWidget#chatEditPanel QPushButton{"
+            "background:transparent; border:1px solid #DCDAD3; border-radius:3px;"
+            "color:#6B727A; padding:0 12px; min-height:26px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace;"
+            "font-size:10px; letter-spacing:0.5px; font-weight:600;"
+            "}"
+            "QWidget#chatEditPanel QPushButton:hover{"
+            "background:transparent; border-color:#0E0F12; color:#0E0F12;"
+            "}"
+            "QWidget#chatEditPanel QPushButton#batchToggle{"
+            "border:1px dashed #B9B6AE; border-radius:3px; color:#6B727A;"
+            "}"
+            "QWidget#chatEditPanel QPushButton#batchToggle:checked{"
+            "border:1px solid #0E0F12; color:#0E0F12;"
+            "}"
+            "QWidget#chatEditPanel QLineEdit{"
+            "background:#FFFFFF; border:1px solid #DCDAD3; border-radius:3px;"
+            "padding:6px 10px; color:#1F2329;"
+            "font-family:'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;"
+            "font-size:12px;"
+            "}"
+            "QWidget#chatEditPanel QLineEdit:focus{ border-color:#0E0F12; }"
+            "QWidget#chatEditPanel QPlainTextEdit{"
+            "background:#FFFFFF; border:1px solid #DCDAD3; border-radius:3px;"
+            "color:#1F2329;"
+            "font-family:'SF Pro Text','PingFang SC','Microsoft YaHei',sans-serif;"
+            "font-size:13px; padding:8px 10px;"
+            "}"
+        )
+
         self.input.installEventFilter(self)
 
     def eventFilter(self, obj, event):
@@ -800,8 +913,16 @@ class ChatEditPanel(QWidget):
             self._clear_messages()
 
     # ── 图片 ──
+    def _search_stock(self):
+        """从图库搜图作为改图源。选中的先下载到本地再 set_image ——
+        下游图像 API 与缩略图都按本地路径处理,直接给远程 URL 会在一半地方炸。"""
+        from .stock_photo_dialog import StockPhotoDialog
+        dlg = StockPhotoDialog(self)
+        if dlg.exec() == QDialog.Accepted and dlg.local_path:
+            self.set_image(dlg.local_path)
+
     def _pick_image(self):
-        from .image_process_page import IMG_EXTS  # 复用常量
+        from .image_batch_panel import IMG_EXTS  # 复用常量
         path, _ = QFileDialog.getOpenFileName(
             self, tr("chat_edit_install_dir"), "",
             f"Images ({' '.join('*' + e for e in IMG_EXTS)})")
@@ -810,7 +931,7 @@ class ChatEditPanel(QWidget):
         self.set_image(path)
 
     def set_image(self, path: str, auto_new_session: bool = True):
-        """外部入口(图片处理页传入)。auto_new_session=True 时若无会话就建一个。"""
+        """外部入口。auto_new_session=True 时若无会话就建一个。"""
         if auto_new_session and not self._session_id:
             sid = db.create_chat_session(path, engine_mode="")
             self._session_id = sid
@@ -827,6 +948,70 @@ class ChatEditPanel(QWidget):
         self._current_image = path
         self._render_thumb()
         self._refresh_status()
+
+    # ── 批量处理(原「图片处理」页搬进来后与聊天流的接口)──
+
+    def _on_batch_toggle(self, on: bool):
+        self.batch_host.setVisible(bool(on))
+
+    def expand_batch(self):
+        """展开批量区(外部要把结果塞进结果区时用,否则用户看不到东西去哪了)。"""
+        self.batch_toggle.setChecked(True)
+
+    def add_external_result(self, out_path: str):
+        """聊天里点「保存到结果区」:成品落到批量区的结果行,顺手把折叠区展开。
+
+        原先这条路径把图写进独立的「图片处理」页结果区;那个页没了以后,
+        成品没地方可去 —— 现在统一停在同一个面板里,导出目录一致。
+        """
+        if not out_path:
+            return
+        self.expand_batch()
+        self.batch_panel.add_result(out_path)
+        from .toast import ok
+        ok(tr("chat_edit_saved"))
+
+    def _on_batch_send_to_chat(self, path: str):
+        """批量区的缩略图点 💬:设为会话当前图,折叠批量区好让用户直接开聊。"""
+        if not path:
+            return
+        # 远程 URL 对话流吃不下(图生图/缩略图都按本地路径),先落地再设
+        local = path
+        if str(path).startswith(("http://", "https://")):
+            import uuid
+            from ..ai import stock_photo as _sp
+            from ..core import config as _cfg
+            _d = _cfg.STATIC_DIR / "uploads"
+            _d.mkdir(parents=True, exist_ok=True)
+            _out = _d / f"batch_{uuid.uuid4().hex[:10]}.jpg"
+            if not _sp.download(path, _out):
+                from .toast import err
+                err(tr("url_invalid"))
+                return
+            local = str(_out)
+        self.batch_toggle.setChecked(False)
+        self.set_image(local)
+        from .toast import ok
+        ok(tr("image_sent_to_chat"))
+
+    def _on_batch_result_ready(self, items: list):
+        """一轮批处理跑完 → 在对话流里留一条气泡(成功的第一张直接进会话)。
+
+        结果缩略图本身在批量区里,这里只补一句「做了什么」,否则批量跑完
+        聊天区毫无变化,用户不知道结果已经在那儿了。**不**自动切当前图 ——
+        一次可能出十几张,替用户挑一张没有道理,让他点结果上的 💬 自己选。
+        """
+        if not items:
+            return
+        done_n = sum(1 for _s, out, _e in items if out)
+        if done_n <= 0:
+            return
+        first = next((out for _s, out, _e in items if out), None)
+        note = (f"🗂 {tr('image_process')}: {tr('result_count').format(done_n, len(items))}")
+        self._append_message_widget("assistant", note, None, first)
+        if self._session_id:
+            db.add_chat_message(self._session_id, "assistant", note,
+                                result_image=first, engine_label="batch_image")
 
     def _reset_current(self):
         if not self._source_image:
@@ -1596,9 +1781,14 @@ class ChatEditPanel(QWidget):
     # 复用 app.ui.photocraft_watcher.PhotoCraftWatcher(三路监听 +
     # mtime+size 双检),不在这里重复实现。
 
-    def _start_manual_edit(self):
-        """✋ 我手动改:启动 photocraft.exe <当前图>,watcher 自动同步回来。"""
-        if not self._current_image or not Path(self._current_image).exists():
+    def _start_manual_edit(self, path: str | None = None):
+        """✋ 我手动改:启动 photocraft.exe <当前图>,watcher 自动同步回来。
+
+        path 非空时改那张图而不是当前图 —— 批量区的缩略图 🖥 就是这么接进来的
+        (它可以指向一张还没进会话的来源图)。
+        """
+        target = path or self._current_image
+        if not target or not Path(target).exists():
             self.status_lab.setText(tr("chat_edit_manual_no_img"))
             return
         from .photocraft_watcher import PhotoCraftWatcher
@@ -1608,19 +1798,19 @@ class ChatEditPanel(QWidget):
             self._pc_watcher.changed.connect(self._handle_manual_change)
         # 终止上一次(若用户连点),重新 watch
         self._pc_watcher.stop()
-        ok, err = self._pc_watcher.watch(self._current_image)
+        ok, err = self._pc_watcher.watch(target)
         if not ok:
             self.status_lab.setText(err[:200])
             return
         # 写一条"接力"消息,让对话流清楚
         self._append_message_widget("assistant",
                            f"🖐 接力给手动模式 —— PhotoCraft 已打开当前图。你保存后会同步回来。",
-                           None, self._current_image)
+                           None, target)
         if self._session_id:
             db.add_chat_message(self._session_id, "assistant",
                                 f"🖐 接力给手动模式",
                                 command_json=None,
-                                result_image=self._current_image,
+                                result_image=target,
                                 engine_label="manual")
         self.status_lab.setText(tr("chat_edit_manual_watching"))
         self.manual_btn.setText("🖐 改完会自动同步")
@@ -1689,3 +1879,10 @@ class ChatEditDrawer(QWidget):
 
     def set_image(self, path: str):
         self.panel.set_image(path)
+
+    def add_external_result(self, path: str):
+        """主窗口转发「聊天里保存的成品」到批量区结果行。"""
+        self.panel.add_external_result(path)
+
+    def expand_batch(self):
+        self.panel.expand_batch()

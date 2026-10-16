@@ -33,6 +33,26 @@ class CharacterFaceSwapDialog(QDialog):
         self._batch_running = False
         self.setWindowTitle(f"{tr('face_swap')} · {character['name']}")
         self.resize(760, 560)
+        # Director's Slate:dialog 容器 + 三栏 4px 圆角细灰边的 img-cell,
+        # 把原 8px 软灰边收回 slate 风格
+        self.setObjectName("faceSwapDialog")
+        self.setStyleSheet(
+            "QDialog#faceSwapDialog{background:#F5F4EF;}"
+            "QLabel#faceSwapImg{background:#1F2937; border:1px solid #DCDAD3;"
+            "border-radius:4px;}"
+            "QLabel#faceSwapImgSrc{background:#FFFFFF; border:1px dashed #DCDAD3;"
+            "border-radius:4px; color:#6B727A;}"
+            "QLabel#faceSwapImgRes{background:#1A2332; border:1px solid #6E8C5E;"
+            "border-radius:4px;}"
+            "QCheckBox{color:#1F2329; spacing:6px; font-size:11px;}"
+            "QCheckBox::indicator{width:13px; height:13px;"
+            "border:1.5px solid #DCDAD3; border-radius:2px; background:#FFFFFF;}"
+            "QCheckBox::indicator:checked{background:#0E0F12; border-color:#0E0F12;}"
+            "QPushButton#faceSwapGoBtn{background:#0E0F12; border:1px solid #0E0F12;"
+            "border-radius:3px; color:#F5F4EF; padding:0 16px; min-height:30px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11px;"
+            "letter-spacing:1.5px; font-weight:700;}"
+        )
         root = QVBoxLayout(self)
         root.setSpacing(12)
 
@@ -48,6 +68,7 @@ class CharacterFaceSwapDialog(QDialog):
         self.cur_img.setFixedSize(240, 240)
         self.cur_img.setAlignment(Qt.AlignCenter)
         self.cur_img.setStyleSheet("border:1px solid rgba(128,128,128,50);border-radius:8px;")
+        self.cur_img.setObjectName("faceSwapImg")
         self.cur_img.setPixmap(W.pixmap_from_media(character["image_url"], 236, 236))
         cur_box.addWidget(self.cur_img)
         cols.addLayout(cur_box)
@@ -58,6 +79,7 @@ class CharacterFaceSwapDialog(QDialog):
         self.src_img.setFixedSize(240, 240)
         self.src_img.setAlignment(Qt.AlignCenter)
         self.src_img.setStyleSheet("border:1px dashed rgba(128,128,128,80);border-radius:8px;color:#888;")
+        self.src_img.setObjectName("faceSwapImgSrc")
         src_box.addWidget(self.src_img)
         btns = QHBoxLayout()
         up = QPushButton("▣ " + tr("upload"))
@@ -79,6 +101,7 @@ class CharacterFaceSwapDialog(QDialog):
         self.res_img.setFixedSize(240, 240)
         self.res_img.setAlignment(Qt.AlignCenter)
         self.res_img.setStyleSheet("border:1px solid rgba(75,110,245,60);border-radius:8px;color:#888;")
+        self.res_img.setObjectName("faceSwapImgRes")
         res_box.addWidget(self.res_img)
         cols.addLayout(res_box)
         root.addLayout(cols, 1)

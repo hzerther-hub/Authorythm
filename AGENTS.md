@@ -120,6 +120,15 @@ def some_new_entry(..., config_id: int | None = None):
 (门控 / 提示词拼装 / 落库)全部 monkeypatch 打桩。真跑过一次 `write_chapter`
 就把用户一章正文覆盖成了测试夹具内容。
 
+**测试段的 id 会连带吃掉用户配置,两个坑叠在一起**(实测踩过):
+1. 清理时 `DELETE ... WHERE provider=?` 不带 id 条件 → 连用户真的配置一起删;
+   改成只删 `id>=TEST_ID_BASE`(95000)的自建行,并用 **autouse fixture** 统一
+   屏蔽真实配置 —— 逐个用例手动插隔离必然漏,实测漏了 7 个。
+2. 更隐蔽的:`registry.add_config` 用 `MAX(id)+1` 分配 id,而库里残留着大量
+   上百万的测试垃圾行,于是**新配置被分到 96002,正好落进测试清理段**,
+   跑一次测试就没了。用户真实配置要手动指定一个安全 id(本项目用 1001/1002)。
+   排查手法:配置凭空消失时先查 `SELECT MAX(id) FROM ai_service_configs`。
+
 ## 文本编码
 
 `app/core/encoding.py` 是乱码防护:`repair()` 只能救回 latin-1/cp1252 误读,

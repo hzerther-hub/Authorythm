@@ -37,6 +37,12 @@ class IntroPreview(QWidget):
         self._font_id = -1
         self._font_family = ""
         self._aw, self._ah = 9, 16       # 项目画幅,默认竖屏
+        # Director's Slate:stage 容器统一深底,letterbox + 黑底描边,
+        # 让 QLabel 容器跟 setStyleSheet(stage QSS) 协调;画布内仍用 paintEvent 自绘 9 宫格。
+        self.setObjectName("introStage")
+        self.setStyleSheet(
+            "#introStage{background:#0E0F12; border:1px solid #0E0F12; border-radius:4px;}"
+        )
         self._load_font()
 
     def set_aspect(self, aw: int, ah: int):

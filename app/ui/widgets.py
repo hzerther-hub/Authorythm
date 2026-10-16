@@ -39,6 +39,48 @@ def muted(text: str) -> QLabel:
     return lab
 
 
+# Director's Slate:共享 helper —— 按钮在 slate 风的 dialog / panel 里的统一外观
+# 用法:`btn = slate_button("REFRESH"); btn.clicked.connect(...)`
+# 默认排他(主操作),可选 primary=True 走拍板黑底白字
+def slate_button(text: str, *, primary: bool = False) -> "QPushButton":
+    """返回带 slate 风 QSS 的 QPushButton;不破坏其他按钮。"""
+    from PySide6.QtWidgets import QPushButton
+    btn = QPushButton(text)
+    if primary:
+        btn.setObjectName("slatePrimary")
+        btn.setStyleSheet(
+            "QPushButton#slatePrimary{background:#0E0F12; border:1px solid #0E0F12;"
+            "border-radius:3px; color:#F5F4EF; padding:0 16px; min-height:28px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+            "font-weight:700; letter-spacing:1.5px;}"
+            "QPushButton#slatePrimary:hover{background:#1F2128; border-color:#1F2128;}"
+            "QPushButton#slatePrimary:disabled{background:#DCDAD3; color:#A8A6A1;}"
+        )
+    else:
+        btn.setObjectName("slateGhost")
+        btn.setStyleSheet(
+            "QPushButton#slateGhost{background:transparent; border:1px solid #DCDAD3;"
+            "border-radius:3px; color:#6B727A; padding:0 12px; min-height:26px;"
+            "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+            "font-weight:600; letter-spacing:0.5px;}"
+            "QPushButton#slateGhost:hover{border-color:#0E0F12; color:#0E0F12;}"
+        )
+    btn.setCursor(Qt.PointingHandCursor)
+    return btn
+
+
+def slate_status_label(text: str = "") -> "QLabel":
+    """Status bar mono 风的 QLabel:暗色 + letter-spacing,适配场记板。"""
+    lab = QLabel(text)
+    lab.setObjectName("slateStatus")
+    lab.setStyleSheet(
+        "QLabel#slateStatus{color:#6B727A;"
+        "font-family:ui-monospace,Menlo,Consolas,monospace; font-size:10px;"
+        "letter-spacing:0.5px; padding:0 4px;}"
+    )
+    return lab
+
+
 def tag(text: str) -> QLabel:
     lab = QLabel(text)
     lab.setObjectName("tag")
@@ -142,6 +184,24 @@ def set_icon(btn, name: str, text: str | None = None, size: int = 16) -> None:
         btn.setIcon(ic)
         btn.setIconSize(_QSize(size, size))
     btn.setText(strip_emoji(text if text is not None else btn.text()))
+
+
+def add_item(combo, text: str, data=None, user_data=None) -> int:
+    """版本无关的 QComboBox.addItem 包装 —— 永远返回新行的索引。
+
+    PySide6 不同小版本对 QComboBox.addItem 的返回值承诺不一致:
+      - 6.5+ 文档保证返回 int(刚加进去的索引)
+      - 早期版本(实测 6.7.x)实际返回 None
+    直接用 `idx = combo.addItem(...)` 然后 setItemData(idx, ...) 在后者上
+    会拿到 None → TypeError,被 try/except 吞掉就表现为「点按钮无反应」。
+    走这个 helper 一律用 count()-1 算索引,跨版本都稳。
+    """
+    combo.addItem(text, data)
+    idx = combo.count() - 1
+    if user_data is not None:
+        from PySide6.QtCore import Qt as _Qt
+        combo.setItemData(idx, user_data, _Qt.UserRole)
+    return idx
 
 
 def icon_label(name: str, size: int = 20, color: str = "") -> QLabel:

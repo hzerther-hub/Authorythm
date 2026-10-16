@@ -20,7 +20,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
                                QGridLayout, QHBoxLayout, QLabel, QMessageBox,
@@ -48,6 +48,52 @@ CROP_PRESETS = [
 ]
 
 FILTERS = ["无", "黑白", "复古", "冷调", "暖调", "锐化", "柔焦"]
+
+# 超过这个长边就提醒用 PhotoCraft:十一参全开在本机要 1 秒起,再大的图会到几秒,
+# 拖滑杆时体感是"卡死"。PhotoCraft 走外部程序,不在本机算。
+BIG_IMAGE_SIDE = 2400
+
+# 预览降采样的长边。实测:640 → 约 150ms/次,拖滑杆可接受;全分辨率要 1s+,不能用于实时。
+ADJUST_PREVIEW_SIDE = 640
+
+
+class _AdjustApplyWorker(QThread):
+    """「应用调整」的后台落盘:全分辨率算完回主线程写进撤销栈。"""
+
+    done = Signal()
+
+    def __init__(self, dlg, parent=None):
+        super().__init__(parent)
+        self._dlg = dlg
+
+    def start_run(self, params: dict):
+        self._params = dict(params)
+        self.start()
+
+    def run(self):
+        from ..pipeline import img_adjust as IA
+        import tempfile
+        base = self._dlg._adjust_base.convert("RGBA")
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "in.png"
+            dst = Path(td) / "out.png"
+            base.save(src)
+            IA.adjust(src, dst, **self._params)
+            out = Image.open(dst)
+            self._result = out.convert("RGBA")
+        self.done.emit()
+
+    def _finish(self):
+        dlg = self._dlg
+        dlg._busy_overlay.stop()
+        dlg.current = self._result
+        dlg._push_history()
+        dlg._render()
+        dlg._adjust_base = dlg.current.copy()
+        for s_ in (dlg.brightness, dlg.contrast, dlg.saturation):
+            s_.blockSignals(True); s_.setValue(100); s_.blockSignals(False)
+        for s_ in dlg._adv.values():
+            s_.blockSignals(True); s_.setValue(0); s_.blockSignals(False)
 
 # 水印预设(用户点一下即填好文字 + 颜色 + 字号 + 位置)
 # 只给「文字水印」用;图片水印不涉及字体/文字,预设下拉对图片类型无意义。
@@ -99,7 +145,20 @@ class ImageEditDialog(QDialog):
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(560, 520)
-        self.preview.setStyleSheet("background:#14161a; border-radius:8px;")
+        # Director's Slate:dark preview stage,用 4px 直角圆角取代 8px 软角;
+        # 用 objectName 让所有用色都在 setStyleSheet 集中管理
+        self.preview.setObjectName("imageEditPreview")
+        self.preview.setStyleSheet(
+            "QLabel#imageEditPreview{background:#14161a; border-radius:4px;"
+            "border:1px solid #0E0F12;}"
+        )
+        # 等待层盖在预览区上:调色算图期间显示,用户知道"在算"而不是"卡死"。
+        # 用 QStackedLayout 的思路更麻烦(要换整棵控件树),直接叠一个同几何的
+        # 子控件最简单 —— 它只覆盖预览区,工具列照常可点。
+        from .adjust_worker import BusyOverlay
+        self._busy_overlay = BusyOverlay(self.preview)
+        self._busy_overlay.setGeometry(self.preview.rect())
+        self.preview.installEventFilter(self)
         root.addWidget(self.preview, 1)
         # 水印拖动定位:在预览图上按住拖动,松手即位置生效。
         # 位置以归一化坐标存储(相对当前画面),换尺寸/裁剪后仍相对正确。
@@ -146,14 +205,59 @@ class ImageEditDialog(QDialog):
         # 实时预览:拖动滑杆 → 在「已固化画面」上叠加调整显示;点「应用调整」才写入
         # (此前只有"应用"按钮,拖滑杆没有任何反应,像"精调无效")
         self._adjust_base = self.current.copy()          # 合成基准
+
+        # 大图提前提醒:十一参全开在 1080p 要 ~1s,更大的图要几秒,拖滑杆会卡。
+        # PhotoCraft 是外部程序,本地算得快得多 —— 大图就让用户走那条路。
+        try:
+            _big = max(self.current.size) > BIG_IMAGE_SIDE
+        except Exception:  # noqa: BLE001
+            _big = False
+        if _big:
+            tip = W.muted(tr("图片较大({px}),本机精调可能卡顿 — 建议用 PhotoCraft 处理").format(
+                px=f"{max(self.current.size)}"))
+            tools.addWidget(tip)
+            # 大图直接给个跳转,别只说一句"建议去别处"让用户自己找入口
+            go_chat = QPushButton(tr("转到聊天改图(支持大图)"))
+            go_chat.setToolTip(tr("聊天改图走 PhotoCraft,大图处理更快更稳"))
+            go_chat.clicked.connect(self._goto_chat_edit)
+            tools.addWidget(go_chat)
+
         self.brightness = self._slider(tools, tr("亮度"), 0, 200, 100)
         self.contrast = self._slider(tools, tr("对比度"), 0, 200, 100)
         self.saturation = self._slider(tools, tr("饱和度"), 0, 200, 100)
         for s_ in (self.brightness, self.contrast, self.saturation):
             s_.valueChanged.connect(self._preview_adjust)
             s_.sliderReleased.connect(self._preview_adjust)
-        apply_adj = QPushButton(tr("应用调整"))
-        apply_adj.clicked.connect(self._apply_adjust)
+
+        # 八项进阶调色:之前本机只能调亮度/对比度/饱和度三样,专业修图必需的
+        # 高光阴影、色彩分离、锐度层次都缺。走 numpy 向量化(见 pipeline/img_adjust)。
+        self._adv: dict[str, object] = {}
+        for key, label in (("highlights", "高光"), ("shadows", "阴影"),
+                           ("temperature", "色温"), ("tint", "色调"),
+                           ("vibrance", "自然饱和"), ("sharpness", "锐度"),
+                           ("clarity", "清晰度"), ("vignette", "暗角")):
+            sl = self._slider(tools, tr(label), -50, 50, 0, compact=True)
+            sl.valueChanged.connect(self._preview_adjust)
+            self._adv[key] = sl
+        tools.addWidget(W.muted(tr("以上八项在「应用调整」时按全分辨率计算")))
+
+        # 预览 worker:拖滑杆时后台算,不冻结界面。
+        # 基准图先存一份临时文件 —— worker 在子线程里跑,不能直接用 QImage/PIL
+        # 对象跨线程传(那不是线程安全的),落盘再读是干净的边界。
+        import tempfile as _tf
+        self._adj_base_file = str(Path(_tf.gettempdir()) /
+                                  f"adjbase_{os.getpid()}_{uuid.uuid4().hex[:6]}.png")
+        self._adjust_base.save(self._adj_base_file)
+        from .adjust_worker import AdjustWorker
+        self._adj_worker = AdjustWorker(self._adj_base_file,
+                                        preview_side=ADJUST_PREVIEW_SIDE,
+                                        preview=True, parent=self)
+        self._adj_worker.done.connect(self._on_adjust_done)
+        self._adj_apply_worker = None
+        apply_worker = _AdjustApplyWorker(self, self)
+        apply_worker.done.connect(apply_worker._finish)
+        self._adj_apply_worker = apply_worker
+
         tools.addWidget(apply_adj)
 
         tools.addWidget(self._section_label(tr("滤镜")))
@@ -446,27 +550,98 @@ class ImageEditDialog(QDialog):
             out = ImageEnhance.Color(out).enhance(s)
         return out
 
+    def current_path(self) -> str:
+        """把当前编辑结果落一份临时文件并返回路径。
+
+        聊天改图吃的是文件路径或 URL,不接 PIL 对象 —— 跨进程/跨模块传内存
+        图片对象最容易出「显示正常、实际读不到」的怪问题。
+        """
+        import tempfile
+        p = str(Path(tempfile.gettempdir()) /
+                f"big2chat_{os.getpid()}_{uuid.uuid4().hex[:6]}.png")
+        self.current.convert("RGBA").save(p)
+        self._tmp_chat_file = p
+        return p
+
+    def _goto_chat_edit(self):
+        """把当前图送到「聊天改图」继续处理。
+
+        两条路的分工:本弹窗适合快速裁剪/精调小图;大图走聊天改图,
+        那边接 PhotoCraft 外部程序,不吃满本机 CPU(十一参全开在 2400px
+        以上要几秒,拖滑杆直接卡住)。
+        走 main_window 的 chatRequested 信号,与图片处理页「发送到聊天修图」同一条路。
+        """
+        mw = self.parent()
+        while mw is not None and not hasattr(mw, "chat_edit_page"):
+            mw = mw.parent()
+        if mw is None:
+            from .toast import err as _err
+            _err(tr("找不到聊天改图入口,请从主窗口的图片处理页发送"))
+            return
+        try:
+            p = self.current_path()
+            # 顶层容器是 QStackedWidget(属性名 stack),不是 tabs
+            mw.stack.setCurrentWidget(mw.chat_edit_page)
+            mw.chat_edit_page.set_image(p)
+            from .toast import ok as _ok
+            _ok(tr("image_sent_to_chat"))
+        except Exception as exc:  # noqa: BLE001
+            from .toast import err as _err
+            _err(str(exc)[:160])
+
+    def resizeEvent(self, e):
+        """预览区尺寸变了要同步等待层,否则它会停在旧位置(看着像飘在半空)。"""
+        super().resizeEvent(e)
+        ov = getattr(self, "_busy_overlay", None)
+        if ov is not None and self.preview.width() > 0:
+            ov.setGeometry(self.preview.rect())
+
+    def _adv_params(self) -> dict:
+        """八项进阶滑杆 → img_adjust 的参数(0.1 一格)。"""
+        return {k: s_.value() / 500.0 for k, s_ in self._adv.items()}
+
+    def _all_params(self) -> dict:
+        p = self._adv_params()
+        # 老三项是 0~200 映射到 -1..1 的整数滑杆,100 为中性
+        p["brightness"] = (self.brightness.value() - 100) / 100.0
+        p["contrast"] = (self.contrast.value() - 100) / 100.0
+        p["saturation"] = (self.saturation.value() - 100) / 100.0
+        return p
+
     def _preview_adjust(self, *_):
-        """拖动滑杆实时预览:基准画面 + 当前三滑杆值(不进撤销栈、不改原图)。"""
-        self.current = self._enhance(self._adjust_base,
-                                     self.brightness.value() / 100.0,
-                                     self.contrast.value() / 100.0,
-                                     self.saturation.value() / 100.0).convert("RGBA")
+        """拖动滑杆实时预览:后台算,预览区盖等待层,不冻结界面。
+
+        降采样到 640 长边算完直接用小图显示 —— 界面渲染时本来就会再缩一次,
+        提前放大回原尺寸是纯浪费(那一遍插值就要几百毫秒)。
+        """
+        if not hasattr(self, "_adj_worker") or self._adj_worker is None:
+            return
+        params = self._all_params()
+        if all(abs(v) < 1e-6 for v in params.values()):
+            self.current = self._adjust_base.copy()
+            self._render()
+            return
+        self._busy_overlay.start(tr("计算中…"))
+        self._adj_worker.request(params)
+
+    def _on_adjust_done(self, img, err):
+        self._busy_overlay.stop()
+        if err or img is None:
+            from .toast import err as _err
+            _err(tr("精调计算失败:{}").format(err or ""))
+            return
+        self.current = img
         self._render()
 
     def _apply_adjust(self):
-        b = self.brightness.value() / 100.0
-        c = self.contrast.value() / 100.0
-        s = self.saturation.value() / 100.0
-        if (b, c, s) == (1.0, 1.0, 1.0):
+        params = self._all_params()
+        if all(abs(v) < 1e-6 for v in params.values()):
             return
-        self._apply(lambda im: self._enhance(im, b, c, s))
-        # 固化后基准同步、滑杆复位,避免"再拖一点"在已增强画面上二次叠加
-        self._adjust_base = self.current.copy()
-        for s_ in (self.brightness, self.contrast, self.saturation):
-            s_.blockSignals(True)
-            s_.setValue(100)
-            s_.blockSignals(False)
+        # 全分辨率落盘:预览是降采样的,固化必须按原尺寸算,否则等于用预览图覆盖原图
+        self._busy_overlay.start(tr("应用中…"))
+        if not hasattr(self, "_adj_apply_worker") or self._adj_apply_worker is None:
+            self._adj_apply_worker = _AdjustApplyWorker(self, self)
+        self._adj_apply_worker.start_run(params)
 
     def _apply_all(self):
         """一键应用:精调滑杆 + 当前滤镜一次性落到画面,作为下一轮编辑起点。

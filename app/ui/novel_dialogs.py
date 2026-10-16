@@ -559,8 +559,10 @@ class NovelPlanDialog(QDialog):
             # 长篇:一次请求写不下(999 章会被模型压成散文、解析全废)→ 分批生成
             from ..core.taskmgr import TASKMGR
             btn.busy(tr('生成 {} 章计划中').format(n_target))
-            # 不清空编辑器:清空后若第一批就失败,用户原来已有的章节计划
-            # 在界面上也一并消失,像是把内容弄丢了(库里其实还在)。
+            # 生成开始就把编辑器换成过程提示:原先保留旧内容,用户看到一堆
+            # 「第 53-60 章」却不知道新的在生成,像是点了没反应。
+            # 真正的旧内容没有丢 —— 库里还在,每批成功即落库,失败可重做。
+            editor.setPlainText(tr('正在准备 {lab} 的章节计划…').format(lab=label))
             self.plan_stat.setText(tr('正在生成 {lab}…0/{n} 章').format(lab=label, n=n_target))
 
             # 进度回写走 **TASKMGR 的信号**(跨线程安全),不用 QTimer.singleShot ——
@@ -576,7 +578,8 @@ class NovelPlanDialog(QDialog):
                 if vol_no:
                     return novel_pipe.generate_chapters_for_volume(
                         self.drama_id, vol_no, word_count=words,
-                        progress=prog.on_progress, on_partial=snap.on_partial)
+                        progress=prog.on_progress, on_partial=snap.on_partial,
+                        on_stage=snap.on_stage)
                 return novel_pipe.generate_chapters_batched(
                     self.drama_id, chapter_count=n, word_count=words,
                     progress=prog.on_progress, on_partial=snap.on_partial)
@@ -584,8 +587,20 @@ class NovelPlanDialog(QDialog):
             def done(tid, result, error):
                 btn.idle()
                 self._leave_busy()
+                snap.release()      # 解冻:失败也必须解,否则编辑器永久只读
                 if error:
                     err(tr('章节计划生成失败:{}').format(str(error)[:160]))
+                    # 中途失败时把**已生成的那几批**显示回来,而不是停在
+                    # 「正在生成…」——用户要能看到已有的成果,也能手动保存。
+                    try:
+                        kept = db.jload(db.q1(
+                            "SELECT novel_chapters FROM dramas WHERE id=?",
+                            (self.drama_id,))["novel_chapters"], []) or []
+                        if kept:
+                            editor.setPlainText(novel_pipe.chapters_to_text(kept))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._update_plan_stat()
                     return
                 self._reload_tabs()
                 self._update_plan_stat()
@@ -1028,10 +1043,25 @@ class _PlanPartial(QObject):
         super().__init__(dialog)
         self._editor = editor
         self._sig.connect(self._apply)
+        self._stage_sig.connect(self._apply_stage)
+        # 生成中冻结编辑:用户手改会和 worker 的整篇覆盖打架,
+        # 表现为"我改的字莫名消失"。生成完再解开。
+        self._editor.setReadOnly(True)
+
+    _sig = Signal(object)
+    _stage_sig = Signal(str)
 
     def on_partial(self, chapters):
         """worker 线程调用:只 emit。"""
         self._sig.emit(list(chapters))
+
+    def on_stage(self, text: str):
+        """批次级过程反馈。第一批要 80 秒+,没有它这段时间界面完全静止。"""
+        self._stage_sig.emit(text)
+
+    def _apply_stage(self, text: str):
+        self._editor.setPlainText(text)
+        self._editor.moveCursor(self._editor.textCursor().MoveOperation.End)
 
     def _apply(self, chapters):
         from ..pipeline import novel as novel_pipe
@@ -1040,6 +1070,9 @@ class _PlanPartial(QObject):
             self._editor.moveCursor(self._editor.textCursor().MoveOperation.End)
         except Exception:  # noqa: BLE001
             pass
+
+    def release(self):
+        self._editor.setReadOnly(False)
 
 
 class _PlanProgress(QObject):

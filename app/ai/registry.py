@@ -2,9 +2,11 @@
 """AI 服务配置注册表:六类服务(text/image/video/tts/faceswap/jev)多供应商 CRUD + 默认项 + 连通测试。"""
 from __future__ import annotations
 
+import json
+
 from ..core import db
 
-SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev"]
+SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev", "stockphoto"]
 
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
@@ -83,10 +85,23 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
         {"name": "TypeSafe AI · Jev", "provider": "jev",
          "base_url": "https://api.typesafe.ai", "models": ["jev-latest"]},
     ],
+    # 免费图库:只用来搜参考图,不参与任何生成。三家的鉴权方式不同,
+    # 见 app/ai/stock_photo.py 的说明。
+    "stockphoto": [
+        {"name": "Unsplash", "provider": "unsplash",
+         "base_url": "https://api.unsplash.com",
+         "models": ["search/photos"]},
+        {"name": "Pexels", "provider": "pexels",
+         "base_url": "https://api.pexels.com",
+         "models": ["v1/search"]},
+        {"name": "Pixabay", "provider": "pixabay",
+         "base_url": "https://pixabay.com",
+         "models": ["api/"]},
+    ],
 }
 
 SVC_CN = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音", "faceswap": "换脸",
-         "jev": "Jev"}
+         "jev": "Jev", "stockphoto": "图库"}
 
 # 各 provider 的可选模型候选(新建时展示;对齐原版设置页展示)
 MODEL_CHOICES: dict[str, list[str]] = {
@@ -101,6 +116,105 @@ MODEL_CHOICES: dict[str, list[str]] = {
     "xiaoyunque": ["Seedance_2.5", "seedance2.0_fast_vision", "seedance2.0_vision", "Seedance_2.0_mini",
                    "MiniMax-H3", "MiniMax-H3-Max", "wan3.0", "happyhorse-1.1", "Seedance_2.0_mini_lite"],
 }
+
+
+# 支持多模态(能看图/看视频)的模型 —— **按模型名匹配**,不是按 provider。
+# 同一家下面既有看图的也有纯文本的(deepseek-flash 是纯文本,agnes-3.0-flash 能读图),
+# 按 provider 一刀切会标错。
+#
+# MiniMax-M 系列是**实测确认能读图**的(video_clone 的读产品图/读人物外貌
+# 都发它,`text_client._build_body` 的多模态格式注释也写着它)—— 所以
+# "minimax 的 M"是确定项,不是靠名字猜的。
+VISION_EXACT = (
+    # 名称无规律、只能整串列出的
+    "minimax-m", "minimax-m2", "minimax-m3",
+)
+VISION_HINTS = ("vision", "-vl", "vl-", "3.0-flash", "3-pro", "gpt-4o",
+                "gemini-2", "gemini-3", "glm-4v", "kimi-vl", "qwen-vl")
+
+
+def is_vision_model(model: str | None) -> bool:
+    """该模型名是否属于多模态(可收图/收视频)。
+
+    这是**启发式标注**,用于界面提示,不阻断请求 —— 标错顶多提示不准,
+    不会把用户的活儿挡下来;而漏标会让本该读图的功能静默拿到胡话。
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if m.startswith(VISION_EXACT):
+        return True
+    return any(h in m for h in VISION_HINTS)
+
+
+def model_entries(service_type: str) -> list[dict]:
+    """一条配置里的**每个**模型各出一个下拉条目。
+
+    之前 `_reload_models` 用 `addItem(cfg["model"], cfg["id"])`,一条配置只显示
+    默认模型 —— 设置页标签里明明列着 deepseek-v4-pro / deepseek-flash、agnes-image
+    三个型号、minimax 五个型号,顶栏下拉里却只有 12 个默认值,其余全选不到。
+    这里把 models 列表逐个展开。
+
+    返回 [{label, config_id, model, is_default}]。同一配置有多个模型时 label
+    加 provider 前缀,避免"MiniMax-M2"这类看不出是哪家的名字。
+    """
+    out: list[dict] = []
+    for cfg in list_configs(service_type):
+        raw = cfg.get("models")
+        models: list[str] = []
+        if raw:
+            try:
+                models = [str(m).strip() for m in json.loads(raw) if str(m or "").strip()]
+            except (TypeError, ValueError):
+                models = []
+        default = str(cfg.get("model") or "").strip()
+        if default and default not in models:
+            models.insert(0, default)      # models 与 model 列不一致时以 model 列为准
+        if not models:
+            models = [default or "(未配置)"]
+        for m in models:
+            short = m.split("/")[-1]
+            vision = is_vision_model(m)
+            base = f"{cfg['provider']} · {short}" if len(models) > 1 else short
+            out.append({
+                # 多模态模型加文字标记:复刻/图片编辑这类要读图的功能,选到纯文本
+                # 模型会拿到一句"我看不到图"式的胡话。
+                # 用「[多模态]」而不是 👁 —— Windows 应用字体没有该字形,
+                # emoji 在这里会渲染成空白(见 AGENTS.md 图标约定)。
+                "label": base + ("  [多模态]" if vision and service_type == "text" else ""),
+                "config_id": cfg["id"],
+                "model": m,
+                "is_default": m == default,
+                "vision": vision,
+            })
+    return out
+
+
+def select_model(config_id: int, model: str) -> bool:
+    """把该配置当前使用的模型切到 model。切换成功返回 True。
+
+    调用链(`runner.run_agent` / `text_client.chat` / `video_client.generate_video`)
+    只接受 config_id,模型名一律从库里读,所以「选了哪个模型」这件事只能落到
+    配置的 model 列上 —— 选完即刻生效,不必新增参数贯穿整条链路。
+    只允许在 models 列表**内**切换,防止借此把配置改成列表外的模型。
+    """
+    if not model:
+        return False
+    row = db.q1("SELECT models, model FROM ai_service_configs WHERE id=?", (config_id,))
+    if not row:
+        return False
+    try:
+        allowed = [str(m).strip() for m in json.loads(row["models"] or "[]")
+                   if str(m or "").strip()]
+    except (TypeError, ValueError):
+        allowed = []
+    if row["model"] == model:
+        return False
+    if allowed and model not in allowed:
+        return False
+    db.ex("UPDATE ai_service_configs SET model=?, updated_at=? WHERE id=?",
+          (model, db.now(), config_id))
+    return True
 
 
 def normalize_base_url(service_type: str, provider: str, base_url: str) -> str:
@@ -288,7 +402,7 @@ def seed_jev_default() -> None:
 
 # ── 就绪检查(缺失配置/Key 时直接拦下,不让请求白跑) ──
 SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
-                "faceswap": "换脸", "jev": "Jev"}
+                "faceswap": "换脸", "jev": "Jev", "stockphoto": "图库"}
 # 不需要 API Key 的 provider(本地服务)
 NO_KEY_PROVIDERS = {"local-faceswap", 'comfyui', 'sdwebui', 'fooocus'}
 

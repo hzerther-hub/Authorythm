@@ -43,9 +43,15 @@ class PatchDialog(QDialog):
         body.setSpacing(10)
         left = QVBoxLayout()
         self.hint = W.muted(tr("patch_hint"))
+        # Director's Slate:左栏 host 加 slate 边,跟右侧 preview frame 对称;
+        # 注意:不能误伤内部的 MaskCanvas 自绘 mask。
         self.hint.setWordWrap(True)
         left.addWidget(self.hint)
         self.left_host = QWidget()
+        self.left_host.setObjectName("patchCanvasHost")
+        self.left_host.setStyleSheet(
+            "#patchCanvasHost{background:#14161a; border:1px solid #DCDAD3; border-radius:4px;}"
+        )
         lh = QVBoxLayout(self.left_host)
         lh.setContentsMargins(0, 0, 0, 0)
         self.canvas = MaskCanvas(self.src.read_bytes())

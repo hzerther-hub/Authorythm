@@ -40,9 +40,20 @@ class BookImportDialog(QDialog):
             tr("导入会替换本项目现有全部章节(旧章节与分镜一并删除)。"
             "分析只读不改;仿写会新建一个项目,原项目不受影响。")))
 
+        # Director's Slate:三段流水线卡片统一 4px 圆角 + 细灰边,
+        # 左侧 3px 强条颜色标记阶段状态(PENDING / RUN / DONE)
+        STAGE_QSS = (
+            "QWidget{background:#FFFFFF; border:1px solid #DCDAD3; border-radius:4px;}"
+            "QWidget[stageState=\"done\"]{border-left:3px solid #6E8C5E;}"
+            "QWidget[stageState=\"run\"]{border-left:3px solid #C28F4C;}"
+            "QWidget[stageState=\"pend\"]{border-left:3px solid #6B727A;}"
+            "QWidget[stageState=\"fail\"]{border-left:3px solid #A14844;}"
+        )
         # ── 段① 导入 ──
         box1 = QWidget()
         box1.setObjectName("card")
+        box1.setProperty("stageState", "pend")
+        box1.setStyleSheet(STAGE_QSS)
         l1 = QVBoxLayout(box1)
         l1.addWidget(W.h2(tr("① 导入整本书")))
         row1 = QHBoxLayout()
@@ -72,6 +83,8 @@ class BookImportDialog(QDialog):
         # ── 段② 分析 ──
         box2 = QWidget()
         box2.setObjectName("card")
+        box2.setProperty("stageState", "run")
+        box2.setStyleSheet(STAGE_QSS)
         l2 = QVBoxLayout(box2)
         l2.addWidget(W.h2(tr("② 结构分析(Map → Reduce)")))
         l2.addWidget(W.muted(
@@ -96,6 +109,8 @@ class BookImportDialog(QDialog):
         # ── 段③ 仿写 ──
         box3 = QWidget()
         box3.setObjectName("card")
+        box3.setProperty("stageState", "pend")
+        box3.setStyleSheet(STAGE_QSS)
         l3 = QVBoxLayout(box3)
         l3.addWidget(W.h2(tr("③ 依样仿写(新建项目)")))
         form = QFormLayout()

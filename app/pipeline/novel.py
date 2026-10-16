@@ -377,13 +377,17 @@ def _merge_chapters(drama_id: int, new_ch: list[dict]) -> int:
 def generate_chapters_for_volume(drama_id: int, volume_no: int,
                                  word_count: int | None = None,
                                  config_id: int | None = None,
-                                 progress=None, on_partial=None,
+                                 progress=None, on_partial=None, on_stage=None,
                                  with_characters: bool = True) -> dict:
     """只生成**第 volume_no 卷**的章节计划(A 方案)。
 
     全书一次生成对 999 章这种体量不现实(20 分钟以上、中途看不到产出、
     质量不稳)。分卷已经把叙事切成若干段,按卷生成既快又能保证章节与
     分卷对齐 —— 每次约 120 章、3 分钟左右,不满意只重做这一卷。
+
+    on_stage(文本) 在**每批开始前**回调一次,让界面能显示「正在生成第 N 批…」——
+    实测一批要 82 秒(deepseek-v4-pro),这段时间里进度回调一次都不触发,
+    没有它界面完全静止,用户看到的就是"点了没反应"。
 
     返回 {"count","word_count","chapters","start","end"}。
     """
@@ -401,9 +405,17 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
     n = b - a + 1
     all_ch: list[dict] = []
     total_batches = (n + CHAPTER_BATCH - 1) // CHAPTER_BATCH
+    if on_stage:
+        on_stage(tr("第 {no} 卷【{t}】第 {a}-{b} 章,共 {n} 章,分 {k} 批生成。\n"
+                    "每批约 1 分钟,完成后会立即显示在下方。").format(
+                        no=volume_no, t=vol.get("title") or "", a=a, b=b,
+                        n=n, k=total_batches))
     for bi in range(total_batches):
         start = a + bi * CHAPTER_BATCH
         cnt = min(CHAPTER_BATCH, b - start + 1)
+        if on_stage and bi:
+            on_stage(tr("第 {bi}/{all} 批 · 第 {a}-{b} 章…").format(
+                bi=bi + 1, all=total_batches, a=start, b=start + cnt - 1))
         prev_hint = ""
         if all_ch:
             last = all_ch[-1]
@@ -428,6 +440,8 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
         if on_partial:
             on_partial(all_ch)
     all_ch.sort(key=lambda c: c["number"])
+    if on_stage:
+        on_stage(tr("正在抽取本卷主要角色…"))
     chars: list[dict] = []
     if with_characters:
         try:
@@ -905,55 +919,34 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
                               task_id: int | None = None,
                               lang: str | None = None,
                               content: str | None = None) -> dict:
-    """写章 → 写后校验 → 六维审校 → 有问题带清单重写一轮。
+    """写章 → 写后校验 → 六维审校 → JEV 门控 → 必要时带清单修复 → loop。
+
+    C.1:内部走 LangGraph StateGraph(装了的话) 或 fallback cycle loop;
+    与原版行为一致 — 真装 LangGraph 时自动启用真图,fail-safe fallback 保底。
 
     对齐原版(101759d + 未提交批次):
     - 写后校验:以 episodes.content 为准,`len < 200` 视为模型没真写入 →
       抛错让上层重试一次,避免"界面显示完成但章节空着,极难排查"。
-    - 阶段标记:writing → reviewing → repairing 写进 sys_task.params.stage,
-      批量面板据此显示"当前在做什么"(正文生成要几十秒,只有阶段可见才不像卡死)。
+    - 阶段标记:writing → reviewing → repairing → jev_gate 写进 sys_task.params.stage。
     """
-    from ..core import taskmgr as TM
-    MIN_CHARS = 200
-    # 写章/审稿/改稿整条链统一走「正文模型」,提前定好,免得下游某处漏传又
-    # 悄悄回落到全局默认模型。
+    from ..agents.novel_review_flow import run_novel_review_loop
     config_id = config_id or prose_config_id()
 
-    def _stage(s: str):
-        if task_id:
-            TM.set_stage(task_id, s)
-
-    _stage("writing" if not content else "reviewing")
-    if content is not None:            # 流式路径:正文已生成,只落库后直接审校
-        _save_with_title(episode_id, content)
-    else:
-        write_chapter(episode_id, config_id=config_id, lang=lang)
-    row = db.q1("SELECT content, episode_number FROM episodes WHERE id=?", (episode_id,))
-    content = (row["content"] if row else "") or ""
-    if len(content.strip()) < MIN_CHARS:
-        num = row["episode_number"] if row else "?"
-        raise RuntimeError(f"第 {num} 集未写入正文(仅 {len(content.strip())} 字符),请重新生成")
-
-    _stage("reviewing")
-    try:
-        review = review_chapter(episode_id, config_id=config_id, lang=lang)
-    except Exception:  # noqa: BLE001
-        return {"content": content, "review": None, "fixed": False}
-    if isinstance(review, dict) and review.get("overall") == "fix":
-        issues = []
-        for dim, v in (review.get("dimensions") or {}).items():
-            if isinstance(v, dict) and not v.get("pass", True):
-                issues.append(f"[{dim}] " + "; ".join(v.get("issues", [])[:3]))
-        if issues:
-            _stage("repairing")
-            fix_prompt = ("审校发现以下问题,请修复后输出完整修订正文:\n" + "\n".join(issues[:8])
-                          + f"\n\n本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}(修复时必须保持不变)"
-                          + f"\n\n原正文:\n{content[:14000]}")
-            fixed = _strip_think(runner.run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id))
-            fixed = _gate_content(fixed, "审校修复正文")
-            db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
-            return {"content": fixed, "review": review, "fixed": True}
-    return {"content": content, "review": review, "fixed": False}
+    out = run_novel_review_loop(
+        episode_id=episode_id,
+        config_id=config_id,
+        lang=lang,
+        task_id=task_id,
+        content=content,
+        max_cycles=3,
+    )
+    # 兼容老 caller 返回形状(content/review/fixed):
+    final = (out.get("final") or [None])[0]
+    return {
+        "content": final or content or "",
+        "review": None,                      # StateGraph 内部跑过 caller 拿不到详情,如需可见再扩
+        "fixed": out.get("decision") == "ok",
+    }
 
 
 def load_cover_asset_refs(drama_id: int, limit: int = 5) -> list[str]:
