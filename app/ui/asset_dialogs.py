@@ -615,6 +615,19 @@ class ImageViewerDialog(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
+    def _view_large_image(self):
+        """点击预览图看大图:image_url/comic_image_url **现读库**,保证弹窗
+        与缩略图是同一张(生成形象/上传/擦除/换画风之后都不会再拿旧图)。"""
+        d = db.q1(f"SELECT image_url, comic_image_url FROM {self.table} WHERE id=?",
+                  (self.row["id"],))
+        url = ""
+        if d:
+            url = ((d.get("image_url") or "").strip()
+                   or (d.get("comic_image_url") or "").strip())
+        if not url:
+            return
+        ImageViewerDialog(self, url, self.row.get("name") or "").exec()
+
     def _on_extra_clicked(self):
         if self._on_extra:
             self._on_extra(self)
@@ -701,7 +714,10 @@ class AssetDetailDialog(QDialog):
         _cover = ((row.get("image_url") or "").strip()
                   or (row.get("comic_image_url") or "").strip())
         self.img.setPixmap(W.pixmap_from_media(_cover, 276, 276))
-        self.img.mousePressEvent = lambda _e: ImageViewerDialog(self, _cover, row["name"]).exec()
+        # 点击看大图:URL **点击时从库现读**,不能用构造期闭包 —— 生成形象/
+        # 改图/换画风/上传都会更新 image_url,闭包里存的地址是旧图(用户实测:
+        # 缩略图已是新四格,弹窗还停在旧三格)
+        self.img.mousePressEvent = lambda _e: self._view_large_image()
         self.img.setToolTip(tr("点击查看大图"))
         left.addWidget(self.img)
         dl = QPushButton(tr("↓ 下载原图"))
