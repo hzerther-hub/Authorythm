@@ -245,6 +245,8 @@ def test_web_search_parses_bing_html(monkeypatch):
 
     page = ('<li class="b_algo"><h2><a href="https://example.com/a">'
             '高斯<b>模糊</b> - 百度百科</a></h2><p>高斯模糊是<em>线性</em>平滑滤波</p></li>')
+    # DDG lite 现在排第一,也得打桩 —— 不然这个用例会真发网络请求
+    monkeypatch.setattr(WS, "_fetch_ddg_lite", lambda q: "")
     monkeypatch.setattr(WS, "_fetch_page", lambda url: page)
     hits, err = WS.search("高斯模糊", use_cache=False)
     assert err == "" and hits, f"解析失败:{err}"
@@ -254,6 +256,7 @@ def test_web_search_parses_bing_html(monkeypatch):
     assert "高斯模糊是线性平滑滤波" in snip
 
     # 全引擎空页 → 软失败(空列表 + 错误文案),不抛异常
+    monkeypatch.setattr(WS, "_fetch_ddg_lite", lambda q: "")
     monkeypatch.setattr(WS, "_fetch_page", lambda url: "")
     hits2, err2 = WS.search("高斯模糊", use_cache=False)
     assert hits2 == [] and "无结果" in err2
@@ -297,3 +300,49 @@ def test_find_photo_query_variants():
         assert _extract_photo_query(t) == want, f"关键词剥错:{t}"
     for t in ("改成黑白", "把图片换成黑白的", "什么是高斯模糊?"):
         assert not _looks_like_find_photo(t), f"误判找图:{t}"
+
+
+def test_web_query_routing_and_extraction():
+    """显式联网查询(查火车/打开web查询XX)→ web_search 意图,搜索词剥掉外壳。"""
+    from app.ui.chat_edit_drawer import (_looks_like_web_query, _web_query_text,
+                                         _looks_like_find_photo)
+
+    for t in ("打开web查询宁波到淄博的火车表", "查宁波到淄博的火车",
+              "帮我查一下天气", "联网查一下最新模型", "搜索一下锐化教程"):
+        assert _looks_like_web_query(t), f"该判成联网查询:{t}"
+    for t in ("查美女图", "搜一下雪山风景图",       # 找图优先
+              "什么是高斯模糊?", "这张图是什么内容?", "改成黑白"):
+        assert not _looks_like_web_query(t), f"误判联网查询:{t}"
+    # 找图判定不受影响
+    assert _looks_like_find_photo("查美女图")
+    # 取词
+    assert _web_query_text("打开web查询宁波到淄博的火车表") == "宁波到淄博的火车表"
+    assert _web_query_text("查宁波到淄博的火车") == "宁波到淄博的火车"
+    assert _web_query_text("帮我查一下天气") == "天气"
+
+
+def test_web_search_ddg_lite_first(monkeypatch):
+    """引擎顺序:DDG lite 第一(Bing 对无 cookie 客户端会假装答了无关内容)。"""
+    import app.ai.web_search as WS
+
+    calls = []
+
+    def fake_lite(q):
+        calls.append("ddg")
+        return ("<a rel=\"nofollow\" href=\"https://trains.ctrip.com/x\" "
+                "class='result-link'>宁波到淄博高铁查询</a>"
+                "<td class='result-snippet'>高铁时刻表与余票</td>")
+
+    def fake_bing(*a, **k):
+        calls.append("bing")
+        return "<li class='b_algo'><h2><a href='https://x.com'>junk</a></h2><p>junk</p></li>"
+
+    monkeypatch.setattr(WS, "_fetch_ddg_lite", fake_lite)
+    monkeypatch.setattr(WS, "_fetch_page", fake_bing)
+    hits, err = WS.search("宁波到淄博的火车", use_cache=False)
+    assert calls[0] == "ddg", f"DDG lite 应该是第一引擎,实际顺序:{calls}"
+    assert err == "" and hits
+    # href 在 class 前面的新标记也要能解析(实测 lite 版就是这个顺序)
+    assert hits[0][0] == "宁波到淄博高铁查询"
+    assert hits[0][1] == "https://trains.ctrip.com/x"
+    assert "高铁时刻表" in hits[0][2]

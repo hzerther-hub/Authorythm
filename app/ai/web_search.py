@@ -85,6 +85,22 @@ def _parse_baidu(page: str) -> list[Hit]:
     return results
 
 
+def _fetch_ddg_lite(query: str) -> str:
+    """DuckDuckGo lite 版用 POST 表单查询,单独取页(GET html 版实测会给
+    无关内容/异常页)。"""
+    data = urllib.parse.urlencode({"q": query}).encode()
+    try:
+        req = urllib.request.Request(
+            "https://lite.duckduckgo.com/lite/", data=data,
+            headers={"User-Agent": UA,
+                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                     "Content-Type": "application/x-www-form-urlencoded"})
+        with urllib.request.urlopen(req, timeout=DEFAULT_TIMEOUT_S) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:  # noqa: BLE001
+        return ""
+
+
 def _parse_duckduckgo(page: str) -> list[Hit]:
     """解析 DuckDuckGo HTML/Lite 版结果页。"""
     results: list[Hit] = []
@@ -100,17 +116,27 @@ def _parse_duckduckgo(page: str) -> list[Hit]:
         results.append((_strip_tags(title), url, snip))
     if results:
         return results
-    # lite 版备用布局:链接 class='result-link',摘要在 class='result-snippet'
-    blocks = re.findall(
-        r"<a[^>]*class='result-link'[^>]*href=\"([^\" )]+)\"[^>]*>(.*?)</a>",
-        page, re.S)
+    # lite 版备用布局:链接 class='result-link',摘要在 class='result-snippet'。
+    # 注意 href 可能在 class **前面**(实测 <a rel="nofollow" href="…" class='result-link'>),
+    # 所以抓整个 <a> 标签再从属性串里提 href,别假定属性顺序。
+    results = []
+    for m in re.finditer(r"<a([^>]*?)class='result-link'([^>]*?)>(.*?)</a>",
+                         page, re.S):
+        attrs = m.group(1) + m.group(2)
+        hm = re.search(r'href="([^"]+)"', attrs)
+        if not hm:
+            continue
+        url = hm.group(1)
+        m2 = re.search(r"[?&]uddg=([^&]+)", url)
+        if m2:
+            url = urllib.parse.unquote(m2.group(1))
+        results.append((_strip_tags(m.group(3)), url, ""))
     snips = re.findall(r"class='result-snippet'[^>]*>(.*?)</td>", page, re.S)
-    for i, (url, title) in enumerate(blocks):
-        m = re.search(r"[?&]uddg=([^&]+)", url)
-        real = urllib.parse.unquote(m.group(1)) if m else url
+    out: list[Hit] = []
+    for i, (title, url, _s) in enumerate(results):
         snip = _strip_tags(snips[i]) if i < len(snips) else ""
-        results.append((_strip_tags(title), real, snip))
-    return results
+        out.append((title, url, snip))
+    return out
 
 
 def search(query: str, max_results: int = 6,
@@ -128,19 +154,25 @@ def search(query: str, max_results: int = 6,
         if hit and hit[0] > now:
             return hit[1][:max_results], ""
 
-    q = urllib.parse.quote(query)
-    engines: list[tuple[str, str, object]] = [
-        ("Bing", f"https://www.bing.com/search?q={q}&setmkt=zh-CN&count=10",
+    q = query
+    # 顺序即优先级。**DuckDuckGo lite 第一**:对无 cookie 的程序化请求最宽容、
+    # 结果相关(实测「宁波到淄博的火车」返回 12306/携程/去哪儿);Bing 对
+    # 这类客户端会**假装答了** —— 页面标题是对的,organic 结果却是无关内容
+    # (实测返回塑料协会/翻译,比"没结果"更坑),降为第二引擎。
+    engines: list[tuple[str, object, object]] = [
+        ("DuckDuckGo", lambda: _fetch_ddg_lite(q), _parse_duckduckgo),
+        ("Bing", lambda: _fetch_page(
+            f"https://www.bing.com/search?q={urllib.parse.quote(q)}&setmkt=zh-CN&count=10"),
          _parse_bing),
-        ("DuckDuckGo", f"https://html.duckduckgo.com/html/?q={q}",
-         _parse_duckduckgo),
-        ("百度", f"https://www.baidu.com/s?wd={q}&rn=10", _parse_baidu),
+        ("百度", lambda: _fetch_page(
+            f"https://www.baidu.com/s?wd={urllib.parse.quote(q)}&rn=10"),
+         _parse_baidu),
     ]
     tried: list[str] = []
     results: list[Hit] = []
-    for name, url, parse in engines:
+    for name, fetch, parse in engines:
         tried.append(name)
-        page = _fetch_page(url)
+        page = fetch()
         if not page:
             continue
         results = parse(page)

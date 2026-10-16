@@ -555,11 +555,13 @@ class ImageViewerDialog(QDialog):
     """
     def __init__(self, parent, url: str | None, title: str = "",
                  confirm_text: str | None = None,
-                 extra_text: str | None = None, on_extra=None):
+                 extra_text: str | None = None, on_extra=None,
+                 style_choices=None, style_default: str | None = None):
         super().__init__(parent)
         self.used = False
         self._on_extra = on_extra
         self._img_label = None
+        self._style_combo = None
         self.setWindowTitle(title or tr("预览"))
         self.resize(760, 620)
         root = QVBoxLayout(self)
@@ -591,9 +593,20 @@ class ImageViewerDialog(QDialog):
         if extra_text and on_extra:
             ex = QPushButton(extra_text)
             W.set_icon(ex, "magic")
-            ex.setToolTip(tr("把这张图转成项目画风,转完可以直接使用"))
+            ex.setToolTip(tr("把这张图转成选定的画风,转完可以直接使用"))
             ex.clicked.connect(self._on_extra_clicked)
             row.addWidget(ex)
+            if style_choices:
+                # 画风下拉:换画风的目标风格可选。不再死绑「项目默认」——
+                # 聊天改图里经常根本没开项目,「项目画风」是空话(用户实测提出)。
+                # 预选 style_default(项目画风;没项目时调用方给 3d)。
+                self._style_combo = QComboBox()
+                for val, lab in style_choices:
+                    self._style_combo.addItem(lab, val)
+                i = self._style_combo.findData(style_default)
+                self._style_combo.setCurrentIndex(i if i >= 0 else 0)
+                self._style_combo.setToolTip(tr("换画风的目标风格"))
+                row.addWidget(self._style_combo)
         if confirm_text:
             use = W.primary_btn(confirm_text)
             use.clicked.connect(self._on_use)
@@ -605,6 +618,10 @@ class ImageViewerDialog(QDialog):
     def _on_extra_clicked(self):
         if self._on_extra:
             self._on_extra(self)
+
+    def selected_style(self) -> str | None:
+        """画风下拉当前选中的 value;没建下拉(非换画风场景)返回 None。"""
+        return self._style_combo.currentData() if self._style_combo else None
 
     def show_local_image(self, path: str):
         """换画风完成后原地刷新显示 —— 避免用户还要自己关窗重开。"""

@@ -43,6 +43,7 @@ _JEV_INTENT_QUESTIONS = {
             "chat": "用户想问当前这张图片的内容,或要对它点评/要建议",
             "knowledge": "用户问图片处理的知识/概念/参数建议,与当前这张图无关(如:什么是高斯模糊、锐化和磨皮的区别)",
             "find_photo": "用户想找/搜一张新的图片素材(如:我想找一张美女图片、搜一张雪山风景图)",
+            "web_search": "用户要求联网查询资料,与图片无关(如:查宁波到淄博的火车、打开web查询天气)",
         },
     },
 }
@@ -52,7 +53,9 @@ _INTENT_EDIT = "edit"
 _INTENT_CHAT = "chat"
 _INTENT_KNOWLEDGE = "knowledge"      # 问图片处理知识(与当前图无关)→ web 搜索后作答
 _INTENT_FIND_PHOTO = "find_photo"    # 想找/搜一张新图 → 弹图库搜索,预填关键词
-_KNOWN_INTENTS = (_INTENT_EDIT, _INTENT_CHAT, _INTENT_KNOWLEDGE, _INTENT_FIND_PHOTO)
+_INTENT_WEB_QUERY = "web_search"     # 显式要求联网查资料(查火车/查天气)→ web 搜索后作答
+_KNOWN_INTENTS = (_INTENT_EDIT, _INTENT_CHAT, _INTENT_KNOWLEDGE, _INTENT_FIND_PHOTO,
+                  _INTENT_WEB_QUERY)
 
 
 def _parse_jev_intent(res: dict | None) -> str:
@@ -209,6 +212,40 @@ def _knowledge_query(text: str) -> str:
     return t.strip() or (text or "").strip()
 
 
+# ── 显式联网查询(「查宁波到淄博的火车」「打开web查询XX」)──
+# 用户实测:问火车车次,路由进了纯聊天,模型只好答「我无法查询实时车次」。
+# 「查/搜索 + 任意话题」是明确的联网意图,与图片处理知识问句(什么是/区别)
+# 是两回事 —— 但找图优先(「查美女图」带图片名词,已在更早处截走)。
+_WEBQ_NET_WORDS = ("web", "Web", "WEB", "网页", "网上", "互联网", "联网", "上网", "网络")
+
+
+def _looks_like_web_query(text: str) -> bool:
+    """显式要求联网查资料:带 web/联网字样,或以 查/搜索/检索 开头的祈使句。"""
+    t = (text or "").strip()
+    if not t or _looks_like_find_photo(t):
+        return False            # 「查美女图」是找图,已在路由更早处截走,双保险
+    if any(w in t for w in _WEBQ_NET_WORDS) and re.search(r"(查|搜|询|找)", t):
+        return True
+    # 查/搜索 开头(可带 帮我/打开web 等前缀)。只认查/搜根系 —— 「看看这张图」
+    # 这类是视觉问答,不能抢
+    return bool(re.match(
+        r"^(帮我|麻烦|请|给我)?(打开?|用|通过?|走)?"
+        r"(web|网页|网上|互联网|联网|上网)?"
+        r"(查一?下|查|查询|搜索|搜一?下|搜|检索)", t))
+
+
+def _web_query_text(text: str) -> str:
+    """剥掉联网查询的指令外壳,留下搜索词:「打开web查询宁波到淄博的火车表」
+    →「宁波到淄博的火车表」。"""
+    t = (text or "").strip()
+    t = re.sub(r"^(帮我|麻烦|请|给我)+", "", t)
+    t = re.sub(r"^(打开?|用|通过?|走)", "", t)
+    t = re.sub(r"^(web|Web|WEB|网页|网上|互联网|联网|上网)", "", t)
+    t = re.sub(r"^(查一?下|查询|搜索|搜一?下|搜|检索|查)", "", t)
+    t = re.sub(r"[?？。，,!! ]+$", "", t)
+    return t.strip() or (text or "").strip()
+
+
 # 快捷命令的「正典清单」:白名单没命中时,让 Jev 判断用户消息跟哪条最接近。
 # 只收**无参数歧义**的命令(带具体数值的按常见默认值给),criteria 文案写给
 # Jev 看语义,执行时重放正典命令本身 —— 白名单会对正典命令确定性命中。
@@ -349,6 +386,10 @@ _HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车�
 【知识 · 联网搜索后作答(带来源)】
 什么是高斯模糊?        ← 图片处理知识自动先搜再答
 锐化和磨皮有什么区别 / 9:16 是多少分辨率
+
+【联网查询 · 任意话题】
+查宁波到淄博的火车      ← 显式查询自动联网,答案带来源链接
+打开web查询今天天气 / 帮我查一下12306
 
 【找图 · 自动弹图库搜索】
 我想找一张美女图片      ← 关键词自动预填,选中即成当前图
@@ -1450,16 +1491,17 @@ class ChatEditPanel(QWidget):
         if dlg.exec() == QDialog.Accepted and dlg.local_path:
             self.set_image(dlg.local_path)
 
-    def _knowledge_reply(self, text: str, llm_id) -> dict:
-        """知识问句:web 搜索 → LLM 基于结果作答(带来源)。
+    def _knowledge_reply(self, text: str, llm_id, query: str | None = None) -> dict:
+        """知识问句 / 联网查询:web 搜索 → LLM 基于结果作答(带来源)。
 
         搜索移植自参考项目 D:\\drama 的 web_search(Bing→DuckDuckGo→百度
         三引擎回退)。全部引擎失败时降级为纯 LLM 回答,并注明未经联网核实。
+        query 直给时(联网查询意图已剥好搜索词)不再二次剥离。
         """
         from ..ai import text_client as _tc
         from ..ai import web_search as WS
         from ..ai.photocraft_bridge import _strip_reasoning
-        query = _knowledge_query(text)
+        query = (query or "").strip() or _knowledge_query(text)
         hits, err = WS.search(query)
         if hits:
             ctx = "\n\n".join(f"[{i + 1}] {t}\n{u}\n{s}"
@@ -1510,7 +1552,8 @@ class ChatEditPanel(QWidget):
         # 反馈「聊天还是要有图片」。但**找图和知识问句恰恰不需要图**(没图才会
         # 去搜图/查知识),这两类放行。
         if (not self._current_image or not Path(self._current_image).exists()) \
-                and not _looks_like_find_photo(text) and not _looks_like_knowledge(text):
+                and not _looks_like_find_photo(text) and not _looks_like_knowledge(text) \
+                and not _looks_like_web_query(text):
             self.status_lab.setText(tr("chat_edit_msg_image_missing"))
             return
 
@@ -1537,6 +1580,11 @@ class ChatEditPanel(QWidget):
             #    (问「什么是高斯模糊」不需要先放一张图进来)
             if _looks_like_find_photo(text):
                 return self._find_photo_result(text, llm_id)
+            if _looks_like_web_query(text):
+                # 显式联网查询(「查宁波到淄博的火车」「打开web查询XX」):
+                # 搜索词剥掉指令外壳,复用知识回答管线(搜→答→带来源)
+                return self._knowledge_reply(text, llm_id,
+                                             query=_web_query_text(text))
             if _looks_like_knowledge(text):
                 return self._knowledge_reply(text, llm_id)
             # ② 批分析命令(带「分析」字样,须在问句规则前截走)

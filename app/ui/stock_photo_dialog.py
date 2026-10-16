@@ -322,7 +322,9 @@ class StockPhotoDialog(QDialog):
         dlg = ImageViewerDialog(self, url, label or tr("预览"),
                                 confirm_text=tr("使用这张"),
                                 extra_text=tr("换画风"),
-                                on_extra=self._on_transform)
+                                on_extra=self._on_transform,
+                                style_choices=self._style_choices(),
+                                style_default=self._default_style())
         dlg.remote_url_hint = url
         if not dlg.exec() == ImageViewerDialog.Accepted or not dlg.used:
             return                                  # 关闭:回到搜索结果,弹窗继续开着
@@ -330,8 +332,21 @@ class StockPhotoDialog(QDialog):
         self._download(getattr(dlg, "transformed_url", None) or url)
 
     # ── 预览里的「换画风」 ──
+    def _style_choices(self) -> list[tuple[str, str]]:
+        """画风下拉的选项:全部启用的风格预设(与制作台画面风格同源)。"""
+        from ..core import db
+        return [(r["value"], tr(r["name"])) for r in
+                db.q("SELECT value, name FROM style_presets "
+                     "WHERE is_active=1 ORDER BY sort_order, id")]
+
+    def _default_style(self) -> str:
+        """下拉预选值:有项目跟项目画风,没项目给 3d —— 聊天改图里经常没开
+        项目,不能拿「项目默认画风」当选项糊弄(用户实测提出)。"""
+        d = self._drama_id or _drama_id_of(self)
+        return _current_project_style(d) if d else "3d"
+
     def _on_transform(self, viewer):
-        """就地执行:下载原图 → 转项目画风 → 刷新显示。
+        """就地执行:下载原图 → 转下拉选定的画风 → 刷新显示。
 
         `style_convert.convert_path` 只返回新图路径、**不落库**(手动流程
         先看效果),所以这里不会动任何资产表。
@@ -339,6 +354,8 @@ class StockPhotoDialog(QDialog):
         from ..ai import image_client
         from ..pipeline import style_convert as SC
         from ..core.taskmgr import TASKMGR
+        style = (viewer.selected_style() if hasattr(viewer, "selected_style")
+                 else None) or self._default_style()
         try:
             cfg = image_client.registry.check_ready("image", None)
         except Exception as exc:  # noqa: BLE001
@@ -356,10 +373,10 @@ class StockPhotoDialog(QDialog):
             return
         viewer._src_cache = src
         viewer.setEnabled(False)        # 一次 30-60 秒,禁掉防连点
-        self.hint.setText(tr("正在转换为项目画风…"))
+        self.hint.setText(tr("正在转换为「{}」画风…").format(style))
 
         def job(tid):
-            return SC.convert_path(src, _current_project_style(self._drama_id), cfg["id"])
+            return SC.convert_path(src, style, cfg["id"])
 
         def done(tid, result, error):
             viewer.setEnabled(True)
@@ -369,7 +386,7 @@ class StockPhotoDialog(QDialog):
                 return
             viewer.transformed_url = str(result)
             viewer.show_local_image(str(result))
-            info(tr("已转成项目画风 —— 满意点「使用这张」,不满意可关闭后重选"))
+            info(tr("已转成「{}」画风 —— 满意点「使用这张」,不满意可换一款再转").format(style))
 
         TASKMGR.submit("image", job, done)
 
