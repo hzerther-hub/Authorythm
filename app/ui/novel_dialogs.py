@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
                                QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QTabWidget,
@@ -540,21 +541,34 @@ class NovelPlanDialog(QDialog):
         self.tabs.setCurrentIndex(self.tabs.count() - 1)     # 章节计划页
         editor = self.chapters_edit
 
-        if n > novel_pipe.CHAPTER_PLAN_LIMIT:
+        vol_no = self.vol_combo.currentData() if hasattr(self, "vol_combo") else None
+        # 选了卷 → 本次只生成那一卷,进度上限是**该卷章数**而不是全书章数。
+        # 原先用全书 n 做进度分母,选卷生成第一卷(120 章)时状态栏写的是
+        # 「分批生成中 0/999 章…」,用户以为在生成整本书,也对不上实际产出。
+        if vol_no:
+            vols = novel_pipe.load_volume_chapters(self.drama_id)
+            v = vols[int(vol_no) - 1] if 0 < int(vol_no) <= len(vols) else None
+            va, vb = (novel_pipe._range_of(v) if v else (None, None))
+            n_target = (vb - va + 1) if va and vb else n
+            label = tr('第 {no} 卷 · 第 {a}-{b} 章').format(
+                no=vol_no, a=va or "?", b=vb or "?")
+        else:
+            n_target, label = n, tr('全书')
+
+        if n > novel_pipe.CHAPTER_PLAN_LIMIT or vol_no:
             # 长篇:一次请求写不下(999 章会被模型压成散文、解析全废)→ 分批生成
             from ..core.taskmgr import TASKMGR
-            from ..core.preflight import ensure_ready as _er
-            btn.busy(tr('生成 {} 章计划中').format(n))
-            editor.clear()
-            self.plan_stat.setText(tr('分批生成中 0/{n} 章…').format(n=n))
+            btn.busy(tr('生成 {} 章计划中').format(n_target))
+            # 不清空编辑器:清空后若第一批就失败,用户原来已有的章节计划
+            # 在界面上也一并消失,像是把内容弄丢了(库里其实还在)。
+            self.plan_stat.setText(tr('正在生成 {lab}…0/{n} 章').format(lab=label, n=n_target))
 
             # 进度回写走 **TASKMGR 的信号**(跨线程安全),不用 QTimer.singleShot ——
             # 后者在 worker 线程里排队等主线程事件循环,界面繁忙时更新会整段丢失,
             # 表现为状态栏卡在「分批生成中 0/999 章…」不动(实测)。
-            prog = _PlanProgress(self, btn, n)
+            prog = _PlanProgress(self, btn, n_target, label)
+            prog.beat()          # 先起心跳:第一批 82 秒,期间界面不能是死的
             snap = _PlanPartial(self, editor)
-
-            vol_no = self.vol_combo.currentData() if hasattr(self, "vol_combo") else None
 
             def job(tid):
                 # 选了卷 → 只生成该卷章节(并顺带抽该卷角色);
@@ -1038,19 +1052,41 @@ class _PlanProgress(QObject):
 
     _sig = Signal(int, int, int)          # done, total, percent
 
-    def __init__(self, dialog, btn, total):
+    def __init__(self, dialog, btn, total, label=""):
         super().__init__(dialog)
         self._dlg, self._btn, self._total = dialog, btn, total
+        self._label = label or ""
         self._sig.connect(self._apply)
 
     def on_progress(self, _pct, done, total):
         """worker 线程调用:只 emit,绝不碰界面。"""
         self._sig.emit(int(done), int(total), int(done * 100 / max(1, total)))
 
+    def beat(self):
+        """第一批还没回来时的心跳,让用户知道「在跑,不是卡死」。
+
+        **必须有**:实测 deepseek-v4-pro 生成一批要 82 秒,第一卷 3 批共
+        4-5 分钟。期间 on_progress 一次都不触发,状态栏纹丝不动地写着
+        「0/120 章」,用户看到的就是"点了没反应"。心跳每 10 秒把已等时长
+        说出来,「已等待 30 秒…」比静止的数字可信得多。
+        """
+        self._t0 = time.time()
+        self._tick()
+
+    def _tick(self):
+        if not self._dlg.plan_stat.isVisible():
+            return
+        secs = int(time.time() - self._t0)
+        base = self._dlg.plan_stat.text().split("  ·  已等待")[0]
+        self._dlg.plan_stat.setText(f"{base}  ·  已等待 {secs} 秒…")
+        QTimer.singleShot(10_000, self._tick)
+
     def _apply(self, done, total, _pct):
         """主线程槽:更新状态栏与按钮文字。"""
         self._dlg.plan_stat.setText(
-            tr('分批生成中 {done}/{total} 章…').format(done=done, total=total))
+            tr('{lab}生成中 {done}/{total} 章…').format(
+                lab=(self._label + " ") if self._label else "",
+                done=done, total=total))
         self._btn.setText(tr('生成中 {done}/{total}').format(done=done, total=total))
 
 

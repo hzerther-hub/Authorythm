@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 
 from app.core import db
 from app.pipeline import novel as nv
@@ -148,3 +149,54 @@ def test_every_prose_entry_falls_back_to_prose_model():
     for name in PROSE_ENTRIES:
         src = inspect.getsource(getattr(nv, name))
         assert "prose_config_id()" in src, f"{name} 未回退到正文模型"
+
+
+# ── 分卷生成不能覆盖已有章节计划 ────────────────────────────────────
+
+def test_merge_chapters_keeps_existing_volumes(monkeypatch):
+    """按卷生成只做增量合并,**绝不整表覆盖**。
+
+    实测踩过:`UPDATE dramas SET novel_chapters=<本卷结果>` 会把用户已生成的
+    其它卷整体抹掉 —— 生成第一卷(第 1-120 章)时,已存在的第 61 章以后的
+    计划被清空,而界面只显示「生成了 120 章」,看着一切正常。
+    """
+    import time as _t
+    did = int(_t.time() * 1000) % 900000 + 700000
+    db.ex("INSERT INTO dramas (id, title, created_at, updated_at) VALUES (?,?,?,?)",
+          (did, "合并测试", db.now(), db.now()))
+
+    def set_chapters(nums):
+        rows = [{"number": i, "title": f"T{i}", "goal": "g", "events": "e",
+                 "cliffhanger": "c"} for i in nums]
+        db.ex("UPDATE dramas SET novel_chapters=? WHERE id=?",
+              (json.dumps(rows, ensure_ascii=False), did))
+
+    def get_chapters():
+        row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (did,))
+        return [int(c["number"]) for c in db.jload(row["novel_chapters"], []) or []]
+
+    set_chapters(range(1, 61))                    # 已有第 1-60 章(其它卷的)
+    nv._merge_chapters(did, [{"number": i, "title": f"N{i}", "goal": "g",
+                              "events": "e", "cliffhanger": "c"}
+                             for i in range(1, 41)])   # 再生成第 1-40 章
+    got = get_chapters()
+    assert len(got) == 60, f"原有 60 章被覆盖了,现在只有 {len(got)} 章"
+    assert got == list(range(1, 61)), f"章号不对:{got[:5]}…"
+    db.ex("DELETE FROM dramas WHERE id=?", (did,))
+
+
+def test_merge_chapters_same_number_overwrites(monkeypatch):
+    """同章号以新结果为准(重做本卷时能覆盖旧的)。"""
+    import time as _t
+    did = (int(_t.time() * 1000) % 900000 + 700001)
+    db.ex("INSERT INTO dramas (id, title, created_at, updated_at) VALUES (?,?,?,?)",
+          (did, "覆盖测试", db.now(), db.now()))
+    db.ex("UPDATE dramas SET novel_chapters=? WHERE id=?",
+          (json.dumps([{"number": 1, "title": "旧", "goal": "g", "events": "e",
+                        "cliffhanger": "c"}], ensure_ascii=False), did))
+    nv._merge_chapters(did, [{"number": 1, "title": "新", "goal": "g",
+                              "events": "e", "cliffhanger": "c"}])
+    row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (did,))
+    got = db.jload(row["novel_chapters"], []) or []
+    assert len(got) == 1 and got[0]["title"] == "新", "同章号没被新结果覆盖"
+    db.ex("DELETE FROM dramas WHERE id=?", (did,))

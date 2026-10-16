@@ -348,6 +348,32 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
     return chars
 
 
+def _merge_chapters(drama_id: int, new_ch: list[dict]) -> int:
+    """按章号把新章节并进库里已有的计划,返回合并后的总章数。
+
+    **绝不能整表覆盖** —— 分卷生成是增量补充,用户很可能已经生成过前面几卷。
+    实测踩过:按卷生成时直接 `UPDATE novel_chapters=<本卷结果>`,
+    把已有的 60 章(第 1-60 章)整体抹掉,而那一卷只覆盖第 1-120 章,
+    看着「生成了 120 章」实则把第 61 章以后的计划清空了。
+    同章号以新结果为准(重做本卷时覆盖),其余保留。
+    """
+    row = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
+    old = db.jload(row["novel_chapters"], []) if row else []
+    merged: dict[int, dict] = {}
+    for c in (old or []):
+        num = int(c.get("number") or 0)
+        if num:
+            merged[num] = c
+    for c in new_ch or []:
+        num = int(c.get("number") or 0)
+        if num:
+            merged[num] = c
+    out = [merged[k] for k in sorted(merged)]
+    db.ex("UPDATE dramas SET novel_chapters=?, updated_at=? WHERE id=?",
+          (json.dumps(out, ensure_ascii=False), db.now(), drama_id))
+    return len(out)
+
+
 def generate_chapters_for_volume(drama_id: int, volume_no: int,
                                  word_count: int | None = None,
                                  config_id: int | None = None,
@@ -388,14 +414,20 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
                                   prev_hint=prev_hint),
             temperature=0.4, config_id=config_id, max_tokens=None)
         data = runner.extract_json(raw) or {}
-        all_ch.extend(_clean_chapter_list(data.get("chapters"), cnt))
+        batch = _clean_chapter_list(data.get("chapters"), cnt)
+        if not batch:
+            # 空批次直接报错:继续往下跑只会让用户等完才看到「什么都没有」。
+            # 已产出的批次已经在下面逐批落库,不会丢。
+            raise RuntimeError(f"第 {start}-{start + cnt - 1} 章生成失败"
+                               f"(返回 {len(raw)} 字,疑似被截断)")
+        all_ch.extend(batch)
+        # 逐批落库(合并,不覆盖):三批跑几分钟,中途断网/超时已生成的批次不能丢
+        _merge_chapters(drama_id, all_ch)
         if progress:
             progress(int(len(all_ch) * 100 / n), len(all_ch), n)
         if on_partial:
             on_partial(all_ch)
-    # 按章号写回(与已有章节计划合并,不覆盖其它卷已生成的)
-    db.ex("UPDATE dramas SET novel_chapters=?, updated_at=? WHERE id=?",
-          (json.dumps(all_ch, ensure_ascii=False), db.now(), drama_id))
+    all_ch.sort(key=lambda c: c["number"])
     chars: list[dict] = []
     if with_characters:
         try:
