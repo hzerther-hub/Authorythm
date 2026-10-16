@@ -156,7 +156,16 @@ class VariantsDialog(QDialog):
             fp = r["final_prompt"]
             if not fp:
                 raise RuntimeError(tr("该变体还没有提示词,请稍后重试或补充造型描述后重新打开"))
-            out, _p = image_client.generate_image(fp)
+            # 造型变体也是角色参考图:统一白底(共享守卫);三视图类提示词跳过
+            # 人数守卫(people=1 负面词会砍掉多视图,见 asset_dialogs 同款注释)
+            from ..ai.prompt_guards import (CHARACTER_SHEET_NEGATIVE,
+                                            CHARACTER_SHEET_PROMPT_SUFFIX)
+            is_sheet = any(k in fp for k in ("三视图", "turnaround", "character sheet"))
+            if "white background" not in fp.lower():
+                fp = fp + ", clean pure white background, isolated subject"
+            fp = fp + CHARACTER_SHEET_PROMPT_SUFFIX
+            out, _p = image_client.generate_image(fp, skip_guard=is_sheet,
+                                                  extra_negative=CHARACTER_SHEET_NEGATIVE)
             db.ex("UPDATE character_variants SET image_url=? WHERE id=?",
                   (config.path_to_media_url(out), r["id"]))
             return str(out)

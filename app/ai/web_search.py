@@ -139,6 +139,21 @@ def _parse_duckduckgo(page: str) -> list[Hit]:
     return out
 
 
+def fetch_page_text(url: str, limit: int = 3500) -> str:
+    """抓网页正文文本(剥脚本/样式/标签),失败返回空串。
+
+    给「搜索 + 读页」的回答管线用:搜索摘要只有一两句,车次表/参数表这类
+    数据在结果页正文里,把最相关的那页正文喂给 LLM 才答得准。
+    """
+    page = _fetch_page(url)
+    if not page:
+        return ""
+    text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page,
+                  flags=re.S | re.I)
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.sub(r"\s+", " ", html.unescape(text)).strip()[:limit]
+
+
 def search(query: str, max_results: int = 6,
            use_cache: bool = True) -> tuple[list[Hit], str]:
     """联网搜索,返回 (hits, 错误文案)。hits 为空时错误文案说明原因。

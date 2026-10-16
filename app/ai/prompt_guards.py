@@ -46,6 +46,21 @@ IMAGE_NEGATIVE_GUARD = (
     "extra heads, crowd in background, friends standing behind, coworkers watching"
 )
 
+# 角色「形象图/三视图」白底守卫 —— 公共词表里没有背景条目,形象图生成点共用
+# 这一份(经 extra_negative 追加,不覆盖公用负面词)。
+# 为什么要压制:最终提示词开头的风格前缀带 creamy bokeh / soft warm lighting,
+# 实测会把纯白背景画成彩色虚化、还会把「正面脸部特写」挤出构图 —— 参考图与
+# 换脸链路对纯色背景最稳,必须双向压制(正向后缀 + 负面词)。
+# 只给形象图用:漫画格/场景里的角色需要环境,**不要**带到剧情画面生成。
+CHARACTER_SHEET_PROMPT_SUFFIX = (
+    ", pure white seamless studio background (#FFFFFF), flat even front lighting, "
+    "no bokeh, no depth of field, no colored or gradient background"
+)
+CHARACTER_SHEET_NEGATIVE = (
+    "colored background, gradient background, bokeh, pastel background, "
+    "environment, scenery, interior"
+)
+
 # 视频质量守卫:肢体之外覆盖视频侧高发伪结构 —— 背景围观路人、被褥家具下多出的肢体、
 # 服装发型跨帧漂移、角色间换脸融合、字幕水印、把角色三视图当构图模板照抄成「多视角站桩设定图」
 # (绑三视图参考图时的高发病)。躺卧构图是「双头」伪结构高发场景,单独点名。

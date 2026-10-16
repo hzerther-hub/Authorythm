@@ -984,11 +984,23 @@ class AssetDetailDialog(QDialog):
             fp = self.fp.toPlainText() or self.row.get("final_prompt") or ""
             if not fp:
                 raise RuntimeError(tr("请先生成最终提示词"))
-            # 角色形象图统一白底:参考图/换脸链路对纯色背景最稳,带环境虚化的
-            # 底图会往画面里渗色(用户要求:要求背景为白色)
-            if self.kind == "character" and "white background" not in fp.lower():
-                fp = fp + ", clean pure white background, isolated subject, no environment"
-            out, _p = image_client.generate_image(fp)
+            # 角色形象图统一白底(共享守卫,见 prompt_guards 白底注释):
+            # 风格前缀的 creamy bokeh 会把纯白背景画成彩色虚化、挤掉脸部特写
+            from ..ai.prompt_guards import (CHARACTER_SHEET_NEGATIVE,
+                                            CHARACTER_SHEET_PROMPT_SUFFIX)
+            extra_neg = None
+            # 三视图/turnaround 提示词自含完整构图说明(左特写 + 三全身),必须
+            # 跳过人数守卫 —— people=1 公共负面词禁「multiple people/duplicate」,
+            # 而三视图本质是同一人的多次出现,模型为守规会砍掉特写那格
+            # (用户实测:应四格只出三格,少的正是正面特写)。
+            is_sheet = any(k in fp for k in ("三视图", "turnaround", "character sheet"))
+            if self.kind == "character":
+                if "white background" not in fp.lower():
+                    fp = fp + ", clean pure white background, isolated subject"
+                fp = fp + CHARACTER_SHEET_PROMPT_SUFFIX
+                extra_neg = CHARACTER_SHEET_NEGATIVE
+            out, _p = image_client.generate_image(fp, skip_guard=is_sheet,
+                                                  extra_negative=extra_neg)
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), self.row["id"]))
             return url

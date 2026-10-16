@@ -422,7 +422,8 @@ def build_presenter_turnaround(presenter_path,
               f"{_turnaround_block()}")
     out, _ = image_client.generate_image(prompt, out_name="clone_turnaround.png",
                                          config_id=config_id,
-                                         reference_images=[str(presenter_path)])
+                                         reference_images=[str(presenter_path)],
+                                         skip_guard=True)  # 三视图自含构图,人数守卫会砍特写格
     return out
 
 

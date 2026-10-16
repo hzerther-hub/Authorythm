@@ -1491,6 +1491,37 @@ class ChatEditPanel(QWidget):
         if dlg.exec() == QDialog.Accepted and dlg.local_path:
             self.set_image(dlg.local_path)
 
+    def _web_query_reply(self, text: str, llm_id, query: str) -> dict:
+        """联网查询:浏览器 Agent(jev-ultrafast)上官网真查实时数据,
+        不可用/失败落回普通网页搜索。浏览器会打开本机 Chrome,查询类目标
+        明确限定「只查不动钱」。"""
+        from ..ai import browser_query as BQ
+        from ..ai import text_client as _tc
+        from ..ai.photocraft_bridge import _strip_reasoning
+        site = BQ.pick_site(query)
+        if site and BQ.available()[0]:
+            res = BQ.query(f"在当前网站查询:{query}。只做查询,不要提交订单、不要支付。",
+                           site)
+            if res and res.get("page_text"):
+                sys_p = ("你是实时查询助手。根据从网站读到的页面内容,用中文简洁"
+                         "回答用户的查询;车次/时间/价格等数字以页面为准。"
+                         "页面内容不足以回答时如实说明,不要编造。")
+                try:
+                    raw = _tc.chat(
+                        f"用户查询:{text}\n\n网站页面内容:\n{res['page_text']}",
+                        system=sys_p, config_id=llm_id, temperature=0.3, timeout=60)
+                    content = _strip_reasoning(raw or "").strip()
+                except _tc.AIError as exc:
+                    return {"error": str(exc)[:240], "user_text": text,
+                            "engine_label": "browser_agent"}
+                if content:
+                    src = res.get("url") or site
+                    return {"kind": "knowledge", "user_text": text,
+                            "content": (f"{content}\n\n来源:{src}"
+                                        f"(浏览器实时查询 · {res.get('steps', 0)} 步)"),
+                            "sources": [src], "engine_label": "browser_agent"}
+        return self._knowledge_reply(text, llm_id, query=query)
+
     def _knowledge_reply(self, text: str, llm_id, query: str | None = None) -> dict:
         """知识问句 / 联网查询:web 搜索 → LLM 基于结果作答(带来源)。
 
@@ -1506,6 +1537,13 @@ class ChatEditPanel(QWidget):
         if hits:
             ctx = "\n\n".join(f"[{i + 1}] {t}\n{u}\n{s}"
                               for i, (t, u, s) in enumerate(hits))
+            # 摘要只有一两句;车次表/参数表这类数据在结果页正文里。抓最相关的
+            # 一页正文一起喂给 LLM(10s 超时,失败不影响,摘要照用)
+            for _t, u, _s in hits[:2]:
+                page_text = WS.fetch_page_text(u)
+                if page_text:
+                    ctx += f"\n\n[最相关页面({u})正文]\n{page_text}"
+                    break
             sys_p = ("你是图片处理知识助手。根据搜索结果用中文简洁、可操作地回答"
                      "用户的图片处理问题,重点给结论与参数建议;引用来源用 [n] 标注。"
                      "搜索结果不足以回答时如实说明,不要编造。")
@@ -1582,8 +1620,9 @@ class ChatEditPanel(QWidget):
                 return self._find_photo_result(text, llm_id)
             if _looks_like_web_query(text):
                 # 显式联网查询(「查宁波到淄博的火车」「打开web查询XX」):
-                # 搜索词剥掉指令外壳,复用知识回答管线(搜→答→带来源)
-                return self._knowledge_reply(text, llm_id,
+                # 火车/天气这类**实时数据**优先浏览器 Agent 上官网真查,
+                # 拿不到(没装/没 Chrome/key 缺)落回普通网页搜索
+                return self._web_query_reply(text, llm_id,
                                              query=_web_query_text(text))
             if _looks_like_knowledge(text):
                 return self._knowledge_reply(text, llm_id)
