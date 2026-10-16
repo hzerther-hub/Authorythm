@@ -606,6 +606,21 @@ class ProjectsPage(QWidget):
     def set_new_callback(self, cb) -> None:
         self._new_cb = cb
 
+    def _cols_for_width(self) -> int:
+        """按当前视口宽算该排几列(与 reload 同一口径,含间距)。"""
+        gap = self.grid.spacing() or 0
+        avail = self.scroll.viewport().width() or 1200
+        return max(1, (avail + gap) // (ProjectCard.CARD_W + gap))
+
+    def showEvent(self, ev):
+        super().showEvent(ev)
+        # 从别的页切回来时强制重算一次列数:窗口在**本页隐藏期间**被拖窄的话,
+        # viewport 的 resize 事件可能在页面不可见时错过,切回来还是老列数,
+        # 表现为最后一两张卡被窗口右缘裁掉(用户实测截图)
+        if self.isVisible() and self._last_cols and \
+                self._cols_for_width() != self._last_cols:
+            self.reload()
+
     def eventFilter(self, obj, ev):
         """viewport 尺寸变化 → 列数变了才重排(防抖:只在列数真的改变时 reload,
         否则拖动过程中每一帧都重建所有卡片,会卡)。"""
@@ -668,6 +683,11 @@ class ProjectsPage(QWidget):
             f"<b>{int(running):02d}</b>&nbsp; {tr('n_running', running)}")
         self._stat_styles.setText(
             f"<b>{int(styles_n):02d}</b>&nbsp; {tr('n_styles', styles_n)}")
+        # 统计标签保底宽度 +20%:富文本 QLabel 在行宽吃紧时会被布局压到
+        # minimumSizeHint(远小于文本实宽),表现为「21 21 种视」被截断。
+        # 保底宽度按 sizeHint 上浮 20%,布局就不许再压它。
+        for lab in (self._stat_projects, self._stat_running, self._stat_styles):
+            lab.setMinimumWidth(int(lab.sizeHint().width() * 1.2))
 
     def _empty_state(self, has_rows: bool) -> QWidget:
         box = QFrame()
