@@ -3985,6 +3985,8 @@ class EpisodePage(QWidget):
         self.sb_history_title = W.muted("")
         hh.addWidget(self.sb_history_title)
         self.sb_history_count = C.mono_tag("0")
+        # 定高:右栏被父布局拉高时,无约束的 QLabel 会被竖向拉成细长条(实测变形)
+        self.sb_history_count.setFixedHeight(20)
         hh.addWidget(self.sb_history_count)
         hh.addStretch(1)
         hl3.addLayout(hh)
@@ -4008,6 +4010,8 @@ class EpisodePage(QWidget):
         self.sb_history_row.setAlignment(Qt.AlignTop)
         self.sb_history_scroll.setWidget(self.sb_history_row_host)
         hl3.addWidget(self.sb_history_scroll)
+        # 尾部竖向 stretch:把右栏多余的高度吃掉,不再灌进标题行把计数标签拉变形
+        hl3.addStretch(1)
         self.sb_history.setVisible(False)
         rl3.addWidget(self.sb_history)
         self._history_preview_path = ""
