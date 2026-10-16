@@ -1117,13 +1117,14 @@ class ChatEditPanel(QWidget):
         self.input.installEventFilter(self)
 
     def eventFilter(self, obj, event):
-        """Ctrl+Enter 直接发送(Enter 只换行,贴近聊天惯例)。"""
+        """回车直接发送,Shift+Enter 换行(Ctrl+Enter 也发送,老习惯保留)。"""
         if obj is self.input and event.type() == event.Type.KeyPress:
             from PySide6.QtGui import QKeyEvent
             if isinstance(event, QKeyEvent) and event.key() in (Qt.Key_Return, Qt.Key_Enter):
-                if event.modifiers() & Qt.ControlModifier:
-                    self._send()
-                    return True
+                if event.modifiers() & Qt.ShiftModifier:
+                    return super().eventFilter(obj, event)   # Shift+Enter = 换行
+                self._send()
+                return True
         return super().eventFilter(obj, event)
 
     # ── 状态 ──
