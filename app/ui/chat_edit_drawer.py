@@ -49,6 +49,50 @@ _INTENT_EDIT = "edit"
 _INTENT_CHAT = "chat"
 
 
+def _parse_jev_intent(res: dict | None) -> str:
+    """从 decide() 的返回里取意图;取不到一律 edit(软建议器契约)。
+
+    **answer 是对象不是字符串**:`answers.intent` 的真实形态是
+    `{"type": "choice", "choice": "chat", "confidence": 1.0, "probabilities": {...}}`
+    (实测本机 Jev 对「这张图片是什么内容?」返回 choice=chat、置信度 1.0)。
+    之前直接 `str(answer)` 跟 "chat" 比 —— 一个 dict 的字符串永远不等于
+    "chat",于是**每条消息都被判成 edit,聊天分支从上线起就是死代码**,
+    问图内容也进改图引擎,产出不了新图就回「未能执行」。这与 AGENTS.md
+    记过的视频路由同款坑(choice 的答案在 `choice` 字段,不在外层)。
+    """
+    answer = (res or {}).get("answers", {}).get("intent")
+    if isinstance(answer, dict):
+        answer = answer.get("choice") or ""
+    return _INTENT_CHAT if str(answer or "").strip().lower() == _INTENT_CHAT else _INTENT_EDIT
+
+
+# 问句/分析类消息的确定性识别 —— 在 Jev 之前跑,命中直接走聊天分支。
+# Jev 正常时这是省一次网络往返;Jev 未配/熔断/断网时这是唯一还能把
+# 「这是什么图」送进问答的路(那种情况下默认 edit 就是死胡同)。
+_QUESTION_HINTS = ("什么", "甚么", "啥", "多少", "为什么", "为啥", "怎么样", "如何",
+                   "哪个", "哪些", "谁", "介绍一下", "介绍下", "描述", "分析一下",
+                   "解释", "看看这", "评价", "内容是", "质量如何")
+_EDIT_VERBS = ("改成", "改为", "换成", "去掉", "去除", "删除", "抹掉", "加上", "添加",
+               "加水印", "裁剪", "裁掉", "旋转", "翻转", "镜像", "提亮", "压暗",
+               "模糊", "锐化", "磨皮", "去雾", "反色", "黑白", "饱和", "亮度",
+               "对比", "曝光", "色温", "扩图", "重绘", "批量", "补图", "重画",
+               "文绘", "执行", "生成")
+
+
+def _looks_like_analysis(text: str) -> bool:
+    """像「问问题/要分析」而不是「要改图」:有疑问特征且不带任何编辑动词。
+
+    批分析命令(「先分析这张图,再给 2 个方案」)是改图流程,调用方须在
+    更早处用 _wants_batch_analysis 截走,别落到这里。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(v in t for v in _EDIT_VERBS):
+        return False
+    return ("?" in t or "？" in t or any(h in t for h in _QUESTION_HINTS))
+
+
 # ── /help 帮助文案 ──
 # 按**实际实现**分类,不是拍脑袋写的:
 #   ① 白名单:正则确定性命中,零延迟、结果稳定(photocraft_bridge._WL_RULES)
@@ -109,6 +153,11 @@ _HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车�
 批量重画 场景         ← 强制覆盖已有图,跑新风格
 补图全部               ← 只生空白图(image_url IS NULL),不浪费 token
 批量视频               ← 任务列表所有「无视频」分镜全跑
+
+【聊天 · 直接问图(不动图)】
+这张图片是什么内容?    ← 问句自动进问答,多模态模型看图回答
+这个构图怎么样 / 给点配色建议
+对比这张图和电影感调色的区别
 
 【外部打开 · PhotoCraft 桌面端】
 ✋ 我手动改             ← 启动 PhotoCraft,改完自动同步回来
@@ -1213,24 +1262,33 @@ class ChatEditPanel(QWidget):
         sess_id = self._session_id
 
         def job(tid):
-            # ── JEV 意图路由:先问一句「用户想聊天还是改图」 ──
+            # ── 意图路由(三级):批分析命令 → 问句规则 → JEV → 默认 edit ──
             # edit → 走原本 Whitelist + LLM IntentParser + PhotoCraft CLI
             # chat → 走文本 LLM 纯聊天回复(给建议/解释/问答),不动图
-            # JEV 未配/挂了 → fallback edit(沿用旧行为,0 回归)
-            from ..ai.jev_client import JevClient
-            intent = _INTENT_EDIT   # 默认 edit
-            try:
-                client = JevClient()
-                if client.is_configured():
-                    # 把用户文本 + 当前图(若有)拼成 state,再喂判定问题
-                    state = f"用户消息: {text}"
-                    if self._current_image:
-                        state += f"\n当前图: {Path(self._current_image).name}"
-                    res = client.decide(state, _JEV_INTENT_QUESTIONS) or {}
-                    answer = (res.get("answers") or {}).get("intent", _INTENT_EDIT)
-                    intent = _INTENT_CHAT if str(answer).strip().lower() == _INTENT_CHAT else _INTENT_EDIT
-            except Exception:  # noqa: BLE001
+            from ..ai.photocraft_bridge import (_wants_batch_analysis,
+                                                _wants_batch_n, analyze_and_plan)
+            if _wants_batch_analysis(text):
+                # 「先分析这张图,再给 N 个方案」是改图流程,不能被问句规则
+                # 抢进聊天分支 —— 它也带「分析」字样
                 intent = _INTENT_EDIT
+            else:
+                # ① 问句/分析类消息确定性命中,不过 JEV:省一次网络往返,而且
+                #    JEV 未配/熔断/断网时这是唯一还能把「这是什么图」送进问答的路
+                intent = _INTENT_CHAT if _looks_like_analysis(text) else _INTENT_EDIT
+                # ② 灰色地带交给 JEV(软建议器:未配/挂了/解析失败都不抛异常)
+                if intent != _INTENT_CHAT:
+                    from ..ai.jev_client import JevClient
+                    try:
+                        client = JevClient()
+                        if client.is_configured():
+                            # 把用户文本 + 当前图(若有)拼成 state,再喂判定问题
+                            state = f"用户消息: {text}"
+                            if self._current_image:
+                                state += f"\n当前图: {Path(self._current_image).name}"
+                            intent = _parse_jev_intent(client.decide(state, _JEV_INTENT_QUESTIONS))
+                    except Exception:  # noqa: BLE001
+                        intent = _INTENT_EDIT
+                # ③ 其余默认 edit(这是个改图工具,拿不准就当作改图)
 
             # chat 路径:不动图,直接调文本 LLM 给建议(不检查图存在)
             if intent == _INTENT_CHAT:
@@ -1242,9 +1300,7 @@ class ChatEditPanel(QWidget):
                         "note": tr("chat_edit_msg_image_missing"),
                         "user_text": text}
 
-            # edit 路径:走原本逻辑(批量 / 单步)
-            from ..ai.photocraft_bridge import (_wants_batch_analysis,
-                                                 _wants_batch_n, analyze_and_plan)
+            # edit 路径:走原本逻辑(批量 / 单步)—— 批分析已在路由处导入
             if _wants_batch_analysis(text):
                 n = _wants_batch_n(text)
                 analysis, plans, err = analyze_and_plan(
@@ -1275,8 +1331,16 @@ class ChatEditPanel(QWidget):
                         "user_text": text}
 
             # ── 单步(文字编辑 / PhotoCraft CLI) ──
-            return self._execute_single(
+            single = self._execute_single(
                 text, str(in_path), sess_id, llm_id, mode, tid)
+            if single.get("empty"):
+                # 编辑引擎没产出可执行命令(白名单没命中、LLM 也没理解)→
+                # 与其回一句死胡同的「没有产出新图」,不如自动转带图问答:
+                # 问句漏进 edit 路径的(JEV 挂了/规则没接住)在这里兜住。
+                reply = self._chat_reply(text, str(in_path), llm_id, mode)
+                if reply.get("kind") == "chat" and not reply.get("error"):
+                    return reply
+            return single
 
         def done(tid, result, error):
             """job 跑完的统一回调(单步 / 批量 / chat 都走这里)。"""
