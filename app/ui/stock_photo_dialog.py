@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import uuid
 
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
 import requests
 
 from PySide6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
@@ -169,7 +169,8 @@ class _ImgLabel(QFrame):
 class StockPhotoDialog(QDialog):
     """搜图库 → 选中 → 下载到本地 → accepted(local_path)。"""
 
-    def __init__(self, parent=None, drama_id: int | None = None):
+    def __init__(self, parent=None, drama_id: int | None = None,
+                 query: str = "", auto_search: bool = False):
         super().__init__(parent)
         # drama_id 决定「换画风」转成哪个项目的画风;没有项目上下文就禁用该动作
         self._drama_id = drama_id or _drama_id_of(parent)
@@ -216,6 +217,12 @@ class StockPhotoDialog(QDialog):
 
         if not sp.configured_sources():
             self.hint.setText(tr("未配置图库 API Key — 到「设置 → AI 服务」添加(类型选「图库」)"))
+        elif query:
+            # 聊天里说「我想找一张美女图片」→ 直接带着关键词进来开搜
+            # (singleShot 等一拍,让对话框先显示,别在构造期就起线程)
+            self.query_edit.setText(query)
+            if auto_search:
+                QTimer.singleShot(0, self._search)
 
     def closeEvent(self, e):
         """关闭前把后台线程停干净。

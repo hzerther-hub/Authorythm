@@ -163,3 +163,97 @@ def test_shortcut_replay_hits_whitelist():
         steps, label, note = eng.interpret(canon, image_url="", mode="whitelist",
                                            llm_config_id=None)
         assert steps, f"正典命令「{canon}」白名单没命中,Jev 挑了也白挑(note={note})"
+
+
+def test_knowledge_and_find_photo_routing():
+    """知识问句 → web 搜索;找图 → 弹图库。两者都不得误伤原有路由。"""
+    from app.ui.chat_edit_drawer import (_extract_photo_query, _knowledge_query,
+                                         _looks_like_find_photo,
+                                         _looks_like_knowledge)
+
+    # 知识:问概念/参数,与当前图无关;指着当前图问的不算
+    for t in ("什么是高斯模糊?", "锐化和磨皮有什么区别", "推荐一个磨皮参数",
+              "9:16 是多少分辨率"):
+        assert _looks_like_knowledge(t), f"该判成知识问句:{t}"
+    for t in ("这张图是什么内容?", "画面里的人物是谁", "改成黑白",
+              "怎么把图变成黑白的"):
+        assert not _looks_like_knowledge(t), f"不该判成知识问句:{t}"
+
+    # 找图:找/搜/换 + 图片名词;术语撞编辑动词的不得误杀
+    for t in ("我想找一张美女图片", "搜一下雪山风景图", "给我找点赛博朋克壁纸",
+              "换一张黑白的图片"):
+        assert _looks_like_find_photo(t), f"该判成找图:{t}"
+    for t in ("改成黑白", "什么是高斯模糊?", "把图片换成黑白的"):
+        assert not _looks_like_find_photo(t), f"不该判成找图:{t}"
+
+    # 关键词剥离:喂给图库搜索的就是干净名词
+    assert _extract_photo_query("我想找一张美女图片") == "美女"
+    assert _extract_photo_query("搜一下雪山风景图") == "雪山风景"
+    assert _knowledge_query("什么是高斯模糊?") == "高斯模糊"
+    assert _knowledge_query("锐化和磨皮有什么区别") == "锐化和磨皮"
+
+
+def test_jev_intent_parses_four_ways(monkeypatch):
+    """Jev 四选一:knowledge / find_photo 也要能从 choice 字段解析出来。"""
+    from app.ui.chat_edit_drawer import (_INTENT_FIND_PHOTO, _INTENT_KNOWLEDGE,
+                                         _parse_jev_intent)
+
+    def res(choice):
+        return {"answers": {"intent": {"type": "choice", "choice": choice,
+                                       "confidence": 0.9}}}
+
+    assert _parse_jev_intent(res("knowledge")) == _INTENT_KNOWLEDGE
+    assert _parse_jev_intent(res("find_photo")) == _INTENT_FIND_PHOTO
+    assert _parse_jev_intent(res("garbage")) == "edit", "不认识的值退 edit"
+
+
+def test_knowledge_reply_uses_search_and_strips_think(monkeypatch):
+    """知识回答 = 搜索结果喂 LLM;带来源;think 块剥掉;搜索挂了注明未核实。"""
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import app.ai.text_client as tc
+    import app.ai.web_search as WS
+    from app.ui.chat_edit_drawer import ChatEditPanel
+
+    panel = ChatEditPanel()
+    monkeypatch.setattr(WS, "search", lambda q, **k: (
+        [("高斯模糊 - 维基", "https://wiki.example/g", "高斯模糊是…")], ""))
+    monkeypatch.setattr(tc, "chat",
+                        lambda *a, **k: "<think>reasoning</think>高斯模糊是线性平滑滤波 [1]")
+    r = panel._knowledge_reply("什么是高斯模糊?", None)
+    assert r["kind"] == "knowledge"
+    assert "高斯模糊是线性平滑滤波" in r["content"] and "<think>" not in r["content"]
+    assert r["sources"] == ["https://wiki.example/g"]
+
+    # 搜索挂 → 纯 LLM 兜底,注明未经联网核实
+    monkeypatch.setattr(WS, "search", lambda q, **k: ([], "三引擎全挂"))
+    monkeypatch.setattr(tc, "chat", lambda *a, **k: "答案")
+    r2 = panel._knowledge_reply("什么是直方图?", None)
+    assert "未经联网核实" in r2["content"] and "答案" in r2["content"]
+
+    # LLM 也挂 → error,done 会走统一错误气泡
+    def boom(*a, **k):
+        raise tc.AIError("timeout")
+    monkeypatch.setattr(tc, "chat", boom)
+    r3 = panel._knowledge_reply("什么是直方图?", None)
+    assert r3.get("error")
+
+
+def test_web_search_parses_bing_html(monkeypatch):
+    """移植的 web_search:用罐头 Bing 页面验证解析与缓存。"""
+    import app.ai.web_search as WS
+
+    page = ('<li class="b_algo"><h2><a href="https://example.com/a">'
+            '高斯<b>模糊</b> - 百度百科</a></h2><p>高斯模糊是<em>线性</em>平滑滤波</p></li>')
+    monkeypatch.setattr(WS, "_fetch_page", lambda url: page)
+    hits, err = WS.search("高斯模糊", use_cache=False)
+    assert err == "" and hits, f"解析失败:{err}"
+    title, url, snip = hits[0]
+    assert url == "https://example.com/a"
+    assert "<b>" not in title and "高斯模糊" in title
+    assert "高斯模糊是线性平滑滤波" in snip
+
+    # 全引擎空页 → 软失败(空列表 + 错误文案),不抛异常
+    monkeypatch.setattr(WS, "_fetch_page", lambda url: "")
+    hits2, err2 = WS.search("高斯模糊", use_cache=False)
+    assert hits2 == [] and "无结果" in err2

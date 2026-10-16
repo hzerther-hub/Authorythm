@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -39,7 +40,9 @@ _JEV_INTENT_QUESTIONS = {
         "instructions": "用户想让 chat-edit 助手做什么?",
         "criteria": {
             "edit": "用户想修改这张图片(改色/裁剪/滤镜/加水印/去字/扩图等)",
-            "chat": "用户想聊天、要建议、问问题、解释概念或跟改图无关的请求",
+            "chat": "用户想问当前这张图片的内容,或要对它点评/要建议",
+            "knowledge": "用户问图片处理的知识/概念/参数建议,与当前这张图无关(如:什么是高斯模糊、锐化和磨皮的区别)",
+            "find_photo": "用户想找/搜一张新的图片素材(如:我想找一张美女图片、搜一张雪山风景图)",
         },
     },
 }
@@ -47,10 +50,13 @@ _JEV_INTENT_QUESTIONS = {
 # 路由结果常量
 _INTENT_EDIT = "edit"
 _INTENT_CHAT = "chat"
+_INTENT_KNOWLEDGE = "knowledge"      # 问图片处理知识(与当前图无关)→ web 搜索后作答
+_INTENT_FIND_PHOTO = "find_photo"    # 想找/搜一张新图 → 弹图库搜索,预填关键词
+_KNOWN_INTENTS = (_INTENT_EDIT, _INTENT_CHAT, _INTENT_KNOWLEDGE, _INTENT_FIND_PHOTO)
 
 
 def _parse_jev_intent(res: dict | None) -> str:
-    """从 decide() 的返回里取意图;取不到一律 edit(软建议器契约)。
+    """从 decide() 的返回里取意图;取不到/不认识一律 edit(软建议器契约)。
 
     **answer 是对象不是字符串**:`answers.intent` 的真实形态是
     `{"type": "choice", "choice": "chat", "confidence": 1.0, "probabilities": {...}}`
@@ -63,7 +69,8 @@ def _parse_jev_intent(res: dict | None) -> str:
     answer = (res or {}).get("answers", {}).get("intent")
     if isinstance(answer, dict):
         answer = answer.get("choice") or ""
-    return _INTENT_CHAT if str(answer or "").strip().lower() == _INTENT_CHAT else _INTENT_EDIT
+    val = str(answer or "").strip().lower()
+    return val if val in _KNOWN_INTENTS else _INTENT_EDIT
 
 
 # 问句/分析类消息的确定性识别 —— 在 Jev 之前跑,命中直接走聊天分支。
@@ -91,6 +98,67 @@ def _looks_like_analysis(text: str) -> bool:
     if any(v in t for v in _EDIT_VERBS):
         return False
     return ("?" in t or "？" in t or any(h in t for h in _QUESTION_HINTS))
+
+
+# ── 知识问句 vs 找图意图(用户实测提出的两类高频诉求)──
+# 知识:「什么是高斯模糊?」「锐化和磨皮有什么区别?」—— 问的是概念/参数,
+#       与当前这张图无关 → web 搜索后作答。
+# 找图:「我想找一张美女图片」—— 想要的是新素材 → 直接弹图库搜索预填关键词。
+# 两者都必须在「关于当前图」的视觉问答之前判断:消息里带「这张/画面」等
+# 指代词的是在问当前图,走 chat(多模态看图);不带的是知识/找图。
+_KNOWLEDGE_HINTS = ("什么是", "什么叫", "是什么意思", "原理", "有什么区别", "的区别",
+                    "哪种好", "怎么选", "有什么用", "作用是什么", "推荐", "建议用",
+                    "多大", "多少合适", "什么格式", "详解", "教程", "怎么拍",
+                    "多少分辨率", "多少dpi", "多少DPI")
+_IMAGE_REFERS = ("这张", "这图", "此图", "画面", "图里", "图中", "照片里",
+                 "它", "当前图", "这张照片")
+_FIND_PHOTO_RE = re.compile(
+    r"(想找|帮我找|帮我搜|帮忙找|找一?[张个点些]|搜一?下|搜个?|搜图|来一?[张点]|换个?|换一?[张批])"
+    r".{0,16}(照片|图片|壁纸|素材|图)")
+
+
+def _looks_like_knowledge(text: str) -> bool:
+    """问图片处理知识(概念/参数/区别),与当前这张图无关 → 走 web 搜索作答。
+
+    知识提示词**优先于编辑动词否决**:「模糊/锐化/磨皮」既是修图术语也是
+    编辑动词,「什么是高斯模糊?」按动词否决会被误杀 —— 提示词在就当知识问,
+    动词在术语里只是被解释的对象。
+    """
+    t = (text or "").strip()
+    if not t or any(r in t for r in _IMAGE_REFERS):
+        return False          # 指着当前图问的 → 视觉问答,不是知识检索
+    return any(h in t for h in _KNOWLEDGE_HINTS)
+
+
+def _looks_like_find_photo(text: str) -> bool:
+    """想找/搜一张新图(如「我想找一张美女图片」)→ 弹图库搜索。
+
+    **不做**编辑动词否决:正则(找/搜/换 + 16 字内的照片名词)已足够特异,
+    而「换一张黑白的图片」里的「黑白」是编辑动词 —— 否决会误杀找图诉求。
+    真正的混合意图(「找张图然后加上水印」)落进图库也无妨,选完图还能改。
+    """
+    t = (text or "").strip()
+    return bool(t) and bool(_FIND_PHOTO_RE.search(t))
+
+
+def _extract_photo_query(text: str) -> str:
+    """从找图消息里剥出搜索关键词:「我想找一张美女图片」→「美女」。"""
+    t = (text or "").strip()
+    t = re.sub(r"(我想|我想要|我想找|帮我|帮忙|给我|麻烦|请|想|要|来|换个?|换一?[张批]"
+               r"|找一?[张个点些]|找|搜一?下|搜个?|搜)", "", t)
+    t = re.sub(r"(的)?(图片|照片|图像|壁纸|素材|图)", "", t)
+    t = re.sub(r"[看看一下呗吧啊呀呢。,,,?!?!?]", "", t)
+    return t.strip() or "风景"
+
+
+def _knowledge_query(text: str) -> str:
+    """把知识问句剥成搜索引擎友好的关键词:「什么是高斯模糊?」→「高斯模糊」。"""
+    t = (text or "").strip()
+    t = re.sub(r"(请问|你知道|告诉我|我想知道|什么是|什么叫|是什么意思|是什么"
+               r"|有什么区别|的区别|怎么选|哪种好|为什么)", "", t)
+    # 标点/语气词单独走字符类 —— 裸 ? 写进交替分支是 "nothing to repeat"
+    t = re.sub(r"[吗呢啊?？。，,!!? ]+", "", t)
+    return t.strip() or (text or "").strip()
 
 
 # 快捷命令的「正典清单」:白名单没命中时,让 Jev 判断用户消息跟哪条最接近。
@@ -229,6 +297,14 @@ _HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车�
 这张图片是什么内容?    ← 问句自动进问答,多模态模型看图回答
 这个构图怎么样 / 给点配色建议
 对比这张图和电影感调色的区别
+
+【知识 · 联网搜索后作答(带来源)】
+什么是高斯模糊?        ← 图片处理知识自动先搜再答
+锐化和磨皮有什么区别 / 9:16 是多少分辨率
+
+【找图 · 自动弹图库搜索】
+我想找一张美女图片      ← 关键词自动预填,选中即成当前图
+搜一下雪山风景图 / 来点赛博朋克壁纸
 
 【外部打开 · PhotoCraft 桌面端】
 ✋ 我手动改             ← 启动 PhotoCraft,改完自动同步回来
@@ -1310,6 +1386,61 @@ class ChatEditPanel(QWidget):
             return {"error": str(exc)[:240], "user_text": user_text,
                     "engine_label": "chat"}
 
+    def _find_photo_result(self, text: str) -> dict:
+        """找图意图的 job 结果:done()(主线程)据此弹图库搜索。"""
+        return {"kind": "find_photo", "query": _extract_photo_query(text),
+                "user_text": text}
+
+    def _open_stock_with_query(self, query: str):
+        """弹出图库搜索并预填关键词自动搜(done 在主线程,弹窗安全)。"""
+        from .stock_photo_dialog import StockPhotoDialog
+        dlg = StockPhotoDialog(self, query=query, auto_search=True)
+        if dlg.exec() == QDialog.Accepted and dlg.local_path:
+            self.set_image(dlg.local_path)
+
+    def _knowledge_reply(self, text: str, llm_id) -> dict:
+        """知识问句:web 搜索 → LLM 基于结果作答(带来源)。
+
+        搜索移植自参考项目 D:\\drama 的 web_search(Bing→DuckDuckGo→百度
+        三引擎回退)。全部引擎失败时降级为纯 LLM 回答,并注明未经联网核实。
+        """
+        from ..ai import text_client as _tc
+        from ..ai import web_search as WS
+        from ..ai.photocraft_bridge import _strip_reasoning
+        query = _knowledge_query(text)
+        hits, err = WS.search(query)
+        if hits:
+            ctx = "\n\n".join(f"[{i + 1}] {t}\n{u}\n{s}"
+                              for i, (t, u, s) in enumerate(hits))
+            sys_p = ("你是图片处理知识助手。根据搜索结果用中文简洁、可操作地回答"
+                     "用户的图片处理问题,重点给结论与参数建议;引用来源用 [n] 标注。"
+                     "搜索结果不足以回答时如实说明,不要编造。")
+            try:
+                raw = _tc.chat(f"用户问题:{text}\n\n搜索结果:\n{ctx}",
+                               system=sys_p, config_id=llm_id, temperature=0.4,
+                               max_tokens=900, timeout=60)
+            except _tc.AIError as exc:
+                return {"error": str(exc)[:240], "user_text": text,
+                        "engine_label": "web_search"}
+            content = _strip_reasoning(raw or "").strip()
+            return {"kind": "knowledge", "user_text": text,
+                    "content": content or "(空回复)",
+                    "sources": [u for _t, u, _s in hits[:4]],
+                    "engine_label": "web_search"}
+        # 搜索全挂:纯 LLM 兜底,注明未经联网核实
+        try:
+            raw = _tc.chat(
+                text, system=("你是图片处理知识助手,用中文简洁回答。"
+                              "注意:当前无法联网检索,不确定的内容请明确说明。"),
+                config_id=llm_id, temperature=0.4, max_tokens=700, timeout=60)
+        except _tc.AIError as exc:
+            return {"error": f"联网搜索失败({err});文本模型也不可用:{str(exc)[:120]}",
+                    "user_text": text, "engine_label": "web_search"}
+        content = _strip_reasoning(raw or "").strip() or "(空回复)"
+        return {"kind": "knowledge", "user_text": text,
+                "content": f"(联网搜索失败:{err};以下回答未经联网核实)\n\n{content}",
+                "sources": [], "engine_label": "web_search"}
+
     def _send(self):
         if self._busy:
             return
@@ -1323,10 +1454,11 @@ class ChatEditPanel(QWidget):
             self.input.clear()
             self._append_help()
             return
-        # chat-edit 整面板就是围着当前图转的,不管聊天还是改图都要先选图 —— 用户实测
-        # 反馈「聊天还是要有图片」(没图发任何指令都不知拿啥说/改啥)。worker 里 JEV
-        # 路由前先在主线程拦掉,无图直接报 chat_edit_msg_image_missing。
-        if not self._current_image or not Path(self._current_image).exists():
+        # chat-edit 整面板就是围着当前图转的,改图/聊天都要先选图 —— 用户实测
+        # 反馈「聊天还是要有图片」。但**找图和知识问句恰恰不需要图**(没图才会
+        # 去搜图/查知识),这两类放行。
+        if (not self._current_image or not Path(self._current_image).exists()) \
+                and not _looks_like_find_photo(text) and not _looks_like_knowledge(text):
             self.status_lab.setText(tr("chat_edit_msg_image_missing"))
             return
 
@@ -1346,20 +1478,22 @@ class ChatEditPanel(QWidget):
         sess_id = self._session_id
 
         def job(tid):
-            # ── 意图路由(三级):批分析命令 → 问句规则 → JEV → 默认 edit ──
-            # edit → 走原本 Whitelist + LLM IntentParser + PhotoCraft CLI
-            # chat → 走文本 LLM 纯聊天回复(给建议/解释/问答),不动图
+            # ── 意图路由:找图/知识(规则直判)→ 批分析 → 问当前图 → Jev → edit ──
             from ..ai.photocraft_bridge import (_wants_batch_analysis,
                                                 _wants_batch_n, analyze_and_plan)
+            # ① 找图/知识问句:确定性规则直判,不过 Jev,也不要求已选图
+            #    (问「什么是高斯模糊」不需要先放一张图进来)
+            if _looks_like_find_photo(text):
+                return self._find_photo_result(text)
+            if _looks_like_knowledge(text):
+                return self._knowledge_reply(text, llm_id)
+            # ② 批分析命令(带「分析」字样,须在问句规则前截走)
             if _wants_batch_analysis(text):
-                # 「先分析这张图,再给 N 个方案」是改图流程,不能被问句规则
-                # 抢进聊天分支 —— 它也带「分析」字样
                 intent = _INTENT_EDIT
             else:
-                # ① 问句/分析类消息确定性命中,不过 JEV:省一次网络往返,而且
-                #    JEV 未配/熔断/断网时这是唯一还能把「这是什么图」送进问答的路
+                # ③ 问当前图内容/要建议 → 视觉问答
                 intent = _INTENT_CHAT if _looks_like_analysis(text) else _INTENT_EDIT
-                # ② 灰色地带交给 JEV(软建议器:未配/挂了/解析失败都不抛异常)
+                # ④ 灰色地带交给 JEV(软建议器:未配/挂了/解析失败都不抛异常)
                 if intent != _INTENT_CHAT:
                     from ..ai.jev_client import JevClient
                     try:
@@ -1372,11 +1506,15 @@ class ChatEditPanel(QWidget):
                             intent = _parse_jev_intent(client.decide(state, _JEV_INTENT_QUESTIONS))
                     except Exception:  # noqa: BLE001
                         intent = _INTENT_EDIT
-                # ③ 其余默认 edit(这是个改图工具,拿不准就当作改图)
+                # ⑤ 其余默认 edit(这是个改图工具,拿不准就当作改图)
 
             # chat 路径:不动图,直接调文本 LLM 给建议(不检查图存在)
             if intent == _INTENT_CHAT:
                 return self._chat_reply(text, str(in_path), llm_id, mode)
+            if intent == _INTENT_KNOWLEDGE:
+                return self._knowledge_reply(text, llm_id)
+            if intent == _INTENT_FIND_PHOTO:
+                return self._find_photo_result(text)
 
             # edit 路径:必须有图。JEV 已判定为改图,若用户没选图就明确报错
             if not in_path or not Path(in_path).exists():
@@ -1452,6 +1590,25 @@ class ChatEditPanel(QWidget):
                 content = r.get("content") or "(空回复)"
                 self._append_message_widget("assistant", content, None, None)
                 self.status_lab.setText("💬 chat · " + tr(r.get("engine_label") or "ready"))
+                return
+            # 知识问句:回答 + 来源列表
+            if r.get("kind") == "knowledge":
+                body = r.get("content") or "(空回复)"
+                srcs = r.get("sources") or []
+                if srcs:
+                    body += "\n\n来源:\n" + "\n".join(f"· {u}" for u in srcs)
+                self._append_message_widget("assistant", body, None, None)
+                self.status_lab.setText("🌐 web_search")
+                return
+            # 找图意图:弹图库搜索,预填关键词自动搜(done 在主线程,弹窗安全)
+            if r.get("kind") == "find_photo":
+                q = (r.get("query") or "").strip() or "风景"
+                self._append_message_widget(
+                    "assistant",
+                    f"🖼 想找图对吧 —— 已打开图库搜索「{q}」,选中一张就会设为当前图。",
+                    None, None)
+                self.status_lab.setText("🖼 stock photo")
+                self._open_stock_with_query(q)
                 return
             if r.get("empty"):
                 note = r.get("note") or tr("chat_edit_msg_no_steps")
