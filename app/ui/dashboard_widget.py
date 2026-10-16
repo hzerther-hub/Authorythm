@@ -190,9 +190,7 @@ class DashboardWidget(QWidget):
         hero.addWidget(greet)
         sub = QLabel()
         sub.setWordWrap(True)
-        sub.setText(
-            "未配置 AI 服务时部分数据占位。点下方任一 panel 跳到对应模块。"
-        )
+        sub.setText(tr("dash_sub_hint"))
         sub.setStyleSheet("font-size:12px; color:#6B727A;")
         hero.addWidget(sub)
         root.addLayout(hero)
@@ -206,7 +204,7 @@ class DashboardWidget(QWidget):
         grid.setColumnStretch(3, 1)
 
         # 列 1:最近项目 —— db 没数据时回退到 demo 列表(只有 greet 文案一致化还不够)
-        p_recent = _Panel("RECENT · 最近项目")
+        p_recent = _Panel(tr("dash_recent_panel"))
         rows = _safe_query(
             "SELECT id, title, updated_at, total_episodes FROM dramas "
             "ORDER BY updated_at DESC LIMIT 5"
@@ -215,7 +213,7 @@ class DashboardWidget(QWidget):
         # 跟设计稿 27-main-dashboard.html 视觉一致(空 db 时不空荡)
         if len(rows) >= 3:
             for r in rows[:5]:
-                title = r.get("title") or "(未命名)"
+                title = r.get("title") or tr("dash_unnamed")
                 ep = r.get("total_episodes") or 0
                 ts = (r.get("updated_at") or "")[:16]
                 # 状态:简化版——按 updated_at 距今是否 ≤ 7 天显示 PEND/PROG
@@ -235,44 +233,44 @@ class DashboardWidget(QWidget):
         grid.addWidget(p_recent, 0, 0)
 
         # 列 2:任务池
-        p_tasks = _Panel("TASKS · 任务池")
+        p_tasks = _Panel(tr("dash_tasks_panel"))
         cnt_prog = len(_safe_query("SELECT id FROM sys_task WHERE state='processing'", default=[]))
         cnt_done = len(_safe_query("SELECT id FROM sys_task WHERE state='completed'", default=[]))
         cnt_fail = len(_safe_query("SELECT id FROM sys_task WHERE state='failed'", default=[]))
         tasks_total = len(_safe_query("SELECT id FROM sys_task", default=[]))
         if tasks_total >= 3:
             p_tasks._body.addWidget(_MiniRow(
-                f"总任务 {tasks_total}",
-                f"按创建时间倒序",
+                tr("dash_total_n").format(tasks_total),
+                tr("dash_meta_by_created"),
                 f"TOTAL"))
             p_tasks._body.addWidget(_MiniRow(
-                f"运行 {cnt_prog}",
-                f"由 TASKMGR 线程池驱动 · 上限 6",
+                tr("dash_running_n").format(cnt_prog),
+                tr("dash_meta_taskmgr"),
                 "PROG"))
             p_tasks._body.addWidget(_MiniRow(
-                f"完成 {cnt_done}",
-                f"7 日内统计",
+                tr("dash_done_n").format(cnt_done),
+                tr("dash_meta_7d"),
                 "DONE"))
             p_tasks._body.addWidget(_MiniRow(
-                f"失败 {cnt_fail}",
-                f"1 次自动重试 · 持续失败查 stderr",
+                tr("dash_failed_n").format(cnt_fail),
+                tr("dash_meta_retry"),
                 "FAIL"))
         else:
-            p_tasks._body.addWidget(_placeholder("暂无任务"))
+            p_tasks._body.addWidget(_placeholder(tr("dash_no_tasks")))
             # demo fill - 空 db 时仍 4 行
             p_tasks._body.addWidget(_MiniRow(
-                "总任务 17", "按创建时间倒序", "TOTAL"))
+                tr("dash_total_n").format(17), tr("dash_meta_by_created"), "TOTAL"))
             p_tasks._body.addWidget(_MiniRow(
-                "运行 2", "由 TASKMGR 线程池驱动 · 上限 6", "PROG"))
+                tr("dash_running_n").format(2), tr("dash_meta_taskmgr"), "PROG"))
             p_tasks._body.addWidget(_MiniRow(
-                "完成 12", "7 日内", "DONE"))
+                tr("dash_done_n").format(12), tr("dash_meta_7d"), "DONE"))
             p_tasks._body.addWidget(_MiniRow(
-                "失败 1", "1 次自动重试 · 持续失败查 stderr", "FAIL"))
+                tr("dash_failed_n").format(1), tr("dash_meta_retry"), "FAIL"))
             p_tasks._body.addStretch(1)
         grid.addWidget(p_tasks, 0, 1)
 
         # 列 3:服务状态 —— 不发起网络,只读 ai_service_configs 表
-        p_svc = _Panel("SERVICES · 服务商")
+        p_svc = _Panel(tr("dash_services_panel"))
         svcs = _safe_query(
             "SELECT service_type, remark, is_active FROM ai_service_configs "
             "WHERE is_active=1 ORDER BY service_type, priority DESC",
@@ -298,7 +296,7 @@ class DashboardWidget(QWidget):
         grid.addWidget(p_svc, 0, 2)
 
         # 列 4:本周统计 —— 4 个数字
-        p_week = _Panel("THIS WEEK · 本周")
+        p_week = _Panel(tr("dash_week_panel"))
         cnt_shots = len(_safe_query(
             "SELECT id FROM storyboards WHERE created_at >= datetime('now','-7 days')",
             default=[],
@@ -313,9 +311,9 @@ class DashboardWidget(QWidget):
             "AND created_at >= datetime('now','-7 days')",
             default=[],
         ))
-        p_week._body.addWidget(_StatRow(str(cnt_shots), "SHOTS · 本周生成"))
-        p_week._body.addWidget(_StatRow(str(cnt_eps_done), "EPISODES · 本周完结"))
-        p_week._body.addWidget(_StatRow(str(cnt_fail_7), "FAILS · 本周失败"))
+        p_week._body.addWidget(_StatRow(str(cnt_shots), tr("dash_week_shots")))
+        p_week._body.addWidget(_StatRow(str(cnt_eps_done), tr("dash_week_eps")))
+        p_week._body.addWidget(_StatRow(str(cnt_fail_7), tr("dash_week_fails")))
         # demo fill - 跟设计稿 27-main-dashboard.html 一致展示 98.2% 成功率
         from PySide6.QtWidgets import QLabel as _QL
         success_lab = _QL("98.2%")
@@ -324,7 +322,7 @@ class DashboardWidget(QWidget):
             "font-size:22px; font-weight:700; color:#6E8C5E; letter-spacing:-0.5px;"
         )
         p_week._body.addWidget(success_lab)
-        success_meta = _QL("SUCCESS RATE · 7 日")
+        success_meta = _QL(tr("dash_success_rate"))
         success_meta.setStyleSheet(
             "font-family:ui-monospace,Menlo,Consolas,monospace;"
             "font-size:10px; letter-spacing:1.5px; color:#6B727A;"

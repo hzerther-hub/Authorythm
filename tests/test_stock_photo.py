@@ -324,3 +324,31 @@ def test_configured_sources_respects_active_flag():
         assert "pixabay" not in sp.configured_sources(), "停用的配置仍出现在可用列表"
     finally:
         _drop("pixabay")
+
+
+def test_thumb_card_shows_dimensions():
+    """搜图结果卡片必须直接显示「来源 · 宽×高」。
+
+    用户反馈:搜图是在找特定画幅(9:16 竖版 / 16:9 横版),尺寸只藏在
+    点开后的预览标题里,等于要一张张点开才知道合不合适。三家 API 都返回
+    width/height,_photo() 也解析了,必须印在卡片上。
+    """
+    pytest.importorskip("PySide6")
+    from PySide6.QtWidgets import QApplication, QLabel
+    QApplication.instance() or QApplication([])
+    from app.ui.stock_photo_dialog import _ImgLabel
+
+    ph = {"id": "pexels-1", "source": "pexels", "preview_url": "",
+          "download_url": "", "width": 1920, "height": 1080,
+          "photographer": "x", "alt": "x"}
+    card = _ImgLabel(ph)
+    texts = [c.text() for c in card.findChildren(QLabel)]
+    assert any("1920×1080" in t for t in texts), f"卡片上没有尺寸:{texts}"
+    assert any("Pexels" in t for t in texts), f"卡片上没有来源:{texts}"
+
+    # API 没给尺寸时退化为只显示来源,不能显示 "0×0" 或崩
+    ph2 = dict(ph, source="pixabay", width=0, height=0)
+    card2 = _ImgLabel(ph2)
+    texts2 = [c.text() for c in card2.findChildren(QLabel)]
+    assert any("Pixabay" in t for t in texts2)
+    assert not any("0×0" in t for t in texts2)

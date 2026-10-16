@@ -157,6 +157,12 @@ def some_new_entry(..., config_id: int | None = None):
 
 ## Qt / UI 约定(本项目特有的坑)
 
+- **新增一种页面必须同步三处**:`_PAGE_KINDS`(与 addWidget 顺序一一对应)、
+  `_make_page`(语言切换的重建靠它,**没有分支 = 该页切语言后永远停在旧语言**)、
+  `_goto` 的页面映射表(没有 = 按钮点了静默没反应)。三个坑各实战踩过一次
+  (dashboard 漏 _goto、dashboard 漏 _PAGE_KINDS 首位、全部工具页漏 _make_page),
+  `tests/test_nav_wiring.py` 与 `tests/test_lang_switch.py` 守着。
+
 - **图标一律用 iconfont SVG**(`app/ui/icons.py` + `app/ui/icons.py:ALIAS`),
   **不要用 emoji 或几何字符**(▶ ⬇ 🗑 🩹 在 Windows 应用字体里没有字形,
   渲染成纯空白,实测颜色数=1)。用 `W.svg_icon_btn(name, tip, size)` /

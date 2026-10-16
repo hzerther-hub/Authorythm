@@ -14,7 +14,7 @@ import uuid
 from PySide6.QtCore import Qt, QThread, Signal
 import requests
 
-from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
+from PySide6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
                                QLineEdit, QPushButton, QScrollArea,
                                QVBoxLayout, QWidget)
 
@@ -113,8 +113,14 @@ class _Downloader(QThread):
         self.done.emit(bool(ok), self._out)
 
 
-class _ImgLabel(QLabel):
-    """缩略图 + 点击选中。"""
+class _ImgLabel(QFrame):
+    """缩略图卡片:图 + 底部「来源 · 宽×高」标注,点击选中。
+
+    尺寸必须直接印在卡片上:搜图的人往往是在找特定画幅(9:16 竖版封面 /
+    16:9 横版背景),只把尺寸放进点开后的预览标题,等于要一张张点开才知道
+    有没有合适的。三家 API(pexels/unsplash/pixabay)都返回 width/height,
+    `_photo()` 已解析,之前只是没显示。
+    """
 
     clicked = Signal(str, str)
 
@@ -127,9 +133,21 @@ class _ImgLabel(QLabel):
         self._label = f"{sp.SOURCE_CN.get(photo['source'], photo['source'])}"                       + (f" · {w0}×{h0}" if w0 and h0 else "")
         self.setFixedSize(self._w, self._h + 26)
         self.setCursor(Qt.PointingHandCursor)
-        self.setAlignment(Qt.AlignCenter)
         self.setStyleSheet("background:#f0f0f0;border:1px solid #ddd;border-radius:4px;")
-        self.setText("…")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self._img = QLabel("…")
+        self._img.setAlignment(Qt.AlignCenter)
+        # 子控件不吃鼠标事件:点卡片任何位置都算点这张图(不然点在图上没反应)
+        self._img.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay.addWidget(self._img, 1)
+        cap = QLabel(self._label)
+        cap.setAlignment(Qt.AlignCenter)
+        cap.setFixedHeight(18)
+        cap.setStyleSheet("color:#64748b;font-size:10px;border:none;background:transparent;")
+        cap.setAttribute(Qt.WA_TransparentForMouseEvents)
+        lay.addWidget(cap)
 
     def apply_bytes(self, data: bytes):
         from PySide6.QtGui import QPixmap
@@ -138,8 +156,8 @@ class _ImgLabel(QLabel):
             return
         scaled = pm.scaled(self._w - 8, self._h - 8,
                            Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.setPixmap(scaled)
-        self.setText("")
+        self._img.setPixmap(scaled)
+        self._img.setText("")
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:

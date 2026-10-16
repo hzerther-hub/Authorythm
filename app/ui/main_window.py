@@ -191,18 +191,15 @@ class MainWindow(QMainWindow):
         from ..core.taskmgr import TASKMGR
         TASKMGR.attach_host(self)
 
-        # 信号
-        self.projects_page.set_new_callback(self._new_project)
-        self.projects_page.open_drama.connect(self._open_drama)
-        self.projects_page.settings_drama.connect(self._open_project_settings)
+        # 信号 —— 页面实例在语言切换时会被重建(_make_page),所以接线统一走
+        # _wire_* 帮手,__init__ 与 _make_page 共用同一份,避免改一处漏一处
+        # (settings_drama 就这么漏过:重建后的项目卡「⋯ → 项目设置」点了没反应)。
+        self._wire_projects_page(self.projects_page)
         self.project_page.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
         self.episode_page.back_requested.connect(self._back_to_project)
-        self.clone_page.back_requested.connect(self._back_to_projects)
-        self.clone_page.open_workbench_requested.connect(self._enter_episode)
+        self._wire_clone_page(self.clone_page)
         # 聊天抽屉保存成品 → 落到同页批量区的结果行(原「图片处理」页没了)
-        self.chat_edit_page.imageSaved.connect(self._on_chat_image_saved)
-        self.chat_edit_page.needSettings.connect(self._open_settings)
-        self.chat_edit_page.openDesktopApp.connect(self._open_photocraft_desktop)
+        self._wire_chat_page(self.chat_edit_page)
         TASKMGR.updated.connect(lambda: self.status.showMessage(
             f"{tr('tasks')}: {TASKMGR.active_count()} {tr('in_progress')}"))
         # 任务抽屉是浮在 central 上的,切页时必须收掉,否则会跟着飘到别的页面
@@ -261,16 +258,22 @@ class MainWindow(QMainWindow):
                    "face_swap", "merger", "chatedit"]
 
     def _make_page(self, kind: str):
-        """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。"""
+        """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。
+
+        **每一种页面都必须有分支** —— 语言切换的重建机制靠它,漏了哪种,
+        哪种语言切换后就永远停在旧语言(而且不报错)。_PAGE_KINDS 里的每个键
+        都要能在这里造出来,tests/test_lang_switch.py 守着这条。
+        """
         from .project_page import ProjectPage
         from .projects_page import ProjectsPage
         from .episode_page import EpisodePage
         drama_id = getattr(self, "_cur_drama_id", 0)
         episode_id = getattr(self, "_cur_episode_id", 0)
+        if kind == "dashboard":
+            return DashboardWidget()
         if kind == "projects":
             p = ProjectsPage()
-            p.open_drama.connect(self._open_drama)
-            p.set_new_callback(self._new_project)
+            self._wire_projects_page(p)
             return p
         if kind == "project" and drama_id:
             p = ProjectPage()
@@ -283,10 +286,57 @@ class MainWindow(QMainWindow):
             p.back_requested.connect(self._back_to_project)
             p.load(drama_id, episode_id)
             return p
+        if kind == "clone":
+            p = ClonePage()
+            self._wire_clone_page(p)
+            # 复刻页是「按项目打开」的:当前项目是复刻类型就把上下文带回去,
+            # 否则语言一切换用户就丢了正在看的复刻项目
+            if drama_id:
+                d = db.q1("SELECT work_type FROM dramas WHERE id=?", (drama_id,))
+                if d and d["work_type"] == "video_clone":
+                    p.load(drama_id)
+            return p
+        if kind == "face_swap":
+            from .face_swap_page import FaceSwapPage
+            return FaceSwapPage()
+        if kind == "merger":
+            from .merger_tool_page import MergerToolPage
+            return MergerToolPage()
+        if kind == "chatedit":
+            from .chat_edit_drawer import ChatEditDrawer
+            p = ChatEditDrawer(self)
+            self._wire_chat_page(p)
+            # 保留当前会话:语言切换不该把用户正进行中的对话视图清掉
+            # (会话本体在 SQLite,load_session 恢复消息流与当前图)
+            old = getattr(self, "chat_edit_page", None)
+            sid = getattr(getattr(old, "panel", None), "_session_id", None)
+            if sid:
+                try:
+                    p.panel.load_session(sid)
+                except Exception:  # noqa: BLE001 —— 恢复失败就从头开始,不炸重建
+                    pass
+            return p
         return None
 
+    def _wire_projects_page(self, p):
+        p.open_drama.connect(self._open_drama)
+        p.settings_drama.connect(self._open_project_settings)
+        p.set_new_callback(self._new_project)
+
+    def _wire_clone_page(self, p):
+        p.back_requested.connect(self._back_to_projects)
+        p.open_workbench_requested.connect(self._enter_episode)
+
+    def _wire_chat_page(self, p):
+        p.imageSaved.connect(self._on_chat_image_saved)
+        p.needSettings.connect(self._open_settings)
+        p.openDesktopApp.connect(self._open_photocraft_desktop)
+
     _PAGE_ATTR = {
+        "dashboard": "dashboard",
         "projects": "projects_page", "project": "project_page", "episode": "episode_page",
+        "clone": "clone_page",
+        "face_swap": "face_swap_page", "merger": "merger_page",
         "chatedit": "chat_edit_page",
     }
 
@@ -333,7 +383,10 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
             err(tr('界面重建失败:{}').format(str(exc)[:120]))
             return
-        self._stale_pages = {k for k in ("projects", "project", "episode") if k != kind}
+        # 全部页面种类都标记待重建(当前页马上重建,其余进入时重建)。
+        # 之前只标 projects/project/episode —— dashboard / 聊天改图 / 复刻 /
+        # 换脸 / 合并永远停在旧语言,「切语言大部分无效」的主因就是这个。
+        self._stale_pages = {k for k in self._PAGE_KINDS if k != kind}
         if new is None:                     # 工具页/未加载的数据页,原地刷顶栏即可
             self.retranslate()
             return
@@ -373,6 +426,8 @@ class MainWindow(QMainWindow):
                     "chatedit": getattr(self, "chat_edit_page", None)}.get(k)
             if page is not None:
                 b.setChecked(cur is page)
+        # AI 就绪横幅也是 tr() 求值的,切语言后要跟着刷
+        self._refresh_ai_banner()
 
     def _refresh_ai_banner(self):
         """AI 服务就绪横幅:缺失时明确列出缺哪几类,点击直达设置。"""
@@ -467,6 +522,7 @@ class MainWindow(QMainWindow):
             return
         self._cur_drama_id = drama_id
         if d["work_type"] == "video_clone":
+            self._ensure_fresh("clone")
             self.clone_page.load(drama_id)
             self.stack.setCurrentWidget(self.clone_page)
         else:
