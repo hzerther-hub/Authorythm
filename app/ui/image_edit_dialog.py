@@ -20,7 +20,7 @@ import subprocess
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
                                QGridLayout, QHBoxLayout, QLabel, QMessageBox,
@@ -258,6 +258,15 @@ class ImageEditDialog(QDialog):
         apply_worker.done.connect(apply_worker._finish)
         self._adj_apply_worker = apply_worker
 
+        # 「应用调整」按钮:预览是降采样(640 长边)算的,固化必须按原尺寸
+        # 全分辨率重算(_apply_adjust → _AdjustApplyWorker),算完写撤销栈、
+        # 滑杆复位。创建按钮的几行曾整体缺失 —— _AdjustApplyWorker 都建好了,
+        # 却没有任何东西触发它,而 `tools.addWidget(apply_adj)` 引用未定义
+        # 名字直接 NameError,整个改图弹窗弹不出来(角色卡「改图」/聊天缩略图
+        # /批量区改图全走这个类)。
+        apply_adj = QPushButton(tr("应用调整"))
+        apply_adj.setObjectName("primary")
+        apply_adj.clicked.connect(self._apply_adjust)
         tools.addWidget(apply_adj)
 
         tools.addWidget(self._section_label(tr("滤镜")))

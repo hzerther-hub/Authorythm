@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtWidgets import QWidget
 
 
 class AdjustWorker(QThread):
