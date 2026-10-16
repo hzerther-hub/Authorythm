@@ -150,6 +150,22 @@ class SettingsDialog(QDialog):
         m_lay.addLayout(chips)
         lay.addWidget(manual)
 
+        # 浏览器实时查询(jev-ultrafast)总开关:默认关 —— 实测复杂站点(12306)
+        # 一次查询要烧 200+ 次 Jev 决策调用;开了才会用本机 Chrome 上官网真查
+        # (查火车/天气等实时数据),失败自动落回普通网页搜索
+        bq_card = W.make_card()
+        bq_lay = QVBoxLayout(bq_card)
+        bq_lay.setContentsMargins(14, 12, 14, 12)
+        self.bq_cb = QCheckBox(tr("浏览器实时查询(实验)—— 查火车/天气等实时信息时用浏览器上官网真查"))
+        self.bq_cb.setChecked(db.get_setting("browser_query_enabled", "0") == "1")
+        self.bq_cb.toggled.connect(
+            lambda on: db.set_setting("browser_query_enabled", "1" if on else "0"))
+        bq_lay.addWidget(self.bq_cb)
+        bq_hint = W.muted(tr("需要本机 Chrome;复杂站点一次查询会消耗较多 Jev 决策调用,默认关闭。失败自动落回普通网页搜索。"))
+        bq_hint.setWordWrap(True)
+        bq_lay.addWidget(bq_hint)
+        lay.addWidget(bq_card)
+
         self.svc_tabs = QTabWidget()
         self._svc_hosts: dict[str, QWidget] = {}
         self._svc_empties: dict[str, QLabel] = {}

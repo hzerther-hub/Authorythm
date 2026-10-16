@@ -5057,10 +5057,16 @@ class EpisodePage(QWidget):
 
     def _one_tts_selected(self):
         # 没选中分镜时此前是静默返回 —— 点了毫无反应,用户以为按钮坏了(实测)
+        print(f"[tts] 点击合成配音 sb={self._sb_id}", flush=True)
         if not self._sb_id:
             err(tr("请先在左侧选中一个分镜,再合成配音"))
             return
-        self._one_tts(self._sb_id)
+        try:
+            self._one_tts(self._sb_id)
+            print(f"[tts] TTS 任务已提交 sb={self._sb_id}", flush=True)
+        except Exception as exc:  # noqa: BLE001 —— 提交前的崩溃此前全部静默
+            print(f"[tts] 提交失败: {exc}", flush=True)
+            err(f"合成配音无法开始:{str(exc)[:200]}")
 
     def _ai_sb_prompt(self):
         """按当前画面描述 + 氛围重生成视频提示词。"""
