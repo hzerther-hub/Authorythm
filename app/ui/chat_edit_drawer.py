@@ -1517,6 +1517,12 @@ class ChatEditPanel(QWidget):
         dlg = StockPhotoDialog(self, query=query, auto_search=True)
         if dlg.exec() == QDialog.Accepted and dlg.local_path:
             self.set_image(dlg.local_path)
+            # 进聊天的可见反馈:只把左上缩略图换掉毫无存在感(用户实测),
+            # 在对话流里补一条带图气泡,明示「已是当前图,直接下改图指令」
+            self._append_message_widget(
+                "assistant",
+                "🖼 已把这张图库图片设为当前图 —— 直接输入改图指令即可(如「改成黑白」)。",
+                None, dlg.local_path)
 
     def _web_query_reply(self, text: str, llm_id, query: str) -> dict:
         """联网查询:浏览器 Agent(jev-ultrafast)上官网真查实时数据,

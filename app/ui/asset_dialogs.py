@@ -596,6 +596,7 @@ class ImageViewerDialog(QDialog):
             ex.setToolTip(tr("把这张图转成选定的画风,转完可以直接使用"))
             ex.clicked.connect(self._on_extra_clicked)
             row.addWidget(ex)
+            self._btn_extra = ex
             if style_choices:
                 # 画风下拉:换画风的目标风格可选。不再死绑「项目默认」——
                 # 聊天改图里经常根本没开项目,「项目画风」是空话(用户实测提出)。
@@ -611,6 +612,7 @@ class ImageViewerDialog(QDialog):
             use = W.primary_btn(confirm_text)
             use.clicked.connect(self._on_use)
             row.addWidget(use)
+            self._btn_use = use
         row.addStretch(1)
         row.addWidget(close)
         root.addLayout(row)
@@ -622,6 +624,24 @@ class ImageViewerDialog(QDialog):
     def selected_style(self) -> str | None:
         """画风下拉当前选中的 value;没建下拉(非换画风场景)返回 None。"""
         return self._style_combo.currentData() if self._style_combo else None
+
+    def set_busy(self, on: bool, text: str = ""):
+        """换画风等长任务的等待效果:图片上盖转圈遮罩 + 文案,只禁用动作按钮。
+
+        **不要** setEnabled(False) 整窗 —— 禁用会让整窗子控件走 disabled 调色板,
+        彩色图整体变灰,用户以为生成了黑白(实测反馈)。转换期间照片保持原色。
+        """
+        for b in (getattr(self, "_btn_extra", None), getattr(self, "_btn_use", None)):
+            if b is not None:
+                b.setEnabled(not on)
+        if on:
+            if getattr(self, "_busy_overlay", None) is None:
+                from .adjust_worker import BusyOverlay
+                self._busy_overlay = BusyOverlay(self._img_label)
+                self._busy_overlay.setGeometry(self._img_label.rect())
+            self._busy_overlay.start(text or tr("处理中…"))
+        elif getattr(self, "_busy_overlay", None) is not None:
+            self._busy_overlay.stop()
 
     def show_local_image(self, path: str):
         """换画风完成后原地刷新显示 —— 避免用户还要自己关窗重开。"""

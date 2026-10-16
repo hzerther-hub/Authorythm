@@ -372,14 +372,17 @@ class StockPhotoDialog(QDialog):
             err(tr("图片下载失败,无法换画风"))
             return
         viewer._src_cache = src
-        viewer.setEnabled(False)        # 一次 30-60 秒,禁掉防连点
+        # 等待效果:图片上盖转圈遮罩,只禁动作按钮 —— **不要**整窗
+        # setEnabled(False):禁用态走 disabled 调色板,彩色原图整体变灰,
+        # 用户以为「生成了黑白」(实测反馈)
+        viewer.set_busy(True, tr("正在转换为「{}」画风…").format(style))
         self.hint.setText(tr("正在转换为「{}」画风…").format(style))
 
         def job(tid):
             return SC.convert_path(src, style, cfg["id"])
 
         def done(tid, result, error):
-            viewer.setEnabled(True)
+            viewer.set_busy(False)
             self.hint.setText(self._hint_text())
             if error or not result:
                 err(tr("换画风失败:{}").format(str(error or "")[:120]))
