@@ -180,12 +180,13 @@ class DashboardWidget(QWidget):
         n_task = len(_safe_query("SELECT id FROM sys_task", default=[]))
         greet_n_drama = n_drama if n_drama >= 3 else 18
         greet_n_task = n_task if n_task >= 3 else 17
+        # 中文文案 + 字号调小(用户实测:英文大标题突兀,24px 太抢)
         greet.setText(
             f"{QDate.currentDate().toString('yyyy.MM.dd')}  ·  "
-            f"{greet_n_drama}  projects · {greet_n_task}  tasks"
+            f"{greet_n_drama} 个项目 · {greet_n_task} 个任务"
         )
         greet.setStyleSheet(
-            "font-size:24px; font-weight:800; color:#0E0F12; letter-spacing:-0.3px;"
+            "font-size:17px; font-weight:700; color:#0E0F12; letter-spacing:-0.2px;"
         )
         hero.addWidget(greet)
         sub = QLabel()
