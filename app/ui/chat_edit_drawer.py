@@ -412,9 +412,10 @@ class ChatEditMessage(QFrame):
 
     def __init__(self, role: str, content: str, steps: list[Step] | None = None,
                  result_image: Optional[str] = None, parent=None,
-                 on_image_edit=None):
+                 on_image_edit=None, on_resend=None):
         super().__init__(parent)
         self.role = role
+        self._on_resend = on_resend      # 用户消息「修改后回车重新提问」的回调
         self._steps = steps or []
         self._result_image = result_image
         # 帮助气泡(/help):内容长,宽度上限单独放宽,见 _bubble_max_w
@@ -453,6 +454,32 @@ class ChatEditMessage(QFrame):
             "font-size:12px; line-height:1.55; font-family:Consolas,Menlo,monospace;"
             if self._is_help else "font-size:13px; line-height:1.5;")
         bl.addWidget(text)
+        self._raw_content = content or ""
+        self._text_label = text
+
+        # 复制 / 就地修改(用户要求:提问和返回信息都要能复制、可改;
+        # 提问改完按回车直接重新提问)
+        if content:
+            act_row = QHBoxLayout()
+            act_row.setSpacing(4)
+            copy_btn = QPushButton("▤ 复制")
+            edit_btn = QPushButton("✎ 修改")
+            for b in (copy_btn, edit_btn):
+                b.setFixedSize(64, 22)
+                b.setCursor(Qt.PointingHandCursor)
+                b.setStyleSheet(
+                    "QPushButton{background:rgba(255,255,255,225);"
+                    "border:1px solid rgba(128,128,128,90);border-radius:3px;"
+                    "color:#4e5969;font-size:11px;padding:0;}"
+                    "QPushButton:hover{background:#f97316;color:#ffffff;}")
+            act_row.addWidget(copy_btn)
+            act_row.addWidget(edit_btn)
+            act_row.addStretch(1)
+            bl.addLayout(act_row)
+            copy_btn.clicked.connect(lambda: self._copy_content(copy_btn))
+            edit_btn.clicked.connect(lambda: self._toggle_edit(edit_btn))
+            self._edit_btn = edit_btn
+            self._editor = None
 
         # 助手:执行的命令
         if not is_user and self._steps:
@@ -574,6 +601,69 @@ class ChatEditMessage(QFrame):
         """首次显示时也要刷一次 —— 此时父容器才刚拿到真实宽度。"""
         super().showEvent(e)
         self._apply_bubble_width()
+
+    def _copy_content(self, btn):
+        """一键复制本条消息全文(长答案没法用鼠标拖选全,用户实测)。"""
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtCore import QTimer
+        QGuiApplication.clipboard().setText(self._raw_content)
+        btn.setText("已复制 ✓")
+        QTimer.singleShot(1500, lambda: btn.setText("▤ 复制"))
+
+    def _toggle_edit(self, btn):
+        """就地编辑:QLabel ↔ QPlainTextEdit;完成/回车收尾。
+
+        用户消息 + 回车 = **重新提问**(走完整发送流程);助手消息回车只收尾。
+        Shift+Enter 在编辑器里换行。
+        """
+        if getattr(self, "_editor", None) is not None:
+            self._finish_edit(resend=False)
+            return
+        from PySide6.QtWidgets import QPlainTextEdit
+        ed = QPlainTextEdit(self._raw_content)
+        ed.setFixedHeight(max(90, self._text_label.height()))
+        ed.setStyleSheet(
+            "font-size:13px; border:1px solid rgba(14,15,18,120);"
+            "border-radius:4px; background:#ffffff; padding:4px;")
+        self._text_label.hide()
+        lay = self._text_label.parentWidget().layout()
+        lay.insertWidget(lay.indexOf(self._text_label) + 1, ed)
+        self._editor = ed
+        ed.installEventFilter(self)
+        ed.setFocus()
+        btn.setText("✓ 完成")
+
+    def _finish_edit(self, resend: bool):
+        ed = self._editor
+        new = ed.toPlainText().strip()
+        self._raw_content = new
+        self._text_label.setText(new)
+        # 同步宽度测量的原始文本(_apply_bubble_width 按 _wrap_labels 量宽)
+        for i, (lab, _raw) in enumerate(getattr(self, "_wrap_labels", [])):
+            if lab is self._text_label:
+                self._wrap_labels[i] = (lab, new)
+        lay = self._text_label.parentWidget().layout()
+        lay.removeWidget(ed)
+        ed.deleteLater()
+        self._editor = None
+        self._text_label.show()
+        if getattr(self, "_edit_btn", None) is not None:
+            self._edit_btn.setText("✎ 修改")
+        self._apply_bubble_width()
+        if resend and self.role == "user" and new and self._on_resend:
+            self._on_resend(new)
+
+    def eventFilter(self, obj, event):
+        """编辑器里回车 = 完成;**用户消息**回车还会重新提问;Shift+Enter 换行。"""
+        from PySide6.QtCore import QEvent
+        from PySide6.QtGui import QKeyEvent
+        if obj is getattr(self, "_editor", None) and event.type() == QEvent.Type.KeyPress:
+            if isinstance(event, QKeyEvent) and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+                if event.modifiers() & Qt.ShiftModifier:
+                    return super().eventFilter(obj, event)
+                self._finish_edit(resend=self.role == "user")
+                return True
+        return super().eventFilter(obj, event)
 
     def _view_large(self, path: str):
         """点气泡里的结果图 → 弹「改图」对话框(裁剪/旋转/精调/滤镜/水印/尺寸/AI 修补)。
@@ -1429,7 +1519,8 @@ class ChatEditPanel(QWidget):
         stretch = self.hist_lay.takeAt(self.hist_lay.count() - 1).widget()
         msg = ChatEditMessage(role, content, steps=steps, result_image=result_image,
                               parent=self.hist_host,
-                              on_image_edit=self._open_image_edit)
+                              on_image_edit=self._open_image_edit,
+                              on_resend=self._resend_question if role == "user" else None)
         if role == "user":
             # 右对齐:用 spacer 推右
             row = QHBoxLayout()
@@ -1523,6 +1614,15 @@ class ChatEditPanel(QWidget):
                 "assistant",
                 "🖼 已把这张图库图片设为当前图 —— 直接输入改图指令即可(如「改成黑白」)。",
                 None, dlg.local_path)
+
+    def _resend_question(self, text: str):
+        """编辑旧提问后回车重发:改后的问题作为**新一轮提问**走完整流程
+        (路由/守卫/搜索一概重跑,不是简单的文本替换)。"""
+        text = (text or "").strip()
+        if not text:
+            return
+        self.input.setPlainText(text)
+        self._send()
 
     def _web_query_reply(self, text: str, llm_id, query: str) -> dict:
         """联网查询:浏览器 Agent(jev-ultrafast)上官网真查实时数据,
