@@ -5052,12 +5052,16 @@ class EpisodePage(QWidget):
             self._download_sb(dict(row))
 
     def _one_tts_selected(self):
-        if self._sb_id:
-            self._one_tts(self._sb_id)
+        # 没选中分镜时此前是静默返回 —— 点了毫无反应,用户以为按钮坏了(实测)
+        if not self._sb_id:
+            err(tr("请先在左侧选中一个分镜,再合成配音"))
+            return
+        self._one_tts(self._sb_id)
 
     def _ai_sb_prompt(self):
         """按当前画面描述 + 氛围重生成视频提示词。"""
         if not self._sb_id:
+            err(tr("请先在左侧选中一个分镜,再 AI 生成提示词"))
             return
         row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
         if not row:
