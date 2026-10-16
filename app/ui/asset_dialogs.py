@@ -615,19 +615,6 @@ class ImageViewerDialog(QDialog):
         row.addWidget(close)
         root.addLayout(row)
 
-    def _view_large_image(self):
-        """点击预览图看大图:image_url/comic_image_url **现读库**,保证弹窗
-        与缩略图是同一张(生成形象/上传/擦除/换画风之后都不会再拿旧图)。"""
-        d = db.q1(f"SELECT image_url, comic_image_url FROM {self.table} WHERE id=?",
-                  (self.row["id"],))
-        url = ""
-        if d:
-            url = ((d.get("image_url") or "").strip()
-                   or (d.get("comic_image_url") or "").strip())
-        if not url:
-            return
-        ImageViewerDialog(self, url, self.row.get("name") or "").exec()
-
     def _on_extra_clicked(self):
         if self._on_extra:
             self._on_extra(self)
@@ -1062,6 +1049,23 @@ class AssetDetailDialog(QDialog):
         self.img.setPixmap(W.pixmap_from_media(url, 276, 276))
         if self._on_changed:
             self._on_changed()
+
+    def _view_large_image(self):
+        """点击预览图看大图:image_url/comic_image_url **现读库**,保证弹窗
+        与缩略图是同一张(生成形象/上传/擦除/换画风之后都不会再拿旧图)。
+
+        本方法属于 AssetDetailDialog —— 第一次修时误插进了 ImageViewerDialog,
+        点击时 AttributeError 被事件循环吞掉,弹窗直接弹不出(实测)。
+        """
+        d = db.q1(f"SELECT image_url, comic_image_url FROM {self.table} WHERE id=?",
+                  (self.row["id"],))
+        url = ""
+        if d:
+            url = ((d.get("image_url") or "").strip()
+                   or (d.get("comic_image_url") or "").strip())
+        if not url:
+            return
+        ImageViewerDialog(self, url, self.row.get("name") or "").exec()
 
     def _download(self):
         from ..core import download as dl_mod
