@@ -36,6 +36,17 @@ workspace/skills/  技能文件
 路径统一走 `config.media_url_to_path()` / `path_to_media_url()`,不要自己拼 `data/static/...`。
 环境变量可覆盖:`YIHAO_DATA_DIR` / `SQLITE_PATH` / `STORAGE_PATH`。
 
+**密钥一律不进版本库。** 本仓库是 **public**,任何提交过的 key 都等同公开泄露。
+用户的 API Key 存在 `ai_service_configs.api_key`(SQLite,`data/` 已被 gitignore),
+代码里只读不写。需要某把 key 的地方一律「本机读」,别内置常量:
+
+- 环境变量(如 `YIHAO_BAIDU_FORWARD_KEY`),或
+- 设置表 `app_settings`(`db.get_setting(key)`,与 `photocraft_install_dir` 同机制)。
+
+实测踩过:`app/core/translate.py` 硬编码过一把百度转发 key,随仓库推到 GitHub。
+删掉代码里的常量**不等于**安全 —— 它还在 git 历史里,必须去服务端作废重发。
+新接外部服务前先自查:`git grep -nIE "[\"'](sk-[A-Za-z0-9]{16,}|[0-9a-f]{40,})[\"']" -- '*.py'`。
+
 ## 线程模型(最容易踩)
 
 `TASKMGR.submit(type, job, done)` 把 `job` 丢进 QThreadPool(上限 6)。

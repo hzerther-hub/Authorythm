@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """翻译服务:三级引擎依次降级,供 i18n 自动补翻与将来的运行时翻译使用。
 
-    1. baidu-forward —— fortuneteller.top 转发(百度翻译),主力;API_KEY 常量内置
+    1. baidu-forward —— fortuneteller.top 转发(百度翻译),主力;需本机配 API Key
     2. google-gtx    —— translate.googleapis.com gtx 免费端点,免 key(限流按 IP)
     3. mymemory      —— MyMemory 免费端点(5000 词/天/IP),兜底
 
@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.parse
 import urllib.request
@@ -20,7 +21,27 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
 
 BAIDU_FORWARD_URL = "https://fortuneteller.top/api/translate"
-BAIDU_FORWARD_KEY = "***REMOVED-LEAKED-KEY***"
+
+
+def _baidu_forward_key() -> str:
+    """取转发服务的 API Key —— 只从本机读,**代码里不内置**。
+
+    这里曾经硬编码过一把真 key,并随仓库推到了 GitHub;而本仓库是 public,
+    那把 key 等同于公开泄露过,已在 fortuneteller.top 后台作废。
+    现在只认两处本机来源,优先级 环境变量 > 设置表:
+      - 环境变量 `YIHAO_BAIDU_FORWARD_KEY`
+      - 设置表键 `baidu_forward_key`(与 photocraft_install_dir 同一套机制,
+        在 data/yihao.sqlite3 里,不进版本库)
+
+    取不到返回空 → `_via_baidu` 抛 TranslateError → 自动降级到免 key 的
+    google-gtx / mymemory。翻译不会因此不可用,只是慢一点、额度少一点。
+
+    **别再把任何 key 写回这个文件**:光删代码不等于安全,git 历史里还在。
+    仓库是 public,任何进过版本库的 key 都必须当作已泄露、去服务端作废重发。
+    """
+    from . import db
+    return (os.environ.get("YIHAO_BAIDU_FORWARD_KEY", "")
+            or db.get_setting("baidu_forward_key", "") or "").strip()
 
 
 class TranslateError(RuntimeError):
@@ -40,11 +61,17 @@ def _post_json(url: str, payload: dict | None = None, timeout: int = 20) -> dict
 
 
 def _via_baidu(text: str, target: str, source: str) -> str:
+    key = _baidu_forward_key()
+    if not key:
+        # 不是异常,是「这台机器没配这把 key」—— 走降级链即可,别打断调用方
+        raise TranslateError(
+            "baidu-forward 未配置 API Key(设环境变量 YIHAO_BAIDU_FORWARD_KEY "
+            "或设置表 baidu_forward_key)")
     req = urllib.request.Request(
         BAIDU_FORWARD_URL,
         data=json.dumps({"text": text, "from": source, "to": target}).encode(),
         headers={"Content-Type": "application/json",
-                 "X-API-Key": BAIDU_FORWARD_KEY})
+                 "X-API-Key": key})
     with urllib.request.urlopen(req, timeout=25) as r:
         data = json.loads(r.read().decode("utf-8"))
     out = (data.get("text") or "").strip()
