@@ -20,6 +20,27 @@ def _style_prefix(drama_id: int) -> str:
     return db.style_prompt(db.drama_style(drama_id))
 
 
+def _dedupe_style_prefix(fp: str, prefix: str) -> str:
+    """把 LLM 复读进 final_prompt 的重复风格前缀剥掉,只留开头一份(幂等)。
+
+    实测:character_prompt 把「视觉风格前缀」喂给模型后,它会把前缀整段
+    复读 4 份进 final_prompt —— 风格词占掉大半 token,角色描述被稀释,
+    三视图的布局指令权重也被摊薄。
+    """
+    import re as _re
+    p = (prefix or "").strip()
+    fp = (fp or "").strip()
+    if not p or p not in fp:
+        return fp
+    head, sep, body = fp.partition(p)
+    while p in body:
+        body = body.replace(p, "", 1)
+    body = _re.sub(r"[,，、;；。\n]{2,}",
+                   lambda m: "。" if "。" in m.group() else ", ", body)
+    body = _re.sub(r"^[,，、;；。\s]+", "", body)
+    return (head + sep + body).strip()
+
+
 def _robust_json(agent: str, prompt: str, lang=None, config_id=None) -> dict:
     """跑 prompt_generator 并解析 JSON。
 
@@ -80,28 +101,41 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     #   实测只写中文「三视图布局」会被无视,出单人立绘);②内容比风格前缀长不出 80 字的
     # 判为模型偷懒只回了前缀。不合格一律拦下重试
     prefix = _style_prefix(c["drama_id"])
+    # LLM 会把「视觉风格前缀」整段复读多份进 final_prompt(实测 4 份),先去重
+    fp = _dedupe_style_prefix(fp, prefix)
     if len(fp) <= len(prefix) + 80:
         raise RuntimeError("提示词不合格:内容与风格前缀几乎等长,模型偷懒,请重试")
+    # 旧版布局块与中文规格自相矛盾(中文:恰 4 个实例=1 特写+3 全身;英文:
+    # no close-up portraits / only three full-body),模型随机二选一 —— 实测
+    # 特写格被丢,四格只剩三格。正则剥除(容忍逗号/空格变体),连写标点归一。
+    import re as _re
+    fp = _re.sub(r"no close-up portraits\s*[,，]\s*no facial zoom-ins\s*[,，]?", "", fp)
+    fp = _re.sub(r"only three full-body views( in a horizontal row)?",
+                 "exactly four panels in a horizontal row: one front-face close-up "
+                 "plus three full-body views", fp)
+    fp = _re.sub(r"[,，]{2,}", ", ", fp)
+    fp = _re.sub(r"。{2,}", "。", fp)
     # 三视图布局保证:英文 token 权重最高,但 glm 等模型常只写中文甚至漏写布局。
     # 中文等价词(三视图/正脸特写/三张全身)也算数;仍缺就**确定性补上**标准英文
     # 布局块 —— 此前直接 raise,任务失败、final_prompt 留空,生图只能走兜底
     # 单行提示词,出的全是单人立绘(灰袍散修实测)。补块幂等,不重复添加。
     # 判据只看**英文 token 在不在**,不能因为写了中文「三视图」就放过 ——
     # 图像模型不认中文布局词(实测中文三视图照样出单人立绘),放过等于没补。
+    # 布局规格 = **四格**:左起正面脸部特写 + 正面/侧面90°/背面三个等高全身
+    # (与中文规格「恰 4 个实例:1 特写 + 3 全身」一致 —— 用户验收过的出图)。
     if not any(k in fp for k in ("turnaround", "reference sheet", "multi-view", "orthographic")):
-        fp += (", character turnaround sheet, three equal-height full-body views "
-               "shown strictly side by side in left-to-right order: "
-               "(1) FRONT VIEW facing camera, (2) SIDE VIEW rotated exactly 90 degrees, "
-               "(3) BACK VIEW facing away from camera. "
-               "All three views must be full body from head to toe, equal height, "
+        fp += (", character turnaround sheet, exactly four panels of the same "
+               "character instance shown side by side in one horizontal row, "
+               "left to right: (1) FRONT-FACE CLOSE-UP panel on the far left, "
+               "(2) FRONT full-body view, (3) SIDE view rotated exactly 90 degrees, "
+               "(4) BACK view facing away from camera. "
+               "The three full-body views must be head to toe, equal height, "
                "identical character instance (same face / hair / outfit / accessories), "
                "neutral A-pose standing, hands relaxed at sides, eyes looking straight ahead. "
                "Pure white seamless background, soft even diffuse lighting from front, "
                "no dramatic shadows, orthographic projection (no perspective distortion), "
-               "no close-up portraits, no facial zoom-ins, "
-               "only three full-body views in a horizontal row, "
                "no props / furniture / environment / scenery in the frame, "
-               "front face / profile / back view layout, no 3/4 angle, no diagonal pose")
+               "no 3/4 angle, no diagonal pose, no extra panels, no more than four panels")
     # 只落库正向提示词。质量守卫与负向词由 app/ai/prompt_guards.py 在**生图时统一追加**
     # (positive 走 apply_image_quality_guard、负面走 negative_prompt),不再拼接进资产
     # 提示词正文 —— 否则每个角色的 final_prompt 都拖着一段重复的守卫文本,详情页难以编辑,

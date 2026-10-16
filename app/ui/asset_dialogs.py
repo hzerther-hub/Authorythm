@@ -989,6 +989,20 @@ class AssetDetailDialog(QDialog):
             from ..ai.prompt_guards import (CHARACTER_SHEET_NEGATIVE,
                                             CHARACTER_SHEET_PROMPT_SUFFIX)
             extra_neg = None
+            # 存量脏提示词就地清洗(不用重新 AI 生成):①风格前缀被 LLM 复读
+            # 多份(实测 4 份);②旧版兜底块的矛盾短语(no close-up / only
+            # three full-body)与中文四格规格打架,实测特写格被丢
+            from ..pipeline.prompts_gen import _dedupe_style_prefix, _style_prefix
+            did = self.row.get("drama_id")
+            if did:
+                fp = _dedupe_style_prefix(fp, _style_prefix(did))
+            import re as _re
+            fp = _re.sub(r"no close-up portraits\s*[,，]\s*no facial zoom-ins\s*[,，]?", "", fp)
+            fp = _re.sub(r"only three full-body views( in a horizontal row)?",
+                         "exactly four panels in a horizontal row: one front-face "
+                         "close-up plus three full-body views", fp)
+            fp = _re.sub(r"[,，]{2,}", ", ", fp)
+            fp = _re.sub(r"。{2,}", "。", fp)
             # 三视图/turnaround 提示词自含完整构图说明(左特写 + 三全身),必须
             # 跳过人数守卫 —— people=1 公共负面词禁「multiple people/duplicate」,
             # 而三视图本质是同一人的多次出现,模型为守规会砍掉特写那格

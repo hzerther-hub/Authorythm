@@ -140,6 +140,27 @@ def some_new_entry(..., config_id: int | None = None):
    跑一次测试就没了。用户真实配置要手动指定一个安全 id(本项目用 1001/1002)。
    排查手法:配置凭空消失时先查 `SELECT MAX(id) FROM ai_service_configs`。
 
+## 角色形象图(三视图)提示词管线
+
+四格规格 = 左起正面脸部特写 + 正面/90°侧面/背面三个等高全身,纯白背景。
+三个历史坑,任何一个复发都是「应四格只出三格」或「背景彩色虚化」:
+
+1. **风格前缀复读**:`prompts_gen.character_prompt` 把视觉风格前缀喂给 LLM,
+   它会整段复读多份(实测 4 份)进 final_prompt,稀释角色描述与布局指令。
+   `_dedupe_style_prefix` 在生成时去重;`asset_dialogs._gen_image` 对**存量**
+   脏提示词再洗一遍。
+2. **中英规格矛盾**:旧版英文布局块写 "no close-up portraits / only three
+   full-body views",与中文规格「恰 4 个实例(1 特写 + 3 全身)」直接冲突,
+   模型随机二选一 → 特写格被丢。系统提示词(agents/prompts.py 的
+   prompt_generator)与兜底块都必须写**四格**规格;生成/生图两处正则剥除
+   残留矛盾短语。
+3. **人数守卫打架**:people=1 公共负面词禁「multiple people / duplicate
+   character」,而三视图本质是同一人的多次出现 → 三视图类提示词
+   (含 三视图/turnaround/character sheet)**必须 skip_guard**;白底压制走
+   prompt_guards 的 CHARACTER_SHEET_PROMPT_SUFFIX/_NEGATIVE(共享常量,
+   经 extra_negative 追加,不覆盖公用负面词)。漫画格/场景**不要**带这两样
+   —— 那里需要环境。
+
 ## 文本编码
 
 `app/core/encoding.py` 是乱码防护:`repair()` 只能救回 latin-1/cp1252 误读,

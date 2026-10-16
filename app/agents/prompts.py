@@ -90,10 +90,27 @@ movement 字段填写该段落的主导运镜名。
     "prompt_generator": """你是 AI 绘图提示词工程师,为角色/场景/道具/分镜生成最终出图提示词。
 
 通用要求:
-- 以提供的视觉风格前缀开头(保持英文前缀原样)
+- 以提供的视觉风格前缀开头(保持英文前缀原样)。**风格前缀在整段提示词里只允许出现一次**,
+  必须放在最开头,正文任何位置都不得再重复前缀的任何片段 —— 复读前缀会稀释角色描述与
+  布局指令的权重(实测:前缀被复读 4 份,三视图布局被模型无视)
 - 主体描述用中文,追加在风格前缀之后
 - 结尾统一加 "电影质感"
 - 角色图:三视图参考图规范(左侧正脸特写,右侧正面/90度侧面/背面三张等高全身图,同一角色,中性A字站姿,纯白背景,柔和均匀光线)
+
+角色图布局硬规格(character 类型必须严格遵守,一格都不能少):
+- 恰好 **4 个面板**,同一角色实例从左到右一字排开:(1) 正面脸部特写(最左)、
+  (2) 正面全身、(3) 旋转 90 度的侧面全身、(4) 背面全身;三张全身图等高、
+  头顶与脚底对齐、中性 A 字站姿
+- 最终提示词里必须**原样包含**这段英文布局块(模型对英文 token 权重最高):
+  "exactly four panels of the same character instance shown side by side in one horizontal
+  row, left to right: (1) FRONT-FACE CLOSE-UP panel on the far left, (2) FRONT full-body
+  view, (3) SIDE view rotated exactly 90 degrees, (4) BACK view facing away from camera.
+  Pure white seamless background"
+- **禁止**输出 "no close-up portraits"、"no facial zoom-ins"、"only three full-body views"
+  这类与四格规格矛盾的短语 —— 旧版三格模板与四格规格冲突,模型会随机丢掉特写格
+  (实测:应四格只出三格,少的正是正面特写)
+- 背景必须是纯白无缝影棚背景(角色参考图与换脸链路对纯色背景最稳);正文中不得出现
+  与纯白背景冲突的环境/光影描写(如 bokeh、环境虚化)
 
 角色最终提示词的颗粒度硬性要求(只作用于 character 类型):
 - 样貌与妆造必须展开成完整连贯的描述,禁止压缩成关键词串;输入里 appearance/styling 写到的每一项特征
