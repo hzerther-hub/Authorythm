@@ -5744,18 +5744,19 @@ class EpisodePage(QWidget):
         def job(tid):
             done_n = 0
             fails: list[str] = []
-            for i, r in enumerate(rows):
+            for i, sb_id in enumerate(rows):
                 if i:
                     _time.sleep(3)
                 _TM.set_stage(tid, f"{i + 1}/{len(rows)}")   # 任务面板显示进行到第几镜
                 try:
-                    self._gen_one_video(r["id"], res=snap_res, config_id=snap_cfg,
+                    self._gen_one_video(sb_id, res=snap_res, config_id=snap_cfg,
                                         image_cfg=snap_img)
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc).replace("\n", " ")[:120]
-                    fails.append(f"#{r['id']}:{msg}")
-                    err(tr("镜头 {} 失败:{}").format(i + 1, msg))
+                    # 失败标记用镜头号(用户看的),不用内部 id
+                    fails.append(f"#{nums.get(sb_id, sb_id)}:{msg}")
+                    err(tr("镜头 {} 失败:{}").format(nums.get(sb_id, i + 1), msg))
                     # 失败也写进阶段标记:toast 一闪就没,任务面板要能查到哪镜为什么挂
                     _TM.set_stage(tid, f"{i + 1}/{len(rows)} · 最近失败 {msg}")
             return {"done": done_n, "total": len(rows), "fails": fails}
