@@ -161,16 +161,90 @@ def map_size_to_tier_ratio(size: str | None) -> tuple[str, str]:
     return '2K', '16:9'
 
 
-# 哪些 provider 真正支持"参考图"入参。
+# 哪些 provider 真正支持"参考图"入参 —— **唯一真相源**。
 # agnes 走 extra_body.image[] 注入;qwen-image / volcengine 的请求体里根本没有
 # 图像字段,传了也被丢弃 —— 表现为「按参考图重绘」实际变成纯文生图,画面与原图
 # 完全无关。调用改图类功能前必须先过这个检查,否则会白花钱。
+#
+# 这里只放**实测确认过**的 provider。新接供应商时:
+#   1. jev_ask.reference_capable(provider, base_url, model) 拿个方向(仅参考,
+#      实测它在知名大厂域名上会乐观臆断,见 jev_ask.REF_QUESTIONS 注释)
+#   2. **实测一次**真发张参考图,看画面是否真的被约束
+#   3. 确认支持再写进这个集合
+# 宁可漏一个(退化成纯文生图,不会误导用户),不可多一个(白花参考图的钱、
+# 还画出一张跟原图无关的图让用户以为"改图"成功了)。
 REFERENCE_CAPABLE_PROVIDERS = {"agnes", "local", "comfyui", "sdwebui", "fooocus"}
+
+# 白名单外 provider 的诊断缓存。只缓存"Jev 确实答了"的线索,
+# 不缓存 None(那是"这次没问成",不是"不支持")。**不参与决策**,见 clear_ref_hints。
+_ref_hint_cache: dict[str, bool] = {}
 
 
 def supports_reference_images(provider: str | None) -> bool:
-    """该 provider 是否真的会把参考图发给模型。"""
-    return (provider or "").strip().lower() in REFERENCE_CAPABLE_PROVIDERS
+    """该 provider 是否真的会把参考图发给模型。白名单命中即 True,否则 False。
+
+    刻意**不做 Jev 兜底**:实测 jev 在本项目真实配置上把 qwen-image /
+    volcengine 判成"支持"(0.52/0.54),与实测相反。让一个会臆断的判定来决定
+    发不发参考图,比没有更糟。详见 `app/ai/jev_ask.py` REF_QUESTIONS 上方注释。
+
+    白名单外的 provider 仍会问一次 Jev 拿诊断线索(只打印,不改变返回值),
+    方便接新供应商时有据可依。
+    """
+    key = (provider or "").strip().lower()
+    if key in REFERENCE_CAPABLE_PROVIDERS:
+        return True
+    if key not in _ref_hint_cache:
+        try:
+            from .jev_ask import reference_capable
+            hint = reference_capable(key)
+        except Exception:  # noqa: BLE001 —— Jev 侧任何异常都不外泄
+            hint = None
+        if hint is not None:
+            _ref_hint_cache[key] = hint
+    print(f"[image] provider={key or '(空)'} 不在参考图白名单 → 不支持"
+          f"(退化为纯文生图)。要接入请实测后加入 REFERENCE_CAPABLE_PROVIDERS。",
+          flush=True)
+    return False
+
+
+def clear_reference_capability_cache() -> None:
+    """设置页改完 AI 服务后调用:provider 的诊断线索可能过时了(换网关 / 换模型)。"""
+    _ref_hint_cache.clear()
+
+
+# 429 退避:生图是突发流量大的接口(尤其多镜批量 + 用户手点),
+# 单次限流是常态而不是异常。首帧/尾帧/封面/资产图全都走这里,
+# 所以退避做成**统一包装**而不是每个调用点各写一遍。
+RATE_LIMIT_MARKERS = ("429", "Throttling", "rate limit", "too many requests",
+                      "请求过于频繁", "限流")
+_RATE_LIMIT_BACKOFF = (3, 8, 20)      # 秒;三次都失败才把错抛给用户
+
+
+def _is_rate_limited(err) -> bool:
+    s = str(err).lower()
+    return any(m.lower() in s for m in RATE_LIMIT_MARKERS)
+
+
+def generate_image_with_retry(*args, **kwargs):
+    """generate_image 的限流重试包装。
+
+    实测:一次「生成尾帧」直接弹「请求过于频繁」红框,图片其实完全能出 ——
+    image_client 此前对 429 **零处理**,一次限流就整镜失败。批量生图时更是必炸。
+    这里按 3/8/20 秒退避重试三次,仍失败才抛。
+    """
+    import time as _time
+    last = None
+    for i, wait in enumerate(_RATE_LIMIT_BACKOFF):
+        try:
+            return generate_image(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001
+            last = exc
+            if not _is_rate_limited(exc) or i == len(_RATE_LIMIT_BACKOFF) - 1:
+                raise
+            print(f"[image] 触发限流,{wait}s 后重试({i + 1}/{len(_RATE_LIMIT_BACKOFF)})",
+                  flush=True)
+            _time.sleep(wait)
+    raise last      # pragma: no cover
 
 
 def generate_image(prompt: str, out_name: str | None = None,

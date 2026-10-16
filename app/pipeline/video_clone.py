@@ -796,14 +796,27 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
 
 
 def prepare_presenter(drama_id: int, style_value: str, config_id: int | None = None) -> str:
-    """第 2 步(可选):无出镜照片时,AI 生成一位与目标市场匹配的模特形象图。"""
+    """AI 生成一位出镜模特形象图(**仅当用户没上传出镜照时**)。
+
+    **不要覆盖用户上传的照片** —— 这是实测踩过的坑:原来无条件写
+    clone["presenter"],用户传了自己的照片后又点了「AI 生成出镜模特」,
+    上传图被系统生成的模特顶掉,于是:
+      · 外观/服装描述从男模特图提取 → 分镜里人物性别乱跳、有的变男人;
+      · 换成用户的女性脸 → 女的体配男的服装。
+    所以用户传过就直接返回原图,生成结果另存 clone.ai_presenter 供查阅。
+    """
     meta = _meta(drama_id)
     clone = meta.get("clone", {})
+    user_uploaded = _resolve_local(clone.get("presenter_uploaded") or clone.get("presenter_src"))
+    if user_uploaded:
+        print("[clone] 已上传出镜照,跳过 AI 生成模特(不覆盖用户素材)", flush=True)
+        return str(user_uploaded)
     prompt_prefix = db.style_prompt(style_value)
     prompt = (f"{prompt_prefix}, 单人全身模特形象参考图,正面站姿,纯白背景,柔和影棚光, "
               "人物形象干净亲和,适合带货出镜, 电影质感")
     out, _ = image_client.generate_image(prompt, out_name=f"clone_presenter_{drama_id}.png", config_id=config_id)
-    clone["presenter"] = str(out)
+    clone["presenter"] = str(out)          # 仅在用户没上传时才是主角素材
+    clone["ai_presenter"] = str(out)       # 留档,便于分辨是不是 AI 生成的
     meta["clone"] = clone
     _save_meta(drama_id, meta)
     return str(out)
@@ -1018,8 +1031,19 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     except (TypeError, ValueError):
         span = ""
     rewritten = str(b.get("prompt") or "").strip()
-    core = rewritten or (f"{b.get('shot','中景')},{presenter_desc},{action_txt},"
-                         f"画面突出{product_desc}:{b.get('product_use','')}")
+    # 特写/微距镜**不拼人物描述**:这类镜头只拍手与产品,提示词里一旦出现
+    # "XX出镜人物…",模型就会在纯产品画面里凭空造出一张脸(实测镜 2 右侧
+    # 出现一个张嘴嘶吼的半透明女鬼,守卫里的 no onlookers 压不住 —— 那是
+    # 提示词自己要求出现人物的)。
+    _no_person = any(w in _shot_kind for w in ("特写", "微距"))
+    if rewritten:
+        core = rewritten
+    elif _no_person:
+        core = (f"{b.get('shot','特写')},{action_txt},"
+                f"画面只有产品与手部特写,{product_desc}:{b.get('product_use','')}")
+    else:
+        core = (f"{b.get('shot','中景')},{presenter_desc},{action_txt},"
+                f"画面突出{product_desc}:{b.get('product_use','')}")
     tail = consist + (", " + scene_lock if scene_lock else "") + \
         ", 运镜与光线参考带货实拍视频, 清晰锐利, 电影质感"
     # 预算只约束**本镜的内容部分**(风格前缀 + 参考项目尾套合计 ~590 字符,

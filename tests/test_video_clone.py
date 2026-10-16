@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import pytest
+
 from app.ai.prompt_guards import VIDEO_MARKER, apply_video_guards
 from app.pipeline import video_clone as vc
 
@@ -448,6 +450,16 @@ def test_rewrite_does_not_hardcode_max_tokens(monkeypatch):
                 assert kw.arg != "max_tokens", "改写仍显式传 max_tokens,未走模型配置"
 
 
+@pytest.fixture
+def qapp_stub():
+    """保证 QApplication 只创建一次(Qt 不允许多实例)。"""
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    app = QApplication.instance() or QApplication([])
+    yield app
+
+
 # ── 人物参照图:纯文字生成 + 换脸(绕开参考图继承的重影)───────────────
 
 def test_fullshot_prompt_has_no_reference_image():
@@ -510,3 +522,196 @@ def test_pick_ref_kind_uses_single_reference_image():
     import inspect
     src = inspect.getsource(vc.generate_shot_image)
     assert "ref_pool" not in src, "不应再有多图参考池(会引入重影)"
+
+
+# ── 用户素材不得被 AI 生成覆盖 ──────────────────────────────────────────
+
+def test_prepare_presenter_never_overwrites_user_upload():
+    """用户传了出镜照,再点「AI 生成出镜模特」不得把素材顶掉。
+
+    实测踩过:原来无条件写 clone["presenter"],上传图被 AI 生成的男模特顶掉 →
+      · 外观/服装从男模特提取 → 分镜人物性别乱跳、有的变男人;
+      · 换脸把女性脸换上 → 女的体配男的服装。
+    """
+    import inspect
+    src = inspect.getsource(vc.prepare_presenter)
+    assert "presenter_uploaded" in src or "presenter_src" in src, \
+        "prepare_presenter 未检查用户是否已上传素材"
+    # 生成结果必须另存字段,不能直接落在 presenter 上当作主角素材
+    assert "clone[\"presenter\"] = str(out)" in src, "应有条件地写入 presenter"
+    assert "ai_presenter" in src, "AI 生成结果应另存以便区分"
+
+
+def test_closeup_shot_prompt_excludes_person():
+    """特写/微距镜不得拼人物描述。
+
+    实测:产品特写镜提示词里带「出镜人物…」→ 模型在纯产品画面里凭空造出一张
+    脸(张嘴嘶吼的半透明人影)。守卫里的 no onlookers 压不住,因为是提示词
+    自己要求出现人物的。
+    """
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "_no_person" in src, "未对特写镜做人物剔除"
+
+
+# ── 分卷分批生成(章数大时必然截断)──────────────────────────────────
+
+def test_volume_batch_threshold_and_plan_size():
+    """计划章数超过阈值要能算出卷数与批数。
+
+    实测:999 章 → 34 卷,一次性输出约 8800 字,而默认 8192 tokens 只够约 6300 字,
+    必然中途截断(JSON 括号都不闭合),表现为"卡住"。
+    """
+    from app.pipeline import novel as nv
+    assert nv.VOLUME_BATCH_THRESHOLD > 0
+    # 分卷调用**不得显式传 max_tokens**:GUI 路径 config_id=None 时任何兜底值
+    #(4096)都会覆盖配置里的大预算(32768)→ MiniMax-M3 思考完预算耗尽,
+    # 返回 0 字符(实测连续两次)。不传,text_client 自己读配置。
+    import ast
+    import inspect
+    tree = ast.parse(inspect.getsource(nv.draft_volume_in_batches).lstrip())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                assert kw.arg != "max_tokens", "分卷仍显式传 max_tokens,会覆盖配置"
+    # 向上取整,不能漏章
+    assert -(-999 // nv.VOLUME_CHAPTERS_PER_VOL) == 34
+    assert nv.VOLUME_BATCH_SIZE >= 1
+
+
+def test_volume_in_batches_rejects_small_books():
+    """章数未过阈值不该走分批(白白多几次模型调用)。"""
+    from app.pipeline import novel as nv
+    import pytest
+    from app.core import db
+    small = db.q1("SELECT id FROM dramas WHERE total_episodes < 60 LIMIT 1")
+    if not small:
+        pytest.skip("库里没有小体量项目可验证")
+    with pytest.raises(RuntimeError):
+        nv.draft_volume_in_batches(small["id"])
+
+
+# ── 资产表软删除列(缺列会让整条链路 OperationalError)──────────────────
+
+def test_asset_tables_have_deleted_at_column():
+    """characters/scenes/props 必须有 deleted_at 列。
+
+    storyboard.py 在这三张表上查 `deleted_at IS NULL`(软删除资产不算数),
+    但三张表原本都没这一列 → SQLITE OperationalError: no such column: deleted_at,
+    资产提取与分镜拆解整条链路直接报错(实测「重新拆分」一点就弹红框)。
+    """
+    import os
+    import tempfile
+
+    os.environ["YIHAO_DATA_DIR"] = tempfile.mkdtemp()
+    import importlib
+
+    from app.core import db as _db
+    importlib.reload(_db)
+    _db.init_db()
+    for t in ("characters", "scenes", "props", "storyboards"):
+        cols = [r[1] for r in _db.get_db().execute(f"PRAGMA table_info({t})").fetchall()]
+        assert "deleted_at" in cols, f"{t} 缺 deleted_at 列"
+
+
+# ── GUI 构造冒烟:后端能跑 ≠ 界面能跑 ────────────────────────────────
+
+def test_novel_plan_dialog_constructs(qapp_stub):
+    """策划对话框必须能**真正构造**出来。
+
+    教训(实测):接自动保存信号时写成 `lambda _t, k=key: ...`,
+    PySide6 在对话框初始化时按 0 参调用 textChanged → TypeError,
+    对话框构造即失败,后面所有分卷代码一行都没跑到。
+    而我当时的验证方式是**单独 import/调用 novel.py 的后端函数**,
+    全部成功 → 误报"好了"。后端能跑 ≠ 界面能跑,必须构造真实控件。
+
+    这里只保证"构造不抛异常";不真正跑生成(要调模型,太慢太贵)。
+    """
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6.QtWidgets import QApplication
+    except ImportError:                                  # pragma: no cover
+        import pytest
+        pytest.skip("无 PySide6")
+    app = QApplication.instance() or QApplication([])
+    from app.ui.novel_dialogs import NovelPlanDialog
+    from app.core import db
+
+    did = db.q1("SELECT id FROM dramas WHERE work_type='novel' LIMIT 1")
+    if not did:
+        import pytest
+        pytest.skip("库里没有小说项目可构造")
+    dlg = NovelPlanDialog(None, did["id"])      # 构造阶段就会触发 textChanged 连接
+    assert dlg is not None
+
+
+# ── 全书章数不得被生成结果覆盖 ─────────────────────────────────────────
+
+def test_chapter_count_not_overwritten_by_generated_count(tmp_path, monkeypatch):
+    import time
+    """用户设的 999 章不能被自己跑出来的 60 章覆盖。
+
+    现场:`total_episodes` 同时表示「集数」和「全书章数」,而
+    generate_chapters_batched 跑完会把它写成**实际生成的章数**。
+    于是用户设 999 → 生成 60 章 → 下次打开对话框只剩 60,设定永久丢失。
+    章数必须存在 novel_meta.chapter_count,与集数字段分开。
+    """
+    import os
+    os.environ["YIHAO_DATA_DIR"] = str(tmp_path / "cc")
+    import importlib
+    from app.core import db as _db
+    importlib.reload(_db)
+    _db.init_db()
+    import json as _json
+    _new_id = 880000 + int(time.time()) % 90000
+    _db.ex("INSERT INTO dramas(id,title,work_type,status,total_episodes,novel_meta,"
+           "created_at,updated_at) VALUES(?,'T','novel','pending',60,?,?,?)",
+           (880000 + int(time.time()) % 90000, _json.dumps({"chapter_count": 999}),
+            _db.now(), _db.now()))
+    from app.pipeline import novel as nv
+    n, _w = nv._plan_scale(_new_id, None, None)
+    assert n == 999, f"章数被回落成 {n},用户设的 999 丢失"
+
+
+def test_chapter_count_written_to_meta_not_total_episodes():
+    """保存规模时只写 novel_meta,不得再覆盖 total_episodes(那是集数)。"""
+    import inspect
+    from app.ui import novel_dialogs as nd
+    src = inspect.getsource(nd.NovelPlanDialog._on_size_changed)
+    assert "chapter_count" in src, "规模保存未写 chapter_count"
+    assert "total_episodes=?" not in src, "仍在覆盖 total_episodes(会破坏集数与章数的耦合)"
+
+
+# ── 服务编辑弹窗不得崩溃 ──────────────────────────────────────────────
+
+def test_service_dialog_opens_for_existing_config(qapp_stub):
+    """编辑已有服务配置时,弹窗必须能构造出来。
+
+    实测崩过一次:`self._custom_idx = self.provider_combo.addItem(...)` ——
+    QComboBox.addItem() 返回 **None**(不是索引),于是 _custom_idx 是 None,
+    _prefill 里 setCurrentIndex(None) 抛 TypeError,异常被吞,
+    表现为「点编辑弹不出来」。
+    """
+    from app.core import db
+    from app.ui.settings_dialog import ServiceDialog
+    row = db.q1("SELECT * FROM ai_service_configs WHERE service_type='text' LIMIT 1")
+    if not row:
+        import pytest
+        pytest.skip("库里没有文本服务配置")
+    dlg = ServiceDialog("text", None, existing=dict(row))
+    assert dlg is not None
+
+
+def test_custom_provider_index_is_valid(qapp_stub):
+    """_custom_idx 必须是有效整数 —— addItem 的返回值是 None,不能直接赋值。"""
+    from app.ui.settings_dialog import ServiceDialog
+    from app.core import db
+    row = db.q1("SELECT * FROM ai_service_configs WHERE service_type='text' LIMIT 1")
+    if not row:
+        import pytest
+        pytest.skip("库里没有文本服务配置")
+    dlg = ServiceDialog("text", None, existing=dict(row))
+    idx = dlg._custom_idx
+    assert isinstance(idx, int), f"_custom_idx 应为 int,实际 {type(idx).__name__}"
+    assert 0 <= idx < dlg.provider_combo.count()

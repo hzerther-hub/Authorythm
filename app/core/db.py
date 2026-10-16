@@ -419,6 +419,12 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN subtitle_url TEXT",
                 "ALTER TABLE storyboards ADD COLUMN setting_tags TEXT",
                 "ALTER TABLE storyboards ADD COLUMN deleted_at TEXT",
+                # 资产表也要软删除列:storyboard.py 在 characters/scenes/props 上
+                # 查 `deleted_at IS NULL`,但这三张表原本没有该列 → SQLITE OperationalError
+                # (no such column: deleted_at),资产提取/分镜拆解整条链路直接报错。
+                "ALTER TABLE characters ADD COLUMN deleted_at TEXT",
+                "ALTER TABLE scenes ADD COLUMN deleted_at TEXT",
+                "ALTER TABLE props ADD COLUMN deleted_at TEXT",
                 # 旁白起播时间(用户要求:不必一开始讲,但 default 是 0)
                 "ALTER TABLE storyboards ADD COLUMN narration_start REAL DEFAULT 0",
                 # JEV 情绪标签(JSON 数组;detect_emotions 写入,不重写 atmosphere)
@@ -775,3 +781,17 @@ def delete_chat_messages_after(sid: int, msg_id: int) -> None:
     ex(
         "DELETE FROM chat_edit_messages WHERE session_id=? AND id>?",
         (sid, msg_id))
+
+
+def selected_config_id(service_type: str) -> int | None:
+    """读用户当前选中的服务配置 id(全局记忆键,与界面下拉同源)。
+
+    **凡是后台生成入口都必须显式传这个**,不能靠 registry 兜底 ——
+    兜底会挑中"默认"服务,而默认可能是额度耗尽的渠道,表现为 HTTP 429
+    Throttling.AllocationQuota(实测:封面/批量重绘都踩过)。
+    """
+    raw = get_setting(f"yihao.model.{service_type}", "")
+    try:
+        return int(raw) if raw else None
+    except (TypeError, ValueError):
+        return None

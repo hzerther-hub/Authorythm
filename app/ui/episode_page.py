@@ -15,6 +15,7 @@ from datetime import datetime
 from PySide6.QtCore import Qt, QPoint, QRect, QRunnable, QThreadPool, QTimer, Signal
 from PySide6.QtGui import QPainter, QPolygon, QFont, QColor, QPixmap
 from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
+                               QRadioButton,
                                QGridLayout, QHBoxLayout, QMenu, QSizePolicy,
                                QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
                                QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter,
@@ -687,6 +688,12 @@ class EpisodePage(QWidget):
         top.addWidget(QLabel(tr("video_svc") + ":"))
         self.video_model = self._mk_model_combo()
         top.addWidget(self.video_model)
+        # 视频供应商路由建议:旁路能力,Jev 没配/不通时点了只提示一句,不影响生成。
+        # 刻意做成「点一下问一次」而不是自动切换 —— 换供应商等于换钱,要用户拍板。
+        self.jev_route_btn = W.svg_icon_btn(
+            "magic", tr("让 Jev 推荐视频供应商"), 16)
+        self.jev_route_btn.clicked.connect(self._ask_jev_video_route)
+        top.addWidget(self.jev_route_btn)
         top.addWidget(QLabel(tr("faceswap_svc") + ":"))
         self.face_model = self._mk_model_combo()
         top.addWidget(self.face_model)
@@ -879,6 +886,55 @@ class EpisodePage(QWidget):
                 db.ex(f"UPDATE episodes SET {col}=?, updated_at=? WHERE id=?",
                       (cid, db.now(), self.episode_id))
                 self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+
+    def _ask_jev_video_route(self):
+        """问 Jev 该用哪个视频供应商(choice 原语,返回概率分布)。
+
+        刻意**不自动切换**当前选择:换供应商等于换钱,必须用户拍板,所以只弹
+        一个带分布的提示,由用户自己改下拉。Jev 没配 / 不通 / 只有一家候选时
+        什么都不做 —— 这就是「jev 没开也能正常跑」。
+        """
+        need = ""
+        sb = getattr(self, "storyboard_text", None)
+        if sb is not None:
+            need = (sb.toPlainText() or "").strip()[:600]
+        if not need:
+            need = tr("jev_route_need_desc")
+        need = tr("jev_route_need_prefix") + " " + need
+        need = need[:1000]
+        # 按钮本身只做提示,不改配置,不必禁;但连点会重复等 640ms,做个轻量防抖。
+        self.jev_route_btn.setEnabled(False)
+        btn = self.jev_route_btn
+
+        def job(tid):
+            # worker 线程:只碰纯数据,不碰任何 Qt 控件
+            got = video_client.suggest_video_config(need)
+            return got
+
+        def done(tid, result, error):
+            btn.setEnabled(True)
+            if error or not result:
+                info(tr("jev_route_unavailable"))
+                return
+            cid, dist, low = result
+            row = db.q1("SELECT provider, model FROM ai_service_configs WHERE id=?", (cid,))
+            if not row:
+                info(tr("jev_route_unavailable"))
+                return
+            # 分布按占比降序拼成一行,让人看得见「第二名差多少」
+            parts = []
+            for k, v in sorted((dist or {}).items(),
+                               key=lambda kv: -kv[1] if isinstance(kv[1], (int, float)) else 0):
+                if isinstance(v, (int, float)):
+                    parts.append(f"{k.split(':')[0]} {v:.0%}")
+            tail = ("  ·  " + " / ".join(parts)) if parts else ""
+            # 分布接近时如实说「它也不确定」——实测 jev 对两种完全不同的画面需求
+            # 给出了几乎一样的分布(0.62 / 0.59),包装成明确建议是在误导用户。
+            hedge = tr("jev_route_low_confidence") if low else ""
+            info(f"{tr('jev_route_result')} {row['provider']} · {row['model']}"
+                 f"{tail}{('  ' + hedge) if hedge else ''}")
+
+        TASKMGR.submit("jev_route", job, done)
 
     def _sync_res_tiers(self):
         """分辨率档位随视频厂商联动(对齐原版 RESOLUTION_TIERS)。
@@ -5443,6 +5499,9 @@ class EpisodePage(QWidget):
     def _after_split_chain(self):
         """拆分完成后的自动链:修复轮 → 批量补齐提示词(均串行,不并发)。"""
         import time as _time
+        # 必须在本函数内导入:R 只在别的函数里**局部**导入过,这里直接用会
+        # NameError: name 'R' is not defined(实测「重新拆分」跑完就炸在这里)。
+        from ..pipeline import storyboard_repair as R
 
         def repair_job(tid):
             return R.repair_storyboards(self.episode_id,
@@ -6242,7 +6301,7 @@ class EpisodePage(QWidget):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id,
                                                 config_id=snap_text)
             # 绑定资产(comic_panel_characters/scenes/props)的镜像图作为参考图;
-            # 仅 provider 真的支持才走这条路(agnes/local/comfyui/sdwebui/fooocus),
+            # 仅白名单内的 provider 真支持才走这条路(agnes/local/comfyui/sdwebui/fooocus),
             # qwen-image / volcengine 等会丢参考图,直接走纯文生图避免误导预期
             refs = comic_pipe.panel_reference_images(panel_id) if image_client.supports_reference_images(
                 (registry.check_ready("image", snap_img) or {}).get("provider")) else []
@@ -6317,7 +6376,7 @@ class EpisodePage(QWidget):
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
                                                     config_id=snap_text)
-                # 见 _one_panel_image 的注释:仅在 provider 真支持时传参考图
+                # 见 _one_panel_image 的注释:仅在白名单 provider 真支持时传参考图
                 if image_client.supports_reference_images(
                         (registry.check_ready("image", snap_img) or {}).get("provider")):
                     refs = comic_pipe.panel_reference_images(pid, prev_image_url=prev_url)

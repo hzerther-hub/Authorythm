@@ -222,6 +222,22 @@ def _poll(fetch_status, interval: int, rounds: int) -> str:
     raise AIError("视频任务轮询超时")
 
 
+def suggest_video_config(visual_need: str) -> tuple[int, dict, bool] | None:
+    """按画面需求建议视频配置,返回 (config_id, 分布, 低置信)。不可用 → None。
+
+    **只建议,不自动改写用户的选择** —— 换供应商等于换钱,必须由用户拍板。
+    调用方拿 None 时什么都不用做(继续用当前所选配置),这就是「jev 没开也能正常跑」。
+
+    第三个返回值 low=True 表示 jev 自己也不确定(前二名分布差距 <0.15),
+    UI 应据此如实说明,别把它包装成明确建议。
+    """
+    try:
+        from .jev_ask import pick_video_config_advisory
+        return pick_video_config_advisory(visual_need)
+    except Exception:  # noqa: BLE001 —— 软建议器契约
+        return None
+
+
 def generate_video(prompt: str, resolution: str = "720p", duration: int | None = None,
                    first_frame: str | None = None, config_id: int | None = None,
                    reference_images: list[str] | None = None,
@@ -248,6 +264,9 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
     **平台级质量守卫**:prompt 统一追加视频质量要求 + 表演克制 + 节奏三层守卫(各自 marker 幂等)。
     视频模型对肢体畸形与强情绪词(尖叫/嘶吼/痛哭)都天生放大,需在平台层压住;
     确需爆发表情的镜头,在分镜 video_prompt 里显式写「情绪爆发」覆盖表演守卫。
+
+    视频供应商路由走 `suggest_video_config`,**不在这里自动改写 config_id**:
+    生成主体路径保持「用户选什么就用什么」,路由建议是旁路能力,详见该函数 docstring。
     """
     from .prompt_guards import apply_video_guards
     prompt = apply_video_guards(prompt)
@@ -290,7 +309,12 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             body["content"].append({"type": "image_url", "image_url": {"url": ref},
                                     "role": "reference_image"})
         if first_frame:
-            body["content"].append({"type": "image_url", "image_url": {"url": _local_to_data_url(first_frame, max_side, quality)}})
+            # 首帧**必须带 role** —— Seedance 报 `role must be specified for image
+            # contents`(HTTP 400)。参考图那条带了 role 所以一直没事,首帧这条漏了,
+            # 只要分镜有首帧就 400。
+            body["content"].append({
+                "type": "image_url", "role": "first_frame",
+                "image_url": {"url": _local_to_data_url(first_frame, max_side, quality)}})
         resp = requests.post(_ark_url(base, "/contents/generations/tasks"), json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")

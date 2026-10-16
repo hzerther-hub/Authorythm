@@ -1229,7 +1229,12 @@ class ServiceDialog(QDialog):
             idx = self.provider_combo.count()
             self.provider_combo.addItem(p["name"])       # 显示模板 label,如「MiniMax 官方」
             self._tpl_by_index[idx] = p
-        self._custom_idx = self.provider_combo.addItem(tr("自定义…"))
+        # addItem() 返回 **None**(不是索引)—— 必须用 addItem + count() 自己算。
+        # 原写法 `self._custom_idx = addItem(...)` 让 _custom_idx 变成 None,
+        # 编辑已有配置时 _prefill 调 setCurrentIndex(None) 直接 TypeError,
+        # 异常被吞 → 表现为「点编辑弹不出来」(实测)。
+        self.provider_combo.addItem(tr("自定义…"))
+        self._custom_idx = self.provider_combo.count() - 1
         self.provider_combo.currentIndexChanged.connect(self._on_provider_pick)
         form.addRow(tr("服务商"), self.provider_combo)
         self.provider_edit = QLineEdit()

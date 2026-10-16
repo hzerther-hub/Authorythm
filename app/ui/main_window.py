@@ -442,7 +442,7 @@ class MainWindow(QMainWindow):
         d = db.q1("SELECT work_type FROM dramas WHERE id=?", (drama_id,))
         self._open_drama(drama_id)
         if d and d["work_type"] == "video_clone":
-            ok_(tr("项目设置在页面上方:模型、风格与人物资产图"))
+            ok(tr("项目设置在页面上方:模型、风格与人物资产图"))
 
     def _open_drama(self, drama_id: int):
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))

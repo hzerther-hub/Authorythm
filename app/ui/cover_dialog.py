@@ -142,7 +142,10 @@ class CoverPanel(QWidget):
 
         def job(tid):
             from ..pipeline import novel as novel_pipe
-            return novel_pipe.generate_cover(self.drama_id, self.prompt.text().strip())
+            # 同上:不传配置会打到额度耗尽的默认服务(429)
+            from ..core.db import selected_config_id
+            return novel_pipe.generate_cover(self.drama_id, self.prompt.text().strip(),
+                                             config_id=selected_config_id("image"))
 
         def done(tid, result, error):
             self._busy = False

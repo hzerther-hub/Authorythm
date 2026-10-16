@@ -15,3 +15,7 @@ build/
 .claude/
 .zcode/skills/
 skills-lock.json
+
+# 会话计划文件与 UI 设计原型:都不是产品代码,别进版本库
+.zcode/plans/
+design-demos/

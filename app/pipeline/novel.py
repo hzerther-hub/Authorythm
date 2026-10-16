@@ -6,6 +6,9 @@ import json
 import re
 
 from ..agents import runner
+from ..ai import text_client   # 分卷分批直接调 chat(非流式路径)
+from ..core.i18n import tr       # 分批阶段提示文案(漏导入会让整批 NameError)
+from ..ai import registry
 from ..core import config, db
 
 
@@ -96,6 +99,7 @@ def set_novel_style(drama_id: int, style: str) -> None:
 
 def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
     """开书策划:总纲/世界观/合约/卷战略/章节清单/主要角色,写入 dramas。"""
+    config_id = config_id or plan_config_id()
     prompt = f"新书创意:\n{idea[:6000]}\n\n请给出完整开书规划。"
     data = runner.run_agent_json("novel_planner", prompt, config_id=config_id)
     chapters = data.get("chapters", [])
@@ -178,13 +182,47 @@ SEGMENT_PLAN_PROMPT = """你是小说策划。{count} 章的长篇不适合逐�
 其中 chapters 只给每段前 3 章的示例细节(共 {samples} 条),用于校准颗粒度;每章字数 {words} 字。"""
 
 
+# ── 规划 / 正文 双模型(实测见 git log 的提交说明)────────────────────────
+# 规划侧(deepseek-v4-pro):结构化输出规整,分卷/合约的字段完整度高。
+# 正文侧(minimax-M3):篇幅稳定,连续三章无衰减;deepseek 写正文逐章掉一半。
+_PLAN_CFG_KEY = "yihao.novel.plan_cfg"
+_PROSE_CFG_KEY = "yihao.novel.prose_cfg"
+
+
+def plan_config_id() -> int | None:
+    """规划用文本服务配置 id(未单独设置时回退全局默认)。"""
+    v = db.get_setting(_PLAN_CFG_KEY, "")
+    if v:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+    return registry.default_config("text", None).get("id")
+
+
+def prose_config_id() -> int | None:
+    """正文写作用文本服务配置 id(未单独设置时回退全局默认)。"""
+    v = db.get_setting(_PROSE_CFG_KEY, "")
+    if v:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+    return registry.default_config("text", None).get("id")
+
+
 def _plan_scale(drama_id: int, chapter_count: int | None, word_count: int | None) -> tuple[int, int]:
     nm = db.jload((db.q1("SELECT novel_meta,total_episodes FROM dramas WHERE id=?", (drama_id,))
                    or {"novel_meta": None, "total_episodes": None})["novel_meta"], {}) or {}
     # 章数单一来源 = dramas.total_episodes(「项目设置 → 集数」与「小说设定 → 全书章数」共用);
     # novel_meta.chapter_count 为历史遗留,不再参与取值,避免两处显示不一致
-    n = int(chapter_count or db.q1(
-        "SELECT total_episodes FROM dramas WHERE id=?", (drama_id,))["total_episodes"] or 60)
+    # 章数取 novel_meta.chapter_count(**不再用 total_episodes**):
+    # 那个字段同时表示「集数」,而 generate_chapters_batched 跑完会把它写成
+    # 实际生成的章数 —— 用户在输入框设的 999 于是被自己的生成结果覆盖,
+    # 下次打开对话框只剩 60(实测)。
+    n = int(chapter_count or nm.get("chapter_count")
+            or db.q1("SELECT total_episodes FROM dramas WHERE id=?",
+                     (drama_id,))["total_episodes"] or 60)
     words = int(word_count or nm.get("word_count") or 2500)
     return max(1, min(999, n)), words
 
@@ -220,23 +258,167 @@ CHAPTER_BATCH_PROMPT = """你是小说策划。基于已确定的项目设定,�
 输出 JSON:{{"chapters":[{{"number":{start},"title":"","goal":"","events":"","cliffhanger":""}}]}}"""
 
 
+def _range_of(vol: dict) -> tuple[int, int]:
+    """卷的 range("1-120"/"第1-120章")→ (起, 止)。解析不出返回 (0, 0)。"""
+    nums = re.findall(r"\d+", str(vol.get("range") or ""))
+    return (int(nums[0]), int(nums[1])) if len(nums) >= 2 else (0, 0)
+
+
+def find_volume_of_chapter(drama_id: int, chapter_no: int) -> dict | None:
+    """章号 → 所属卷。找不到返回 None。"""
+    for v in load_volume_chapters(drama_id):
+        a, b = _range_of(v)
+        if a and a <= chapter_no <= b:
+            return v
+    return None
+
+
+def volume_hint_for(drama_id: int, start: int) -> str:
+    """这一批(从第 start 章起)所在卷的定位描述,拼进批次提示词。
+
+    不给这段,模型只知道"服从分卷战略"却不知道眼前这批属于哪一卷,
+    章节内容容易跑到别的卷的叙事区间里。
+    """
+    v = find_volume_of_chapter(drama_id, start)
+    if not v:
+        return ""
+    a, b = _range_of(v)
+    bits = [f"本批(第 {start} 章起)属于【{v.get('title') or ''}】(第 {a}-{b} 章)"]
+    if v.get("goal"):
+        bits.append(f"本卷目标:{v['goal']}")
+    ev = [str(x).strip() for x in (v.get("key_events") or []) if str(x).strip()]
+    if ev:
+        bits.append("本卷关键事件:" + " / ".join(ev))
+    if v.get("cliffhanger"):
+        bits.append(f"本卷末钩子:{v['cliffhanger']}")
+    return "\n".join(bits)
+
+
 def chapters_batch_prompt(drama_id: int, start: int, count: int, total: int,
                           word_count: int, prev_hint: str = "", next_hint: str = "") -> str:
     """构造某一章区间的计划提示词(长篇分批生成用)。"""
     ctx = _novel_settings_ctx(drama_id)
-    return CHAPTER_BATCH_PROMPT.format(
+    hint = volume_hint_for(drama_id, start)
+    base = CHAPTER_BATCH_PROMPT.format(
         start=start, end=start + count - 1, count=count, total=total,
         words=word_count, pov=pov_rule(get_novel_pov(drama_id)),
         prev=(prev_hint or "全书开篇(第 1 章)")[:200],
-        next=(next_hint or "按总纲推进")[:200]) + "\n\n" + ctx
+        next=(next_hint or "按总纲推进")[:200])
+    return base + ("\n\n【本卷定位】\n" + hint if hint else "") + "\n\n" + ctx
+
+
+def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
+                                  vol: dict, config_id: int | None = None) -> list[dict]:
+    """用某一卷的章节计划抽取该卷出场的主要角色,再**合并**进已有角色表。
+
+    合并而不是覆盖:按卷滚动生成时前几卷角色已落库,重做一卷不该清掉它们。
+    按 name 去重,同名以新结果为准(允许补全细节)。
+    """
+    if not chapters:
+        return []
+    a, b = _range_of(vol)
+    title = vol.get("title") or ""
+    ctx = _novel_settings_ctx(drama_id)
+    plan_txt = chapters_to_text(chapters)[:6000]
+    parts = [ctx, f"【当前只处理第 {a}-{b} 章(卷名:{title})】"]
+    if vol.get("goal"):
+        parts.append(f"本卷目标:{vol['goal']}")
+    if vol.get("key_events"):
+        parts.append("本卷关键事件:" + " / ".join(
+            str(x) for x in vol["key_events"]))
+    parts.append("本卷章节计划:\n" + plan_txt)
+    parts.append(CHARACTER_PROMPT)
+    parts.append("只列**本卷出场**的角色;前几卷已建立的可只保留姓名,不重复描述。")
+    raw = runner.run_agent("novel_planner", "\n\n".join(parts),
+                           temperature=0.5, config_id=config_id)
+    chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
+    if not chars:
+        return []
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
+                          (drama_id,))["novel_meta"], {}) or {}
+    by_name = {str(c.get("name") or "").strip(): c
+               for c in (meta.get("main_characters") or []) if isinstance(c, dict)}
+    for c in chars:
+        by_name[str(c.get("name") or "").strip()] = c
+    merged = list(by_name.values())
+    meta["main_characters"] = merged
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+    _sync_characters(drama_id, merged)
+    return chars
+
+
+def generate_chapters_for_volume(drama_id: int, volume_no: int,
+                                 word_count: int | None = None,
+                                 config_id: int | None = None,
+                                 progress=None, on_partial=None,
+                                 with_characters: bool = True) -> dict:
+    """只生成**第 volume_no 卷**的章节计划(A 方案)。
+
+    全书一次生成对 999 章这种体量不现实(20 分钟以上、中途看不到产出、
+    质量不稳)。分卷已经把叙事切成若干段,按卷生成既快又能保证章节与
+    分卷对齐 —— 每次约 120 章、3 分钟左右,不满意只重做这一卷。
+
+    返回 {"count","word_count","chapters","start","end"}。
+    """
+    vols = load_volume_chapters(drama_id)
+    if not vols:
+        raise RuntimeError("还没有分卷战略,先在「分卷战略」页签生成")
+    if not 1 <= volume_no <= len(vols):
+        raise RuntimeError(f"卷号超出范围(共 {len(vols)} 卷)")
+    vol = vols[volume_no - 1]
+    a, b = _range_of(vol)
+    if not a or not b:
+        raise RuntimeError(f"第 {volume_no} 卷缺少章号范围({vol.get('range')!r})")
+    total = _plan_scale(drama_id, None, None)[0]
+    config_id = config_id or plan_config_id()
+    n = b - a + 1
+    all_ch: list[dict] = []
+    total_batches = (n + CHAPTER_BATCH - 1) // CHAPTER_BATCH
+    for bi in range(total_batches):
+        start = a + bi * CHAPTER_BATCH
+        cnt = min(CHAPTER_BATCH, b - start + 1)
+        prev_hint = ""
+        if all_ch:
+            last = all_ch[-1]
+            prev_hint = f"第{last['number']}章《{last.get('title','')}》钩子:{last.get('cliffhanger','')}"
+        raw = runner.run_agent(
+            "novel_planner",
+            chapters_batch_prompt(drama_id, start, cnt, total, word_count or 2500,
+                                  prev_hint=prev_hint),
+            temperature=0.4, config_id=config_id, max_tokens=None)
+        data = runner.extract_json(raw) or {}
+        all_ch.extend(_clean_chapter_list(data.get("chapters"), cnt))
+        if progress:
+            progress(int(len(all_ch) * 100 / n), len(all_ch), n)
+        if on_partial:
+            on_partial(all_ch)
+    # 按章号写回(与已有章节计划合并,不覆盖其它卷已生成的)
+    db.ex("UPDATE dramas SET novel_chapters=?, updated_at=? WHERE id=?",
+          (json.dumps(all_ch, ensure_ascii=False), db.now(), drama_id))
+    chars: list[dict] = []
+    if with_characters:
+        try:
+            chars = _extract_characters_for_volume(
+                drama_id, all_ch, vol, config_id)
+        except Exception as exc:  # noqa: BLE001
+            # 角色抽取失败不该让已生成的章节计划前功尽弃
+            print(f"[novel] 第 {volume_no} 卷角色抽取失败({exc}),章节计划已保留", flush=True)
+    return {"count": len(all_ch), "word_count": word_count or 2500,
+            "chapters": all_ch, "start": a, "end": b, "characters": chars}
 
 
 def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
                               word_count: int | None = None,
                               config_id: int | None = None,
-                              progress=None) -> dict:
-    """分批生成整本书的逐章计划并落库。progress(percent, done, total)。"""
+                              progress=None, on_partial=None) -> dict:
+    """分批生成整本书的逐章计划并落库。
+
+    progress(percent, done, total)  —— 进度数字
+    on_partial(已生成章节列表)      —— 每批产出后回调,用于把内容实时写进界面
+    """
     n, words = _plan_scale(drama_id, chapter_count, word_count)
+    config_id = config_id or plan_config_id()
     all_ch: list[dict] = []
     total_batches = (n + CHAPTER_BATCH - 1) // CHAPTER_BATCH
     for bi in range(total_batches):
@@ -260,6 +442,10 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
         all_ch += batch
         if progress:
             progress(int(len(all_ch) * 100 / n), len(all_ch), n)
+        if on_partial:
+            # 每批生成完就把已产出的章节文本抛给 UI 追加 —— 否则长篇分批
+            # 全程编辑器空白,只能等 25 批跑完才一次性出现(实测「看不到过程」)。
+            on_partial(all_ch)
     all_ch.sort(key=lambda c: c["number"])
     nm = db.jload((db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
                    or {"novel_meta": None})["novel_meta"], {}) or {}
@@ -347,6 +533,7 @@ def persist_chapters(drama_id: int, raw: str, chapter_count: int | None = None,
 def plan_chapters(drama_id: int, chapter_count: int | None = None,
                   word_count: int | None = None, config_id: int | None = None) -> dict:
     """一次性生成并落库逐章计划(非流式路径;UI 走 chapters_prompt + persist_chapters)。"""
+    config_id = config_id or plan_config_id()
     raw = runner.run_agent("novel_planner", chapters_prompt(drama_id, chapter_count, word_count),
                            temperature=0.4, config_id=config_id,
                            system=_draft_system("章节计划"))
@@ -389,6 +576,7 @@ CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与章节计�
 
 def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     """AI 生成主要角色。章节计划缺失时先在后台补章节计划(依赖先行)。"""
+    config_id = config_id or plan_config_id()
     d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
     chapters = db.jload(d["novel_chapters"], []) if d else []
     if not chapters:
@@ -551,6 +739,24 @@ def chapter_prompt(episode_id: int) -> str:
     return prompt
 
 
+def _configured_max_tokens(config_id: int | None) -> int | None:
+    """读该模型配置里手填的 max_tokens;留空/非法值返回 None,交给调用方兜底。
+
+    与 `ai/text_client._build_body` 同一优先级:配置值优先,程序兜底在后。
+    这里单独读一次是因为 write_chapter 要用这个值决定**第一次**请求的预算,
+    不能先发一个 8192 的短预算再靠重试顶上去。
+    """
+    if not config_id:
+        return None
+    row = db.q1("SELECT max_tokens FROM ai_service_configs WHERE id=?", (config_id,))
+    if not row:
+        return None
+    try:
+        return int(row["max_tokens"] or 0) or None
+    except (TypeError, ValueError):
+        return None
+
+
 def _write_chapter_text(prompt: str, config_id: int | None, lang: str | None,
                         max_tokens: int) -> tuple[str, str]:
     """流式写正文,返回 (正文, 思考全文)。
@@ -598,11 +804,19 @@ def write_chapter(episode_id: int, config_id: int | None = None,
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集(章)不存在")
+    # 正文模型与规划模型分设:调用方没显式指定时走「正文模型」
+    # (实测 minimax-M3 写正文篇幅稳定三章无衰减;deepseek 逐章掉一半)
+    if config_id is None:
+        config_id = prose_config_id()
     # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
     _enforce_novel_gate(ep["drama_id"])
-    # 思考型模型(M3)行为有波动:偶发只输出标题一行。给三次机会(8k→32k→32k)。
+    # 思考型模型(M3)行为有波动:偶发只输出标题一行,或思考吃满预算导致正文为空。
+    # 给三次机会,但**第一次用配置里填的 max_tokens**,不是硬编码值 ——
+    # 用户把 32768 调大就是想让第一次就够用,固定 8192 会白跑一次短预算。
+    # 配置留空才退到 _chapter_budget 兜底,后两次才升到 32768。
+    budgets = (_configured_max_tokens(config_id) or 32768, 32768, 32768)
     content = ""
-    for budget in (8192, 32768, 32768):
+    for budget in budgets:
         content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, budget)
         if len(content) >= 200:
             break
@@ -669,6 +883,9 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
     """
     from ..core import taskmgr as TM
     MIN_CHARS = 200
+    # 写章/审稿/改稿整条链统一走「正文模型」,提前定好,免得下游某处漏传又
+    # 悄悄回落到全局默认模型。
+    config_id = config_id or prose_config_id()
 
     def _stage(s: str):
         if task_id:
@@ -817,6 +1034,7 @@ def check_pov_violation(content: str, pov: str) -> list[str]:
 
 def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
     """六维审校,结果存 episodes.review_json。"""
+    config_id = config_id or prose_config_id()
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
@@ -840,6 +1058,7 @@ def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
 
 def edit_chapter(episode_id: int, instruction: str, config_id: int | None = None) -> str:
     """按指令改写本章正文。"""
+    config_id = config_id or prose_config_id()
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
@@ -968,7 +1187,8 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[st
     parts.append("请为本章起一个简短、有钩子感的章节名:不超过 12 个汉字,不带「第N集」前缀,"
                  "标题里的称谓必须符合上述叙事人称。")
     parts.append("只输出章节名本身(一行纯文本,不要引号、书名号、前缀和任何解释)。")
-    raw = runner.run_agent("novel_writer", "\n".join(parts), config_id=config_id)
+    raw = runner.run_agent("novel_writer", "\n".join(parts),
+                           config_id=config_id or prose_config_id())
     name = _clean_chapter_name(raw)
     if not name:
         raise RuntimeError("AI 未返回有效章节名,请重试")
@@ -1048,19 +1268,19 @@ def missing_steps_text(drama_id: int) -> str:
 SECTION_SPEC: dict[str, dict] = {
     "outline": {
         "field": "novel_outline", "name": "总纲", "fmt": "plain",
-        "spec": ("800-1500 字全文总纲:一句话主题、核心冲突、主角目标与阻力、"
+        "spec": ("完整全文总纲(内容充分即可,按需展开,不设字数上限):一句话主题、核心冲突、主角目标与阻力、"
                  "三幕递进、结局走向。直接输出正文,不要 JSON、不要标题行、不要解释。"),
     },
     "world": {
         "field": "novel_world", "name": "世界观", "fmt": "json",
-        "spec": ('JSON:{"text":"800-1500 字世界观全文","structured":{"era":"时代背景",'
+        "spec": ('JSON:{"text":"完整世界观全文(内容充分即可,不设字数上限)","structured":{"era":"时代背景",'
                  '"location":"主要地点","power_system":"力量/能力体系",'
                  '"factions":[{"name":"势力名","desc":"一句话"}],"note":"补充"}}\n'
                  "text 是可直接阅读的全文;structured 是给写作红线门控用的结构化字段,两者都要填。"),
     },
     "contract": {
         "field": "novel_contract", "name": "故事合约", "fmt": "json",
-        "spec": ('JSON:{"text":"600-1200 字故事合约全文","structured":{"pov":"first|second|'
+        "spec": ('JSON:{"text":"完整故事合约全文(内容充分即可,不设字数上限)","structured":{"pov":"first|second|'
                  'third_limited|third_omni","tones":["基调1","基调2"],'
                  '"rules":["硬约束1","硬约束2"],"word_range":[1800,2600],"note":"补充"}}\n'
                  "pov 只能取 first/second/third_limited/third_omni 之一;tones 与 rules 都不能是空数组。"),
@@ -1118,6 +1338,190 @@ def looks_like_meta_talk(text: str) -> bool:
     return False
 
 
+# 分卷分批阈值:计划章数超过它就改成「先出卷骨架、再逐卷展开」,
+# 否则一次性输出会被 max_tokens 截断(实测 999 章 → 34 卷 ≈ 8800 字,
+# 而默认 8192 tokens 只够约 6300 字,必然中途截断、JSON 括号都不闭合)。
+VOLUME_BATCH_THRESHOLD = 60
+VOLUME_CHAPTERS_PER_VOL = 30
+# 单次调用的输出预算:骨架与每批细节都用它,远小于默认 8192,
+# 但足够一批(默认 6 卷)的细节 —— 分批的意义就在这里。
+# 输出预算一律**读模型配置表**(设置页「最大输出 token」),不写死。
+#
+# 写死过 4096/8192,踩了两种坑:
+#   · 4096 对 34 卷骨架太小 → 模型思考完就吐空(返回 0 字符),表现为
+#     "点了没反应、十分钟不出结果";
+#   · 而用户在设置里把该服务配成了 384000 —— 写死值让配置形同虚设,
+#     改设置不生效。
+# 所以这里只保留**下限兜底**(配置留空时用),有配置一律听配置的。
+VOLUME_BATCH_SIZE = 6
+
+
+def volume_plan_size(drama_id: int) -> int:
+    """该书的计划章数。**统一走 _plan_scale**,不要自己另算。
+
+    此前这里另写了一套取值(读 novel_chapters 长度 / total_episodes),与
+    _plan_scale 的规则不一致 —— 后者已改为读 novel_meta.chapter_count,而这里
+    还在读 total_episodes,于是同一本书两处算出 999 与 60:分批以为只有 60 章
+    (不超阈值直接 raise),界面却显示 999。
+    """
+    return _plan_scale(drama_id, None, None)[0]
+
+
+def _volume_brief(drama_id: int, outline_chars: int = 300) -> str:
+    """分卷骨架用的**精简**上下文:书名 + 简介 + 总纲开头。
+
+    完整 _novel_settings_ctx() 有 3200+ 字符,推理型模型读完就没预算输出正文了
+    (实测 48s 后返回 0 字符)。骨架只需要"分几个卷、各卷叫什么",
+    总纲读个开头足够 —— 细节留到阶段二逐批展开时再给。
+    """
+    d = db.q1("SELECT title, novel_outline, metadata FROM dramas WHERE id=?", (drama_id,))
+    if not d:
+        return ""
+    meta = db.jload(d["metadata"], {}) or {}
+    parts = [f"书名:{d['title']}"]
+    intro = (meta.get("intro") or "").strip()
+    if intro:
+        parts.append(f"简介:{intro[:150]}")
+    outline = (d["novel_outline"] or "").strip()
+    if outline:
+        parts.append(f"总纲摘要:{outline[:outline_chars]}")
+    return "\n".join(parts)
+
+
+def draft_volume_in_batches(drama_id: int, config_id: int | None = None,
+                            on_progress=None, on_stage=None) -> list[dict]:
+    """分批起草分卷战略:骨架先行,再逐卷补细节,拼成完整的 chapters 数组。
+
+    一次性出全书分卷在章数大时不可行(输出量随章数线性增长,必然撞 max_tokens)。
+    这里拆成两阶段:
+      1. **骨架**:只要 卷名 + 章号范围,输出极短,一次就能出完;
+      2. **展开**:按批(每批 N 卷)补 goal / key_events / cliffhanger,
+         骨架已定,模型每批只看得到自己的那几卷,不会跑偏、也不会重复。
+
+    on_progress(done, total) 供 UI 显示进度;失败的单批不阻断整体,缺字段留空。
+    """
+    total_ch = volume_plan_size(drama_id)
+    if total_ch <= VOLUME_BATCH_THRESHOLD:
+        raise RuntimeError(f"章数({total_ch})未超过阈值,应走单次起草")
+    config_id = config_id or plan_config_id()
+    ctx = _novel_settings_ctx(drama_id)
+
+    # ── 阶段 1:骨架 ──
+    # 骨架只给**书名 + 总纲摘要**:完整 ctx 有 3200+ 字符,实测带上去后模型
+    # 花 48s 思考、思考完预算耗尽返回**空**(0 字符)。骨架只需要"分几个卷、
+    # 各卷叫什么",总纲读个开头就够。
+    brief = _volume_brief(drama_id)
+    skel_prompt = f"""请为下面这本书规划分卷骨架。
+
+{brief}
+
+全书共 {total_ch} 章。请**按故事的叙事结构**(幕、转折、情绪阶段、主角成长弧)
+来决定分几卷,每一卷是一个完整的叙事单元,**不要机械地按固定章数均分**。
+若内容体量确实只够写几十章,就按实际篇幅规划,并在 text 里写清实到多少章。
+
+只输出 JSON,不要任何解释:
+{{"text":"分卷说明(markdown:分几卷、每卷叙事定位、整体节奏)","chapters":[{{"title":"卷名","range":"起-止"}}]}}
+chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重不漏。"""
+    if on_stage:
+        # 骨架这一步实测要 ~22s(deepseek-v4-pro 出 34 项 JSON),
+        # 不发通知的话这段就是"点了没反应" —— 用户根本不知道在跑。
+        on_stage(tr('正在规划分卷(按叙事结构决定卷数)…'))
+    # 推理型模型偶尔返回空 content(<think> 吃满预算 / 网关抖动),重试一次;
+    # 两次都空才报错,并把响应长度带出来 —— 否则排查时只看到"生成失败"无从下手。
+    data, raw = None, ""
+    for attempt in range(2):
+        # 后台线程里的异常若不打印,界面只表现为"没反应",排查完全无从下手
+        # (实测连续三轮分卷失败,控制台一行输出都没有)
+        # **不传 max_tokens**:text_client 会自己读配置表(32768)。
+        # 此前这里显式传 _max_tokens(config_id),而 GUI 路径 config_id=None
+        # → 兜底 4096 → 覆盖了配置的大预算 → MiniMax-M3 思考完预算耗尽,
+        # 返回 0 字符(实测连续两次)。显式传小值比不传更糟。
+        raw = text_client.chat(skel_prompt, temperature=0.3,
+                               json_mode=True, config_id=config_id)
+        data = runner.extract_json(raw) or {}
+        skel = [c for c in (data.get("chapters") or []) if isinstance(c, dict) and c.get("range")]
+        if skel:
+            break
+        print(f"[novel] 分卷骨架第 {attempt + 1} 次返回 {len(raw or '')} 字符,重试", flush=True)
+    if not skel:
+        raise RuntimeError(
+            f"分卷骨架生成失败(重试 2 次,末次响应 {len(raw or '')} 字符,"
+            f"前 120 字:{raw[:120]!r})")
+
+    if on_stage:
+        on_stage(tr('卷骨架完成,共 {n} 卷,开始逐批补细节…').format(n=len(skel)))
+    # ── 阶段 2:逐批展开 ──
+    batch = VOLUME_BATCH_SIZE
+    done = 0
+    for i in range(0, len(skel), batch):
+        group = skel[i:i + batch]
+        listing = "\n".join(f"{n}. 卷名「{c.get('title')}」 覆盖第 {c.get('range')} 章"
+                            for n, c in enumerate(group, i + 1))
+        if on_stage:
+            on_stage(tr('正在补第 {a}-{b} 卷的细节…')
+                     .format(a=i + 1, b=min(i + batch, len(skel))))
+        exp_prompt = f"""为下面这几卷补写分卷细节(其余卷不用管)。全书共 {total_ch} 章。
+
+{ctx}
+
+{listing}
+
+只输出 JSON,不要解释:
+{{"chapters":[{{"title":"卷名","range":"章号范围","goal":"本卷目标(60字内)","
+"key_events":["关键事件1","关键事件2"],"cliffhanger":"卷末钩子"}}]}}
+必须正好 {len(group)} 项,title 与 range 与上面给的完全一致。"""
+        try:
+            r2 = text_client.chat(exp_prompt, temperature=0.4,
+                                  json_mode=True, config_id=config_id)
+            d2 = runner.extract_json(r2) or {}
+            got = [c for c in (d2.get("chapters") or []) if isinstance(c, dict)]
+
+            def _norm_range(v) -> str:
+                """「第 1-120 章」「1-120」「1~120」统一成「1-120」。
+
+                模型写 range 的格式极不统一(带"第…章"、空格、全角横线都见过),
+                精确字符串匹配必然频繁落空 —— 实测 6 卷细节因此全部被丢弃,
+                界面只标红「缺细节」。
+                """
+                nums = re.findall(r"\d+", str(v or ""))
+                return "-".join(nums) if len(nums) >= 2 else str(v or "").strip()
+
+            by_range = {_norm_range(c.get("range")): c for c in got if c.get("range")}
+            by_title = {str(c.get("title") or "").strip(): c for c in got if c.get("title")}
+            for idx, c in enumerate(group):
+                hit = (by_range.get(_norm_range(c.get("range")))
+                       or by_title.get(str(c.get("title") or "").strip())
+                       or (got[idx] if idx < len(got) else None))   # 顺序兜底
+                if hit:
+                    c.update({k: v for k, v in hit.items() if v})
+        except Exception as exc:  # noqa: BLE001
+            print(f"[novel] 分卷第 {i + 1}-{i + len(group)} 卷细节失败({exc}),保留骨架", flush=True)
+        done += len(group)
+        if on_progress:
+            on_progress(done, len(skel))
+    return skel
+
+
+
+_VOLUME_META_KEY = "volume_chapters"      # 分卷结构(metadata 内,与 novel_chapters 分开)
+
+
+def load_volume_chapters(drama_id: int) -> list[dict]:
+    """读分卷结构。与「章节计划」(novel_chapters)是两个东西,不共用。"""
+    row = db.q1("SELECT metadata FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload((row or {}).get("metadata"), {}) or {}
+    return meta.get(_VOLUME_META_KEY) or []
+
+
+def save_volume_chapters(drama_id: int, chapters: list[dict]) -> None:
+    """写分卷结构到 metadata,不碰 novel_chapters。"""
+    row = db.q1("SELECT metadata FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload((row or {}).get("metadata"), {}) or {}
+    meta[_VOLUME_META_KEY] = chapters
+    db.ex("UPDATE dramas SET metadata=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
+
+
 def persist_draft(drama_id: int, key: str, raw: str) -> dict:
     """解析并落库一次起草结果;返回 {key, field, text, extra}。"""
     spec = SECTION_SPEC.get(key)
@@ -1138,9 +1542,10 @@ def persist_draft(drama_id: int, key: str, raw: str) -> dict:
     if key == "volume" and structured:
         payload = [structured] if isinstance(structured, list) else (structured.get("chapters") or [])
         if payload:
-            db.ex("UPDATE dramas SET novel_chapters=?, updated_at=? WHERE id=?",
-                  (json.dumps(payload, ensure_ascii=False), ts, drama_id))
-            extra = f",已重排 {len(payload)} 章计划"
+            # 写 metadata 而不是 novel_chapters —— 后者是「章节计划」的字段,
+            # 共用会导致生成分卷后一点章节计划就把分卷清空(实测)。
+            save_volume_chapters(drama_id, payload)
+            extra = f",已写入 {len(payload)} 卷结构"
     db.ex(f"UPDATE dramas SET {spec['field']}=?, updated_at=? WHERE id=?",
           (text, ts, drama_id))
     if isinstance(structured, dict) and key in ("world", "contract"):
@@ -1162,6 +1567,9 @@ def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict
     所以这里把两件事自己做掉:上下文**直接内联**进提示词(替代 read_novel_context),
     模型**直接返回内容**由本函数写库(替代 save_novel_settings)。
     """
+    # 规划侧走「规划模型」(实测 deepseek-v4-pro 的结构化输出更规整:
+    # 分卷 7 卷的目标/关键事件/钩子字段完整;minimax 偶有只吐散文)
+    config_id = config_id or plan_config_id()
     raw = runner.run_agent("novel_planner", draft_prompt(drama_id, key),
                            temperature=0.6, config_id=config_id,
                            system=_draft_system(SECTION_SPEC[key]["name"]))
