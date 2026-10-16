@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import uuid
+import pathlib
 
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 import requests
@@ -403,15 +404,27 @@ class StockPhotoDialog(QDialog):
         return str(out) if sp.download(url, out) else ""
 
     def _download(self, url: str):
-        """下载原图到本地静态目录,完成后 accept。
+        """把选中的图落地到本地静态目录,完成后 accept。
 
-        下载走后台线程:原图常有几百 KB 到几 MB,同步下会把窗口冻住,
-        用户点了没反应以为程序卡死。
+        两条路:**本地路径直接复制**(换画风的产物就是本地文件 —— 走 HTTP
+        下载会 requests.get 一个盘符路径,必败,表现为点「使用这张」毫无
+        反应、图带不进聊天,实测);远程 URL 才走后台线程下载。
         """
-        if self._dl.isRunning():
-            return
         out_dir = config.STATIC_DIR / "uploads"
         out_dir.mkdir(parents=True, exist_ok=True)
+        if url and not str(url).startswith(("http://", "https://")):
+            import shutil
+            src = pathlib.Path(url)
+            if not src.exists():
+                err(tr("图片下载失败,请换一张"))
+                return
+            out = out_dir / f"stock_{uuid.uuid4().hex[:10]}{src.suffix or '.png'}"
+            shutil.copy2(src, out)
+            self.local_path = str(out)
+            self.accept()
+            return
+        if self._dl.isRunning():
+            return
         ext = ".jpg"
         for cand in (".jpg", ".png", ".jpeg", ".webp"):
             if url.split("?")[0].lower().endswith(cand):
