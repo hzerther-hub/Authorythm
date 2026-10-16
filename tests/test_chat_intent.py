@@ -257,3 +257,43 @@ def test_web_search_parses_bing_html(monkeypatch):
     monkeypatch.setattr(WS, "_fetch_page", lambda url: "")
     hits2, err2 = WS.search("高斯模糊", use_cache=False)
     assert hits2 == [] and "无结果" in err2
+
+
+def test_llm_extract_photo_query(monkeypatch):
+    """找图关键词主路径走文本模型;think 块剥掉、取最后一行;失败回退正则。"""
+    import app.ai.text_client as tc
+    from app.ui.chat_edit_drawer import _extract_photo_query, _llm_extract_photo_query
+
+    monkeypatch.setattr(
+        tc, "chat",
+        lambda *a, **k: "<think>thinking about the request</think>\n\n美女")
+    assert _llm_extract_photo_query("查美女图", None) == "美女"
+
+    # think 把输出吃光(截断)→ None,调用方落回正则兜底
+    monkeypatch.setattr(tc, "chat", lambda *a, **k: "<think>只想到一半")
+    assert _llm_extract_photo_query("查美女图", None) is None
+    assert _extract_photo_query("查美女图") == "美女"
+
+    # 模型抛异常 → None 不外溢
+    def boom(*a, **k):
+        raise RuntimeError("no model")
+    monkeypatch.setattr(tc, "chat", boom)
+    assert _llm_extract_photo_query("查美女图", None) is None
+
+
+def test_find_photo_query_variants():
+    """正则兜底:查/寻/哪有/画/照片 各种口语变体都要剥出干净关键词。"""
+    from app.ui.chat_edit_drawer import _extract_photo_query, _looks_like_find_photo
+
+    cases = [("查美女图", "美女"), ("查一下美女图片", "美女"),
+             ("查询雪山风景图", "雪山风景"), ("查到几张赛博朋克图", "赛博朋克"),
+             ("帮我查点赛博朋克壁纸", "赛博朋克"), ("找到美女图片", "美女"),
+             ("我想找一张美女图片", "美女"), ("搜一下雪山风景图", "雪山风景"),
+             ("来点古风壁纸", "古风"), ("寻几张国画照片", "国画"),
+             ("哪有赛博朋克壁纸", "赛博朋克"), ("哪里有山水画图片", "山水画"),
+             ("查山水画照片", "山水画"), ("查国画", "国画")]
+    for t, want in cases:
+        assert _looks_like_find_photo(t), f"没判成找图:{t}"
+        assert _extract_photo_query(t) == want, f"关键词剥错:{t}"
+    for t in ("改成黑白", "把图片换成黑白的", "什么是高斯模糊?"):
+        assert not _looks_like_find_photo(t), f"误判找图:{t}"

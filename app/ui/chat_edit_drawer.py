@@ -113,8 +113,10 @@ _KNOWLEDGE_HINTS = ("什么是", "什么叫", "是什么意思", "原理", "有�
 _IMAGE_REFERS = ("这张", "这图", "此图", "画面", "图里", "图中", "照片里",
                  "它", "当前图", "这张照片")
 _FIND_PHOTO_RE = re.compile(
-    r"(想找|帮我找|帮我搜|帮忙找|找一?[张个点些]|搜一?下|搜个?|搜图|来一?[张点]|换个?|换一?[张批])"
-    r".{0,16}(照片|图片|壁纸|素材|图)")
+    r"(想找|帮我找|帮我搜|帮忙找|找一?[张个点些]|找到|搜一?下|搜个?|搜图|来一?[张点]"
+    r"|查一?下|查询|查到|查个?|查|寻一?[张个点些]?|哪里?有|有没有"
+    r"|换个?|换一?[张批])"
+    r".{0,16}(照片|图片|壁纸|素材|画|图)")
 
 
 def _looks_like_knowledge(text: str) -> bool:
@@ -142,13 +144,59 @@ def _looks_like_find_photo(text: str) -> bool:
 
 
 def _extract_photo_query(text: str) -> str:
-    """从找图消息里剥出搜索关键词:「我想找一张美女图片」→「美女」。"""
+    """正则兜底:从找图消息里剥出搜索关键词(「查美女图」→「美女」)。
+
+    口语变体无穷多(查/寻/哪有/画/照片…),靠正则追不完 —— 主路径是
+    `_llm_extract_photo_query` 用文本模型提取,这里只在模型不可用时兜底。
+    交替分支**长词必须放前面**:「查」排在「查询」前会剥成「询雪山」。
+    """
     t = (text or "").strip()
-    t = re.sub(r"(我想|我想要|我想找|帮我|帮忙|给我|麻烦|请|想|要|来|换个?|换一?[张批]"
-               r"|找一?[张个点些]|找|搜一?下|搜个?|搜)", "", t)
-    t = re.sub(r"(的)?(图片|照片|图像|壁纸|素材|图)", "", t)
+    t = re.sub(r"(我想|我想要|我想找|帮我|帮忙|给我|麻烦|请|想|要|来一?[张点些]?|来"
+               r"|换个?|换一?[张批]"
+               r"|查一?下|查询|查到|查[张个点些]?"
+               r"|找到|搜到|搜一?下|搜个?|搜"
+               r"|寻一?[张个点些]?|寻|哪里?有|有没有"
+               r"|找一?[张个点些]|找)", "", t)
+    # 量词:查到几张/找一张…(数字词开头才剥,免得吃掉关键词本身)
+    t = re.sub(r"[一两二三四五六七八九十几\d]+[张个幅组套点些]", "", t)
     t = re.sub(r"[看看一下呗吧啊呀呢。,,,?!?!?]", "", t)
+    # 复合后缀(图片/照片/壁纸…)剥完就到此为止 —— 「山水画图片」是「山水画」
+    # +「图片」,不能再把「画」剥掉;原话没带复合后缀才处理光杆「图/画」
+    # (「美女图」→「美女」;「国画」len≤2 整词保留)
+    t = re.sub(r"(的)?(图片|照片|图像|壁纸|素材)$", "", t)
+    if not re.search(r"(图片|照片|图像|壁纸|素材)$", (text or "").strip()):
+        if len(t) > 2 and t.endswith(("图", "画")):
+            t = t[:-1]
     return t.strip() or "风景"
+
+
+def _llm_extract_photo_query(text: str, llm_id) -> str | None:
+    """文本模型提取找图关键词(主路径,口语变体不用挨个写正则)。
+
+    Jev 干不了这活 —— 它只有打分原语、**不吐字**(AGENTS.md),提取关键词
+    必须用文本模型。失败/没配/剥完为空一律返回 None,调用方落回正则兜底。
+    """
+    try:
+        from ..ai import text_client as _tc
+        from ..ai.photocraft_bridge import _strip_reasoning
+        raw = _tc.chat(
+            f"用户消息:{text}",
+            system=("从用户消息里提取要搜索的图片关键词,只输出关键词本身。"
+                    "不要动词(查/搜/找/寻/看/来/换)、不要量词(一张/几张/点/些)、"
+                    "不要「图/图片/照片/壁纸/素材/画」这类后缀。"
+                    "例:「查美女图」→美女;「哪有赛博朋克壁纸」→赛博朋克;"
+                    "「寻几张国画照片」→国画。提取不出就输出:风景"),
+            config_id=llm_id, temperature=0.2, timeout=30)
+        raw = raw or ""
+        if "<think>" in raw and "</think>" not in raw:
+            return None          # think 没闭合 = 只输出了思考就被截断,没有关键词
+        q = _strip_reasoning(raw).strip().strip('"「」『\'')
+        # 推理模型的 think 可能吃掉大半输出,剥完取最后一行非空文本 —— 关键词
+        # 就一个词,最后一行就是它
+        lines = [x.strip().strip('"「」『\'') for x in q.splitlines() if x.strip()]
+        return (lines[-1] if lines else None) or None
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _knowledge_query(text: str) -> str:
@@ -1361,7 +1409,7 @@ class ChatEditPanel(QWidget):
             image_urls = None
         try:
             content = _tc.chat(user_prompt, system=sys_p, config_id=llm_id,
-                              temperature=0.6, max_tokens=600, timeout=60,
+                              temperature=0.6, timeout=60,
                               image_urls=image_urls)
             # 推理型模型(minimax-M3 / glm)会先吐 <think>…</think> 再给正文,
             # 不剥的话思考过程原样显示在气泡里(用户实测见过英文 think 块)。
@@ -1386,10 +1434,14 @@ class ChatEditPanel(QWidget):
             return {"error": str(exc)[:240], "user_text": user_text,
                     "engine_label": "chat"}
 
-    def _find_photo_result(self, text: str) -> dict:
-        """找图意图的 job 结果:done()(主线程)据此弹图库搜索。"""
-        return {"kind": "find_photo", "query": _extract_photo_query(text),
-                "user_text": text}
+    def _find_photo_result(self, text: str, llm_id=None) -> dict:
+        """找图意图的 job 结果:done()(主线程)据此弹图库搜索。
+
+        关键词主路径走文本模型提取(口语变体不用挨个写正则),模型不可用
+        落回正则兜底。
+        """
+        query = _llm_extract_photo_query(text, llm_id) or _extract_photo_query(text)
+        return {"kind": "find_photo", "query": query, "user_text": text}
 
     def _open_stock_with_query(self, query: str):
         """弹出图库搜索并预填关键词自动搜(done 在主线程,弹窗安全)。"""
@@ -1418,7 +1470,7 @@ class ChatEditPanel(QWidget):
             try:
                 raw = _tc.chat(f"用户问题:{text}\n\n搜索结果:\n{ctx}",
                                system=sys_p, config_id=llm_id, temperature=0.4,
-                               max_tokens=900, timeout=60)
+                               timeout=60)
             except _tc.AIError as exc:
                 return {"error": str(exc)[:240], "user_text": text,
                         "engine_label": "web_search"}
@@ -1432,7 +1484,7 @@ class ChatEditPanel(QWidget):
             raw = _tc.chat(
                 text, system=("你是图片处理知识助手,用中文简洁回答。"
                               "注意:当前无法联网检索,不确定的内容请明确说明。"),
-                config_id=llm_id, temperature=0.4, max_tokens=700, timeout=60)
+                config_id=llm_id, temperature=0.4, timeout=60)
         except _tc.AIError as exc:
             return {"error": f"联网搜索失败({err});文本模型也不可用:{str(exc)[:120]}",
                     "user_text": text, "engine_label": "web_search"}
@@ -1484,7 +1536,7 @@ class ChatEditPanel(QWidget):
             # ① 找图/知识问句:确定性规则直判,不过 Jev,也不要求已选图
             #    (问「什么是高斯模糊」不需要先放一张图进来)
             if _looks_like_find_photo(text):
-                return self._find_photo_result(text)
+                return self._find_photo_result(text, llm_id)
             if _looks_like_knowledge(text):
                 return self._knowledge_reply(text, llm_id)
             # ② 批分析命令(带「分析」字样,须在问句规则前截走)
@@ -1514,7 +1566,7 @@ class ChatEditPanel(QWidget):
             if intent == _INTENT_KNOWLEDGE:
                 return self._knowledge_reply(text, llm_id)
             if intent == _INTENT_FIND_PHOTO:
-                return self._find_photo_result(text)
+                return self._find_photo_result(text, llm_id)
 
             # edit 路径:必须有图。JEV 已判定为改图,若用户没选图就明确报错
             if not in_path or not Path(in_path).exists():
