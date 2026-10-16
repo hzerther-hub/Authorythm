@@ -867,9 +867,17 @@ class ChatEditPanel(QWidget):
         self.wm_input.setClearButtonEnabled(True)
         text_input_row.addWidget(self.wm_input)
         text_vlay.addLayout(text_input_row)
-        # 样式行:预设 + 描边宽 + 描边色 + 主色
+        self.wm_stack.addWidget(text_page)
+        # 样式行(第二行,仅文字模式):预设 + 字体 + 描边宽 + 描边色 + 主色
         # 选预设会自动套用「描边宽/描边色/主色」三件套,后续用户手动调会覆盖预设
-        text_style_row = QHBoxLayout()
+        # 样式行与内容行是**两个联动堆栈**:旧实现把样式行塞在内容页里、
+        # 而尺寸/位置是内容堆栈的兄弟控件,堆栈一两行高,兄弟控件全顶到
+        # 第一行右侧,整块控件满宽乱飘(用户实测截图)。现在按行拆:
+        # 第 1 行 模式+内容,第 2 行 样式(文字模式)/PNG 说明,第 3 行 参数+按钮。
+        self.wm_style_stack = QStackedWidget()
+        text_style_page = QWidget()
+        text_style_row = QHBoxLayout(text_style_page)
+        text_style_row.setContentsMargins(0, 0, 0, 0)
         text_style_row.setSpacing(4)
         # 预设:默认值(None=中心像素反相)。每项 = (标签, {main, stroke, width})。
         # main/stroke 是 RGBA,alpha 越低越通透 —— 压在画面上的水印不宜太实,
@@ -917,29 +925,19 @@ class ChatEditPanel(QWidget):
         self.wm_font.setToolTip("文字字体(取系统能扫到的 .ttf/.otf/.ttc)")
         self.wm_font.setMinimumWidth(96)
         text_style_row.addWidget(self.wm_font)
-        # 描边宽(像素)—— 加显式「宽 N」标签,跟 QSpinBox 一起看才不歧义
-        stroke_lbl = QLabel("宽")
+        # 描边宽(像素)—— 标签写「描边」与第 3 行的「尺寸」区分开
+        stroke_lbl = QLabel("描边")
         stroke_lbl.setStyleSheet("color:#64748b; font-size:11px;")
         text_style_row.addWidget(stroke_lbl)
         self.wm_stroke_w = QSpinBox()
         self.wm_stroke_w.setRange(0, 6)
         self.wm_stroke_w.setValue(1)
         self.wm_stroke_w.setSuffix("px")
-        self.wm_stroke_w.setFixedWidth(58)
+        self.wm_stroke_w.setFixedWidth(87)         # 参数控件统一加宽 50%
         self.wm_stroke_w.setToolTip("描边宽度(0=无描边)")
         text_style_row.addWidget(self.wm_stroke_w)
-        # 透明度(0-100%,默认 100 = 不透明;PNG 模式缩放 RGBA alpha,
-        # 文字模式按比例缩放主色/描边色的 alpha)
-        opa_lbl = QLabel("透")
-        opa_lbl.setStyleSheet("color:#64748b; font-size:11px;")
-        text_style_row.addWidget(opa_lbl)
-        self.wm_opacity = QSpinBox()
-        self.wm_opacity.setRange(10, 100)
-        self.wm_opacity.setValue(100)
-        self.wm_opacity.setSuffix("%")
-        self.wm_opacity.setFixedWidth(72)
-        self.wm_opacity.setToolTip("水印透明度(10~100,数字越小越透)")
-        text_style_row.addWidget(self.wm_opacity)
+        # 描边色 + 主色按钮:之前 28x22 太窄,用户点不上;改成 36x24 + 文字「色」
+        # 让点击区够大,按钮底色就是当前色,鼠标移上去 tooltip 显完整说明
         # 描边色 + 主色按钮:之前 28x22 太窄,用户点不上;改成 36x24 + 文字「色」
         # 让点击区够大,按钮底色就是当前色,鼠标移上去 tooltip 显完整说明
         for color_attr, label, pick_method, default_name in (
@@ -955,8 +953,8 @@ class ChatEditPanel(QWidget):
             btn.clicked.connect(getattr(self, pick_method))
             setattr(self, color_attr, btn)
             text_style_row.addWidget(btn)
-        text_vlay.addLayout(text_style_row)
-        self.wm_stack.addWidget(text_page)
+        text_style_row.addStretch(1)
+        self.wm_style_stack.addWidget(text_style_page)
         # 初始化颜色按钮的填色:默认预设(中心反相)不给具体色,先给一个默认色
         self._wm_stroke_qc = QColor(0, 0, 0, 200)
         self._wm_main_qc = QColor(255, 255, 255, 230)
@@ -980,21 +978,50 @@ class ChatEditPanel(QWidget):
         img_lay.addStretch(1)
         self.wm_stack.addWidget(img_page)
         wm_row.addWidget(self.wm_stack, 1)
-        # 宽度(两模式共用):
-        #   文字模式 = 字号占图短边的百分比(40% / 100 = 图短边 0.4 倍字号)
-        #   图片模式 = 水印图宽度占图短边的百分比(20% / 100 = 图短边 0.2 倍宽)
-        # 默认 12% —— 用户实测反馈「20% 看起来占了图的一半」,小点更不抢戏
-        width_lbl = QLabel("宽")
-        width_lbl.setStyleSheet("color:#64748b; font-size:11px;")
-        wm_row.addWidget(width_lbl)
+        root.addLayout(wm_row)
+
+        # 第 2 行:样式(PNG 模式显示说明,文字模式显示预设/字体/描边)
+        img_style_page = QWidget()
+        im_l = QHBoxLayout(img_style_page)
+        im_l.setContentsMargins(0, 0, 0, 0)
+        im_hint = QLabel("PNG 按原样叠加(保留透明通道);尺寸 / 透明度 / 位置见下行")
+        im_hint.setStyleSheet("color:#94a3b8; font-size:11px;")
+        im_l.addWidget(im_hint)
+        im_l.addStretch(1)
+        self.wm_style_stack.addWidget(img_style_page)
+        root.addWidget(self.wm_style_stack)
+
+        # 第 3 行:输出参数(两模式共用)+ 加水印按钮靠右 —— 旧布局把尺寸/位置
+        # 塞在内容堆栈的兄弟位,被顶到第一行右侧;加水印按钮又孤零零居中一行。
+        # 透明度两模式共用,也从文字样式行挪到这里。
+        out_row = QHBoxLayout()
+        out_row.setSpacing(4)
+        out_lbl = QLabel("尺寸")
+        out_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        out_row.addWidget(out_lbl)
         self.wm_scale = QSpinBox()
         self.wm_scale.setRange(3, 80)
         self.wm_scale.setValue(12)
         self.wm_scale.setSuffix("%")
-        self.wm_scale.setFixedWidth(64)            # 加宽 6px,「N%」更完整可见
+        self.wm_scale.setFixedWidth(96)            # 参数控件统一加宽 50%,数值完整可见
         self.wm_scale.setToolTip("水印占图短边的百分比(文字=字号;PNG=宽度)")
-        wm_row.addWidget(self.wm_scale)
+        out_row.addWidget(self.wm_scale)
+        # 透明度(0-100%,默认 100 = 不透明;PNG 模式缩放 RGBA alpha,
+        # 文字模式按比例缩放主色/描边色的 alpha)—— 两模式共用,放输出行
+        opa_lbl = QLabel("透明度")
+        opa_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        out_row.addWidget(opa_lbl)
+        self.wm_opacity = QSpinBox()
+        self.wm_opacity.setRange(10, 100)
+        self.wm_opacity.setValue(100)
+        self.wm_opacity.setSuffix("%")
+        self.wm_opacity.setFixedWidth(108)
+        self.wm_opacity.setToolTip("水印透明度(10~100,数字越小越透)")
+        out_row.addWidget(self.wm_opacity)
         # 9 宫格位置(与文字/图片共用)
+        pos_lbl = QLabel("水印位置")
+        pos_lbl.setStyleSheet("color:#64748b; font-size:11px;")
+        out_row.addWidget(pos_lbl)
         self.wm_pos = QComboBox()
         for label, x, y in (
                 ("左上", 0.08, 0.10), ("中上", 0.5, 0.06), ("右上", 0.92, 0.10),
@@ -1003,22 +1030,18 @@ class ChatEditPanel(QWidget):
         ):
             self.wm_pos.addItem(label, (x, y))
         self.wm_pos.setCurrentIndex(8)
-        wm_row.addWidget(self.wm_pos)
-        root.addLayout(wm_row)
-
-        # 加水印按钮单独一行 —— 设置项(模式/文字/PNG/宽度/位置)挤一行,
-        # 按钮独占下一行,按下后「模式+文字/PNG+宽度+位置」整体生效;视觉上更清楚
-        # 这是个主操作,不该跟下拉挤一起。
-        btn_row = QHBoxLayout()
-        btn_row.addStretch(1)
+        self.wm_pos.setFixedWidth(110)
+        out_row.addWidget(self.wm_pos)
+        out_row.addStretch(1)
+        # 加水印:参数行的主操作,靠右跟参数连成一组(旧布局孤零零居中一行,
+        # 参数控件则满宽乱飘 —— 用户要求排整齐)
         self.wm_btn = QPushButton("💧 " + tr("chat_watermark_apply"))
         self.wm_btn.setCursor(Qt.PointingHandCursor)
         self.wm_btn.setFixedHeight(28)
         self.wm_btn.setObjectName("primary")
         self.wm_btn.clicked.connect(self._add_watermark)
-        btn_row.addWidget(self.wm_btn)
-        btn_row.addStretch(1)
-        root.addLayout(btn_row)
+        out_row.addWidget(self.wm_btn)
+        root.addLayout(out_row)
         # 记录当前 PNG 路径(QStackedWidget 内 file_lab 显示)
         self._wm_image_path: str | None = None
 
@@ -1114,13 +1137,16 @@ class ChatEditPanel(QWidget):
         from ..ai.photocraft_bridge import resolve_cli_path
         path = resolve_cli_path()
         self.path_lab.setText(path or "(未配置)")
-        self.send_btn.setEnabled(ok and self._current_image is not None and not self._busy)
+        # 发送不再要求已选图:问图/知识/找图/联网查询/闲聊没图也能用。
+        # 改图指令没图时由 _send 拦下并提示(见那里的守卫)。
+        self.send_btn.setEnabled(ok and not self._busy)
         # 未配 → 只显示内嵌配置卡;配了 → 正常图像工作台
         self.config_card.setVisible(not ok)
         # 未配时把手动 / 桌面端 / 输入区都禁用,避免用户点空炮
         self.manual_btn.setEnabled(ok)
-        for w in (self.input, self.save_btn):
-            w.setEnabled(ok and self._current_image is not None)
+        self.input.setEnabled(ok)
+        # 「保存到结果区」依赖当前图,保持原判
+        self.save_btn.setEnabled(ok and self._current_image is not None)
 
     def set_engine_mode(self, mode: str):
         """更新引擎模式(由设置对话框写入后回调)。"""
@@ -1586,12 +1612,14 @@ class ChatEditPanel(QWidget):
             self.input.clear()
             self._append_help()
             return
-        # chat-edit 整面板就是围着当前图转的,改图/聊天都要先选图 —— 用户实测
-        # 反馈「聊天还是要有图片」。但**找图和知识问句恰恰不需要图**(没图才会
-        # 去搜图/查知识),这两类放行。
+        # 无图守卫只拦**明确的改图指令**(含编辑动词、又不属于任何非改图意图)
+        # —— 问图/知识/找图/联网查询/闲聊没图也照发。灰色地带(没编辑动词也
+        # 没有疑问特征的消息)放行交给 Jev;若 Jev 判成改图,job 里的编辑路径
+        # 会以气泡形式提示「请先加载一张图」,比直接吞掉消息友好。
         if (not self._current_image or not Path(self._current_image).exists()) \
-                and not _looks_like_find_photo(text) and not _looks_like_knowledge(text) \
-                and not _looks_like_web_query(text):
+                and any(v in text for v in _EDIT_VERBS) \
+                and not (_looks_like_find_photo(text) or _looks_like_knowledge(text)
+                         or _looks_like_web_query(text) or _looks_like_analysis(text)):
             self.status_lab.setText(tr("chat_edit_msg_image_missing"))
             return
 
@@ -1966,7 +1994,8 @@ class ChatEditPanel(QWidget):
 
     def _set_busy(self, on: bool):
         self._busy = on
-        self.send_btn.setEnabled(not on and self._engine.ready and self._current_image is not None)
+        # 发送键不再依赖当前图(无图可用非改图意图,见 _send 的守卫)
+        self.send_btn.setEnabled(not on and self._engine.ready)
         self.input.setReadOnly(on)
         if on:
             self.send_btn.setText(tr("chat_edit_thinking"))
@@ -2176,8 +2205,9 @@ class ChatEditPanel(QWidget):
             self._sync_wm_color_btns()
 
     def _on_wm_mode_changed(self, _idx: int):
-        """模式切换:文字 ↔ PNG,同步 QStackedWidget 当前页 + 按钮状态。"""
+        """模式切换:文字 ↔ PNG,同步内容堆栈与样式堆栈(两行一起换页)。"""
         self.wm_stack.setCurrentIndex(_idx)
+        self.wm_style_stack.setCurrentIndex(_idx)
 
     # ── 跳转 / 桌面端 ──
     def _save_to_main(self):
