@@ -5663,7 +5663,17 @@ class EpisodePage(QWidget):
 
         缺失/失败(默认)只补空镜与重跑失败的 —— 不重复烧已有视频的额度;
         「全部」连已完成的也重新生成(明确要求重出时才选)。
+
+        任何异常都要弹出来:此前提交前的崩溃(如 TypeError)被 Qt 事件循环
+        吞掉,任务行都不建,表现为「点了没反应/失败但查不到原因」(实测)。
         """
+        try:
+            self._batch_video_impl()
+        except Exception as exc:  # noqa: BLE001
+            from .toast import err as _err
+            _err(f"批量视频无法开始:{str(exc)[:200]}")
+
+    def _batch_video_impl(self):
         all_ids = [dict(r) for r in db.q(
             "SELECT id, storyboard_number, video_url, composed_video_url, status FROM storyboards "
             "WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,))]
