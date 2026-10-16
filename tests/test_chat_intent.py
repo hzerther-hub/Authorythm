@@ -106,3 +106,60 @@ def test_chat_reply_strips_reasoning_block(monkeypatch):
     monkeypatch.setattr(tc, "chat", lambda *a, **k: "<think>思考到一半")
     res2 = panel._chat_reply("问", "", None, "smart")
     assert "思考到一半" not in res2["content"]
+
+
+def _fake_jev_shortcut(choice, prob):
+    """构造 answers.shortcut 的真实响应形态(对象,答案在 choice 字段)。"""
+    return {"answers": {"shortcut": {
+        "type": "choice", "choice": choice, "confidence": prob,
+        "probabilities": {choice: prob, "none": round(1 - prob, 2)}}}}
+
+
+def test_jev_shortcut_match_accepts_confident_variant(monkeypatch):
+    """「改黑白」→「改成黑白」:白名单漏掉的口语变体由 Jev 对上正典命令。"""
+    import app.ai.jev_client as jm
+    from app.ui.chat_edit_drawer import _jev_shortcut_match
+
+    monkeypatch.setattr(jm.JevClient, "is_configured", lambda self: True)
+    monkeypatch.setattr(jm.JevClient, "decide",
+                        lambda self, s, q: _fake_jev_shortcut("改成黑白", 0.9))
+    assert _jev_shortcut_match("改黑白") == "改成黑白"
+
+
+def test_jev_shortcut_match_rejects_low_confidence_and_none(monkeypatch):
+    """低置信 / 选了 none / 未配 / 异常 一律 None(软建议器契约)。"""
+    import app.ai.jev_client as jm
+    from app.ui.chat_edit_drawer import _jev_shortcut_match
+
+    monkeypatch.setattr(jm.JevClient, "is_configured", lambda self: True)
+    monkeypatch.setattr(jm.JevClient, "decide",
+                        lambda self, s, q: _fake_jev_shortcut("改成黑白", 0.4))
+    assert _jev_shortcut_match("改黑白") is None, "低于 0.6 不该猜"
+
+    monkeypatch.setattr(jm.JevClient, "decide",
+                        lambda self, s, q: _fake_jev_shortcut("none", 0.95))
+    assert _jev_shortcut_match("给我讲个笑话") is None
+
+    monkeypatch.setattr(jm.JevClient, "is_configured", lambda self: False)
+    assert _jev_shortcut_match("改黑白") is None
+
+    monkeypatch.setattr(jm.JevClient, "is_configured", lambda self: True)
+    monkeypatch.setattr(jm.JevClient, "decide", lambda self, s, q: None)
+    assert _jev_shortcut_match("改黑白") is None
+
+    def boom(self, s, q):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(jm.JevClient, "decide", boom)
+    assert _jev_shortcut_match("改黑白") is None
+
+
+def test_shortcut_replay_hits_whitelist():
+    """正典命令必须能被白名单确定性命中 —— Jev 挑完重放才算数。"""
+    from app.ai.photocraft_bridge import ChatEditEngine, Step
+    from app.ui.chat_edit_drawer import _JEV_SHORTCUTS
+
+    eng = ChatEditEngine()
+    for canon in list(_JEV_SHORTCUTS)[:6]:
+        steps, label, note = eng.interpret(canon, image_url="", mode="whitelist",
+                                           llm_config_id=None)
+        assert steps, f"正典命令「{canon}」白名单没命中,Jev 挑了也白挑(note={note})"

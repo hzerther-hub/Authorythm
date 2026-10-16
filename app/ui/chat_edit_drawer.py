@@ -93,6 +93,77 @@ def _looks_like_analysis(text: str) -> bool:
     return ("?" in t or "？" in t or any(h in t for h in _QUESTION_HINTS))
 
 
+# 快捷命令的「正典清单」:白名单没命中时,让 Jev 判断用户消息跟哪条最接近。
+# 只收**无参数歧义**的命令(带具体数值的按常见默认值给),criteria 文案写给
+# Jev 看语义,执行时重放正典命令本身 —— 白名单会对正典命令确定性命中。
+# 实测动机:「改黑白」白名单没命中(规则只认 改成黑白/改为黑白/黑白化/去色),
+# 而 Jev 能判出它跟「改成黑白」是同一件事(本机实测 choice=改成黑白)。
+_JEV_SHORTCUTS = {
+    "改成黑白": "把图片转成黑白/去色/变灰度",
+    "反色": "反相/负片/底片效果",
+    "亮度+30": "把图片调亮/提亮",
+    "亮度-30": "把图片调暗/压暗",
+    "对比+20": "增强对比/更通透",
+    "对比-20": "减弱对比/变平",
+    "饱和度+30": "颜色更浓/更鲜艳",
+    "饱和度-40": "颜色变淡/降低鲜艳度",
+    "曝光+10": "增加曝光/高光提亮",
+    "顺时针旋转90": "图片顺时针转 90 度/向右转",
+    "逆时针旋转90": "图片逆时针转 90 度/向左转",
+    "旋转180": "图片倒过来/转 180 度",
+    "水平翻转": "左右镜像/水平镜像",
+    "垂直翻转": "上下翻转/垂直镜像",
+    "高斯模糊 5": "把图片模糊/虚化背景",
+    "锐化": "让图片更清晰/细节更锐",
+    "磨皮": "皮肤柔化/美肤/去瑕疵感",
+    "去雾": "去雾感/更通透清晰",
+    "胶片感": "胶片色调滤镜/复古色彩",
+    "暖色调": "暖色滤镜/偏黄偏暖",
+    "冷色调": "冷色滤镜/偏蓝偏冷",
+    "裁掉透明边": "裁剪掉四周的透明/空白边缘",
+}
+
+# 概率低于这条就当 Jev 没说话 —— 对齐视频路由的低置信纪律,宁可落到
+# 带图问答兜底,也不猜错命令白花一次用户的图
+_JEV_SHORTCUT_MIN_PROB = 0.6
+
+
+def _jev_shortcut_match(text: str) -> str | None:
+    """白名单没命中时,问 Jev「这条消息跟哪条快捷命令最接近」。
+
+    choice 原语天然适合 N 选一。任何失败(未配/挂了/低置信/选了 none)
+    一律返回 None,调用方落到带图问答兜底 —— 软建议器契约,绝不打断业务。
+    注意 answers.shortcut 是对象,答案在 `choice` 字段(intents 同款坑)。
+    """
+    from ..ai.jev_client import JevClient
+    try:
+        client = JevClient()
+        if not client.is_configured() or not (text or "").strip():
+            return None
+        criteria = dict(_JEV_SHORTCUTS)
+        criteria["none"] = "都不是,用户想要别的"
+        questions = {"shortcut": {
+            "type": "choice",
+            "instructions": "用户消息跟哪条改图快捷命令最接近?",
+            "criteria": criteria,
+        }}
+        res = client.decide(f"用户消息: {text}", questions) or {}
+        ans = (res.get("answers") or {}).get("shortcut")
+        if not isinstance(ans, dict):
+            return None
+        choice = str(ans.get("choice") or "").strip()
+        probs = ans.get("probabilities") or {}
+        try:
+            p = float(probs.get(choice, 0) or 0)
+        except (TypeError, ValueError):
+            p = 0.0
+        if choice not in _JEV_SHORTCUTS or p < _JEV_SHORTCUT_MIN_PROB:
+            return None
+        return choice
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # ── /help 帮助文案 ──
 # 按**实际实现**分类,不是拍脑袋写的:
 #   ① 白名单:正则确定性命中,零延迟、结果稳定(photocraft_bridge._WL_RULES)
@@ -1347,9 +1418,21 @@ class ChatEditPanel(QWidget):
             single = self._execute_single(
                 text, str(in_path), sess_id, llm_id, mode, tid)
             if single.get("empty"):
-                # 编辑引擎没产出可执行命令(白名单没命中、LLM 也没理解)→
-                # 与其回一句死胡同的「没有产出新图」,不如自动转带图问答:
-                # 问句漏进 edit 路径的(JEV 挂了/规则没接住)在这里兜住。
+                # ① JEV 近似快捷命令:「改黑白」这类口语变体白名单没命中,
+                #    让 Jev 在已知命令里挑最像的,置信度 ≥0.6 才按那条重放。
+                #    重放走的是白名单正典命令,确定性命中、不花钱(不走生图)。
+                canon = _jev_shortcut_match(text)
+                if canon:
+                    retried = self._execute_single(
+                        canon, str(in_path), sess_id, llm_id, mode, tid)
+                    if not retried.get("empty") and not retried.get("error"):
+                        retried["user_text"] = text   # 气泡仍显示用户原话
+                        retried["note"] = ((retried.get("note") or "")
+                                           + ("\n" if retried.get("note") else "")
+                                           + f"✓ JEV 近似匹配:按快捷命令「{canon}」执行")
+                        return retried
+                # ② 仍不行 → 自动转带图问答:问句漏进 edit 路径的在这里兜住,
+                #    不再回死胡同的「没有产出新图」
                 reply = self._chat_reply(text, str(in_path), llm_id, mode)
                 if reply.get("kind") == "chat" and not reply.get("error"):
                     return reply
