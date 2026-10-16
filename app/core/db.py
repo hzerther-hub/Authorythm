@@ -783,6 +783,54 @@ def delete_chat_messages_after(sid: int, msg_id: int) -> None:
         (sid, msg_id))
 
 
+def resolve_selected_config_id(service_type: str) -> int | None:
+    """读 `yihao.model.<type>` 并**解析成配置 id**;两种历史形态都认。
+
+    形态一(现行):纯数字,就是配置 id,直接用。
+
+    形态二(历史包袱):模型**名字**,例如 `yihao.model.text = 'MiniMax-M3'`。
+    老版本往这个键里写的是模型名而不是配置 id,而现在的读取方一律
+    `int(saved)` —— 遇到名字直接 `ValueError: invalid literal for int()
+    with base 10: 'MiniMax-M3'`,把 `episode_page._reload_models` 连同整个
+    剧集页的加载一起炸掉(实测:点剧集卡片就弹一串 traceback)。
+    注意 `db.selected_config_id` 与 `video_clone._selected_*` 当年是加了
+    try/except 兜住的,只有 episode_page 那两处裸 `int()` 会崩。
+
+    形态二的处理:反查这个模型名属于哪条配置(`model` 列或 `models` JSON 数组
+    里出现即算),查到就**顺手把设置改写成 id** —— 自愈,下次直接走形态一;
+    查不到就当没配,返回 None,交由调用方兜底。
+
+    返回 None 的含义是「用户没选过 / 选的那条已经不存在」,调用方按各自
+    约定退回默认配置。
+    """
+    raw = (get_setting(f"yihao.model.{service_type}", "") or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        pass
+    # 形态二:按模型名反查所属配置
+    rows = q(
+        "SELECT id, model, models FROM ai_service_configs WHERE service_type=?",
+        (service_type,))
+    hit = None
+    for r in rows:
+        if (r["model"] or "").strip() == raw:
+            hit = r["id"]
+            break
+        try:
+            models = [str(m).strip() for m in json.loads(r["models"] or "[]")]
+        except (TypeError, ValueError):
+            models = []
+        if raw in models:
+            hit = r["id"]
+            break
+    if hit is not None:
+        set_setting(f"yihao.model.{service_type}", str(hit))   # 自愈
+    return hit
+
+
 def selected_config_id(service_type: str) -> int | None:
     """读用户当前选中的服务配置 id(全局记忆键,与界面下拉同源)。
 
@@ -790,8 +838,4 @@ def selected_config_id(service_type: str) -> int | None:
     兜底会挑中"默认"服务,而默认可能是额度耗尽的渠道,表现为 HTTP 429
     Throttling.AllocationQuota(实测:封面/批量重绘都踩过)。
     """
-    raw = get_setting(f"yihao.model.{service_type}", "")
-    try:
-        return int(raw) if raw else None
-    except (TypeError, ValueError):
-        return None
+    return resolve_selected_config_id(service_type)

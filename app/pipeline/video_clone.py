@@ -432,29 +432,17 @@ def _selected_image_cfg() -> int | None:
     不写死任何配置 id —— 各厂商额度/可用性不同(实测百炼月度额度耗尽会 429),
     用哪个模型必须由用户在界面上选。
     """
-    try:
-        saved = db.get_setting("yihao.model.image", "")
-        return int(saved) if saved else None
-    except (TypeError, ValueError):
-        return None
+    return db.resolve_selected_config_id("image")
 
 
 def _selected_text_cfg() -> int | None:
     """读用户选中的文本服务(读原照提取外观/服装描述用)。"""
-    try:
-        v = db.get_setting("yihao.model.text", "")
-        return int(v) if v else None
-    except (TypeError, ValueError):
-        return None
+    return db.resolve_selected_config_id("text")
 
 
 def _selected_swap_cfg() -> int | None:
     """读用户选中的换脸服务;未选则用默认。"""
-    try:
-        v = db.get_setting("yihao.model.faceswap", "")
-        return int(v) if v else None
-    except (TypeError, ValueError):
-        return None
+    return db.resolve_selected_config_id("faceswap")
 
 
 def build_presenter_fullshot(presenter_path, config_id: int | None = None,

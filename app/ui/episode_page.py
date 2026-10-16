@@ -841,14 +841,19 @@ class EpisodePage(QWidget):
             combo.addItem(tr("configured"), None)
             # 每条配置的**每个**模型各出一项:设置页里 deepseek 有 v4-pro/flash 两个、
             # agnes-image 有三个型号、minimax 有五个,原先只显示默认值,其余全选不到。
-            # 当前模型存 UserRole,_on_pick_model 据此把选择写回配置的 model 列。
+            # 配置 id 落 UserRole(currentData 读它),型号名落 USER_DATA_ROLE ——
+            # _remember_model 据后者把选择写回配置的 model 列。两者必须分开存,
+            # 抢同一个角色会互相覆盖,见 widgets.USER_DATA_ROLE 的注释。
             # 用 W.add_item:跨 PySide6 版本都稳(早期 addItem 不返回 idx)
             for ent in registry.model_entries(stype):
                 W.add_item(combo, ent["label"], ent["config_id"], user_data=ent["model"])
-            # 恢复上次选择(全局记忆)
-            saved = db.get_setting(f"yihao.model.{stype}")
+            # 恢复上次选择(全局记忆)。用 resolver 而不是 int(saved):老库里这个键
+            # 存的是模型名而不是配置 id(见 db.resolve_selected_config_id 的文档),
+            # 裸 int() 会 ValueError 炸掉 _reload_models,连带整个剧集页加载失败 ——
+            # 表现为点一下剧集卡片就弹一串 traceback。
+            saved = db.resolve_selected_config_id(stype)
             if saved:
-                i = combo.findData(int(saved))
+                i = combo.findData(saved)
                 if i >= 0:
                     combo.setCurrentIndex(i)
             combo.blockSignals(False)
@@ -880,12 +885,21 @@ class EpisodePage(QWidget):
 
     def _remember_model(self, combo, stype: str):
         cid = combo.currentData()
+        # currentData 正常是配置 id(int)。这里再兜一层:万一哪个下拉被别处用
+        # 模型名当 data 填过,别让一次误点把 int() 炸在信号回调里 —— 信号回调
+        # 抛异常会打断 Qt 的信号派发,后面连着的槽全都不执行(实测表现是
+        # 「换了模型但分辨率档位没跟着重算」)。
+        try:
+            cid = int(cid) if cid is not None else None
+        except (TypeError, ValueError):
+            return
         if cid:
             db.set_setting(f"yihao.model.{stype}", str(cid))
             # 把所选模型写回这条配置的 model 列:调用链只认 config_id,
             # 模型名从库里读,不改这里的话选了 deepseek-flash 也还是跑 v4-pro。
-            model = combo.currentData(Qt.UserRole)
-            if model and registry.select_model(int(cid), str(model)):
+            # 型号名在 USER_DATA_ROLE,不在 UserRole —— 后者是配置 id。
+            model = combo.currentData(W.USER_DATA_ROLE)
+            if model and registry.select_model(cid, str(model)):
                 # 型号变了,分辨率档位之类依赖具体型号的限制要重算
                 self._sync_res_tiers()
         # 集级锁定回写

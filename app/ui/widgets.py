@@ -186,6 +186,18 @@ def set_icon(btn, name: str, text: str | None = None, size: int = 16) -> None:
     btn.setText(strip_emoji(text if text is not None else btn.text()))
 
 
+# 下拉项的第二份数据(除 UserRole 的主数据之外)放哪个角色。
+# Qt 的 ItemDataRole 是整数枚举,UserRole = 256,再往后都是自定义区,随便取。
+# **不要把第二份数据也塞进 UserRole** —— combo.currentData() 就是
+# itemData(Qt.UserRole),两者会互相覆盖(实测踩过:模型下拉里
+# addItem(label, config_id) 之后再 setItemData(idx, model, UserRole),
+# 结果 currentData() 变成模型名而不是配置 id,于是
+#   · findData(config_id) 永远 -1 → 上次选的模型恢复不出来
+#   · int(currentData()) 直接 ValueError → 剧集页加载崩在信号回调里
+#   · set_setting 写进去的是模型名 → 下一轮读取再崩一次,自我 perpetuating)
+USER_DATA_ROLE = 257   # Qt.UserRole + 1
+
+
 def add_item(combo, text: str, data=None, user_data=None) -> int:
     """版本无关的 QComboBox.addItem 包装 —— 永远返回新行的索引。
 
@@ -195,12 +207,14 @@ def add_item(combo, text: str, data=None, user_data=None) -> int:
     直接用 `idx = combo.addItem(...)` 然后 setItemData(idx, ...) 在后者上
     会拿到 None → TypeError,被 try/except 吞掉就表现为「点按钮无反应」。
     走这个 helper 一律用 count()-1 算索引,跨版本都稳。
+
+    `data` 落在 Qt.UserRole(也就是 currentData() 读的那个);`user_data`
+    落在 USER_DATA_ROLE,读用 `combo.currentData(USER_DATA_ROLE)`。
     """
     combo.addItem(text, data)
     idx = combo.count() - 1
     if user_data is not None:
-        from PySide6.QtCore import Qt as _Qt
-        combo.setItemData(idx, user_data, _Qt.UserRole)
+        combo.setItemData(idx, user_data, USER_DATA_ROLE)
     return idx
 
 

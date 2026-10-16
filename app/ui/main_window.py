@@ -1182,14 +1182,11 @@ class ClonePage(QWidget):
         self.clone_image_combo.addItem(tr("configured"), None)
         for r in registry.list_configs("image"):
             self.clone_image_combo.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
-        saved = db.get_setting("yihao.model.image", "")
+        saved = db.resolve_selected_config_id("image")
         if saved:
-            try:
-                i = self.clone_image_combo.findData(int(saved))
-                if i >= 0:
-                    self.clone_image_combo.setCurrentIndex(i)
-            except (TypeError, ValueError):
-                pass
+            i = self.clone_image_combo.findData(saved)
+            if i >= 0:
+                self.clone_image_combo.setCurrentIndex(i)
         self.clone_image_combo.blockSignals(False)
         self.clone_image_combo.currentIndexChanged.connect(self._remember_clone_image_model)
 
@@ -1207,14 +1204,11 @@ class ClonePage(QWidget):
         self.clone_text_combo.addItem(tr("configured"), None)
         for r in registry.list_configs("text"):
             self.clone_text_combo.addItem((r["model"] or "").split("/")[-1] or r["model"], r["id"])
-        saved = db.get_setting("yihao.model.text", "")
+        saved = db.resolve_selected_config_id("text")
         if saved:
-            try:
-                i = self.clone_text_combo.findData(int(saved))
-                if i >= 0:
-                    self.clone_text_combo.setCurrentIndex(i)
-            except (TypeError, ValueError):
-                pass
+            i = self.clone_text_combo.findData(saved)
+            if i >= 0:
+                self.clone_text_combo.setCurrentIndex(i)
         self.clone_text_combo.blockSignals(False)
         self.clone_text_combo.currentIndexChanged.connect(self._remember_clone_text_model)
 

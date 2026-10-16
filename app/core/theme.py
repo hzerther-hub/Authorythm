@@ -954,7 +954,12 @@ def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     if family:
         from PySide6.QtGui import QFont
         f = QFont(family)
-        f.setPointSize(app.font().pointSize() or 9)
+        # `pointSize() or 9` 拦不住 -1:-1 是 truthy,`or` 直接放行,于是
+        # setPointSize(-1) 打出 "Point size <= 0 (-1), must be greater than 0"。
+        # 什么时候会是 -1:某些平台/ DPI 场景下 QApplication 默认字体的
+        # pointSize 未初始化。要显式判 > 0,不能靠 or。
+        pt = app.font().pointSize()
+        f.setPointSize(pt if pt > 0 else 9)
         app.setFont(f)
         # QSS 的 `*` 用具体族名,别再让 Qt 自由回退挑到片头花体
         qss = qss.replace(FONT_STACK, f"'{family}'", 1)
