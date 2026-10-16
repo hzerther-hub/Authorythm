@@ -323,14 +323,9 @@ class ProjectCard(QFrame):
             img.setCursor(Qt.PointingHandCursor)
             img.clicked.connect(self._preview_cover)
             cl.addWidget(img)
-        else:
-            # 无封面时仍走米白底 + 拍板黑大字首字母
-            init = QLabel((drama["title"] or "?")[:1].upper())
-            init.setAlignment(Qt.AlignCenter)
-            init.setStyleSheet(
-                f"color:{SLATE_BAR}; font-family:'Inter','Helvetica Neue',sans-serif;"
-                f"font-size:54px; font-weight:800; border:none; background:transparent;")
-            cl.addWidget(init)
+        # 无封面就留干净的米白底,不再放标题首字大字 —— 用户实测反馈:
+        # 「克」这种单字项目渲染成半卡片高的巨型字,像出了 bug(2026-10-16 截图)。
+        # 占位区保持空白即可,拍板条 + 项目编号已经足够传达「这是张空卡片」。
         # 比例 mono 标签(右上角,不抢戏)
         if drama.get("aspect_ratio") and drama["aspect_ratio"] != "adaptive":
             row = QHBoxLayout()
@@ -445,6 +440,8 @@ class ProjectCard(QFrame):
 
     def _preview_cover(self):
         """点击封面:弹出大图预览(完整比例,不随卡片裁切)。"""
+        if not self._thumb:
+            return          # 没封面:整个封面区只是米白占位,点了不该弹空预览窗
         d = QDialog(self)
         d.setWindowTitle(self._title)
         d.resize(480, 720)

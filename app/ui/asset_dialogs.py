@@ -777,6 +777,9 @@ class AssetDetailDialog(QDialog):
             fp_btns.addWidget(b)
         fp_btns.addStretch(1)
         fp_lay.addLayout(fp_btns)
+        # 生成期间的忙碌反馈留存引用:点了要有"在动了"的观感(用户实测:
+        # 点 AI 生成/生成形象界面毫无反应,其实是任务在后台跑或错误被吞)
+        self._fp_gen_btns = (gen_fp, regen_fp)
         root.addWidget(fp_box)
 
         # 角色变体
@@ -824,6 +827,7 @@ class AssetDetailDialog(QDialog):
         upload.clicked.connect(self._upload)
         gen_img = W.primary_btn(tr("◑ 生成形象"))
         gen_img.clicked.connect(self._gen_image)
+        self.gen_img_btn = gen_img          # 忙碌反馈用(_gen_image 里切换文案/置灰)
         save = W.primary_btn(tr("save"))
         save.clicked.connect(self._save)
         close = QPushButton(tr("close"))
@@ -944,6 +948,10 @@ class AssetDetailDialog(QDialog):
     def _gen_prompt(self):
         from ..core.taskmgr import TASKMGR
         from .toast import err, ok
+        # 忙碌反馈:置灰两个生成按钮 —— 之前点了毫无动静,用户不知道在跑
+        for b in getattr(self, "_fp_gen_btns", ()):
+            b.setEnabled(False)
+            b.setText(b.text() if "…" in b.text() else b.text() + "…")
         d = db.q1(f"SELECT * FROM {self.table} WHERE id=?", (self.row["id"],))
         merged = {**dict(d), **self._collect()}
         from ..pipeline import prompts_gen
@@ -952,8 +960,11 @@ class AssetDetailDialog(QDialog):
         def job(tid):
             return fn(self.row["id"])
         def done(tid, result, error):
+            for b in getattr(self, "_fp_gen_btns", ()):
+                b.setEnabled(True)
+                b.setText(b.text().replace("…", ""))
             if error:
-                err(error)
+                err(str(error)[:200])
             else:
                 ok(tr("提示词已生成"))
                 d2 = db.q1(f"SELECT final_prompt FROM {self.table} WHERE id=?", (self.row["id"],))
@@ -962,23 +973,38 @@ class AssetDetailDialog(QDialog):
 
     def _gen_image(self):
         from ..core.taskmgr import TASKMGR
-        from .toast import err
+        from .toast import err, ok
         from ..ai import image_client
+        # 忙碌反馈:生成要几十秒,按钮不变化用户会连点/以为死了(用户实测)
+        btn = getattr(self, "gen_img_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText(tr("◑ 生成中…"))
         def job(tid):
             fp = self.fp.toPlainText() or self.row.get("final_prompt") or ""
             if not fp:
                 raise RuntimeError(tr("请先生成最终提示词"))
+            # 角色形象图统一白底:参考图/换脸链路对纯色背景最稳,带环境虚化的
+            # 底图会往画面里渗色(用户要求:要求背景为白色)
+            if self.kind == "character" and "white background" not in fp.lower():
+                fp = fp + ", clean pure white background, isolated subject, no environment"
             out, _p = image_client.generate_image(fp)
             url = config.path_to_media_url(out)
             db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), self.row["id"]))
             return url
         def done(tid, result, error):
+            if btn is not None:
+                btn.setEnabled(True)
+                btn.setText(tr("◑ 生成形象"))
             if error:
-                err(e_)
-            else:
-                self.img.setPixmap(W.pixmap_from_media(result, 276, 276))
-                if self._on_changed:
-                    self._on_changed()
+                # 之前这里写的是 err(e_) —— e_ 根本不存在,回调自己 NameError,
+                # 失败被吞得干干净净,表现为「点生成没反应」
+                err(str(error)[:200])
+                return
+            self.img.setPixmap(W.pixmap_from_media(result, 276, 276))
+            ok(tr("形象已生成"))
+            if self._on_changed:
+                self._on_changed()
         TASKMGR.submit("image", job, done)
 
     def _upload(self):

@@ -5706,13 +5706,9 @@ class EpisodePage(QWidget):
         if dlg.exec() != QDialog.Accepted:
             return
         ids = [r["id"] for r in all_ids] if rb_all.isChecked() else todo_default
-        # 首帧预审门控:跳过未确认的分镜(有首帧但 pending_review/generating/failed)
-        unapproved = [i for i in ids if self._sb_image_status(i) in ("pending_review", "generating", "failed")]
-        if unapproved:
-            nums = {r["id"]: r["storyboard_number"] for r in all_ids}
-            ids = [i for i in ids if i not in unapproved]
-            warn(tr("已跳过 {} 个未确认首帧的分镜:{}").format(
-                len(unapproved), ", ".join(str(nums[i]) for i in unapproved[:12]) + ("…" if len(unapproved) > 12 else "")))
+        # 首帧预审门控已拆除:首帧/尾帧非必需(用户定调),没首帧的分镜直接
+        # 文生视频 + 参考图。原来 pending_review/failed 会被静默跳过 —— 实测
+        # 「选三个只出两个」,toast 一闪根本不知道少的是谁。
         if not ids:
             QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
             return
@@ -5883,18 +5879,11 @@ class EpisodePage(QWidget):
             prompt = f"{style}。{prompt}" if prompt else style
             self._warn_agnes_params(sb, res)
             ref_list = shot_tools.collect_reference_images(self.episode_id, sb_id)
-            # 无首帧先补一张「有景物有人物」的定场帧再生成 —— 纯文生视频
-            # 开场常是黑帧/空镜,成片第一眼没有画面(用户要求第一帧必须带景带人)
-            first_frame = sb["first_frame_image"]
-            # generate_video 的下游(agnes _inline / video_contract)全部按 str 处理,
-            # media_url_to_path 返回 Path,必须在这里转掉 —— 不转就是
-            # 'WindowsPath' object has no attribute 'startswith' 整镜崩溃
-            if first_frame:
-                first_frame = str(config.media_url_to_path(first_frame))
-            else:
-                first_frame = str(config.media_url_to_path(shot_tools.generate_first_frame(
-                    self.episode_id, sb_id,
-                    config_id=image_cfg if image_cfg is not None else self.image_model.currentData())))
+            # 首帧/尾帧**非必需**(用户定调):分镜里带了就用,没带直接文生视频
+            # + 参考图。不再自动补生成定场帧 —— 那要多花一次生图额度,还把
+            # 「生成首帧→人工确认」变成批量视频的隐形前置卡点(实测三选一被卡掉)。
+            first_frame = str(config.media_url_to_path(sb["first_frame_image"])) \
+                if (sb["first_frame_image"] or "").strip() else None
             last_frame = str(config.media_url_to_path(sb["last_frame_image"])) \
                 if (sb["last_frame_image"] or "").strip() else None
             path, _p = video_client.generate_video(

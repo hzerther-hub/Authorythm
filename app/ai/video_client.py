@@ -315,6 +315,12 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
             body["content"].append({
                 "type": "image_url", "role": "first_frame",
                 "image_url": {"url": _local_to_data_url(first_frame, max_side, quality)}})
+        if last_frame:
+            # 尾帧同理要带 role,否则要么 400 要么被静默丢掉(之前这条分支根本
+            # 没处理 last_frame,用户设了尾帧等于白设)
+            body["content"].append({
+                "type": "image_url", "role": "last_frame",
+                "image_url": {"url": _local_to_data_url(last_frame, max_side, quality)}})
         resp = requests.post(_ark_url(base, "/contents/generations/tasks"), json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Seedance 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")

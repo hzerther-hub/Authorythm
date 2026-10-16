@@ -28,13 +28,32 @@ from . import registry
 from .text_client import AIError
 
 
-def _download(url: str, out: Path, headers: dict | None = None) -> Path:
-    resp = requests.get(url, headers=headers or {}, timeout=180)
-    if resp.status_code != 200:
-        raise AIError(f"下载生成图片失败 HTTP {resp.status_code}")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_bytes(resp.content)
-    return out
+def _download(url: str, out: Path, headers: dict | None = None,
+              attempts: tuple = (0, 5, 15)) -> Path:
+    """下载生成结果图,带退避重试。
+
+    不重试的代价实测很贵:agnes 生成成功后,结果图挂在 platform-outputs
+    域名下,走代理下载时代理断连一次(ProxyError / RemoteDisconnected),
+    整次生成就报错丢图 —— 钱已花,图没落地(2026-10-16 18:31 任务 1243)。
+    下载是纯幂等 GET,重试零副作用;生成环节的限流重试已经这么做
+    (generate_image_with_retry),下载环节保持同一纪律。
+    """
+    last = None
+    for i, wait in enumerate(attempts):
+        if wait:
+            time.sleep(wait)
+        try:
+            resp = requests.get(url, headers=headers or {}, timeout=180)
+            if resp.status_code != 200:
+                raise AIError(f"下载生成图片失败 HTTP {resp.status_code}")
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(resp.content)
+            return out
+        except Exception as exc:  # noqa: BLE001 —— 网络类异常统一退避重试
+            last = exc
+            print(f"[image] 下载结果图失败({i + 1}/{len(attempts)}):"
+                  f"{str(exc)[:160]}", flush=True)
+    raise last
 
 
 def _b64_save(b64: str, out: Path) -> Path:
