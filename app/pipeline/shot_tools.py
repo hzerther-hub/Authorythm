@@ -299,11 +299,9 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
     sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
     if not sb:
         raise RuntimeError("分镜不存在")
-    first = sb["first_frame_image"]
-    if not first:
-        generate_first_frame(episode_id, storyboard_id, config_id=config_id)
-        sb = db.q1("SELECT * FROM storyboards WHERE id=?", (storyboard_id,))
-        first = sb["first_frame_image"]
+    # 首帧非必需(用户定调「有就用、没有就不生成」):分镜里带了就作图生视频
+    # 的起始帧,没带直接文生视频 + 参考图,不再自动补生成定场帧。
+    first = (sb["first_frame_image"] or "").strip() or None
     ref_list = collect_reference_images(episode_id, storyboard_id)
     # 视频提示词必须拼风格前缀 —— 与 generate_first_frame 同源。video_prompt
     # 表里只存「0-3 秒:...」的镜头描述,不带画风,直接喂给视频模型会被它默认成
@@ -319,7 +317,8 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
     path, _provider = video_client.generate_video(
         prompt[:1500], resolution=resolution,
         duration=int(sb["duration"] or 8),
-        first_frame=config.media_url_to_path(first), reference_images=ref_list,
+        first_frame=config.media_url_to_path(first) if first else None,
+        reference_images=ref_list,
         config_id=config_id,
         aspect_ratio=(d_row["aspect_ratio"] if d_row else None) or None,
         last_frame=config.media_url_to_path(last) if last else None,
