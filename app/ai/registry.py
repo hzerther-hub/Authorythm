@@ -304,8 +304,13 @@ def update_config(cid: int, **fields) -> None:
         sets.append("settings=?")
         vals.append(fields["settings"] or None)
     if "models" in fields and fields["models"] is not None:
+        v = fields["models"]
+        # 调用方可能传 list(标准)或已序列化的 JSON 字符串 —— 字符串直接存,
+        # 列表才序列化;否则 list 会被二次编码,读回来退化成单模型(实测踩过)
+        if not isinstance(v, str):
+            v = _json.dumps(v, ensure_ascii=False)
         sets.append("models=?")
-        vals.append(_json.dumps(fields["models"], ensure_ascii=False))
+        vals.append(v)
     if "max_tokens" in fields:
         sets.append("max_tokens=?")
         vals.append(fields["max_tokens"])

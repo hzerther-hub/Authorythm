@@ -205,7 +205,8 @@ class SettingsDialog(QDialog):
                 on_test=self._test_service,
                 on_edit=self._edit_service_by_id,
                 on_delete=self._delete_service,
-                on_set_default_model=self._set_default_model))
+                on_set_default_model=self._set_default_model,
+                on_manage_models=self._manage_models))
         host_lay.addStretch(1)
         empty = self._svc_empties.get(st)
         if empty:
@@ -258,6 +259,12 @@ class SettingsDialog(QDialog):
         models.insert(0, model)
         registry.update_config(cfg["id"], model=model, models=json.dumps(models, ensure_ascii=False))
         self._fill_services(cfg["service_type"])
+
+    def _manage_models(self, cfg: dict):
+        """打开该配置的模型管理清单(删除/添加/设默认,改完刷新卡片 chips)。"""
+        dlg = ModelManageDialog(cfg, self,
+                                on_changed=lambda: self._fill_services(cfg.get("service_type") or ""))
+        dlg.exec()
 
     def _test_service(self, cfg: dict):
         """逐行连通测试(对齐原版 Test 按钮)。"""
@@ -1179,6 +1186,128 @@ class ModelChipsEditor(QWidget):
         self.changed.emit()
 
 
+class ModelManageDialog(QDialog):
+    """管理一条 AI 服务配置的模型清单:删除 / 添加 / 设默认。
+
+    清单内的模型会出现在各页面的模型下拉里(「多模型生效」= 都可选,★ 为默认)。
+    删除/添加/设默认立即写库,**无需重启**(生成时现读配置)。删除当前默认模型
+    时,默认自动落到剩余的第一个;最后一个模型不允许删(删空会让相关功能全部
+    失去可选模型,真要清空请直接删掉整条配置)。
+    """
+
+    def __init__(self, cfg: dict, parent=None, on_changed=None):
+        super().__init__(parent)
+        self.cfg_id = cfg["id"]
+        self._svc = cfg.get("service_type") or ""
+        self._on_changed = on_changed
+        self.setWindowTitle(tr("管理模型") + " · " + (cfg.get("remark") or cfg.get("provider") or ""))
+        self.resize(480, 440)
+        root = QVBoxLayout(self)
+
+        hint = W.muted(tr("清单内的模型都会出现在各页面的模型下拉里(多选即多模型生效);★ 为默认。更改立即生效,无需重启。"))
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        self.listw = QListWidget()
+        root.addWidget(self.listw, 1)
+
+        add_row = QHBoxLayout()
+        self.new_edit = QLineEdit()
+        self.new_edit.setPlaceholderText(tr("输入模型名,如 doubao-seedance-2-0-mini-260615"))
+        self.new_edit.returnPressed.connect(self._add)
+        add_row.addWidget(self.new_edit, 1)
+        add_btn = W.primary_btn(tr("添加"))
+        add_btn.clicked.connect(self._add)
+        add_row.addWidget(add_btn)
+        root.addLayout(add_row)
+
+        btns = QHBoxLayout()
+        del_btn = QPushButton("🗑 " + tr("delete"))
+        del_btn.setObjectName("danger")
+        del_btn.clicked.connect(self._delete_selected)
+        btns.addWidget(del_btn)
+        set_def = QPushButton("★ " + tr("设为默认"))
+        set_def.clicked.connect(self._set_default)
+        btns.addWidget(set_def)
+        btns.addStretch(1)
+        close = QPushButton(tr("close"))
+        close.clicked.connect(self.accept)
+        btns.addWidget(close)
+        root.addLayout(btns)
+        self._reload()
+
+    # ── 数据 ──
+    def _row(self) -> dict:
+        return dict(db.q1("SELECT * FROM ai_service_configs WHERE id=?", (self.cfg_id,)) or {})
+
+    def _models(self) -> list[str]:
+        return _cfg_models(self._row())
+
+    def _save(self, models: list[str], default: str):
+        # models 传**列表**(update_config 自己序列化;传字符串会被二次编码)
+        registry.update_config(self.cfg_id, model=default, models=models)
+        self._reload()
+        if self._on_changed:
+            self._on_changed()
+
+    def _reload(self):
+        row = self._row()
+        default = (row.get("model") or "").strip()
+        self.listw.clear()
+        for m in _cfg_models(row):
+            item = QListWidgetItem(("★  " if m == default else "      ") + m)
+            item.setData(Qt.UserRole, m)
+            self.listw.addItem(item)
+        # 默认行置顶显示
+        for i in range(self.listw.count()):
+            if self.listw.item(i).text().startswith("★"):
+                it = self.listw.takeItem(i)
+                self.listw.insertItem(0, it)
+                break
+        self.listw.setCurrentRow(0)
+
+    # ── 操作 ──
+    def _add(self):
+        name = self.new_edit.text().strip()
+        if not name:
+            return
+        models = self._models()
+        if name in models:
+            self.new_edit.clear()
+            return                       # 已存在,静默收场
+        models.append(name)
+        default = (self._row().get("model") or "").strip() or name
+        self.new_edit.clear()
+        self._save(models, default)
+
+    def _delete_selected(self):
+        item = self.listw.currentItem()
+        if not item:
+            return
+        name = item.data(Qt.UserRole)
+        models = self._models()
+        if len(models) <= 1:
+            from .toast import err
+            err(tr("最后一个模型不允许删除 —— 真要清空请直接删除整条配置"))
+            return
+        models = [m for m in models if m != name]
+        default = (self._row().get("model") or "").strip()
+        if default == name:
+            default = models[0]          # 删的是默认 → 落到剩余第一个
+        self._save(models, default)
+
+    def _set_default(self):
+        item = self.listw.currentItem()
+        if not item:
+            return
+        models = self._models()
+        name = item.data(Qt.UserRole)
+        if name in models:
+            models.remove(name)
+        models.insert(0, name)
+        self._save(models, name)
+
+
 class ServiceCard(QFrame):
     """一条 AI 服务配置卡片:徽章 + 名称/Key 标 + 模型 chips + 开关 + 测试/编辑/删除。
 
@@ -1187,9 +1316,11 @@ class ServiceCard(QFrame):
     """
 
     def __init__(self, cfg: dict, parent, on_toggle=None, on_test=None,
-                 on_edit=None, on_delete=None, on_set_default_model=None):
+                 on_edit=None, on_delete=None, on_set_default_model=None,
+                 on_manage_models=None):
         super().__init__()
         self.cfg = cfg
+        self._on_manage_models = on_manage_models
         self.setObjectName("svcCard")
         self.setEnabled(True)
         lay = QVBoxLayout(self)
@@ -1276,6 +1407,13 @@ class ServiceCard(QFrame):
         self.test_btn.setFixedHeight(26)
         self.test_btn.clicked.connect(lambda: on_test(cfg) if on_test else None)
         actions.addWidget(self.test_btn)
+        # 模型管理:删除/添加/设默认 —— 清单里的模型就是各页面下拉的选项
+        mgmt = QPushButton("⚙ " + tr("管理模型"))
+        mgmt.setFixedHeight(26)
+        mgmt.setToolTip(tr("删除不存在的模型、添加新模型、设默认;清单内都可选"))
+        mgmt.clicked.connect(
+            lambda: self._on_manage_models(self.cfg) if self._on_manage_models else None)
+        actions.addWidget(mgmt)
         actions.addStretch(1)
         edit = QPushButton("✎ " + tr("edit"))
         W.set_icon(edit, "edit")
