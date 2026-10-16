@@ -1216,10 +1216,23 @@ class ChatEditPanel(QWidget):
             content = _tc.chat(user_prompt, system=sys_p, config_id=llm_id,
                               temperature=0.6, max_tokens=600, timeout=60,
                               image_urls=image_urls)
+            # 推理型模型(minimax-M3 / glm)会先吐 <think>…</think> 再给正文,
+            # 不剥的话思考过程原样显示在气泡里(用户实测见过英文 think 块)。
+            # 解析纪律见 AGENTS.md;复用 photocraft_bridge 的统一实现。
+            raw = content or ""
+            if "<think>" in raw and "</think>" not in raw:
+                # think 没闭合 = 输出被截断、没有正文。_strip_reasoning 对这种
+                # 会把 think 尾巴当正文留下(对 JSON 解析无害),但显示出来就是
+                # 半截思考 —— 明确告诉用户重试,而不是展示半句话。
+                return {"kind": "chat", "user_text": user_text,
+                        "content": "(模型只输出了思考过程,未给出正文,请重试)",
+                        "engine_label": "chat"}
+            from ..ai.photocraft_bridge import _strip_reasoning
+            clean = _strip_reasoning(raw)
             return {
                 "kind": "chat",
                 "user_text": user_text,
-                "content": (content or "").strip() or "(空回复)",
+                "content": clean.strip() or "(空回复)",
                 "engine_label": "chat",
             }
         except _tc.AIError as exc:

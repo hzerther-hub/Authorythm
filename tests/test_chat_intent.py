@@ -77,3 +77,32 @@ def test_batch_analysis_command_not_captured_by_question_rule():
         if _looks_like_analysis(cmd):
             assert _wants_batch_analysis(cmd), (
                 f"「{cmd}」会被问句规则抢进聊天,批分析保护失效")
+
+
+def test_chat_reply_strips_reasoning_block(monkeypatch):
+    """聊天回复必须剥掉 <think> 推理块(AGENTS.md 解析纪律)。
+
+    实测:问「这张图片是什么内容?」,minimax-M3 先吐一段英文 <think> 再给
+    中文正文,气泡里两者都显示了。复用 photocraft_bridge._strip_reasoning。
+    """
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    import app.ai.text_client as tc
+    from app.ui.chat_edit_drawer import ChatEditPanel
+
+    def fake_chat(*a, **k):
+        return ("<think>The user is asking what this image is. "
+                "I should describe the visual elements.</think>\n"
+                "这是一张女性人物的肖像照片,优雅而正式。")
+
+    monkeypatch.setattr(tc, "chat", fake_chat)
+    panel = ChatEditPanel()
+    res = panel._chat_reply("这张图片是什么内容?", "", None, "smart")
+    assert res["kind"] == "chat"
+    assert "<think>" not in res["content"], f"推理块没剥干净:{res['content'][:80]}"
+    assert "肖像照片" in res["content"]
+
+    # 没闭合的 <think>(模型截断)也不能把 think 内容当正文漏出来
+    monkeypatch.setattr(tc, "chat", lambda *a, **k: "<think>思考到一半")
+    res2 = panel._chat_reply("问", "", None, "smart")
+    assert "思考到一半" not in res2["content"]
