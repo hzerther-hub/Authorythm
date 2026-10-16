@@ -282,7 +282,11 @@ class TaskManager(QObject):
         "novel_title": "text", "review": "text", "extract": "text", "storyboard": "text",
         "prompt": "text", "comic": "text", "promo": "text", "sb_repair": "text",
         "cover": "image", "image": "image", "face_swap": "faceswap", "face_swap_batch": "faceswap",
-        "video": "video", "tts": "tts",
+        "video": "video",
+        # tts 不做就绪校验:tts_client.synthesize 自带三级引擎链,豆包配置停用/
+        # 缺 key 时自动落回**免费的微软 Edge TTS**(无需任何配置)。此前挂了
+        # "tts": "tts",用户停用豆包想切免费,就绪校验直接拦下任务弹「配音
+        # 服务未就绪」,免费通道永远走不到(实测)。
         # 同款复刻整段直传:走多模态文本模型读 base64 视频。对齐参考项目
         # auto-generate.ts 里 clone_understand 的 taskType;不注册的话 submit 会跳过
         # 就绪校验,缺配置也得等模型把请求打回来才失败。
