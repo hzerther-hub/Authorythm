@@ -367,7 +367,8 @@ class MainWindow(QMainWindow):
             self.nav_btns[key].setText(f"{icon}  {tr(label_key)}")
         cur = self.stack.currentWidget()
         for k, b in self.nav_btns.items():
-            page = {"projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
+            page = {"dashboard": self.dashboard,
+                    "projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
                     "merger": getattr(self, "merger_page", None),
                     "chatedit": getattr(self, "chat_edit_page", None)}.get(k)
             if page is not None:
@@ -388,9 +389,15 @@ class MainWindow(QMainWindow):
             self.banner.setVisible(False)
 
     def _goto(self, key: str):
-        """切换:项目列表(导航胶囊)/ 换脸·合并工具(资产卡与导出面板的入口)。"""
+        """切换:项目列表(导航胶囊)/ 换脸·合并工具(资产卡与导出面板的入口)。
+
+        **新加导航项必须在这张表里登记** —— 漏了 page 就是 None,下面直接 return,
+        表现是「按钮能点、点了什么都不发生」,没有任何报错。dashboard 就这么漏过
+        一轮(导航胶囊里有按钮,_PAGE_KINDS 里也有,但这张表里没有)。
+        """
         self._ensure_fresh(key)
-        page = {"projects": self.projects_page,
+        page = {"dashboard": self.dashboard,
+                "projects": self.projects_page,
                 # 聊天改图是独立 tab,必须在这张表里登记 —— 漏了会让 _goto 拿到 None
                 # 直接 return,点按钮没反应。它同时是原「图片处理」页的新归宿。
                 "chatedit": getattr(self, "chat_edit_page", None),
