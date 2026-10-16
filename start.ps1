@@ -4,7 +4,9 @@
 # 用法:  powershell -ExecutionPolicy Bypass -File .\start.ps1
 Set-Location $PSScriptRoot
 try {
-    & py -3.13 -m app.main 2>$null
+    # stderr 合并进 stdout:Qt 槽里的异常堆栈只走 stderr,丢掉它就永远
+    # 查不到「点了没反应」类问题(实测批量视频静默失败就是这么盲的)
+    & py -3.13 -m app.main 2>&1
     if ($LASTEXITCODE -eq 0) { exit 0 }
 } catch {}
-python -m app.main
+python -m app.main 2>&1

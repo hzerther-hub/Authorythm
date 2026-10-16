@@ -5674,6 +5674,7 @@ class EpisodePage(QWidget):
             _err(f"批量视频无法开始:{str(exc)[:200]}")
 
     def _batch_video_impl(self):
+        print("[batch_video] 进入批量流程", flush=True)
         all_ids = [dict(r) for r in db.q(
             "SELECT id, storyboard_number, video_url, composed_video_url, status FROM storyboards "
             "WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,))]
@@ -5723,6 +5724,7 @@ class EpisodePage(QWidget):
             QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
             return
         rows = ids
+        print(f"[batch_video] 选定 {len(rows)} 镜: {rows}", flush=True)
         # 二次确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
         marks = ",".join("?" * len(ids))
         total = db.q1(f"SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE id IN ({marks})",
@@ -5758,9 +5760,11 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 _TM.set_stage(tid, f"{i + 1}/{len(rows)}")   # 任务面板显示进行到第几镜
+                print(f"[batch_video] 开始第 {i + 1}/{len(rows)} 镜 sb={sb_id}", flush=True)
                 try:
                     self._gen_one_video(sb_id, res=snap_res, config_id=snap_cfg,
                                         image_cfg=snap_img)
+                    print(f"[batch_video] 第 {i + 1} 镜完成 sb={sb_id}", flush=True)
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc).replace("\n", " ")[:120]
@@ -5793,6 +5797,7 @@ class EpisodePage(QWidget):
         if btn:
             btn.busy(tr("in_progress"))
         tid = TASKMGR.submit("video", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+        print(f"[batch_video] 任务已提交 tid={tid}(tid=0 表示就绪校验没过)", flush=True)
         # 批量心跳:任务行/统计胶囊/按钮进度每 2.5s 同步一次(不用等全部跑完),
         # 当前正在生成的行会转圈,一眼看出进行到哪一镜
         if tid:
