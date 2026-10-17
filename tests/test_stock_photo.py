@@ -14,6 +14,7 @@ ly_test_rows(monkeypatch)
 「图片处理」「聊天改图」的改图主流程。
 """
 from __future__ import annotations
+from pathlib import Path
 
 import json
 
@@ -352,3 +353,62 @@ def test_thumb_card_shows_dimensions():
     texts2 = [c.text() for c in card2.findChildren(QLabel)]
     assert any("Pixabay" in t for t in texts2)
     assert not any("0×0" in t for t in texts2)
+
+
+def test_use_this_closes_dialog_and_feeds_signal(monkeypatch, tmp_path):
+    """「使用这张」链路:两层窗先关、下载完成经 downloaded 信号回填。
+
+    复刻 2026-10 实测 bug:`_download` 首用时 _dl 为 None,isRunning() 抛
+    AttributeError 被 Qt 吞掉 → 图库页不关、图不进聊天。无线程直测:
+    关窗分支(_download)与回填分支(_on_downloaded)分别验证。
+    """
+    import app.ai.stock_photo as sp
+    from app.ui.stock_photo_dialog import StockPhotoDialog
+
+    def fake_download(url, out_path, timeout=30):
+        Path(out_path).write_bytes(b"data")
+        return True
+
+    monkeypatch.setattr(sp, "download", fake_download)
+
+    got: list[str] = []
+    dlg = StockPhotoDialog(None, query="x", auto_search=False)
+    dlg.downloaded.connect(got.append)
+    # 关窗分支:首次 _dl 为 None,不得崩,且立即 accept(两层窗关闭)
+    dlg._download("https://example.com/original.jpg", close_immediately=True)
+    assert dlg.result() == StockPhotoDialog.Accepted, "弹窗应立即接受(两层窗关闭)"
+    # 回填分支:模拟下载线程完成 → downloaded 信号带路径
+    out = tmp_path / "done.jpg"
+    out.write_bytes(b"data")
+    dlg._on_downloaded(True, str(out))
+    assert got, "downloaded 信号没有回填路径"
+    assert dlg.local_path == got[0] and Path(got[0]).exists()
+
+
+def test_use_this_local_copy_feeds_signal(monkeypatch, tmp_path):
+    """换画风产物(本地路径)走复制分支:同样关闭并回填。"""
+    from app.ui.stock_photo_dialog import StockPhotoDialog
+
+    src = tmp_path / "converted.png"
+    src.write_bytes(b"\x89PNG\r\n\x1a\n converted")
+    got: list[str] = []
+    dlg = StockPhotoDialog(None, query="x", auto_search=False)
+    dlg.downloaded.connect(got.append)
+    dlg._download(str(src), close_immediately=True)
+    assert got and Path(got[0]).exists()
+    assert dlg.local_path == got[0]
+
+
+def test_adopt_stock_image_sets_chat_current(tmp_path):
+    """聊天侧:下载完成 → 设为当前图 + 对话流气泡。"""
+    import app.ai.stock_photo as sp
+    from PySide6.QtWidgets import QApplication
+    QApplication.instance() or QApplication([])
+    from app.ui.chat_edit_drawer import ChatEditPanel
+
+    panel = ChatEditPanel()
+    p = tmp_path / "adopt.png"
+    p.write_bytes(b"\x89PNG\r\n\x1a\n adopt")
+    panel._adopt_stock_image(str(p))
+    assert panel._current_image == str(p)
+    assert panel.status_lab.text() == ""
