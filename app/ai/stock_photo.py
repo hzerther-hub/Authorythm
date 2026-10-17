@@ -166,9 +166,20 @@ def search(query: str, source: str = "all", page: int = 1,
 
 
 def download(url: str, out_path) -> bool:
-    """下载原图到本地。失败返回 False(调用方跳过该张)。"""
+    """下载原图到本地。失败返回 False(调用方跳过该张)。
+
+    url 也可以是**本地图库/换画风结果的本地路径** —— 直接复制,不走网络
+    (换画风的「使用这张」传的就是本地转换结果,此前 requests.get 一个
+    Windows 路径必然失败,表现为「换完画风却选不上」)。
+    """
     if not url:
         return False
+    if os.path.exists(url):                      # 本地路径:直接复制
+        try:
+            shutil.copyfile(url, out_path)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
     try:
         r = requests.get(url, timeout=30, stream=True)
         if r.status_code != 200:

@@ -123,13 +123,21 @@ class _ImgLabel(QFrame):
     `_photo()` 已解析,之前只是没显示。
     """
 
-    clicked = Signal(str, str)
+    clicked = Signal(str, str)          # 单击:看大图(延迟触发,等是否变双击)
+    picked = Signal(str, str)           # 双击:直接选用(下载后关闭弹窗)
 
     def __init__(self, photo, parent=None):
         super().__init__(parent)
         self.remote_path = photo["download_url"] or photo["preview_url"]
         self.photo = photo
         self._w, self._h = THUMB_W, THUMB_H
+        # 单击→看大图的防抖:双击的第二击到来就取消预览、改走「直接选用」
+        self._click_timer = QTimer(self)
+        self._click_timer.setSingleShot(True)
+        self._click_timer.setInterval(280)
+        self._click_timer.timeout.connect(
+            lambda: self.clicked.emit(self.remote_path, self._label))
+        self._busy_overlay = None
         w0, h0 = photo.get("width") or 0, photo.get("height") or 0
         self._label = f"{sp.SOURCE_CN.get(photo['source'], photo['source'])}"                       + (f" · {w0}×{h0}" if w0 and h0 else "")
         self.setFixedSize(self._w, self._h + 26)
@@ -162,9 +170,26 @@ class _ImgLabel(QFrame):
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
-            # 传三个参数:预览大图时带来源与尺寸,用户能知道图是哪来的
-            self.clicked.emit(self.remote_path, self._label)
+            # 单击延迟 280ms 触发预览 —— 期间第二次按下按双击处理(直接选用)
+            self._click_timer.start()
         super().mousePressEvent(e)
+
+    def mouseDoubleClickEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._click_timer.stop()
+            self.picked.emit(self.remote_path, self._label)
+        super().mouseDoubleClickEvent(e)
+
+    def set_busy(self, on: bool, text: str = ""):
+        """下载等待效果:卡片上盖转圈遮罩(照片保持原色,不整卡变灰)。"""
+        if on:
+            if self._busy_overlay is None:
+                from .adjust_worker import BusyOverlay
+                self._busy_overlay = BusyOverlay(self)
+                self._busy_overlay.setGeometry(self.rect())
+            self._busy_overlay.start(text or tr("正在下载…"))
+        elif self._busy_overlay is not None:
+            self._busy_overlay.stop()
 
 
 class StockPhotoDialog(QDialog):
@@ -424,6 +449,16 @@ class StockPhotoDialog(QDialog):
         out = out_dir / f"stocksrc_{uuid.uuid4().hex[:10]}.jpg"
         return str(out) if sp.download(url, out) else ""
 
+    def _select_direct(self, url: str, lab=None):
+        """双击直接选用:下载等待遮罩盖在该卡片上,成功即 accept
+        (聊天流程的调用方会把 local_path 设为当前图)。"""
+        if not url:
+            return
+        if self._dl is not None and self._dl.isRunning():
+            return
+        self._selecting_lab = lab
+        self._download(url)
+
     def _download(self, url: str):
         """把选中的图落地到本地静态目录,完成后 accept。
 
@@ -464,3 +499,6 @@ class StockPhotoDialog(QDialog):
         else:
             err(tr("图片下载失败,请换一张"))
             self.hint.setText(self._hint_text())
+            lab = getattr(self, "_selecting_lab", None)
+            if lab is not None:
+                lab.set_busy(False)      # 失败解遮罩,卡片可再选
