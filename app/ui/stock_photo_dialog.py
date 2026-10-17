@@ -330,8 +330,11 @@ class StockPhotoDialog(QDialog):
         self.g.setContentsMargins(0, 0, 0, 0)
         self.g.setSpacing(8)
         self._labels: list[_ImgLabel] = []
+        # 原图 URL → 缩略图 URL:换画风原图拉不动时的低清回退索引
+        self._preview_by_url: dict[str, str] = {}
         jobs = []
         for i, ph in enumerate(photos):
+            self._preview_by_url[ph.get("download_url") or ""] = ph.get("preview_url") or ""
             lab = _ImgLabel(ph)
             lab.clicked.connect(self._pick)
             self._labels.append(lab)
@@ -373,6 +376,7 @@ class StockPhotoDialog(QDialog):
         """
         if not url:
             return
+        self._last_preview_url = self._preview_by_url.get(url, "")
         from .asset_dialogs import ImageViewerDialog
         dlg = ImageViewerDialog(self, url, label or tr("预览"),
                                 confirm_text=tr("使用这张"),
@@ -381,6 +385,7 @@ class StockPhotoDialog(QDialog):
                                 style_choices=self._style_choices(),
                                 style_default=self._default_style())
         dlg.remote_url_hint = url
+        dlg.remote_preview = getattr(self, "_last_preview_url", "")
         if not dlg.exec() == ImageViewerDialog.Accepted or not dlg.used:
             return                                  # 关闭:回到搜索结果,弹窗继续开着
         # 用了换过画风的版本就用它,否则下原图
@@ -422,19 +427,35 @@ class StockPhotoDialog(QDialog):
                    "当前是「{p}」——请到顶栏切换图像模型").format(p=cfg["provider"]))
             return
 
-        src = getattr(viewer, "_src_cache", "") or self._fetch_to_temp(
-            getattr(viewer, "remote_url_hint", ""))
-        if not src:
-            err(tr("图片下载失败,无法换画风"))
-            return
-        viewer._src_cache = src
-        # 等待效果:图片上盖转圈遮罩,只禁动作按钮 —— **不要**整窗
-        # setEnabled(False):禁用态走 disabled 调色板,彩色原图整体变灰,
-        # 用户以为「生成了黑白」(实测反馈)
-        viewer.set_busy(True, tr("正在转换为「{}」画风…").format(style))
-        self.hint.setText(tr("正在转换为「{}」画风…").format(style))
+        # 等待效果:从点击瞬间就开转圈 —— 原图下载(大图要几秒)也在后台
+        # 任务里做,此前它跑在主线程且无任何反馈,表现为「点了卡住没动静」
+        viewer.set_busy(True, tr("正在下载原图并转换为「{}」画风…").format(style))
+        self.hint.setText(tr("正在下载原图并转换为「{}」画风…").format(style))
+        _url_hint = getattr(viewer, "remote_url_hint", "")
+
+        from ..core import taskmgr as _TM
 
         def job(tid):
+            _TM.set_stage(tid, tr("正在下载原图…"))
+            _prog = {"n": 0}
+
+            def _tick(n):
+                _prog["n"] = n
+                _TM.set_stage(tid, f"{tr('正在下载原图…')} {n / 1048576:.1f} MB")
+
+            src = getattr(viewer, "_src_cache", "") or self._fetch_to_temp(
+                _url_hint, timeout=90, on_progress=_tick)
+            if not src:
+                # 原图下不动 → 退回缩略图 URL(小得多,几乎必成)—— 低清参考
+                # 图好过干等;转换完用户不满意可换一家图库重试
+                _prev = getattr(viewer, "remote_preview", "")
+                if _prev:
+                    _TM.set_stage(tid, tr("原图下载慢,改用缩略图…"))
+                    src = self._fetch_to_temp(_prev, timeout=45)
+            if not src:
+                raise RuntimeError(tr("原图下载失败(图库 CDN 不可达),换一张或切换图库源"))
+            viewer._src_cache = src        # 纯 Python 属性,worker 里赋值安全
+            _TM.set_stage(tid, tr("正在转换为「{}」画风…").format(style))
             return SC.convert_path(src, style, cfg["id"])
 
         def done(tid, result, error):
@@ -449,14 +470,16 @@ class StockPhotoDialog(QDialog):
 
         TASKMGR.submit("image", job, done)
 
-    def _fetch_to_temp(self, url: str) -> str:
+    def _fetch_to_temp(self, url: str, timeout: int = 60,
+                       on_progress=None) -> str:
         """远程图下到本地临时文件(换画风要本地路径作参考图)。"""
         if not url:
             return ""
         out_dir = config.STATIC_DIR / "uploads"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"stocksrc_{uuid.uuid4().hex[:10]}.jpg"
-        return str(out) if sp.download(url, out) else ""
+        return str(out) if sp.download(url, out, timeout=timeout,
+                                        on_progress=on_progress) else ""
 
     def _select_direct(self, url: str, lab=None):
         """双击直接选用:下载等待遮罩盖在该卡片上,成功即 accept

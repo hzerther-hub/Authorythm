@@ -165,7 +165,10 @@ def search(query: str, source: str = "all", page: int = 1,
     return photos, errors
 
 
-def download(url: str, out_path, timeout: int = 30) -> bool:
+def download(url: str, out_path, timeout: int = 30,
+             on_progress=None) -> bool:
+    """on_progress(downloaded_bytes) 每 ~128KB 回调一次,供 UI 显示进度。"""
+
     """下载原图到本地。失败返回 False(调用方跳过该张)。
 
     url 也可以是**本地图库/换画风结果的本地路径** —— 直接复制,不走网络
@@ -186,8 +189,15 @@ def download(url: str, out_path, timeout: int = 30) -> bool:
             return False
         r.raise_for_status()
         with open(out_path, "wb") as f:
-            for chunk in r.iter_content(64 * 1024):
+            n = 0
+            for chunk in r.iter_content(128 * 1024):
                 f.write(chunk)
+                n += len(chunk)
+                if on_progress:
+                    try:
+                        on_progress(n)
+                    except Exception:  # noqa: BLE001 —— 进度回调失败不影响下载
+                        pass
         return True
     except Exception:  # noqa: BLE001
         return False
