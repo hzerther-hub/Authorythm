@@ -176,11 +176,21 @@ class TaskDrawer(QWidget):
         ml = QHBoxLayout(metrics)
         ml.setContentsMargins(16, 10, 16, 10)
         ml.setSpacing(8)
+        # 筛选胶囊(用户要求):「所有」在前,点击切换 生成中/完成/失败 过滤
+        self._filter = "all"
         self.pills: dict[str, QLabel] = {}
-        for state, key in (("pending", "in_progress"), ("done", "done"), ("failed", "failed")):
-            lab = C.status_pill(state, f"0 {tr(key)}")
+
+        def _pill(key: str, text: str):
+            lab = C.status_pill(key, text) if key != "all" else QLabel(f"0 {text}")
+            lab.setCursor(Qt.PointingHandCursor)
+            lab.mousePressEvent = lambda _e, k=key: self._set_filter(k)
             ml.addWidget(lab)
-            self.pills[state] = lab
+            self.pills[key] = lab
+
+        _pill("all", tr("所有"))
+        _pill("pending", f"0 {tr('in_progress')}")
+        _pill("done", f"0 {tr('done')}")
+        _pill("failed", f"0 {tr('failed')}")
         ml.addStretch(1)
         al.addWidget(metrics)
 
@@ -198,6 +208,11 @@ class TaskDrawer(QWidget):
         #(全量 destroy+insert 100 行),所以只把这一行原地换掉
         self._connect_progress_signal()
         self.reload()
+
+    def _set_filter(self, key: str):
+        if key != self._filter:
+            self._filter = key
+            self.reload()
 
     def _connect_progress_signal(self):
         """把 taskmgr 的全局 progress 信号接到本面板的局部刷新。"""
@@ -250,21 +265,32 @@ class TaskDrawer(QWidget):
             if w:
                 w.deleteLater()
         counts = {"pending": 0, "done": 0, "failed": 0, "ready": 0}
+        for r in rows:
+            state, _label = STATE_OF.get(r["status"], ("ready", r["status"]))
+            counts[state] = counts.get(state, 0) + 1
+        # 筛选:「所有」全显;其余按状态过滤(计数胶囊仍显示全集数字)
+        shown = [r for r in rows if self._filter == "all"
+                 or STATE_OF.get(r["status"], ("ready",))[0] == self._filter]
         # 行 → 任务 id 的索引:progress 信号按 id 定位行做局部刷新,避免整表重建
         self._row_by_id = {}
-        for r in rows:
+        for r in shown:
             state, label = STATE_OF.get(r["status"], ("ready", r["status"]))
-            counts[state] = counts.get(state, 0) + 1
             widget = self._task_row(dict(r), state, label)
             self._row_by_id[r["id"]] = widget
             self.list_lay.insertWidget(self.list_lay.count() - 1, widget)
         self.list_lay.addStretch(1)
-        if not rows:
+        if not shown:
             self.list_lay.insertWidget(0, C.empty_state(
                 "☰", tr("gen_task_empty_title"), tr("gen_task_empty_desc")))
-        self.meta.setText(tr("gen_task_meta", len(rows)))
-        for state, lab in self.pills.items():
-            lab.setText(f"{counts.get(state, 0)} {lab.text().split(' ', 1)[1]}")
+        self.meta.setText(tr("gen_task_meta", len(shown)))
+        for key, lab in self.pills.items():
+            n = len(rows) if key == "all" else counts.get(key, 0)
+            suffix = tr("所有") if key == "all" else lab.text().split(" ", 1)[1]
+            lab.setText(f"{n} {suffix}")
+        # 选中态描边:给当前筛选胶囊压一道深色边,别让用户看不出点没点生效
+        for key, lab in self.pills.items():
+            lab.setStyleSheet("QLabel{border:1.5px solid #0E0F12; color:#0E0F12;}"
+                              if key == self._filter else "")
 
     def _task_row(self, r: dict, state: str, label: str) -> QWidget:
         row = QFrame()
