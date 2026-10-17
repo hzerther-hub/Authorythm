@@ -62,13 +62,42 @@
 
 三家免费图库,任配一家即可(也可全配,「全部图库」会聚合):
 
-| 图库 | 申请入口 | 说明 |
+| 图库 | 申请入口 | 免费限额(约) |
 |---|---|---|
-| Pexels | https://www.pexels.com/api/ | 免费申请,秒发 key |
-| Unsplash | https://unsplash.com/developers | 免费申请;Demo 应用限额较低 |
-| Pixabay | https://pixabay.com/api/docs/ | 免费申请 |
+| Pexels(推荐先配) | https://www.pexels.com/api/ | 200 次/小时 · 20,000 次/月 |
+| Unsplash | https://unsplash.com/developers | 50 次/小时 · 5,000 次/月(最紧) |
+| Pixabay | https://pixabay.com/api/docs/ | 100 次/分钟 |
 
-填法:设置 → AI 服务 → 「图库」标签 → 添加 → 粘贴 Key。
+### Pexels(最简单,秒发 key)
+
+1. 打开 https://www.pexels.com/api/ → 点「Get Started」→ 注册/登录(支持谷歌账号)。
+2. 填写用途说明(个人项目随便写一句即可)→ 提交后**页面直接显示你的 API Key**。
+3. 复制 Key → 应用里:设置 → AI 服务 → 「图库」标签 → 新增 → 供应商选
+   **pexels** → 粘贴 Key → 保存 → 点「测试配置」。
+
+### Unsplash
+
+1. 打开 https://unsplash.com/developers → 「Register as a developer」→
+   「New Application」→ 勾选全部使用条款 → 填应用名与描述(随便写)→ 创建。
+2. 应用详情页里的 **Access Key** 就是需要的 Key(页面还有个 Secret Key,用不到)。
+3. 应用里供应商选 **unsplash**,粘贴 Access Key。
+4. 注意:Demo 档限额是三家里最紧的,搜不出来先换 Pexels。
+
+### Pixabay
+
+1. 先注册 Pixabay 账号(https://pixabay.com)并登录。
+2. 打开 https://pixabay.com/api/docs/ → 页面中部「Your API key」处直接显示
+   (新注册账号可能需稍等或正常浏览网站后才会发放)。
+3. 应用里供应商选 **pixabay**,粘贴 key。自带安全过滤(safesearch)。
+
+### 通用说明
+
+- 每家在应用里是**独立一条**配置(类型=图库,供应商分别选 pexels /
+  unsplash / pixabay),Key 各不相同,别混填。
+- 聊天改图里发「查美女图」会自动打开图库弹窗并预填关键词;「全部图库」
+  聚合三家结果;结果卡片上直接标注「来源 · 宽×高」,点卡片预览、可换画风。
+- 某家配额用超(HTTP 429)会提示该家失败并自动只显示其它家的结果;
+  等一小时配额刷新即可,不影响另外两家。
 
 ## 六、PhotoCraft(聊天改图 / 局部重绘的引擎,免费软件)
 
