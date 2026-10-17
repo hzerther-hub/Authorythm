@@ -490,7 +490,11 @@ class StockPhotoDialog(QDialog):
             self.downloaded.emit(self.local_path)
             self.accept()
             return
-        if self._dl.isRunning():
+        # _dl 首次下载前是 None —— 直接 .isRunning() 会 AttributeError,被 Qt
+        # 事件吞掉,表现为「使用这张」关不掉图库页、图也进不来(实测)
+        if self._dl is not None and self._dl.isRunning():
+            if close_immediately:
+                self.accept()      # 关窗不阻塞;上一次下载完成会经信号回填
             return
         ext = ".jpg"
         for cand in (".jpg", ".png", ".jpeg", ".webp"):

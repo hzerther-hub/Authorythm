@@ -1611,16 +1611,19 @@ class ChatEditPanel(QWidget):
             self._adopt_stock_image(dlg.local_path)
         elif getattr(dlg, "_close_when_done", False):
             # 「使用这张」点了远程原图:两层弹窗已先关,下载转后台,
-            # 完成经 downloaded 信号回填进当前图框
+            # 完成经 downloaded 信号回填进当前图框 —— 等待期给可见提示
+            self.status_lab.setText("🖼 正在下载图库图片…")
             dlg.downloaded.connect(self._adopt_stock_image)
 
     def _adopt_stock_image(self, path: str):
         """图库选用的图进聊天:设为当前图 + 对话流气泡确认。失败弹错误。"""
         if not path:
+            self.status_lab.setText("")
             from .toast import err as _err
             _err("图库图片下载失败,请回图库重选一张")
             return
         self.set_image(path)
+        self.status_lab.setText("")
         self._append_message_widget(
             "assistant",
             "🖼 已把这张图库图片设为当前图 —— 直接输入改图指令即可(如「改成黑白」)。",
