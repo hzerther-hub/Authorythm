@@ -44,6 +44,11 @@ def extract_json(text: str) -> dict | list | None:
     s2, e2 = text.find("["), text.rfind("]")
     if s2 >= 0 and e2 > s2:
         candidates.append(text[s2:e2 + 1])
+    # 尾逗号修复候选:LLM 常写 {"a": 1,} / [1,2,] —— json.loads 必炸,去尾逗号就能救
+    for cand in list(candidates):
+        fixed = re.sub(r",\s*([}\]])", r"\1", cand)
+        if fixed != cand:
+            candidates.append(fixed)
     for cand in candidates:
         try:
             return json.loads(cand)
@@ -89,6 +94,12 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
     raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
                     temperature=0.4, config_id=config_id, image_urls=image_urls)
     data = extract_json(raw)
+    if data is None:
+        # 一次重试(对齐 prompts_gen._robust_json 的既有模式):推理模型偶发把
+        # JSON 写坏(引号未转义/尾逗号/被 think 挤占截断),重试命中率很高
+        raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
+                        temperature=0.4, config_id=config_id, image_urls=image_urls)
+        data = extract_json(raw)
     if data is None:
         raise RuntimeError(f"{agent_type} 输出无法解析为 JSON:{raw[:300]}")
     return data
