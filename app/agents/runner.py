@@ -80,26 +80,55 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
 
 JSON_HINT = "请只输出 JSON,不要任何解释文字、不要 Markdown 代码块标记。"
 
+# workspace/prompts/*.md 是给带工具的 Mastra Agent 写的(「调用 read_xxx / save_xxx」),
+# 本仓 runner 没有工具。不加这句时,模型会老老实实回一个
+# {"name": "read_script_for_extraction", "arguments": {...}} —— 它是合法 JSON,
+# extract_json 会解析成功,但调用方拿到的是工具调用而不是结果,资产提取 0 条。
+_NO_TOOL_HINT = (
+    "\n\n【本次运行环境没有工具】不要调用任何工具,也不要输出 "
+    '{"name": "...", "arguments": {...}} 形式的工具调用;直接输出最终 JSON。'
+)
+
+
+def _looks_like_tool_call(data) -> bool:
+    """识别 {"name": "...", "arguments": {...}} 这种工具调用 JSON。"""
+    return (isinstance(data, dict) and set(data) == {"name", "arguments"}
+            and isinstance(data.get("name"), str))
+
 
 def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None,
                    config_id: int | None = None,
-                   image_urls: list[str] | None = None) -> dict | list:
+                   image_urls: list[str] | None = None,
+                   system: str | None = None,
+                   max_tokens: int | None = None) -> dict | list:
     """跑 Agent 并解析 JSON;解析失败时抛 RuntimeError(带原始输出片段)。
 
     **总是把「只输出 JSON」写进用户消息**:部分网关要求 messages 里出现 json 字样才肯用
     response_format=json_object,而 workspace/prompts/*.md 里的系统提示不一定含该词
     (实测 storyboard_breaker 的 md 就没有),否则整个 Agent 调用 400。
+
+    system:整体覆盖系统提示(同 run_agent)。extractor 这类提示词写死了
+    「调用工具保存」的 Agent 必须用 JSON 专用 system,否则拿到的是工具调用。
+    max_tokens:推理型模型把预算烧在 <think> 上时传更大的值。
     """
     prompt = user_prompt if JSON_HINT in user_prompt else user_prompt + "\n\n" + JSON_HINT
     raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
-                    temperature=0.4, config_id=config_id, image_urls=image_urls)
+                    temperature=0.4, config_id=config_id, image_urls=image_urls,
+                    system=system, max_tokens=max_tokens)
     data = extract_json(raw)
+    if _looks_like_tool_call(data):
+        data = None
     if data is None:
         # 一次重试(对齐 prompts_gen._robust_json 的既有模式):推理模型偶发把
-        # JSON 写坏(引号未转义/尾逗号/被 think 挤占截断),重试命中率很高
+        # JSON 写坏(引号未转义/尾逗号/被 think 挤占截断),或照着带工具的
+        # prompt 回了工具调用 —— 重试时明确禁工具,命中率很高。
+        base_system = system if system is not None else prompts.load_prompt(agent_type, lang)
         raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
-                        temperature=0.4, config_id=config_id, image_urls=image_urls)
+                        temperature=0.4, config_id=config_id, image_urls=image_urls,
+                        system=base_system + _NO_TOOL_HINT, max_tokens=max_tokens)
         data = extract_json(raw)
+        if _looks_like_tool_call(data):
+            data = None
     if data is None:
         raise RuntimeError(f"{agent_type} 输出无法解析为 JSON:{raw[:300]}")
     return data
