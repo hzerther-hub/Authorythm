@@ -1283,6 +1283,7 @@ class ChatEditPanel(QWidget):
             self._append_message_widget(m["role"], m["content"], steps, m.get("result_image"),
                                        scroll=False)
         self._refresh_status()
+        QTimer.singleShot(60, self._scroll_to_bottom)   # 加载完落在最新一条
 
     def _new_session(self):
         # 当前图变成新会话的原图
@@ -1541,7 +1542,10 @@ class ChatEditPanel(QWidget):
         if stretch:
             stretch.deleteLater()
         if scroll:
-            QTimer.singleShot(0, self._scroll_to_bottom)
+            # 多拍滚动:消息插入(0ms)、布局稳定(120ms)、结果图解码后(350ms)
+            # 各滚一次 —— 只滚第一拍时,带图消息会因图片撑高又露在下面
+            for ms in (0, 120, 350):
+                QTimer.singleShot(ms, self._scroll_to_bottom)
 
     def _scroll_to_bottom(self):
         sb = self._scroll.verticalScrollBar()
