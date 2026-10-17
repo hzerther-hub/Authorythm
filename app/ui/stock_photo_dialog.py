@@ -35,12 +35,12 @@ class _Searcher(QThread):
     """网络搜索放线程里,别把 UI 冻住。"""
     done = Signal(list, list)
 
-    def __init__(self, query, source, parent=None):
+    def __init__(self, query, source, page: int = 1, parent=None):
         super().__init__(parent)
-        self._q, self._s = query, source
+        self._q, self._s, self._page = query, source, page
 
     def run(self):
-        photos, errs = sp.search(self._q, self._s, per_page=PER_PAGE)
+        photos, errs = sp.search(self._q, self._s, page=self._page, per_page=PER_PAGE)
         self.done.emit(photos, errs)
 
 
@@ -181,6 +181,7 @@ class StockPhotoDialog(QDialog):
         self._fetcher = None
         self._dl = None
         self._labels = []
+        self._page = 1
         self.local_path = ""
         root = QVBoxLayout(self)
 
@@ -209,7 +210,22 @@ class StockPhotoDialog(QDialog):
         self.scroll.setWidget(self.host)
         root.addWidget(self.scroll, 1)
 
+        self._page = 1
         row = QHBoxLayout()
+        # 分页(用户要求):三家图库 API 都支持 page;满页才亮「下一页」
+        self.pg_prev = QPushButton("◀ " + tr("上一页"))
+        self.pg_prev.setCursor(Qt.PointingHandCursor)
+        self.pg_prev.setEnabled(False)
+        self.pg_prev.clicked.connect(lambda: self._search(self._page - 1))
+        row.addWidget(self.pg_prev)
+        self.pg_lab = QLabel("")
+        self.pg_lab.setStyleSheet("color:#64748b; font-size:12px;")
+        row.addWidget(self.pg_lab)
+        self.pg_next = QPushButton(tr("下一页") + " ▶")
+        self.pg_next.setCursor(Qt.PointingHandCursor)
+        self.pg_next.setEnabled(False)
+        self.pg_next.clicked.connect(lambda: self._search(self._page + 1))
+        row.addWidget(self.pg_next)
         row.addStretch(1)
         cancel = QPushButton(tr("取消"))
         cancel.clicked.connect(self.reject)
@@ -242,16 +258,17 @@ class StockPhotoDialog(QDialog):
     def _hint_text(self) -> str:
         return tr("点击任意一张即下载到本地并使用。图库是真实照片,适合找参考图/氛围图。")
 
-    def _search(self):
+    def _search(self, page: int = 1):
         q = self.query_edit.text().strip()
         if not q:
             info(tr("请输入搜索关键词"))
             return
         if self._thread and self._thread.isRunning():
             return
+        self._page = max(1, int(page or 1))
         self._clear()
         self.hint.setText(tr("正在搜索…"))
-        self._thread = _Searcher(q, self.src_combo.currentData(), self)
+        self._thread = _Searcher(q, self.src_combo.currentData(), self._page, self)
         self._thread.done.connect(self._on_done)
         self._thread.start()
 
@@ -297,10 +314,14 @@ class StockPhotoDialog(QDialog):
         self._fetcher = _ThumbFetcher(jobs, self)
         self._fetcher.one.connect(self._on_thumb)
         self._fetcher.start()
-        note = f"{len(photos)} 张"
+        note = f"第 {self._page} 页 · 共 {len(photos)} 张"
         if errs:
             note += "  ·  " + "; ".join(errs)
         self.hint.setText(note)
+        # 满页才可能有下一页;第 1 页没有上一页
+        self.pg_lab.setText(f"{self._page} / ?")
+        self.pg_prev.setEnabled(self._page > 1)
+        self.pg_next.setEnabled(len(photos) >= PER_PAGE)
 
     def _on_thumb(self, idx: int, data: bytes):
         if 0 <= idx < len(self._labels):
