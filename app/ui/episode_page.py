@@ -1556,6 +1556,8 @@ class EpisodePage(QWidget):
 
     def _generate_one(self, sb_id: int):
         """单镜生成视频(任务行右侧操作键 / 主行动键)。"""
+        if self._gen_blocked("video", "视频"):
+            return
         self._one_video(sb_id)
 
     # ── 首帧预审(对齐参考 regen-first-frame / first-frame-approval)──
@@ -4107,6 +4109,11 @@ class EpisodePage(QWidget):
         self._cancelled_sb: set = set()    # 已被用户手动停止的分镜,worker 回来时不再回写
         self._poster_queued: set = set()    # 已排队抽过海报帧的分镜,避免重复起 ffmpeg
         self._task_filter = ""
+        # 生成状态同步:任一 image/video/tts 任务在跑 → 工作台相关按钮一律禁用
+        # (用户要求:批量在跑时,单个生成/弹窗不能再并发点)
+        from ..core.taskmgr import TASKMGR as _TM
+        _TM.updated.connect(self._sync_gen_buttons)
+        _TM.type_finished.connect(lambda *_: self._sync_gen_buttons)
         # 小说项目默认收起「制作/导出」,但可展开(对齐参考项目 showFullPipeline)
         self._pipeline_expanded = False
         self._pipeline_manually_collapsed = False
@@ -5030,7 +5037,38 @@ class EpisodePage(QWidget):
             self._render_bound_refs(dict(row))
 
     # ── 分镜动作 ──
+    def _sync_gen_buttons(self):
+        """按任务池状态禁/启工作台生成按钮(批量在跑 → 单个也不能点)。"""
+        from ..core.taskmgr import TASKMGR as _TM
+        img, vid, tts = _TM.is_busy("image"), _TM.is_busy("video"), _TM.is_busy("tts")
+        pairs = [
+            (getattr(self, "sb_ff_gen_btn", None), img),
+            (getattr(self, "sb_action_btn", None), vid or img),
+            (getattr(self, "sb_empty_btn", None), vid or img),
+            (getattr(self, "batch_video_btn", None), vid),
+        ]
+        for btn, busy in pairs:
+            if btn is None:
+                continue
+            btn.setEnabled(not busy)
+        # 配音按钮:忙禁之外还要旁白非空(与 _select_storyboard/文本编辑两处口径一致)
+        if getattr(self, "sb_tts_btn", None) is not None:
+            has_text = bool(self.sb_narration.toPlainText().strip())
+            self.sb_tts_btn.setEnabled(not tts and has_text)
+
+    @staticmethod
+    def _gen_blocked(service: str, label: str) -> bool:
+        """该类型已有任务在跑 → 弹提示并返回 True(调用方立即中止)。"""
+        from ..core.taskmgr import TASKMGR as _TM
+        if _TM.is_busy(service):
+            from .toast import err as _err
+            _err(tr("已有{}任务在跑,请等它完成后再试").format(label))
+            return True
+        return False
+
     def _generate_selected(self):
+        if self._gen_blocked("video", "视频") or self._gen_blocked("image", "图片"):
+            return
         if self._sb_id:
             self._generate_one(self._sb_id)
 
@@ -5058,6 +5096,8 @@ class EpisodePage(QWidget):
     def _one_tts_selected(self):
         # 没选中分镜时此前是静默返回 —— 点了毫无反应,用户以为按钮坏了(实测)
         print(f"[tts] 点击合成配音 sb={self._sb_id}", flush=True)
+        if self._gen_blocked("tts", "配音"):
+            return
         if not self._sb_id:
             err(tr("请先在左侧选中一个分镜,再合成配音"))
             return
@@ -5689,6 +5729,8 @@ class EpisodePage(QWidget):
 
     def _batch_video_impl(self):
         print("[batch_video] 进入批量流程", flush=True)
+        if self._gen_blocked("video", "视频"):
+            return
         all_ids = [dict(r) for r in db.q(
             "SELECT id, storyboard_number, video_url, composed_video_url, status FROM storyboards "
             "WHERE episode_id=? ORDER BY storyboard_number", (self.episode_id,))]

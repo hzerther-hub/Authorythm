@@ -1003,6 +1003,10 @@ class AssetDetailDialog(QDialog):
         if btn is not None:
             btn.setEnabled(False)
             btn.setText(tr("◑ 生成中…"))
+        if TASKMGR.is_busy("image"):
+            from .toast import err as _err
+            _err("已有图片生成任务在跑,请等它完成后再试")
+            return
         def job(tid):
             fp = self.fp.toPlainText() or self.row.get("final_prompt") or ""
             if not fp:

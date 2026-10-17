@@ -152,6 +152,10 @@ class VariantsDialog(QDialog):
         TASKMGR.submit("prompt", job, done, character_id=self.character["id"])
 
     def _gen_image(self, r: dict):
+        if TASKMGR.is_busy("image"):
+            from .toast import err as _err
+            _err("已有图片生成任务在跑,请等它完成后再试")
+            return
         def job(tid):
             fp = r["final_prompt"]
             if not fp:

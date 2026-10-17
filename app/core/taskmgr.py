@@ -149,6 +149,7 @@ class TaskSignals(QObject):
     progress = Signal(int, int)       # task_id, percent
     message = Signal(str)
     busy_changed = Signal(bool, str)  # 是否忙, 任务类型(D 类全局 running 态)
+    type_finished = Signal(str)       # 某服务类型的任务跑完一个(image/video/tts/…)
     # 任务完成回调走 Qt 跨线程队列(比 QTimer 可靠,不会因事件循环状态丢失)
     done_cb = Signal(object, object, object)   # task_id, result, error
 
@@ -174,9 +175,11 @@ def on_main(fn):
 
 
 class _FnTask(QRunnable):
-    def __init__(self, task_id: int, fn: Callable[..., object], signals: TaskSignals, done_cb: Callable | None):
+    def __init__(self, task_id: int, fn: Callable[..., object], signals: TaskSignals,
+                 done_cb: Callable | None, svc: str = ""):
         super().__init__()
         self.task_id, self.fn, self.signals, self.done_cb = task_id, fn, signals, done_cb
+        self.svc = svc                   # 服务类型:收尾时按类型递减忙计数
         self.setAutoDelete(True)
 
     def run(self):  # noqa: D102
@@ -191,6 +194,8 @@ class _FnTask(QRunnable):
         finally:
             self._emit(self.signals.finished, self.task_id, "done")
             self._emit(self.signals.busy_changed, active_count() > 0, "")
+            if self.svc:
+                self._emit(self.signals.type_finished, self.svc)
 
     def _emit_done(self, cb, result, error):
         try:
@@ -214,9 +219,13 @@ class TaskManager(QObject):
         self.pool = QThreadPool.globalInstance()
         self.pool.setMaxThreadCount(6)
         self.signals = TaskSignals()
+        # 别名:外部(UI)直接连管理器实例上的 type_finished,不必摸内部 signals
+        self.type_finished = self.signals.type_finished
         self.signals.finished.connect(lambda *_: self.updated.emit())
         self.signals.done_cb.connect(self._run_done_cb)
         self.signals.finished.connect(lambda *_: self._leave_busy())
+        self.signals.type_finished.connect(self._leave_busy_type)
+        self.signals.type_finished.connect(lambda *_: self.updated.emit())
 
     @staticmethod
     def active_count() -> int:
@@ -241,8 +250,18 @@ class TaskManager(QObject):
 
     _on_main = staticmethod(on_main)
 
+    # 按服务类型的活动任务数:按钮状态同步用(video 忙 → 单镜生成/批量按钮全禁)。
+    # 计数在主线程的 submit 与 type_finished(queued 回主线程)两处增减,天然串行。
+    TYPE_BUSY: dict[str, int] = {}
+
+    @staticmethod
+    def is_busy(service_type: str) -> bool:
+        """该服务类型(image/video/tts/text/faceswap)是否还有任务在跑。"""
+        return TaskManager.TYPE_BUSY.get(service_type, 0) > 0
+
     def _enter_busy(self, task_type: str):
         TaskManager._pending += 1
+        TaskManager.TYPE_BUSY[task_type] = TaskManager.TYPE_BUSY.get(task_type, 0) + 1
         msg = f"正在{self.LABEL.get(task_type, '处理')}…"
         on_main(lambda: self._apply_busy(True, msg))
 
@@ -251,6 +270,9 @@ class TaskManager(QObject):
         if TaskManager._pending:
             return
         on_main(lambda: self._apply_busy(False, ""))
+
+    def _leave_busy_type(self, svc: str) -> None:
+        TaskManager.TYPE_BUSY[svc] = max(0, TaskManager.TYPE_BUSY.get(svc, 0) - 1)
 
     def _apply_busy(self, on: bool, msg: str):
         # 必须发给登记的主窗口(转轮的宿主)。曾用 activeWindow():任务完成时激活的
@@ -315,7 +337,7 @@ class TaskManager(QObject):
                 return 0
         tid = create_task(task_type, **links)
         self._enter_busy(task_type)
-        self.pool.start(_FnTask(tid, fn, self.signals, done_cb))
+        self.pool.start(_FnTask(tid, fn, self.signals, done_cb, svc))
         self.signals.busy_changed.emit(True, task_type)
         self.updated.emit()
         return tid
