@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -26,6 +27,54 @@ class Row(sqlite3.Row):
 
 
 _local = threading.local()
+
+# 跨进程独占锁:当前进程是否持有本库的 .lock 文件。
+# 只在 init_db 的「启动回收」处使用,详见 _acquire_db_lock() 的注释。
+_lock_fd: tuple[str, int] | None = None
+
+
+def _acquire_db_lock() -> bool:
+    """非阻塞地独占本库,返回**当前进程**是否拿到锁。
+
+    为什么需要:init_db() 的启动回收会把所有 processing 任务一律标 failed。
+    只要**任何**第二个进程调了 init_db —— pytest、诊断脚本、第二次启动 ——
+    用户在另一个实例里正在跑的章节计划就会被误杀。实测:用户 20:27 建的任务,
+    20:29 被一次 pytest 里的 init_db 收走(应用 PID 都没变)。
+
+    拿到锁才说明没有活着的实例,这时 processing 才全是上一个死进程留下的孤儿,
+    可以放心回收;拿不到就跳过,把回收留给真正持锁的那个进程。
+
+    Windows 用 msvcrt.locking,其它平台用 flock —— 两种情况都由进程退出时
+    内核自动释放,不需要清理陈旧的 .lock 文件(文件本身留着无害)。
+    """
+    global _lock_fd
+    lock_path = str(config.DB_PATH) + ".lock"
+    if _lock_fd is not None and _lock_fd[0] == lock_path:
+        return True
+    if _lock_fd is not None:
+        # 测试里 monkeypatch 了 DB_PATH,换库前先放掉旧锁
+        try:
+            os.close(_lock_fd[1])
+        except OSError:
+            pass
+        _lock_fd = None
+    try:
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        return False
+    _lock_fd = (lock_path, fd)
+    return True
 
 
 def now() -> str:
@@ -459,8 +508,11 @@ def init_db() -> None:
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('ui_language_explicit','0',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('theme','light',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('tours_seen','0',?)", (now(),))
-    # 恢复中断任务(对齐原版):按"产出是否已落"归位,而不是一律标 failed
-    settle_interrupted_tasks(db, now())
+    # 恢复中断任务(对齐原版):按"产出是否已落"归位,而不是一律标 failed。
+    # 只在没有其它实例活着时做 —— 否则第二个进程(测试/脚本/双开)会把
+    # 正在跑的任务当孤儿收走,见 _acquire_db_lock()。
+    if _acquire_db_lock():
+        settle_interrupted_tasks(db, now())
     # 首帧预审老数据兜底:first_frame_image 已有内容说明用户隐式批准过(已能出视频),
     # 自动升级 approved,不破坏现有可出视频的分镜(对齐参考 sqlite-schema.ts)
     try:

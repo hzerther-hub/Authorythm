@@ -73,3 +73,24 @@ def _no_leftover_rows_in_real_db():
         f"这些测试项目被留在了用户真实库里:{sorted(leaked)}。"
         f"隔离必须用 monkeypatch.setattr(db.config, 'DB_PATH', tmp_path/...);"
         f"清理语句必须放 finally 里。")
+
+
+def test_no_test_uses_env_var_for_db_isolation():
+    """任何测试都不许用 `YIHAO_DATA_DIR` 做隔离。
+
+    config 在导入时就把 DATA_DIR 算成了 DB_PATH,之后再改环境变量完全无效;
+    reload(db) 也救不回来(db 里 import 的是缓存中的 config)。这类写法实际是
+    在**用户真实库**上跑 init_db(),而 init_db 的启动回收会把另一个实例正在
+    跑的任务当孤儿标 failed —— 实测跑一次 pytest 就杀掉了用户 20:27 创建的
+    章节计划任务(应用 PID 都没变,任务却在 20:29 变 failed)。
+    """
+    import re
+    from pathlib import Path
+    pat = re.compile(r"""environ\[["']YIHAO_DATA_DIR["']\]\s*=""")
+    bad = []
+    for p in Path(__file__).parent.glob("test_*.py"):
+        for i, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+            code = line.split("#", 1)[0]
+            if pat.search(code):
+                bad.append(f"{p.name}:{i}")
+    assert not bad, f"这些测试还在用环境变量隔离(无效且会碰真实库):{bad}"

@@ -151,3 +151,29 @@ def test_watchdog_runs_on_its_own_thread_local_connection(tmp_db):
         assert ok, "巡检 15 秒内没有把僵尸任务收走:tick 很可能在跨线程用连接时炸了"
     finally:
         timer.cancel()
+
+
+def test_second_process_cannot_reap_live_tasks(tmp_db):
+    """第二个进程调 init_db() 时不得回收本进程正在跑的任务。
+
+    现场:某个测试用环境变量隔离失败,init_db() 落在用户真实库上,把另一个
+    实例 20:27 创建的章节计划任务在 20:29 标成了 failed(应用 PID 都没变)。
+    init_db 现在先抢数据库旁的 .lock,抢不到就跳过启动回收。
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    assert db._acquire_db_lock(), "当前进程应能拿到临时库的锁"
+    root = str(Path(__file__).resolve().parents[1])
+    code = (f"import sys; sys.path.insert(0, r'{root}'); "
+            f"from app.core import db; print(db._acquire_db_lock())")
+    env = dict(os.environ)
+    env["SQLITE_PATH"] = str(tmp_db)
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, timeout=60, env=env)
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.strip().endswith("False"), (
+        f"第二个进程也拿到了锁,会把本进程的任务当孤儿收走:{out.stdout!r}"
+    )

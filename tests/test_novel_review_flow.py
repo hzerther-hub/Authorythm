@@ -5,6 +5,21 @@ from __future__ import annotations
 
 import importlib
 
+import pytest
+
+
+@pytest.fixture
+def no_real_jev(monkeypatch):
+    """审校 fallback 用例只测 routing,禁止打真实 Jev 接口。
+
+    实测踩过:本机库里残留一条 Jev 配置(id 落在 95000 测试段),审校 fallback
+    会真的发 POST /v1/systemone;模型答「不连续」时 decision 变 rewrite,
+    final 从 repaired-once 变成 d-2 —— 用例随真实接口时绿时红。
+    Jev 自身的用例(test_jev_gate_*)不用这个 fixture。
+    """
+    from app.agents import novel_review_flow as nrf
+    monkeypatch.setattr(nrf, "jev_gate_node", lambda s: {"jev_decision": None})
+
 
 def test_build_returns_none_or_graph():
     from app.agents.novel_review_flow import build_novel_review_flow
@@ -30,7 +45,7 @@ def test_run_loop_fallback_when_langgraph_missing(monkeypatch):
     assert g is None
 
 
-def test_run_loop_fallback_ok_path():
+def test_run_loop_fallback_ok_path(no_real_jev):
     """fallback 跑通 ok 直接终止。"""
     from app.agents import novel_review_flow as nrf
     nrf.writer_node = lambda s: {"cycle": 1, "draft": "happy"}
@@ -45,7 +60,7 @@ def test_run_loop_fallback_ok_path():
         importlib.reload(nrf)
 
 
-def test_run_loop_fallback_revise_then_ok():
+def test_run_loop_fallback_revise_then_ok(no_real_jev):
     """fallback 1 次 revise + 修复,第二轮 ok。"""
     from app.agents import novel_review_flow as nrf
     nrf.writer_node = lambda s: {
@@ -66,7 +81,7 @@ def test_run_loop_fallback_revise_then_ok():
         importlib.reload(nrf)
 
 
-def test_run_loop_fallback_max_cycles_triggers_giveup():
+def test_run_loop_fallback_max_cycles_triggers_giveup(no_real_jev):
     """max_cycles=2 时,两个 revise 后自动 giveup。"""
     from app.agents import novel_review_flow as nrf
     nrf.writer_node = lambda s: {

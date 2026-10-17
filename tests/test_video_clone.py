@@ -593,21 +593,24 @@ def test_volume_in_batches_rejects_small_books():
 
 # ── 资产表软删除列(缺列会让整条链路 OperationalError)──────────────────
 
-def test_asset_tables_have_deleted_at_column():
+def test_asset_tables_have_deleted_at_column(tmp_path, monkeypatch):
     """characters/scenes/props 必须有 deleted_at 列。
 
     storyboard.py 在这三张表上查 `deleted_at IS NULL`(软删除资产不算数),
     但三张表原本都没这一列 → SQLITE OperationalError: no such column: deleted_at,
     资产提取与分镜拆解整条链路直接报错(实测「重新拆分」一点就弹红框)。
     """
-    import os
-    import tempfile
-
-    os.environ["YIHAO_DATA_DIR"] = tempfile.mkdtemp()
-    import importlib
-
     from app.core import db as _db
-    importlib.reload(_db)
+
+    # 隔离必须改 config.DB_PATH。只设 YIHAO_DATA_DIR 时 config 早已导入,
+    # DB_PATH 不会重算;reload(db) 只是把 db 模块再执行一遍,连的仍是真实库
+    # —— init_db() 的启动回收会把另一个实例正在跑的任务当孤儿收走
+    # (实测:跑一次 pytest 就杀掉了用户 20:27 创建的章节计划任务)。
+    monkeypatch.setattr(_db.config, "DB_PATH", tmp_path / "asset_schema.sqlite3")
+    old = getattr(_db._local, "conn", None)
+    if old is not None:
+        old.close()
+    _db._local.conn = None
     _db.init_db()
     for t in ("characters", "scenes", "props", "storyboards"):
         cols = [r[1] for r in _db.get_db().execute(f"PRAGMA table_info({t})").fetchall()]
