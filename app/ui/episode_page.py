@@ -2682,6 +2682,9 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_comic_assets(self, force: bool = False):
+        if self._gen_blocked("image", "图片"):
+            return
+
         """漫画风格批量:链式串行(上一个个完成再提下一个)+ 按钮全程等待态。
 
         主线程快照 image_model.currentData() —— 跟 _batch_comic 同一种 Internal C++ 报错。
@@ -3035,6 +3038,9 @@ class EpisodePage(QWidget):
         ok(tr("已删除资产"))
 
     def _clear_assets(self):
+        if self._gen_blocked("image", "图片"):
+            return
+
         """清空本集的角色/场景/道具关联与实体,可重新提取(彻底重来)。
 
         只删本集独占的资产;被其它集共用的保留(否则会连带清掉别集的数据)。
@@ -3157,6 +3163,9 @@ class EpisodePage(QWidget):
             return url
 
     def _batch_images(self, table: str):
+        if self._gen_blocked("image", "图片"):
+            return
+
         """批量生图:全走文绘,**单任务串行 + 每个间隔 3 秒**(不并发 ——
         并发会让提示词/生图接口互相踩,实测反复失败)。"""
         import time as _time
@@ -3203,6 +3212,9 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_redo_images(self, table: str):
+        if self._gen_blocked("image", "图片"):
+            return
+
         """批量重画:覆盖所有已有 image_url,按项目设置里的视觉风格(如 3D)重出。
 
         与 _batch_images 区别:不挑「待生成」的,而是**全部重做**。换项目风格后、
@@ -3337,6 +3349,9 @@ class EpisodePage(QWidget):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
     def _batch_fill_missing(self, table: str):
+        if self._gen_blocked("image", "图片"):
+            return
+
         """补图:只为本集已关联但 image_url 为空的资产生图,不覆盖已有图。
 
         与 _batch_redo_images 区别:后者无差别覆盖;本函数只看 NULL / 空串,
@@ -4112,8 +4127,8 @@ class EpisodePage(QWidget):
         # 生成状态同步:任一 image/video/tts 任务在跑 → 工作台相关按钮一律禁用
         # (用户要求:批量在跑时,单个生成/弹窗不能再并发点)
         from ..core.taskmgr import TASKMGR as _TM
-        _TM.updated.connect(self._sync_gen_buttons)
-        _TM.type_finished.connect(lambda *_: self._sync_gen_buttons)
+        _TM.updated.connect(self._sync_prod_buttons)
+        _TM.type_finished.connect(lambda *_: self._sync_prod_buttons)
         # 小说项目默认收起「制作/导出」,但可展开(对齐参考项目 showFullPipeline)
         self._pipeline_expanded = False
         self._pipeline_manually_collapsed = False
@@ -5037,24 +5052,46 @@ class EpisodePage(QWidget):
             self._render_bound_refs(dict(row))
 
     # ── 分镜动作 ──
-    def _sync_gen_buttons(self):
-        """按任务池状态禁/启工作台生成按钮(批量在跑 → 单个也不能点)。"""
+    def _sync_prod_buttons(self):
+        """制作页(分镜+资产)全部生成类按钮的状态同步。
+
+        任一同类任务在跑 → 相关按钮一律禁用:批量出图在跑时,清空资产/重画/
+        补图/卡片图绘文绘/弹窗生成不能再并发点(并发生成会互相踩上游接口,
+        用户实测)。任务跑完自动恢复。"""
         from ..core.taskmgr import TASKMGR as _TM
-        img, vid, tts = _TM.is_busy("image"), _TM.is_busy("video"), _TM.is_busy("tts")
-        pairs = [
-            (getattr(self, "sb_ff_gen_btn", None), img),
-            (getattr(self, "sb_action_btn", None), vid or img),
-            (getattr(self, "sb_empty_btn", None), vid or img),
-            (getattr(self, "batch_video_btn", None), vid),
-        ]
-        for btn, busy in pairs:
-            if btn is None:
-                continue
-            btn.setEnabled(not busy)
-        # 配音按钮:忙禁之外还要旁白非空(与 _select_storyboard/文本编辑两处口径一致)
+        img = _TM.is_busy("image")
+        vid = _TM.is_busy("video")
+        txt = _TM.is_busy("text")
+        tts = _TM.is_busy("tts")
+
+        # ── 分镜工具条(text 类)──
+        for btn in (getattr(self, "split_btn", None), getattr(self, "batch_vp_btn", None),
+                    getattr(self, "batch_atmos_btn", None), getattr(self, "repair_btn", None)):
+            if btn is not None:
+                btn.setEnabled(not txt)
+        # ── 分镜工具条(video 类)──
+        if getattr(self, "batch_video_btn", None) is not None:
+            self.batch_video_btn.setEnabled(not vid)
+        # ── 工作台(image / video / tts)──
+        for btn, busy in ((getattr(self, "sb_ff_gen_btn", None), img),
+                          (getattr(self, "sb_action_btn", None), vid or img),
+                          (getattr(self, "sb_empty_btn", None), vid or img)):
+            if btn is not None:
+                btn.setEnabled(not busy)
         if getattr(self, "sb_tts_btn", None) is not None:
             has_text = bool(self.sb_narration.toPlainText().strip())
             self.sb_tts_btn.setEnabled(not tts and has_text)
+        # ── 资产工具条 + 卡片区(image/text 忙 → 整体禁用,含清空资产)──
+        asset_busy = img or txt
+        for tb in getattr(self, "_asset_toolbar_menus", []):
+            tb.setEnabled(not asset_busy)
+        if getattr(self, "clear_assets_btn", None) is not None:
+            self.clear_assets_btn.setEnabled(not asset_busy)
+        if getattr(self, "asset_stack", None) is not None:
+            self.asset_stack.setEnabled(not asset_busy)
+        for btn in (getattr(self, "_comic_batch", None), getattr(self, "_comic_redo_all", None)):
+            if btn is not None:
+                btn.setEnabled(not img)
 
     @staticmethod
     def _gen_blocked(service: str, label: str) -> bool:
@@ -5452,6 +5489,9 @@ class EpisodePage(QWidget):
             self.repair_btn.setText(tr('⟳ 自动补全 {}').format(n))
 
     def _repair_storyboards(self):
+        if self._gen_blocked("text", "文本"):
+            return
+
         from ..core.taskmgr import TASKMGR
         ids = [x["id"] for x in (self._incomplete or [])]
         if not ids:
@@ -5541,6 +5581,9 @@ class EpisodePage(QWidget):
             err(f"写入失败:{e}")
 
     def _split_sb(self):
+        if self._gen_blocked("text", "文本"):
+            return
+
         """重新拆分分镜(改后台任务 + 轮询,对齐原版 split-async)。"""
         from ..core.preflight import ensure_ready
         combo = self._cfg_for("text")
@@ -5648,6 +5691,9 @@ class EpisodePage(QWidget):
         QTimer.singleShot(6000, tick)
 
     def _batch_vp(self):
+        if self._gen_blocked("text", "文本"):
+            return
+
         btn = getattr(self, "batch_vp_btn", None)
 
         def job(tid):
@@ -5665,6 +5711,9 @@ class EpisodePage(QWidget):
         TASKMGR.submit("prompt", job, done, episode_id=self.episode_id)
 
     def _batch_atmos(self):
+        if self._gen_blocked("text", "文本"):
+            return
+
         """整集按四层规范重写氛围(旧规则拆的分镜不用重拆也能升到新规范)。"""
         btn = getattr(self, "batch_atmos_btn", None)
         rows = db.q("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (self.episode_id,))["c"]
