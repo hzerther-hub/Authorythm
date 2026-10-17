@@ -369,8 +369,20 @@ class BatchImagePanel(QWidget):
         """从图库(Unsplash/Pexels/Pixabay)搜参考图,选中的直接进来源列表。"""
         from .stock_photo_dialog import StockPhotoDialog
         dlg = StockPhotoDialog(self)
-        if dlg.exec() == QDialog.Accepted and dlg.local_path:
+        dlg.exec()
+        if dlg.local_path:
             self._add_paths([dlg.local_path])
+        elif getattr(dlg, "_close_when_done", False):
+            # 「使用这张」远程原图:弹窗已先关,下载完成后回填来源列表
+            def _adopt(path: str):
+                if path:
+                    self._add_paths([path])
+                    from .toast import ok as _ok
+                    _ok("图库图片已加入来源列表")
+                else:
+                    from .toast import err as _err
+                    _err("图库图片下载失败,请重选")
+            dlg.downloaded.connect(_adopt)
 
     def _clear(self):
         self._sources.clear()

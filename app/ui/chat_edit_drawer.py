@@ -1320,8 +1320,13 @@ class ChatEditPanel(QWidget):
         下游图像 API 与缩略图都按本地路径处理,直接给远程 URL 会在一半地方炸。"""
         from .stock_photo_dialog import StockPhotoDialog
         dlg = StockPhotoDialog(self)
-        if dlg.exec() == QDialog.Accepted and dlg.local_path:
-            self.set_image(dlg.local_path)
+        dlg.exec()
+        if dlg.local_path:
+            self._adopt_stock_image(dlg.local_path)
+        elif getattr(dlg, "_close_when_done", False):
+            # 「使用这张」远程原图:弹窗已先关,下载转后台,完成回填当前图框
+            self.status_lab.setText("🖼 正在下载图库图片…")
+            dlg.downloaded.connect(self._adopt_stock_image)
 
     def _pick_image(self):
         from .image_batch_panel import IMG_EXTS  # 复用常量
