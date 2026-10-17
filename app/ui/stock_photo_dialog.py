@@ -193,7 +193,14 @@ class _ImgLabel(QFrame):
 
 
 class StockPhotoDialog(QDialog):
-    """搜图库 → 选中 → 下载到本地 → accepted(local_path)。"""
+    """搜图库 → 选中 → 下载到本地 → accepted(local_path)。
+
+    「使用这张」走**先关窗后下载**模式:accept 后远程下载在后台继续,
+    完成时 emit downloaded(本地路径)(失败 emit "")—— 调用方连此信号把图
+    放进聊天当前图框,两层弹窗即刻关闭,不用干等大图下载。
+    """
+
+    downloaded = Signal(str)
 
     def __init__(self, parent=None, drama_id: int | None = None,
                  query: str = "", auto_search: bool = False):
@@ -376,7 +383,8 @@ class StockPhotoDialog(QDialog):
         if not dlg.exec() == ImageViewerDialog.Accepted or not dlg.used:
             return                                  # 关闭:回到搜索结果,弹窗继续开着
         # 用了换过画风的版本就用它,否则下原图
-        self._download(getattr(dlg, "transformed_url", None) or url)
+        self._download(getattr(dlg, "transformed_url", None) or url,
+                       close_immediately=True)
 
     # ── 预览里的「换画风」 ──
     def _style_choices(self) -> list[tuple[str, str]]:
@@ -459,13 +467,14 @@ class StockPhotoDialog(QDialog):
         self._selecting_lab = lab
         self._download(url)
 
-    def _download(self, url: str):
+    def _download(self, url: str, close_immediately: bool = False):
         """把选中的图落地到本地静态目录,完成后 accept。
 
-        两条路:**本地路径直接复制**(换画风的产物就是本地文件 —— 走 HTTP
-        下载会 requests.get 一个盘符路径,必败,表现为点「使用这张」毫无
-        反应、图带不进聊天,实测);远程 URL 才走后台线程下载。
+        close_immediately=True(「使用这张」):弹窗马上关闭,下载转后台,
+        完成走 downloaded 信号(而非等在 exec 里的 local_path)。
         """
+        self._close_when_done = bool(close_immediately)
+        # 两条路:本地路径直接复制(换画风的产物就是本地文件);远程 URL 走后台线程
         out_dir = config.STATIC_DIR / "uploads"
         out_dir.mkdir(parents=True, exist_ok=True)
         if url and not str(url).startswith(("http://", "https://")):
@@ -477,6 +486,7 @@ class StockPhotoDialog(QDialog):
             out = out_dir / f"stock_{uuid.uuid4().hex[:10]}{src.suffix or '.png'}"
             shutil.copy2(src, out)
             self.local_path = str(out)
+            self.downloaded.emit(self.local_path)
             self.accept()
             return
         if self._dl.isRunning():
@@ -491,11 +501,18 @@ class StockPhotoDialog(QDialog):
         self._dl = _Downloader(url, str(out), self)
         self._dl.done.connect(self._on_downloaded)
         self._dl.start()
+        if getattr(self, "_close_when_done", False):
+            # 「使用这张」:两层弹窗立即关闭,后台继续下载(对话框对象因
+            # parent 存活,线程完成信号照常回填)
+            self.accept()
 
     def _on_downloaded(self, ok: bool, path: str):
         if ok:
             self.local_path = path
-            self.accept()
+            if getattr(self, "_close_when_done", False):
+                self.downloaded.emit(path)   # 弹窗已关,调用方经信号接图
+            else:
+                self.accept()
         else:
             err(tr("图片下载失败,请换一张"))
             self.hint.setText(self._hint_text())
