@@ -108,6 +108,10 @@ def test_first_chapter_budget_comes_from_config(monkeypatch):
     monkeypatch.setattr(nv, "_enforce_novel_gate", lambda drama_id: None)
     monkeypatch.setattr(nv, "_save_with_title", lambda eid, text: "", raising=False)
     monkeypatch.setattr(nv, "chapter_prompt", lambda eid: "P")
+    # 不依赖真实库里有 episode id=1(本机库只有 id=2):测试读的是 max_tokens,
+    # 不是数据,替掉这次查询即可 —— AGENTS 明确要求测试不许碰真实库。
+    monkeypatch.setattr(nv.db, "q1",
+                        lambda sql, args=(): {"id": 1, "drama_id": 1, "content": ""})
     nv.write_chapter(1, config_id=4)
     assert budgets and budgets[0] == 32768, f"首次预算没取配置值:{budgets}"
 

@@ -244,6 +244,11 @@ def chapters_prompt(drama_id: int, chapter_count: int | None = None,
 # 长篇分批生成:一次请求只让模型写一批(单批 40 章,JSON 体积可控),
 # 循环累积直到 n 章 —— 999 章单次请求会超出 token 预算,模型只能吐散文,解析全废。
 CHAPTER_BATCH = 40
+# 章节计划的「升级预算」。实测(deepseek-v4-pro,40 章/批):默认 8192 全部
+# 被 reasoning 吃掉,finish_reason=length、content=0 字,整批报废;同样提示词
+# 给 32768 则一次返回 40 章(约 7k 字 JSON)。先按配置值跑,空了再升级 ——
+# 一上来就塞 32768 会让输出上限较低的模型直接 400。
+PLAN_RETRY_TOKENS = 32768
 CHAPTER_BATCH_PROMPT = """你是小说策划。基于已确定的项目设定,输出**第 {start} 章到第 {end} 章**的逐章计划。
 
 要求:
@@ -420,13 +425,30 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
         if all_ch:
             last = all_ch[-1]
             prev_hint = f"第{last['number']}章《{last.get('title','')}》钩子:{last.get('cliffhanger','')}"
-        raw = runner.run_agent(
-            "novel_planner",
-            chapters_batch_prompt(drama_id, start, cnt, total, word_count or 2500,
-                                  prev_hint=prev_hint),
-            temperature=0.4, config_id=config_id, max_tokens=None)
-        data = runner.extract_json(raw) or {}
-        batch = _clean_chapter_list(data.get("chapters"), cnt)
+        raw = ""
+        batch: list[dict] = []
+        budgets = _plan_budgets(config_id)
+        for attempt, budget in enumerate(budgets):
+            try:
+                raw = runner.run_agent(
+                    "novel_planner",
+                    chapters_batch_prompt(drama_id, start, cnt, total, word_count or 2500,
+                                          prev_hint=prev_hint),
+                    temperature=0.4, config_id=config_id, max_tokens=budget)
+            except Exception as exc:  # noqa: BLE001
+                if attempt == len(budgets) - 1:
+                    raise
+                print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
+                      f"升到 {budgets[attempt + 1]} 预算重试", flush=True)
+                continue
+            data = runner.extract_json(raw) or {}
+            batch = _clean_chapter_list(data.get("chapters"), cnt)
+            if batch:
+                break
+            print(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
+                  f"(预算 {budget},解析 0 章),"
+                  + (f"升到 {budgets[attempt + 1]} 重试" if attempt < len(budgets) - 1
+                     else "放弃"), flush=True)
         if not batch:
             # 空批次直接报错:继续往下跑只会让用户等完才看到「什么都没有」。
             # 已产出的批次已经在下面逐批落库,不会丢。
@@ -474,14 +496,30 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
         if all_ch:
             last = all_ch[-1]
             prev_hint = f"第{last['number']}章《{last.get('title','')}》钩子:{last.get('cliffhanger','')}"
-        raw = runner.run_agent("novel_planner",
-                               chapters_batch_prompt(drama_id, start, cnt, n, words,
-                                                     prev_hint=prev_hint),
-                               temperature=0.4, config_id=config_id,
-                               # 输出预算取该服务配置的「最大输出 token」
-                               max_tokens=None)
-        data = runner.extract_json(raw) or {}
-        batch = _clean_chapter_list(data.get("chapters"), n)
+        raw = ""
+        batch: list[dict] = []
+        budgets = _plan_budgets(config_id)
+        for attempt, budget in enumerate(budgets):
+            try:
+                raw = runner.run_agent("novel_planner",
+                                       chapters_batch_prompt(drama_id, start, cnt, n, words,
+                                                             prev_hint=prev_hint),
+                                       temperature=0.4, config_id=config_id,
+                                       max_tokens=budget)
+            except Exception as exc:  # noqa: BLE001
+                if attempt == len(budgets) - 1:
+                    raise
+                print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
+                      f"升到 {budgets[attempt + 1]} 预算重试", flush=True)
+                continue
+            data = runner.extract_json(raw) or {}
+            batch = _clean_chapter_list(data.get("chapters"), n)
+            if batch:
+                break
+            print(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
+                  f"(预算 {budget},解析 0 章),"
+                  + (f"升到 {budgets[attempt + 1]} 重试" if attempt < len(budgets) - 1
+                     else "放弃"), flush=True)
         if not batch:
             raise RuntimeError(f"第 {start}-{start + cnt - 1} 章生成失败"
                                f"(返回 {len(raw)} 字,疑似被截断)")
@@ -801,6 +839,16 @@ def _configured_max_tokens(config_id: int | None) -> int | None:
         return int(row["max_tokens"] or 0) or None
     except (TypeError, ValueError):
         return None
+
+
+def _plan_budgets(config_id: int | None) -> list[int]:
+    """章节计划每批的输出预算序列:先配置值(留空=8192),空了再升到 32768。
+
+    不再一上来就硬传大值:输出上限低的供应商(reject max_tokens)会直接 400。
+    详见 PLAN_RETRY_TOKENS 的实测记录。
+    """
+    first = _configured_max_tokens(config_id) or 8192
+    return [first] if first >= PLAN_RETRY_TOKENS else [first, PLAN_RETRY_TOKENS]
 
 
 def _write_chapter_text(prompt: str, config_id: int | None, lang: str | None,
