@@ -18,6 +18,8 @@
 """
 from __future__ import annotations
 
+import os
+import shutil
 import requests
 
 DEFAULT_TIMEOUT_S = 15.0
