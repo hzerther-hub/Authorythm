@@ -388,3 +388,17 @@ class TaskManager(QObject):
 
 
 TASKMGR = TaskManager()
+
+
+def short_error(err: str) -> str:
+    """从 taskmgr 回调的 traceback 全文里取**最后一行** —— 真正的异常类型+消息。
+
+    done 回调拿到的是 format_exc 全文;直接 ``str(error)[:160]`` 只会显示
+    「File ... line N, in run」的头部,真正的异常(如 AIError: Agnes 503)
+    被截掉,toast 上用户永远看不到失败原因(实测:章节计划生成失败只弹
+    三行文件路径)。要完整堆栈去任务面板/任务表 error_msg 列看。
+    """
+    if not err:
+        return ""
+    lines = [ln.strip() for ln in err.splitlines() if ln.strip()]
+    return lines[-1] if lines else ""

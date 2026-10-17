@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame, QHBoxLay
 
 from ..core import config, db
 from ..core.i18n import tr
-from ..core.taskmgr import TASKMGR
+from ..core.taskmgr import TASKMGR, short_error
 from . import widgets as W
 from .braille import WaitingButton
 from .toast import err, ok, warn
@@ -589,7 +589,7 @@ class NovelPlanDialog(QDialog):
                 self._leave_busy()
                 snap.release()      # 解冻:失败也必须解,否则编辑器永久只读
                 if error:
-                    err(tr('章节计划生成失败:{}').format(str(error)[:160]))
+                    err(tr('章节计划生成失败:{}').format(short_error(str(error))[:220]))
                     # 中途失败时把**已生成的那几批**显示回来,而不是停在
                     # 「正在生成…」——用户要能看到已有的成果,也能手动保存。
                     try:
@@ -634,7 +634,7 @@ class NovelPlanDialog(QDialog):
             btn.idle()
             self._leave_busy()
             editor.setPlainText("")
-            err(tr('章节计划生成失败:{}').format(msg[:160]))
+            err(tr('章节计划生成失败:{}').format(short_error(str(msg))[:220]))
 
         worker = stream_into(editor, novel_pipe.chapters_prompt(self.drama_id, n, words),
                              # 板块名是提示词路由键(SECTION_SPEC 按中文名匹配),翻了模型就认不出要写哪一块
