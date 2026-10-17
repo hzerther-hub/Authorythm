@@ -165,7 +165,7 @@ def search(query: str, source: str = "all", page: int = 1,
     return photos, errors
 
 
-def download(url: str, out_path) -> bool:
+def download(url: str, out_path, timeout: int = 30) -> bool:
     """下载原图到本地。失败返回 False(调用方跳过该张)。
 
     url 也可以是**本地图库/换画风结果的本地路径** —— 直接复制,不走网络
@@ -181,7 +181,7 @@ def download(url: str, out_path) -> bool:
         except Exception:  # noqa: BLE001
             return False
     try:
-        r = requests.get(url, timeout=30, stream=True)
+        r = requests.get(url, timeout=timeout, stream=True)
         if r.status_code != 200:
             return False
         r.raise_for_status()

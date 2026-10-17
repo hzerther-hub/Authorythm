@@ -104,13 +104,14 @@ class _Downloader(QThread):
     """原图下载(后台线程)。"""
     done = Signal(bool, str)
 
-    def __init__(self, url: str, out_path: str, parent=None):
+    def __init__(self, url: str, out_path: str, parent=None, timeout: int = 30):
         super().__init__(parent)
         self._url, self._out = url, out_path
+        self._timeout = timeout        # 大尺寸原图 30s 可能不够
 
     def run(self):
         from ..ai import stock_photo as sp
-        ok = sp.download(self._url, self._out)
+        ok = sp.download(self._url, self._out, timeout=self._timeout)
         self.done.emit(bool(ok), self._out)
 
 
@@ -498,7 +499,7 @@ class StockPhotoDialog(QDialog):
                 break
         out = out_dir / f"stock_{uuid.uuid4().hex[:10]}{ext}"
         self.hint.setText(tr("正在下载…"))
-        self._dl = _Downloader(url, str(out), self)
+        self._dl = _Downloader(url, str(out), self, timeout=90)
         self._dl.done.connect(self._on_downloaded)
         self._dl.start()
         if getattr(self, "_close_when_done", False):
@@ -519,3 +520,5 @@ class StockPhotoDialog(QDialog):
             lab = getattr(self, "_selecting_lab", None)
             if lab is not None:
                 lab.set_busy(False)      # 失败解遮罩,卡片可再选
+            if getattr(self, "_close_when_done", False):
+                self.downloaded.emit("")  # 先关窗模式:聊天侧弹失败提示

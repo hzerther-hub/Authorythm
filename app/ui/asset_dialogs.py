@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
@@ -1089,7 +1090,64 @@ class AssetDetailDialog(QDialog):
                    or (d.get("comic_image_url") or "").strip())
         if not url:
             return
-        ImageViewerDialog(self, url, self.row.get("name") or "").exec()
+        # 大图与图库预览同款:带「换画风」(可选风格下拉)。转换结果**写回该
+        # 资产** image_url —— 资产预览与图库预览语义不同:这是资产自己的参考图。
+        from ..core import config as _cfg
+        from ..core.taskmgr import TASKMGR
+        styles = [(r["value"], tr(r["name"])) for r in
+                  db.q("SELECT value, name FROM style_presets "
+                       "WHERE is_active=1 ORDER BY sort_order, id")]
+        d_row = db.q1("SELECT drama_id FROM {} WHERE id=?".format(self.table),
+                      (self.row["id"],))
+        default_style = "3d"
+        if d_row and d_row.get("drama_id"):
+            from ..pipeline import style_convert as _SC
+            default_style = _SC.current_project_style(d_row["drama_id"])
+        viewer = ImageViewerDialog(
+            self, url, self.row.get("name") or "",
+            confirm_text=tr("使用这张"), extra_text=tr("换画风"),
+            on_extra=self._convert_viewed_image,
+            style_choices=styles, style_default=default_style)
+        viewer.asset_table = self.table
+        viewer.asset_row_id = self.row["id"]
+        viewer.exec()
+
+    def _convert_viewed_image(self, viewer):
+        """大图里点「换画风」:按选定风格转换并**写回该资产**。"""
+        from ..pipeline import style_convert as SC
+        from .toast import err as _err, ok as _ok
+        style = (viewer.selected_style() or "3d")
+        src = viewer.remote_url_hint or ""
+        src_path = config.media_url_to_path(src) if src else None
+        if not src_path or not pathlib.Path(src_path).exists():
+            _err(tr("图片不存在,无法换画风"))
+            return
+        try:
+            cfg = image_client.registry.check_ready("image", None)
+        except Exception as exc:  # noqa: BLE001
+            _err(str(exc)[:160])
+            return
+        if not image_client.supports_reference_images(cfg["provider"]):
+            _err(tr("换画风需要支持参考图的图像模型,当前是「{p}」").format(p=cfg["provider"]))
+            return
+        viewer.set_busy(True, tr("正在转换为「{}」画风…").format(style))
+
+        def job(tid):
+            return SC.convert_path(src_path, style, cfg["id"])
+
+        def done(tid, result, error):
+            viewer.set_busy(False)
+            if error or not result:
+                _err(tr("换画风失败:{}").format(str(error or "")[:120]))
+                return
+            new_url = SC.apply_result(self.row["id"], self.table, str(result))
+            self.row["image_url"] = new_url
+            self.img.setPixmap(W.pixmap_from_media(new_url, 280, 280))
+            viewer.show_local_image(str(result))
+            viewer.transformed_url = str(result)
+            _ok(tr("已转换并写回资产"))
+
+        TASKMGR.submit("image", job, done, character_id=self.row["id"])
 
     def _download(self):
         from ..core import download as dl_mod
