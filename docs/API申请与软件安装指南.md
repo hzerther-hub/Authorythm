@@ -16,6 +16,7 @@
 | 生成视频 | Agnes 视频或 火山方舟 Seedance key |
 | 配音 | 不配也能用(自动落免费微软 Edge 音色);配豆包语音则音质/时长对齐更好 |
 | 聊天改图全部功能 | PhotoCraft CLI(免费软件,见「软件下载」) |
+| 意图路由 / 实时网站查询(可选) | Jev key(TypeSafe)+ jev-ultrafast —— 见《Jev与浏览器实时查询指南.md》 |
 
 ---
 
