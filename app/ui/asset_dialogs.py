@@ -811,6 +811,13 @@ class AssetDetailDialog(QDialog):
             var_btn = QPushButton(tr("◑ 造型变体"))
             var_btn.clicked.connect(self._open_variants)
             root.addWidget(var_btn)
+            self.var_btn = var_btn
+
+        # 生成状态同步(用户要求):批量出图/生成形象在跑时,本弹窗内的
+        # 生成类按钮一并禁用 —— 并发提交会互相踩上游接口
+        from ..core.taskmgr import TASKMGR
+        TASKMGR.updated.connect(self._sync_busy)
+        self._sync_busy()
 
         # footer
         footer = QHBoxLayout()
@@ -1074,6 +1081,16 @@ class AssetDetailDialog(QDialog):
         self.img.setPixmap(W.pixmap_from_media(url, 276, 276))
         if self._on_changed:
             self._on_changed()
+
+    def _sync_busy(self):
+        """按任务池状态禁/启本弹窗的生成类按钮(与工作台同一口径)。"""
+        from ..core.taskmgr import TASKMGR
+        busy = TASKMGR.is_busy("image")
+        for b in (getattr(self, "gen_img_btn", None),
+                  *getattr(self, "_fp_gen_btns", ()),
+                  getattr(self, "var_btn", None)):
+            if b is not None:
+                b.setEnabled(not busy)
 
     def _view_large_image(self):
         """点击预览图看大图:image_url/comic_image_url **现读库**,保证弹窗
