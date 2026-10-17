@@ -128,6 +128,27 @@ class SettingsDialog(QDialog):
         q_lay.addLayout(row)
         lay.addWidget(quick)
 
+        # 申请/安装指南:各服务 key 申请入口 + 软件下载说明(docs/API申请与软件安装指南.md)
+        guide_row = QHBoxLayout()
+        guide_btn = QPushButton("📖 " + tr("查看 API 申请与软件安装指南"))
+        guide_btn.setCursor(Qt.PointingHandCursor)
+        guide_btn.setStyleSheet(
+            "QPushButton{border:1px solid #DCDAD3;border-radius:3px;padding:5px 14px;"
+            "background:transparent;color:#1F2329;font-weight:600;}"
+            "QPushButton:hover{border-color:#f97316;color:#f97316;}")
+        def _open_guide():
+            import os as _os
+            p = config.ROOT_DIR / "docs" / "API申请与软件安装指南.md"
+            if p.exists():
+                _os.startfile(str(p))
+            else:
+                from .toast import err as _err
+                _err(f"指南文件不存在:{p}")
+        guide_btn.clicked.connect(_open_guide)
+        guide_row.addWidget(guide_btn)
+        guide_row.addStretch(1)
+        lay.addLayout(guide_row)
+
         # 手动模板(对齐原版:选服务类型直接填推荐 provider/base URL/model)
         manual = W.make_card()
         m_lay = QVBoxLayout(manual)
