@@ -40,12 +40,16 @@ def budgets(monkeypatch):
     script = []
 
     def fake(agent_type, user_prompt, *, lang=None, json_output=False, temperature=0.7,
-             config_id=None, image_urls=None, system=None, max_tokens=None):
+             config_id=None, image_urls=None, system=None, max_tokens=None,
+             timeout=None, with_meta=False):
         seen.append(max_tokens)
         item = script.pop(0) if script else GOOD
         if isinstance(item, Exception):
             raise item
-        return item
+        raw, finish = item if isinstance(item, tuple) else (item, None)
+        if with_meta:
+            return raw, {"finish_reason": finish, "usage": {}}
+        return raw
 
     monkeypatch.setattr(runner, "run_agent", fake)
     return seen, script
@@ -78,6 +82,13 @@ def test_budget_ladder_doubles_until_ceiling():
     assert runner._budget_ladder(4096, 8192) == [4096, 8192]
 
 
+def test_timeout_scales_with_budget():
+    """大预算的调用必须给更长的超时,否则 65536 档必然 Timeout。"""
+    assert runner._timeout_for(8192) == 300           # 不超过默认超时
+    assert runner._timeout_for(65536) > 300
+    assert runner._timeout_for(65536) > runner._timeout_for(32768)
+
+
 # ------------------------------------------------------------------ 主路径
 
 def test_escalates_until_success_when_truncated(budgets):
@@ -108,6 +119,34 @@ def test_success_first_call_makes_no_retry(budgets):
     _run()
     assert seen == [8192], "一次成功就不该有第二次调用"
 
+
+def test_length_finish_reason_escalates_even_when_braces_balance(budgets):
+    """finish_reason=="length" 必须直接判定截断。
+
+    这是实测踩到的漏洞:响应切在 JSON 字符串中间时 `{`/`}` 数量仍然相等,
+    只看括号配平会判「不是截断」→ 预算永远不升 → 分镜一直失败。
+    """
+    seen, script = budgets
+    # 括号配平(1 个 { 对应 1 个 }),但供应商说被截断了
+    script.extend([('{"storyboards": [{"title": "第一镜', "length"), GOOD])
+    assert _run() == {"storyboards": [{"number": 1}]}
+    assert seen == [8192, 16384]
+
+
+def test_caller_start_budget_rejected_falls_back_to_low_ladder(budgets):
+    """调用方按「输出大」填的高预算被供应商 400 拒绝时,退回默认低档重爬。"""
+    seen, script = budgets
+    script.extend([AIError("400 max_tokens too large"), GOOD])
+    runner.run_agent_json("storyboard_breaker", "拆一下", max_tokens=65536)
+    assert seen == [65536, 8192], "被拒后应从 BUDGET_START 重新爬,而不是直接失败"
+
+
+def test_auth_error_at_callers_budget_still_raises(budgets):
+    """鉴权/配置错误不能当成「预算太高」吞掉。"""
+    seen, script = budgets
+    script.append(AIError("401 unauthorized"))
+    with pytest.raises(AIError):
+        runner.run_agent_json("storyboard_breaker", "x", max_tokens=65536)
 
 def test_explicit_max_tokens_is_the_starting_point(budgets):
     """契约:max_tokens 是**起始**预算而非上限。

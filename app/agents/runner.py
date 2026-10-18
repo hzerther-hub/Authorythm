@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import requests
 import re
@@ -12,7 +13,10 @@ from ..ai import registry
 from ..ai.text_client import AI_LLM_TIMEOUT_S
 from ..ai.text_client import AIError
 from ..core import db
+from ..core.logging_setup import get_logger
 from . import prompts
+
+log = get_logger(__name__)
 
 
 def extract_json(text: str) -> dict | list | None:
@@ -63,20 +67,28 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
               config_id: int | None = None,
               image_urls: list[str] | None = None,
               system: str | None = None,
-              max_tokens: int | None = None) -> str:
+              max_tokens: int | None = None,
+              timeout: int | None = None,
+              with_meta: bool = False) -> str | tuple[str, dict]:
     """system=None 时用 workspace/prompts/<type>.<lang>.md。
 
     传入 system 可整体覆盖:workspace 里的提示词是给**带工具的 Mastra Agent** 写的
     (例如 novel_planner.md 里写着「只输出工具调用,不要输出规划文本」),
     本仓 runner 是单次调用、没有工具,不覆盖就会拿到一串 <tool_call> 文本。
+
+    with_meta=True 时返回 (content, meta),meta 含 finish_reason / usage ——
+    预算自适应要靠 finish_reason=="length" 判断截断,不能只靠括号配平去猜。
     """
     if lang is None:
         lang = db.get_setting("content_language", "zh")
     system = system if system is not None else prompts.load_prompt(agent_type, lang)
+    kwargs: dict = {}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     return text_client.chat(
         user_prompt, system=system, temperature=temperature,
         json_mode=json_output, config_id=config_id, image_urls=image_urls,
-        max_tokens=max_tokens)
+        max_tokens=max_tokens, with_meta=with_meta, **kwargs)
 
 
 JSON_HINT = "请只输出 JSON,不要任何解释文字、不要 Markdown 代码块标记。"
@@ -110,10 +122,12 @@ def _looks_like_tool_call(data) -> bool:
 # 都能自己爬到够用为止,不需要为它单独调参。
 #
 # 三个信号合起来判定「这次是被预算截断了」:
-#   1. 空响应            —— 预算全烧在 <think> 上,正文一个字没写
-#   2. <think> 未闭合    —— 还在思考就被切断
-#   3. JSON 括号不配平   —— 正文写到一半被切断
-# 只有命中这三个才升预算;否则(JSON 写坏 / 模型回了工具调用 / 输出散文)升预算
+#   1. finish_reason == "length" —— 供应商自己说的,唯一可靠信号
+#   2. 空响应                  —— 预算全烧在 <think> 上,正文一个字没写
+#   3. <think> 未闭合 / 括号不配平 —— 供应商不给 finish_reason 时的退化判断
+# **只看括号配平会漏**(实测 minimax-M3 分镜 8192 档):切在 JSON 字符串中间时
+# `{` 与 `}` 数量仍然相等,于是被判成「不是截断」,预算永远不升。
+# 只有命中这些信号才升预算;否则(JSON 写坏 / 模型回了工具调用 / 输出散文)升预算
 # 纯属浪费 token,那种情况走既有的禁工具重试。
 BUDGET_START = 8192        # 与 text_client._build_body 的兜底值保持一致
 BUDGET_CEILING = 65536     # 自适应天花板:到顶还截断就是提示词本身太长,交给人看
@@ -144,8 +158,11 @@ def _configured_budget(config_id: int | None, explicit: int | None) -> int:
     return BUDGET_START
 
 
-def _looks_truncated(raw: str | None) -> bool:
-    """输出是否像是被输出预算截断(见上方注释的三个信号)。"""
+def _looks_truncated(raw: str | None, finish_reason: str | None = None) -> bool:
+    """输出是否像是被输出预算截断(见上方注释的信号)。"""
+    # 信号 0:供应商明确说 length —— 优先信它,不要再靠文本猜
+    if finish_reason == "length":
+        return True
     if not raw or not raw.strip():
         return True  # 信号 1:空响应
     t = raw.strip()
@@ -153,6 +170,28 @@ def _looks_truncated(raw: str | None) -> bool:
         return True  # 信号 2:思考块没闭合
     # 信号 3:括号不配平(正文写到一半被切断)
     return t.count("{") > t.count("}") or t.count("[") > t.count("]")
+
+
+def _timeout_for(budget: int) -> int:
+    """预算越大,供应商吐字时间越长:按 60 tokens/s 估,再加 120s 余量。
+
+    实测 minimax-M3 出 50,787 completion tokens 用了 401s(≈127 tok/s),
+    固定 300s 超时会让 65536 档必然 Timeout —— 而 Timeout 不是 AIError,
+    会直接冒到任务里,看起来和「模型不会写 JSON」完全无关。
+    """
+    return max(AI_LLM_TIMEOUT_S, budget // 60 + 120)
+
+
+def _budget_rejected(err: AIError) -> bool:
+    """供应商是不是「单纯不认这个 max_tokens」,而不是配置/鉴权坏了。
+
+    只有前者才值得退回低档重试;401/404 之类退回低档也没意义,白白拖时间。
+    """
+    msg = str(err).lower()
+    if any(k in msg for k in ("401", "403", "404", "unauthorized", "invalid api key")):
+        return False
+    return any(k in msg for k in ("max_tokens", "max tokens", "too large", "exceeds",
+                                  "invalid_parameter", "context length"))
 
 
 def _budget_ladder(start: int, ceiling: int) -> list[int]:
@@ -170,16 +209,29 @@ def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
 
     阶梯中途遇到 AIError(供应商拒绝该预算,通常 400)就把天花板压到这一档 ——
     **天花板由供应商自己告诉我们**,而不是代码里写死某个模型的上限。
+    若调用方传的起始预算就被拒,退回到 BUDGET_START 重新爬(而不是直接失败:
+    调用方按「这个 Agent 输出大」填的高预算,供应商不认不代表配置坏了)。
     返回 (data, last_raw):data 为 None 表示全阶梯都没拿到可用结果。
     """
     ladder = _budget_ladder(start_budget, BUDGET_CEILING)
     last_raw = ""
-    for i, budget in enumerate(ladder):
+    i = 0
+    while i < len(ladder):
+        budget = ladder[i]
+        t0 = time.perf_counter()
         try:
-            raw = run_agent(agent_type, prompt, lang=lang, json_output=True,
-                            temperature=0.4, config_id=config_id,
-                            image_urls=image_urls, system=system, max_tokens=budget)
-        except AIError:
+            raw, meta = run_agent(agent_type, prompt, lang=lang, json_output=True,
+                                  temperature=0.4, config_id=config_id,
+                                  image_urls=image_urls, system=system,
+                                  max_tokens=budget, timeout=_timeout_for(budget),
+                                  with_meta=True)
+        except AIError as e:
+            log.warning("agent.budget.rejected agent=%s budget=%d err=%s",
+                        agent_type, budget, str(e)[:200])
+            if i == 0 and _budget_rejected(e) and start_budget > BUDGET_START:
+                ladder = _budget_ladder(BUDGET_START, BUDGET_CEILING)
+                i = 0
+                continue
             # 起始档就炸 = 供应商侧硬错误(配置错/鉴权失败),照常抛出。
             if i == 0:
                 raise
@@ -187,12 +239,20 @@ def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
             ladder = ladder[:i]
             break
         last_raw = raw or ""
+        truncated = _looks_truncated(raw, meta.get("finish_reason"))
+        usage = meta.get("usage") or {}
+        log.info("agent.budget.attempt agent=%s budget=%d finish=%s out_tokens=%s "
+                 "chars=%d truncated=%s elapsed=%.1fs",
+                 agent_type, budget, meta.get("finish_reason"),
+                 usage.get("completion_tokens"), len(last_raw), truncated,
+                 time.perf_counter() - t0)
         data = parse(raw)
         if data is not None and accept(data):
             return data, last_raw
         # 不是被截断 → 升预算也救不回来,别再烧 token。
-        if not _looks_truncated(raw):
+        if not truncated:
             break
+        i += 1
     return None, last_raw
 
 

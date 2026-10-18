@@ -8,6 +8,12 @@ import re
 from ..agents import runner
 from ..core import db
 
+# 起始输出预算:整集分镜一次要吐 20-30 镜 × (description 3-6 句 + atmosphere 2-4 句 +
+# video_prompt 每 3 秒一段),实测一集 26 镜 = 50,787 completion tokens / 115k 字符。
+# 默认 8192 连一个 <think> 都装不下,按阶梯爬上去要连烧 4 次(≈16 分钟);
+# 这里直接按实测值起步。供应商若不认这个上限,runner 会退回到低档阶梯重爬。
+STORYBOARD_MAX_TOKENS = 65536
+
 
 def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
                     lang: str | None = None) -> int:
@@ -93,7 +99,8 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                'number/title/content/shot_type/angle/movement/location/time/description/'
                'atmosphere/result/image_prompt/video_prompt/bgm_prompt/sound_effect/'
                'setting_tags(数组)/characters(角色名数组)/props(道具名数组)')
-    data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang, config_id=config_id)
+    data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang, config_id=config_id,
+                                 max_tokens=STORYBOARD_MAX_TOKENS)
     boards = _extract_boards(data)
     if not boards:
         raise RuntimeError("分镜结果为空")

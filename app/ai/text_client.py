@@ -86,7 +86,8 @@ def _guarded(text: str) -> str:
 def chat(prompt: str, system: str | None = None, config_id: int | None = None,
          temperature: float = 0.7, max_tokens: int | None = None,
          json_mode: bool = False, timeout: int = 300,
-         image_urls: list[str] | None = None) -> str:
+         image_urls: list[str] | None = None,
+         with_meta: bool = False) -> str | tuple[str, dict]:
     cfg = registry.check_ready("text", config_id)  # 未配置/缺 Key 直接拦下,不发空请求
     # 传了图但模型不是多模态 → 先说清楚再发:纯文本模型收下 image_url 后
     # 通常不会报错,而是回一句凭空编的描述(实测复刻的产品描述/人物外貌全是
@@ -126,12 +127,19 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     metrics.observe("ai.text.latency_ms", int((_t.perf_counter() - t0) * 1000))
     try:
         content = data["choices"][0]["message"]["content"]
+        finish_reason = data["choices"][0].get("finish_reason")
     except (KeyError, IndexError) as e:
         raise AIError(f"文本模型响应格式异常: {data}") from e
     # 兼容部分中转站返回 reasoning + content 结构
     if isinstance(content, list):
         content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
-    return _guarded(content or "")
+    out = _guarded(content or "")
+    if not with_meta:
+        return out
+    # finish_reason 是判断「输出被预算截断」唯一可靠的信号:
+    # 按括号是否配平去猜会漏 —— 切在 JSON 字符串中间时 "{" 与 "}" 数量仍然相等
+    # (实测 minimax-M3 分镜 8192 档就是这么漏掉的,导致干脆不升预算)。
+    return out, {"finish_reason": finish_reason, "usage": data.get("usage") or {}}
 
 
 def test_config(cfg: dict) -> tuple[bool, str]:
