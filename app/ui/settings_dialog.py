@@ -565,7 +565,8 @@ class SettingsDialog(QDialog):
             row = db.q1("SELECT provider, api_key FROM ai_service_configs "
                         "WHERE service_type='stockphoto' AND provider=? "
                         "AND is_active=1", (provider,))
-            key = (row["api_key"] or "").strip() if row else ""
+            from ..core.secrets import ensure_decrypted
+            key = ensure_decrypted((row["api_key"] or "").strip()) if row else ""
             if not key:
                 return False, tr("未填 API Key")
             try:
