@@ -2,3 +2,9 @@ PySide6>=6.6.0
 requests>=2.31.0
 Pillow>=10.0.0
 edge-tts
+# API Key 静态加密层(app/core/secrets.py)在模块顶层 import cryptography,
+# 漏装会导致 `python -m app.main` 直接 ModuleNotFoundError 起不来
+cryptography>=41.0
+# app/pipeline/img_adjust.py 顶层 import numpy;cv2(OpenCV)同样是可选增强,
+# 缺 numpy 时图片调整/批量调参/去水印等功能会 ImportError
+numpy>=1.26

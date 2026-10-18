@@ -12,6 +12,7 @@ dependencies = [
     "Pillow>=10.0.0",
     "edge-tts",
     "cryptography>=41.0",
+    "numpy>=1.26",
 ]
 
 [project.optional-dependencies]

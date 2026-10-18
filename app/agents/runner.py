@@ -125,15 +125,20 @@ def _configured_budget(config_id: int | None, explicit: int | None) -> int:
 
     与 `novel._configured_max_tokens`、`ai/text_client._build_body` 同一优先级,
     三处口径必须一致,否则会出现「配置里填的大预算被程序兜底盖掉」。
+
+    **走 `registry.default_config` 而不是按 id 直查**:调用点绝大多数传
+    `config_id=None`(让 text_client 自己挑默认配置),此时按 id 直查是
+    `WHERE id=NULL`,永远查不到行 → 一律退到 8192。而 text_client._build_body
+    在同一种情况下会用默认配置里手填的值(本机是 32768)。两处口径一分裂,
+    第一次请求就白发一个短预算,多烧一次往返还得靠阶梯爬回来。
     """
     if explicit:
         return int(explicit)
     try:
-        row = db.q1("SELECT max_tokens FROM ai_service_configs WHERE id=?", (config_id,))
-        if row:
-            v = int(row["max_tokens"] or 0)
-            if v:
-                return v
+        cfg = registry.default_config("text", config_id) or {}
+        v = int(cfg.get("max_tokens") or 0)
+        if v:
+            return v
     except Exception:  # noqa: BLE001 —— 读不到就按兜底走,不能因此中断业务
         pass
     return BUDGET_START

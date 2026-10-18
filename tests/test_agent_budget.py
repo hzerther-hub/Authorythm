@@ -12,6 +12,7 @@ extract_json 返回 None;而此前的重试用的是同一个预算,等于拿同
 import pytest
 
 from app.agents import runner
+from app.ai import registry
 from app.ai.text_client import AIError
 
 TRUNC_THINK = "<think>Let me analyze this carefully and think about the structure"  # 未闭合
@@ -19,6 +20,17 @@ TRUNC_JSON = '{"storyboards": [{"number": 1, "title": "第一镜"'  # 括号不�
 TOOL_CALL = '{"name": "read_script", "arguments": {"path": "x.md"}}'  # 合法但没用的工具调用
 PROSE = "好的,我已经完成分析了,以下是分镜表"  # 散文,不是截断
 GOOD = '{"storyboards": [{"number": 1}]}'
+
+
+@pytest.fixture(autouse=True)
+def _no_real_db(monkeypatch):
+    """默认不读用户真实库(`_configured_budget` 内部走 `registry.default_config`)。
+
+    打桩点选在 registry 而不是 `_configured_budget` 本身:后者是被测对象,
+    替换掉就等于没测。文件末尾「起始预算」一节会显式覆盖它来测真实取值路径。
+    """
+    monkeypatch.setattr(registry, "default_config",
+                        lambda service_type, config_id=None: {"max_tokens": None})
 
 
 @pytest.fixture
@@ -144,3 +156,62 @@ def test_real_failure_reason_is_not_masked_by_prompt_loading_error(budgets):
     # agent 名不存在 → prompts.load_prompt 抛 ValueError
     with pytest.raises(RuntimeError, match="无法解析为 JSON"):
         runner.run_agent_json("no_such_agent_xyz", "x")
+
+
+# ------------------------------------------------------------------ 起始预算的取值
+
+def test_start_budget_reads_service_config_when_config_id_given(monkeypatch):
+    """config_id 指定时,起始预算 = 该服务配置里手填的 max_tokens。"""
+    monkeypatch.setattr(registry, "default_config", lambda t, c=None: {"max_tokens": 32768})
+    assert runner._configured_budget(4, None) == 32768
+
+
+def test_start_budget_reads_default_config_when_config_id_is_none(monkeypatch):
+    """**config_id=None 是绝大多数调用点的写法**(让 text_client 自己挑默认配置)。
+
+    这时若按 id 直查配置表就是 `WHERE id=NULL`,永远查不到 → 一律退 8192;
+    而 text_client._build_body 同一种情况下会用默认配置里手填的值。
+    两处口径一分裂,第一次请求就白发一个短预算,多烧一次往返还得靠阶梯爬回来。
+    """
+    seen = []
+
+    def _spy(service_type, config_id=None):
+        seen.append((service_type, config_id))
+        return {"max_tokens": 32768}
+
+    monkeypatch.setattr(registry, "default_config", _spy)
+    assert runner._configured_budget(None, None) == 32768
+    assert seen == [("text", None)], "必须按 text 服务的默认口径解析"
+
+
+def test_explicit_value_wins_over_service_config(monkeypatch):
+    """优先级:调用方显式值 > 服务配置里手填的值 > 8192。"""
+    monkeypatch.setattr(registry, "default_config", lambda t, c=None: {"max_tokens": 32768})
+    assert runner._configured_budget(4, 4096) == 4096
+
+
+def test_start_budget_falls_back_when_config_blank(monkeypatch):
+    """配置留空才退 8192 —— 与设置页「留空则用默认 8192」的提示一致。"""
+    monkeypatch.setattr(registry, "default_config", lambda t, c=None: {"max_tokens": None})
+    assert runner._configured_budget(4, None) == runner.BUDGET_START
+
+
+def test_start_budget_survives_db_failure(monkeypatch):
+    """读配置失败不该让 Agent 调用整个挂掉,退兜底即可。"""
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(registry, "default_config", _boom)
+    assert runner._configured_budget(None, None) == runner.BUDGET_START
+
+
+def test_configured_budget_reaches_the_wire(monkeypatch, budgets):
+    """端到端:配置里的预算确实成为**第一次请求**的 max_tokens。
+
+    配置里填了 32768 却先发 8192,是用户可感知的多余一趟往返(几十秒 + 一份钱)。
+    """
+    monkeypatch.setattr(registry, "default_config", lambda t, c=None: {"max_tokens": 32768})
+    seen, _script = budgets
+    _run()
+    assert seen == [32768]
