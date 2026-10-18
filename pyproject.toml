@@ -1,0 +1,99 @@
+[project]
+name = "pydrama"
+version = "1.1.0"
+description = "AI 短剧/小说/漫画一站式桌面制作工具(PySide6)"
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "CC BY-NC-SA 4.0" }
+authors = [{ name = "PySide6 Drama" }]
+dependencies = [
+    "PySide6>=6.6.0",
+    "requests>=2.31.0",
+    "Pillow>=10.0.0",
+    "edge-tts",
+    "cryptography>=41.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "types-requests",
+    "pyinstaller>=6.0",
+]
+test = [
+    "pytest>=8.0",
+    "pytest-timeout>=2.0",
+]
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["tests*", "scripts*", "docs*", "data*", "workspace*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+# 注:多数测试需要 QApplication(QWidget 实例),在 Linux/CI 用 offscreen
+# 平台;本机 macOS/Windows 默认即可。设置项可由环境变量覆盖:
+# QT_QPA_PLATFORM=offscreen python -m pytest tests/ -q
+
+# ── Ruff ────────────────────────────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [
+    "app/assets",
+    "workspace",
+    "data",
+    "build",
+    "dist",
+    ".venv",
+    "venv",
+    "tests/__pycache__",
+]
+
+[tool.ruff.lint]
+# 启用现代默认集:语法错误 + 复杂度 + 风格 + 导入 + pyupgrade + bugbear + simplify
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N"]
+ignore = [
+    "E501",   # 长行(formatter/手写折行常见)
+    "B008",   # 默认参数里调函数(PySide6 Signal/slot 必需)
+    "B904",   # raise from 在 print/异常吞掉路径不强制
+    "UP038",  # isinstance(a, (X, Y)) 写法在 PySide6 信号场景下与类型注解混用会误报
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Qt 类方法遵守 Qt 命名习惯
+"app/ui/*" = ["N802", "N803", "N806", "E741"]
+# 测试桩与 monkeypatch 常用易触发误报
+"tests/*" = ["B011", "N802", "N803"]
+
+# ── Mypy ────────────────────────────────────────────────────────────────
+# 渐进式启用:core / ai / agents / pipeline 先全量检查;
+# ui/ 与 tests/ 留待后续轮次(Qt 类型与 Signal 表达困难)。
+[tool.mypy]
+python_version = "3.10"
+ignore_missing_imports = true
+no_implicit_optional = true
+warn_unused_ignores = true
+disallow_incomplete_defs = false
+files = [
+    "app/core",
+    "app/ai",
+    "app/agents",
+    "app/pipeline",
+]
+
+[[tool.mypy.overrides]]
+# taskmgr 与 logging_setup 暂不强制类型(回调多 + 反射多)
+module = [
+    "app.core.taskmgr",
+    "app.core.logging_setup",
+    "app.core.metrics",
+]
+ignore_errors = true

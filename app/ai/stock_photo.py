@@ -32,11 +32,15 @@ def _cfg_rows() -> dict[str, dict]:
     """provider → 该图库的启用配置行。"""
     from ..core import db
     out: dict[str, dict] = {}
+    from ..core.secrets import ensure_decrypted
     for row in db.q("SELECT * FROM ai_service_configs "
                     "WHERE service_type='stockphoto' AND is_active=1 ORDER BY id"):
         p = (row["provider"] or "").strip().lower()
         if p in SOURCE_ORDER:
-            out[p] = dict(row)
+            d = dict(row)
+            # api_key 静态加密后必须在此解密 —— 否则拿密文当 key,三家全部 401/400
+            d["api_key"] = ensure_decrypted(d.get("api_key") or "")
+            out[p] = d
     return out
 
 

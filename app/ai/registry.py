@@ -5,8 +5,17 @@ from __future__ import annotations
 import json
 
 from ..core import db
+from ..core.secrets import ensure_decrypted, ensure_encrypted
 
 SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev", "stockphoto"]
+
+
+def _decrypt_row(row) -> dict:
+    """把 sqlite3.Row 变 dict,并对 api_key 字段做解密。"""
+    d = dict(row)
+    if "api_key" in d:
+        d["api_key"] = ensure_decrypted(d.get("api_key") or "")
+    return d
 
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)
 PROVIDER_PRESETS: dict[str, list[dict]] = {
@@ -259,7 +268,7 @@ def list_configs(service_type: str | None = None) -> list:
     # 只在内存里改,不写库:存量配置保持用户原样,新建/编辑时才落规范化值。
     out = []
     for r in rows:
-        d = dict(r)
+        d = _decrypt_row(r)
         d["base_url"] = normalize_base_url(d["service_type"], d.get("provider", ""), d.get("base_url", ""))
         out.append(d)
     return out
@@ -278,10 +287,12 @@ def add_config(service_type: str, provider: str, base_url: str, model: str,
     import json as _json
     # 落库前补 API 版本前缀(火山 /api/v3、Agnes /v1),见 normalize_base_url
     base_url = normalize_base_url(service_type, provider, base_url)
+    # 入库前加密 api_key(salt 派生自机器指纹,跨用户/机器不可解)
+    api_key_cipher = ensure_encrypted(api_key or "")
     return db.ex(
         "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,max_tokens,created_at,updated_at)"
         " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?)",
-        (service_type, provider, base_url, api_key, model,
+        (service_type, provider, base_url, api_key_cipher, model,
          1 if is_default else 0, remark, priority,
          _json.dumps(models or [model], ensure_ascii=False),
          temperature, max_tokens, ts, ts))
@@ -299,6 +310,9 @@ def update_config(cid: int, **fields) -> None:
                 st = (row["service_type"] if row else "") or fields.get("service_type", "")
                 pv = fields.get("provider") or (row["provider"] if row else "")
                 v = normalize_base_url(st, pv or "", v)
+            # api_key 入库前加密(明文 → enc:...)
+            if k == "api_key":
+                v = ensure_encrypted(v or "")
             sets.append(f"{k}=?"); vals.append(v)
     if "settings" in fields:                     # 本地生图扩展设置(JSON 字符串;空串存 NULL)
         sets.append("settings=?")
@@ -339,10 +353,10 @@ def default_config(service_type: str, config_id: int | None = None) -> dict | No
     if config_id:
         row = db.q1("SELECT * FROM ai_service_configs WHERE id=? AND service_type=? AND is_active=1", (config_id, service_type))
         if row:
-            return dict(row)
+            return _decrypt_row(row)
     row = db.q1("SELECT * FROM ai_service_configs WHERE service_type=? AND is_active=1 ORDER BY is_default DESC, priority DESC, id LIMIT 1",
                 (service_type,))
-    return dict(row) if row else None
+    return _decrypt_row(row) if row else None
 
 
 def apply_yihao_key(api_key: str) -> list[str]:

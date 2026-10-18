@@ -442,8 +442,8 @@ class CharacterAssetCard(QFrame):
     """
 
     def __init__(self, row: dict, labels: dict, *, on_delete=None, on_gen_image=None, on_gen_text=None,
-                 on_upload=None, on_face_swap=None, on_variants=None, on_prompt=None,
-                 on_open=None, busy: bool = False):
+                 on_upload=None, on_face_swap=None, on_variants=None, on_comic_view=None,
+                 on_prompt=None, on_open=None, busy: bool = False):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QVBoxLayout(self)
@@ -536,11 +536,22 @@ class CharacterAssetCard(QFrame):
             btns.addWidget(b, i // 3, i % 3)
         lay.addLayout(btns)
         if on_variants:
+            var_row = QHBoxLayout()
+            var_row.setSpacing(4)
             var = QPushButton(labels["variants"])
             var.setToolTip(labels["variants_tip"])
             var.setCursor(Qt.PointingHandCursor)
             var.clicked.connect(lambda _=False: on_variants())
-            lay.addWidget(var)
+            var_row.addWidget(var)
+            # Layer 2.1:漫画多角度 —— 复用同一个 VariantsDialog 但 tooltip 强调
+            # 「跨格一致性」;同一变体表,不改数据模型。
+            if on_comic_view:
+                cv = QPushButton(labels.get("comic_multi_view", "📐 漫画多角度"))
+                cv.setToolTip(labels.get("comic_multi_view_tip", ""))
+                cv.setCursor(Qt.PointingHandCursor)
+                cv.clicked.connect(lambda _=False: on_comic_view())
+                var_row.addWidget(cv)
+            lay.addLayout(var_row)
         lay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                         labels["prompt_ph"], on_prompt))
         _snug_card(self)

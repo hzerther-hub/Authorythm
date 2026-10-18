@@ -115,6 +115,71 @@ def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
     return data
 
 
+def outline_to_script(outline: str, episode_id: int,
+                      *, config_id: int | None = None) -> str:
+    """故事梗概 → 格式化剧本(可直接进 `comic.split_panels`)。
+
+    给 `comic_outline_writer` Agent 提供 100-1000 字的梗概,扩成 600-1500 字
+    的格式化剧本:4-8 个场景,每个带 `## S\d+\|内外景·地点\|时间` 头。
+    **失败不落库**(原内容保持),只抛 RuntimeError。
+
+    Args:
+        outline:故事梗概(100-1000 字);太短会拒,太长会截。
+        episode_id:剧集 id,用于取项目元信息(标题/语言/风格)与落库。
+        config_id:文本模型 config_id;None 时回退到 prose_config_id()。
+
+    Returns:
+        落库后的剧本正文。
+
+    Raises:
+        RuntimeError:空梗概 / 空剧本 / 落库失败
+    """
+    outline = (outline or "").strip()
+    if not outline:
+        raise RuntimeError("请先输入故事梗概")
+    if len(outline) < 30:
+        raise RuntimeError("梗概太短(需 ≥30 字),请描述主要人物 / 事件 / 走向")
+    config_id = config_id or prose_config_id()
+    ep = db.q1("SELECT drama_id, episode_number FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集不存在")
+    drama = db.q1("SELECT title, language, novel_style FROM dramas WHERE id=?",
+                  (int(ep["drama_id"]),))
+    title = (drama or {}).get("title") or "未命名项目"
+    style = (drama or {}).get("novel_style") or ""
+    # 三段式 prompt:任务 + 上下文(标题/风格) + 输入(梗概)
+    prompt = (
+        f"项目: {title}\n"
+        f"本集号: 第 {ep['episode_number']} 集\n"
+        + (f"风格要求: {style}\n" if style else "")
+        + f"\n故事梗概(用户输入,可能口语化):\n{outline[:2000]}\n\n"
+        + "请把梗概扩写成 600-1500 字的格式化剧本,要求:\n"
+        + "1. 输出 JSON:{\"script\": \"## S01|...\\n...\\n## S02|...\\n...\"}\n"
+        + "2. 共 4-8 个场景,每个 ## S\\d+\\|内外景·地点\\|时间 头\n"
+        + "3. 每个场景 1-3 句动作/对白,信息密度高,别注水\n"
+        + "4. 严格遵循梗概的人物与主线,不要自创新角色或反转\n"
+        + "5. 输出**只有 JSON**,无 <think> / 无解释 / 无 markdown 围栏"
+    )
+    data = runner.run_agent_json(
+        "comic_outline_writer", prompt,
+        config_id=config_id,
+        lang=(drama or {}).get("language") or None,
+    )
+    if not isinstance(data, dict):
+        raise RuntimeError(f"梗概扩写失败:模型返回非 JSON({type(data).__name__})")
+    script = (data.get("script") or "").strip()
+    if not script:
+        raise RuntimeError("梗概扩写失败:模型未返回 script 字段")
+    # 校验剧本格式:至少 1 个 ## S 头
+    if not re.search(r"^##\s*S\d+\s*\|", script, re.MULTILINE):
+        raise RuntimeError("梗概扩写失败:剧本不含 ## S\\d+\\| 格式头")
+    db.ex(
+        "UPDATE episodes SET script_content=?, content=?, updated_at=? WHERE id=?",
+        (script, script, db.now(), episode_id),
+    )
+    return script
+
+
 def _sync_characters(drama_id: int, chars: list) -> int:
     """主要角色 → 资产库 characters(同名不重复插入),返回新增数。"""
     ts = db.now()

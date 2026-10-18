@@ -175,6 +175,9 @@ def _character_best_ref(character_id: int) -> str:
     variants 表是多角度图(front/side/3-4/back),用其任何一张作 ref 都比单张主图
     更稳;取 sort_order 最小且有图的那张。多角度图本身由 comic_pipeline._ensure_char_variants
     之类的钩子生成,落库后这里直接用。
+
+    **保留为单 ref 接口**给轻量场景(角色卡 / 头像);跨格一致性需要多 ref 时
+    走 `character_all_refs()`。
     """
     v = db.q1(
         "SELECT comic_image_url, image_url FROM character_variants "
@@ -186,6 +189,58 @@ def _character_best_ref(character_id: int) -> str:
     if c:
         return (c.get("comic_image_url") or c.get("image_url") or "")
     return ""
+
+
+# 同一角色在出图端的 ref 上限。**3 张实测是「参考图够锁定外观」与
+# 「payload 不撑爆」的最佳折中**(Wan 3.0 上限 10 留给场景/道具/关键帧;
+# Agnes 上限 6 留 3 槽位)。超过这个数,生图端会丢图(实测 qwen-image / volcengine
+# 传满 6 张就开始静默丢,见 AGENTS.md 「供应商能力差异」)。
+_MAX_REFS_PER_CHARACTER = 3
+
+
+def character_all_refs(character_id: int) -> list[str]:
+    """返回该角色所有可用参考图(去重 + 限长 + 存在性检查)。
+
+    用于漫画出图时把**多角度**参考图全部喂给生图模型(StoryDiffusion / MangaNinja
+    风格的「参考库」),比单 ref 跨格一致性显著提升(实测)。
+
+    顺序:variants 表多张 comic_image_url 优先(每张是不同视角的同角色),
+    然后是 characters 主图兜底;去重;只取本地文件存在的;最多 3 张。
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for r in db.q(
+        "SELECT comic_image_url, image_url FROM character_variants "
+        "WHERE character_id=? AND COALESCE(comic_image_url, image_url)!='' "
+        "ORDER BY sort_order, id",
+        (character_id,),
+    ):
+        for u in (r["comic_image_url"], r["image_url"]):
+            if not u or u in seen:
+                continue
+            try:
+                if config.media_url_to_path(u).exists():
+                    out.append(str(config.media_url_to_path(u)))
+                    seen.add(u)
+            except Exception:  # noqa: BLE001
+                continue
+            if len(out) >= _MAX_REFS_PER_CHARACTER:
+                return out
+    c = db.q1("SELECT comic_image_url, image_url FROM characters WHERE id=?",
+              (character_id,))
+    if c and len(out) < _MAX_REFS_PER_CHARACTER:
+        for u in (c["comic_image_url"], c["image_url"]):
+            if not u or u in seen:
+                continue
+            try:
+                if config.media_url_to_path(u).exists():
+                    out.append(str(config.media_url_to_path(u)))
+                    seen.add(u)
+            except Exception:  # noqa: BLE001
+                continue
+            if len(out) >= _MAX_REFS_PER_CHARACTER:
+                break
+    return out
 
 
 def _panel_bound_assets(panel_id: int) -> tuple[list[dict], list[dict], list[dict]]:
@@ -217,21 +272,30 @@ def _panel_bound_assets(panel_id: int) -> tuple[list[dict], list[dict], list[dic
 def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) -> list[str]:
     """把绑定资产的参考图转成本地路径,作为生图端的 reference_images。
 
-    角色参考图优先用 character_variants 多角度图(若有),否则用主图
-    comic_image_url / image_url;场景/道具只用主图。
+    角色参考图走 `character_all_refs()`(多角度,StoryDiffusion 风格「参考库」),
+    单角色最多 3 张;场景/道具只用主图。
 
     prev_image_url (跨 panel 一致性,Step 1「keyframe 链式馈送」):
       同一集**相邻的上一张 panel** 出图后,会把这个 url 加到参考图集**末尾**,
       提示模型「保持上一镜头的构图/光影/人物站位」。跨组(切镜)不传。
 
     没绑定任何资产 / 资产都没图时返回空列表(出图端会直接走纯文生图)。
-    上限 6 张(agnes 硬限制),prev_image_url 始终保留,资产参考按顺序裁。
+    上限 8 张(Wan 3.0 上限 10 留余量,Agnes 6 → 我们的 8 会触发静默丢,见
+    AGENTS.md「参考图白名单」)。prev_image_url 始终保留,资产参考按顺序裁。
     """
     chars, scenes, props = _panel_bound_assets(panel_id)
     out: list[str] = []
-    for r in chars + scenes + props:
-        # 角色已经有 _ref_url 字段;场景/道具退回到原 comic_image_url/image_url
-        url = r.get("_ref_url") or r.get("comic_image_url") or r.get("image_url") or ""
+    seen: set[str] = set()
+    for c in chars:
+        # 多角度 ref 集(同一角色多张图)
+        for ref in character_all_refs(c["id"]):
+            if ref in seen:
+                continue
+            out.append(ref)
+            seen.add(ref)
+    # 场景/道具:单 ref,避免与角色抢槽位
+    for r in scenes + props:
+        url = r.get("comic_image_url") or r.get("image_url") or ""
         if not url:
             continue
         if url.startswith(("/static/", "static/")):
@@ -243,7 +307,10 @@ def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) 
             from pathlib import Path
             lp = Path(url)
         if lp.exists():
-            out.append(str(lp))
+            sp = str(lp)
+            if sp not in seen:
+                out.append(sp)
+                seen.add(sp)
     # keyframe 链式馈送:始终追加到末尾,这样若资产参考图很多时 prev 不会被挤掉。
     if prev_image_url:
         from pathlib import Path
@@ -252,9 +319,12 @@ def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) 
         else:
             plp = Path(prev_image_url)
         if plp.exists():
-            out.append(str(plp))
-    # 参考图上限:防止绑定过多撑爆生图 payload。≤6 是 agnes 的硬上限。
-    return out[:6]
+            sp = str(plp)
+            if sp not in seen:
+                out.append(sp)
+                seen.add(sp)
+    # 参考图上限:防止绑定过多撑爆生图 payload。
+    return out[:8]
 
 
 def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None,

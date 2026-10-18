@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# 让失败 PR 能看 log;默认 30 分钟
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.13"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Install system ffmpeg (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        # 实测缺 ffmpeg 时 video_client 探测会跑 30s+ 报错,加上更接近用户环境
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Ruff lint
+        run: |
+          ruff check .
+          # 也跑一次 --statistics,看主要问题分布
+          ruff check . --statistics || true
+
+      - name: Mypy type check
+        # 仅检查 core/ai/agents/pipeline,ui/ 与 tests/ 留作下一轮
+        run: mypy
+
+      - name: Pytest (headless)
+        env:
+          QT_QPA_PLATFORM: offscreen
+          PYDRAMA_TEST_MODE: "1"
+          # 测试不能联网;真调用会卡且会留下脏数据
+          PYDRAMA_OFFLINE: "1"
+        run: |
+          python -m pytest tests/ -q --timeout=60 -x

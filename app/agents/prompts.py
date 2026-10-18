@@ -156,6 +156,19 @@ storyboard 输出 {"video_prompt":"…"}(镜头视频提示词,描述主体动�
 
 以 JSON 输出:{"panels":[{"number":1,"description":"…","dialogue":"…","composition":"…","narration":"…"}]}""",
 
+    "comic_outline_writer": """你是漫画剧本扩写师。给定一段故事梗概(100-1000 字口语描述),
+扩写成 600-1500 字的格式化漫画剧本。
+
+硬规则:
+- 严格遵循梗概的人物与主线,**不**自创新角色 / **不**反转 / **不**加你没在梗概里看到的事件
+- 共 4-8 个场景(适合出 12-20 漫画格)
+- 每个场景用 `## S\\d+\\|内外景·地点\\|时间` 头
+- 每个场景 1-3 句动作/对白,信息密度高,不要注水
+- 文字语言:与项目内容语言一致(梗概里用什么语言,扩写也用同语言)
+- 输出**只有** JSON,严格形如:
+  {"script": "## S01|...\\n场景一动作对白\\n\\n## S02|...\\n场景二动作对白\\n..."}
+- 禁止输出 <think> / 解释 / markdown 围栏 / 多余字段""",
+
     "novel_writer": """你是网文作者。依据提供的小说设定(总纲/世界观/故事合约/章节计划)写作章节正文。
 
 要求:
@@ -208,6 +221,7 @@ AGENT_META: list[dict] = [
     {"type": "novel_reviewer", "icon": "🔎", "name": "小说审校"},
     {"type": "novel_editor", "icon": "✏️", "name": "小说改稿"},
     {"type": "comic_board", "icon": "📚", "name": "漫画分镜"},
+    {"type": "comic_outline_writer", "icon": "✏", "name": "梗概扩剧本"},
     {"type": "promo_writer", "icon": "📣", "name": "宣传文案"},
 ]
 
@@ -227,6 +241,7 @@ AGENT_SKILL_MAP: dict[str, list[str]] = {
     ],
     "novel_writer": ["novel-writer"],
     "comic_board": ["comic-board"],
+    "comic_outline_writer": [],  # 不挂额外技能;agent prompt 自身已规定 JSON 格式
     "promo_writer": ["promo-writer"],
 }
 
