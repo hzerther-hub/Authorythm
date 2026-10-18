@@ -297,12 +297,20 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
             base_system = system if system is not None else prompts.load_prompt(agent_type, lang)
             raw2 = run_agent(agent_type, prompt, lang=lang, json_output=True,
                              temperature=0.4, config_id=config_id, image_urls=image_urls,
-                             system=base_system + _NO_TOOL_HINT, max_tokens=start)
-        except (AIError, ValueError, OSError):
+                             system=base_system + _NO_TOOL_HINT, max_tokens=start,
+                             # 重试必须用同一套放大后的超时:start 是 65536 时默认
+                             # 300s 根本不够,实测重试就是死在 300s 的 ReadTimeout
+                             # (requests 的 Timeout 继承 IOError,会被下面 except 吞掉,
+                             #  最终报成「输出无法解析为 JSON」,把真因藏了)
+                             timeout=_timeout_for(start))
+        except (AIError, ValueError, OSError) as e:
+            log.warning("agent.retry.failed agent=%s err=%s", agent_type, str(e)[:200])
             raw2 = None
         d2 = extract_json(raw2) if raw2 else None
         if d2 is not None and not _looks_like_tool_call(d2):
             return d2
+        log.warning("agent.parse.failed agent=%s finish_unparsed raw_head=%r raw_tail=%r",
+                    agent_type, (raw2 or raw or "")[:160], (raw2 or raw or "")[-160:])
     if data is None:
         raise RuntimeError(f"{agent_type} 输出无法解析为 JSON:{raw[:300]}")
     return data

@@ -58,6 +58,95 @@ def test_prompt_marks_batches_so_model_does_not_repeat_other_scenes():
     assert "number/title/content" in p2, "字段清单不能因为分批丢掉"
 
 
+def test_failed_chunk_is_split_into_scenes_and_retried(monkeypatch):
+    """整批拿不到 JSON 时按场景对半拆开重试,不能让整集失败。"""
+    calls = []
+
+    def fake(agent_type, prompt, **kw):
+        calls.append(prompt)
+        if "## S01" in prompt and "## S02" in prompt:   # 两场一起给就失败
+            raise RuntimeError("storyboard_breaker 输出无法解析为 JSON:<think>...")
+        return {"storyboards": [{"number": 1, "title": "镜"}]}
+
+    monkeypatch.setattr(sb.runner, "run_agent_json", fake)
+    part = "## S01 | a | 清晨\n内容A\n## S02 | b | 夜\n内容B\n"
+    got = sb._boards_for_part({"episode_number": 1}, "9:16", "资产", part, "第 01-02 场",
+                              lang="zh", config_id=None)
+    assert len(got) == 2, "拆开后两场都应拿到分镜"
+    assert len(calls) == 3, "先整批一次 + 拆开各一次"
+    assert "## S01" in calls[1] and "## S02" not in calls[1]
+
+
+def test_split_prompt_defers_video_prompt_to_second_stage():
+    """拆分阶段不许再要 video_prompt —— 它是单镜输出翻倍、把预算吐满的主因。"""
+    p = sb._storyboard_prompt({"episode_number": 1}, "9:16", "资产", "## S01 | a\n内容")
+    assert "本步不生成" in p
+    assert "/video_prompt" not in p, "字段清单里不能再出现 video_prompt"
+    assert "number/title/content" in p and "/duration" in p
+
+
+class _FakeDB:
+    """split_storyboards 用到的 db 接口最小替身(测试绝不碰真实库)。"""
+
+    def __init__(self, ep):
+        self.ep = ep
+        self.updates = []
+
+    def q1(self, sql, args=()):
+        if "FROM episodes WHERE id" in sql:
+            return self.ep
+        return None
+
+    def q(self, sql, args=()):
+        return []
+
+    def ex(self, sql, args=()):
+        self.updates.append((sql, args))
+        return 1
+
+    def touch(self, *a, **k):
+        pass
+
+    def now(self):
+        return "2026-10-18T00:00:00Z"
+
+
+def test_failed_batch_keeps_other_batches(monkeypatch):
+    """一批失败不能把已成功的批次一起丢掉 —— 已生成的必须留在库里。"""
+    script = "## S01 | a | 清晨\n" + "字" * 500 + "\n## S02 | b | 夜\n" + "字" * 500
+    fake = _FakeDB({"id": 2, "drama_id": 1, "episode_number": 1, "script_content": script})
+    monkeypatch.setattr(sb, "db", fake)
+    monkeypatch.setattr(sb, "_clear_episode_bindings", lambda *_: None)
+
+    saved = []
+
+    def fake_save(b, num, *a, **k):
+        saved.append(num)
+        return 10.0
+
+    monkeypatch.setattr(sb, "_save_board", fake_save)
+
+    def fake_part(ep, aspect, assets, part, label, **kw):
+        if "## S02" in part:
+            raise RuntimeError("模拟第 2 批失败")
+        return [{"number": 1, "title": "镜"}]
+
+    monkeypatch.setattr(sb, "_boards_for_part", fake_part)
+    failures = []
+    n = sb.split_storyboards(2, on_chunk_failed=lambda lbl, reason: failures.append(lbl))
+    assert n == 1, "第 1 批的镜头必须落库"
+    assert saved == [1]
+    assert failures == ["第 02 场"], "失败批次要能点名,方便只补那几场"
+
+
+def test_split_job_runs_video_prompt_stage():
+    """拆分任务必须串上第二阶段的逐镜补写,否则 video_prompt 会一直是空。"""
+    src = pathlib.Path(sb.__file__).read_text(encoding="utf-8")
+    body = src.split("def split_storyboards_bg(", 1)[1]
+    assert "gen_video_prompts(" in body
+    assert "video_prompts" in body, "应把阶段名写进任务面板"
+
+
 def test_storyboard_module_uses_chunked_batches():
     """守住实现:split_storyboards 必须走 _script_batches,不能再整集一次调用。"""
     src = pathlib.Path(sb.__file__).read_text(encoding="utf-8")

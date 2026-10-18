@@ -16,9 +16,9 @@ log = get_logger(__name__)
 # 115k 字符,且**波动极大** —— 同一条 prompt 换一次跑就顶满 65,536 被 length 截断
 # (128,980 字符全是半截 JSON)。所以除了把预算抬到 65536,更要按场景分批。
 STORYBOARD_MAX_TOKENS = 65536
-# 每批剧本的字数上限:一集 8 场 ≈ 3000 字拆 3 批,单批 ≈ 8-10 镜 ≈ 20k 输出 tokens,
-# 离 65536 上限有足够余量。
-STORYBOARD_CHUNK_CHARS = 1400
+# 每批剧本的字数上限:一集 8 场 ≈ 3000 字拆 3-4 批,单批 ≈ 6-8 镜 ≈ 20-30k 输出 tokens。
+# 1400 字那档实测单批就吐了 42,984 tokens / 453s,太接近上限,所以收紧到 900。
+STORYBOARD_CHUNK_CHARS = 900
 
 
 def _script_batches(script: str, limit: int = STORYBOARD_CHUNK_CHARS) -> list[tuple[str, str]]:
@@ -48,7 +48,7 @@ def _script_batches(script: str, limit: int = STORYBOARD_CHUNK_CHARS) -> list[tu
     merged: list[tuple[str, str]] = []
     for label, part in batches:
         if (merged and len(part) < limit / 3
-                and len(merged[-1][1]) + len(part) <= limit * 1.25):
+                and len(merged[-1][1]) + len(part) <= limit * 1.6):
             prev_part = merged.pop()[1]
             merged.append((_batch_label([prev_part, part]), prev_part + part))
         else:
@@ -61,6 +61,46 @@ def _batch_label(parts: list[str]) -> str:
     if not nums:
         return "本批"
     return f"第 {nums[0]}-{nums[-1]} 场" if nums[0] != nums[-1] else f"第 {nums[0]} 场"
+
+
+def _scene_blocks(text: str) -> list[str]:
+    blocks = [b for b in re.split(r"(?m)^(?=##\s*S\d+\s*\|)", text) if b.strip()]
+    return blocks or [text]
+
+
+def _boards_for_part(ep, aspect: str, assets: str, part: str, label: str, *,
+                     lang, config_id, depth: int = 0) -> list:
+    """跑一批分镜;整批没拿到 JSON 就按场景对半拆开重试,而不是让整集失败。
+
+    实测 minimax-M3 偶发「只吐 <think> 就 finish=stop」(S07-08 那批 39,704 字符
+    全是思维链,正文 0 字),重试同一批也未必好;但拆成单场后模型负担减半,
+    并且失败的代价从「整集重来」降到「重跑一场」。
+    """
+    blocks = _scene_blocks(part)
+    prompt = _storyboard_prompt(ep, aspect, assets, part, label,
+                                total=2 if len(blocks) > 1 else 1)
+    reason = ""
+    try:
+        data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
+                                     config_id=config_id,
+                                     max_tokens=STORYBOARD_MAX_TOKENS)
+        got = _extract_boards(data)
+        if got:
+            return got
+        reason = "模型返回了空分镜列表"
+    except RuntimeError as e:
+        reason = str(e)[:200]
+    if len(blocks) <= 1 or depth >= 2:
+        raise RuntimeError(f"分镜结果为空({label}):{reason}")
+    mid = len(blocks) // 2
+    log.warning("storyboard.chunk.split_retry label=%s scenes=%d reason=%s",
+                label, len(blocks), reason)
+    return (_boards_for_part(ep, aspect, assets, "".join(blocks[:mid]),
+                             _batch_label(blocks[:mid]), lang=lang, config_id=config_id,
+                             depth=depth + 1)
+            + _boards_for_part(ep, aspect, assets, "".join(blocks[mid:]),
+                               _batch_label(blocks[mid:]), lang=lang, config_id=config_id,
+                               depth=depth + 1))
 
 
 def _storyboard_prompt(ep, aspect: str, assets: str, script_part: str,
@@ -95,21 +135,16 @@ def _storyboard_prompt(ep, aspect: str, assets: str, script_part: str,
   ④ 整体氛围:把情绪落到具体物件或人的状态(如"整间屋子冷静、程序化、没有任何温度")
 - 禁止"天气+感受"式短语(如"正午暴晒,热浪扭曲,恍惚")
 
-【video_prompt 规范(硬规则)】
-- 第一行是信息头:出场人物(@角色名)与场景(@场景名),独立一行,句号结尾;有道具出场可追加 道具：@道具名
-- 之后按 3 秒为一段,每段单独一行:格式 = 时间范围[起-止秒] + @场景引用 + 景别/运镜 + @角色引用 + 主体动作·表情 + 对白/旁白 + 氛围光线
-- description 的每个【镜头N】映射为 1-2 个连续的 3 秒段,顺序一致不遗漏;段数 = duration ÷ 3 向上取整
-- 每段必须有镜头运动(位移/变焦/跟随/呼吸感起伏),禁止整段"固定镜头"静止画面;运镜写法="起始景别+运动方式+速度"
-- 台词写「角色名说：「台词」」;情绪全部转为可见描写(动作/表情/肢体),不写抽象词
-- 每段至少一个 @ 引用;名字必须与上面可用资产清单完全一致
-- 每段末尾的氛围光线与环境音取自本镜 atmosphere,不要另造一套
+【video_prompt】本步不生成:video_prompt 由拆分完成后的「逐镜补写」步骤负责
+(那里会拿到这一镜的 description/atmosphere 再写 3 秒分段)。这里输出 null,
+不要自己编 —— 一次性写它会把单镜输出翻倍,实测就是这一步把 65,536 预算吐满的。
 """)
 
     prompt += ("\n\n请输出 JSON 对象:"
                '{"storyboards":[…]};每镜字段 '
                'number/title/content/shot_type/angle/movement/location/time/description/'
-               'atmosphere/result/image_prompt/video_prompt/bgm_prompt/sound_effect/'
-               'setting_tags(数组)/characters(角色名数组)/props(道具名数组)')
+               'atmosphere/result/image_prompt/bgm_prompt/sound_effect/'
+               'setting_tags(数组)/characters(角色名数组)/props(道具名数组)/duration')
     if total > 1:
         # 分批时镜号必须每批从 1 起(落库前统一重编号);否则模型会接着上一批
         # 编出 20、21… 而我们按批追加,排序就会把批次顺序打乱
@@ -119,8 +154,53 @@ def _storyboard_prompt(ep, aspect: str, assets: str, script_part: str,
     return prompt
 
 
+def _save_board(b: dict, num: int, episode_id: int, ts: str, name_to_id: dict,
+                scene_by_name: dict, prop_by_id: dict, prop_names: list) -> float:
+    """落库一镜(幂等 upsert),返回该镜时长。
+
+    拆出来是为了**分批增量落库**:前面批次成功就先写进库,失败批次只影响自己,
+    用户不至于因为最后一场失败而看到「0 个分镜」。
+    """
+    scene_id = _match_scene(b, scene_by_name)
+    inherit = (scene_by_name.get(b.get("location") or "", {}) or {}).get("setting_tags")
+    tags = b.get("setting_tags") or inherit
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.replace("、", ",").split(",") if t.strip()]
+    dur = _resolve_duration(b)
+    # 幂等 upsert:已存在的镜头保留生成物(视频/首帧/字幕),只更新描述类字段
+    existing = db.q1("SELECT id FROM storyboards WHERE episode_id=? AND storyboard_number=?",
+                     (episode_id, num))
+    vals = (str(b.get("title") or b.get("content") or "")[:120],
+            b.get("shot_type") or b.get("shot_size"), b.get("angle"), b.get("movement"),
+            b.get("location"), b.get("time"), b.get("description"),
+            b.get("result"), b.get("atmosphere"), b.get("image_prompt"),
+            b.get("video_prompt"), b.get("bgm_prompt"), b.get("sound_effect"),
+            scene_id, json.dumps(tags, ensure_ascii=False) if tags else None,
+            b.get("content", ""), dur)
+    if existing:
+        db.ex("""UPDATE storyboards SET title=?, shot_type=?, angle=?, movement=?, location=?,
+                  time=?, description=?, result=?, atmosphere=?, image_prompt=?, video_prompt=?,
+                  bgm_prompt=?, sound_effect=?, scene_id=?, setting_tags=?, content=?, duration=?,
+                  updated_at=? WHERE id=?""", vals + (ts, existing["id"]))
+        sb_id = existing["id"]
+    else:
+        sb_id = db.ex(
+            """INSERT INTO storyboards(episode_id,storyboard_number,title,shot_type,angle,
+               movement,location,time,description,result,atmosphere,image_prompt,video_prompt,
+               bgm_prompt,sound_effect,scene_id,setting_tags,content,duration,status,created_at,updated_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
+            (episode_id, num) + vals + (ts, ts))
+    _bind_assets(sb_id, b, name_to_id, prop_by_id, prop_names, ts, episode_id)
+    sid_row = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (sb_id,))
+    if sid_row and sid_row["scene_id"]:
+        db.ex("INSERT OR IGNORE INTO episode_scenes(episode_id,scene_id) VALUES(?,?)",
+              (episode_id, sid_row["scene_id"]))
+    return dur
+
+
 def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
-                      lang: str | None = None, on_progress=None) -> int:
+                      lang: str | None = None, on_progress=None,
+                      on_chunk_failed=None) -> int:
     """整集重新拆分分镜;返回数量(对齐原版 save_storyboards:全量替换 + 资产绑定)。
 
     与原版对齐的关键点:
@@ -158,75 +238,46 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     assets = ("角色(@角色名引用):\n" + "\n".join(char_lines)
               + "\n场景(@场景名引用,含光影供 atmosphere 取材):\n" + "\n".join(scene_lines)
               + "\n道具(@道具名引用):\n" + "\n".join(prop_lines))
-    batches = _script_batches(script)
-    boards: list[dict] = []
-    for bi, (label, part) in enumerate(batches, start=1):
-        prompt = _storyboard_prompt(ep, aspect, assets, part, label, len(batches))
-        data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
-                                     config_id=config_id,
-                                     max_tokens=STORYBOARD_MAX_TOKENS)
-        got = _extract_boards(data)
-        if not got:
-            raise RuntimeError(f"分镜结果为空({label})")
-        # 批次内先按模型给的号排(它可能从 3 开始),再统一编成连续号:
-        # 后面的全局排序只用于兜底,不能指望跨批次的原始编号是连续的
-        got.sort(key=lambda b: (int(b.get("number") or 10 ** 6),))
-        for b in got:
-            b["number"] = len(boards) + 1
-            boards.append(b)
-        log.info("storyboard.chunk.done episode=%s chunk=%d/%d label=%s boards=%d total=%d",
-                 episode_id, bi, len(batches), label, len(got), len(boards))
-        if on_progress:
-            on_progress(min(95, int(bi / len(batches) * 90)))
-    if not boards:
-        raise RuntimeError("分镜结果为空")
     ts = db.now()
     name_to_id = {r["name"]: r["id"] for r in chars}
     scene_by_name = {r["name"]: dict(r) for r in scenes}
     prop_by_id = {r["id"]: r["name"] for r in props}
     prop_names = [r["name"] for r in props]
     _clear_episode_bindings(episode_id)
+    batches = _script_batches(script)
     total_dur = 0.0
-    # 强制重编号 1..N:模型 number 只用于排序(幻觉出 14-30 起始编号时,
-    # 任务列表会变成 #14 在前 #01 在后 —— 对齐参考项目按镜号顺序)
-    boards.sort(key=lambda b: (int(b.get("number") or 10**6), ))
-    for i, b in enumerate(boards, start=1):
-        num = i
-        scene_id = _match_scene(b, scene_by_name)
-        inherit = (scene_by_name.get(b.get("location") or "", {}) or {}).get("setting_tags")
-        tags = b.get("setting_tags") or inherit
-        if isinstance(tags, str):
-            tags = [t.strip() for t in tags.replace("、", ",").split(",") if t.strip()]
-        dur = _resolve_duration(b)
-        total_dur += dur
-        # 幂等 upsert:已存在的镜头保留生成物(视频/首帧/字幕),只更新描述类字段
-        existing = db.q1("SELECT id FROM storyboards WHERE episode_id=? AND storyboard_number=?",
-                         (episode_id, num))
-        vals = (str(b.get("title") or b.get("content") or "")[:120],
-                b.get("shot_type") or b.get("shot_size"), b.get("angle"), b.get("movement"),
-                b.get("location"), b.get("time"), b.get("description"),
-                b.get("result"), b.get("atmosphere"), b.get("image_prompt"),
-                b.get("video_prompt"), b.get("bgm_prompt"), b.get("sound_effect"),
-                scene_id, json.dumps(tags, ensure_ascii=False) if tags else None,
-                b.get("content", ""), dur)
-        if existing:
-            db.ex("""UPDATE storyboards SET title=?, shot_type=?, angle=?, movement=?, location=?,
-                      time=?, description=?, result=?, atmosphere=?, image_prompt=?, video_prompt=?,
-                      bgm_prompt=?, sound_effect=?, scene_id=?, setting_tags=?, content=?, duration=?,
-                      updated_at=? WHERE id=?""", vals + (ts, existing["id"]))
-            sb_id = existing["id"]
-        else:
-            sb_id = db.ex(
-                """INSERT INTO storyboards(episode_id,storyboard_number,title,shot_type,angle,
-                   movement,location,time,description,result,atmosphere,image_prompt,video_prompt,
-                   bgm_prompt,sound_effect,scene_id,setting_tags,content,duration,status,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
-                (episode_id, num) + vals + (ts, ts))
-        _bind_assets(sb_id, b, name_to_id, prop_by_id, prop_names, ts, episode_id)
-        sid_row = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (sb_id,))
-        if sid_row and sid_row["scene_id"]:
-            db.ex("INSERT OR IGNORE INTO episode_scenes(episode_id,scene_id) VALUES(?,?)",
-                  (episode_id, sid_row["scene_id"]))
+    saved = 0
+    failed: list[str] = []
+    for bi, (label, part) in enumerate(batches, start=1):
+        try:
+            got = _boards_for_part(ep, aspect, assets, part, label,
+                                   lang=lang, config_id=config_id)
+        except RuntimeError as e:
+            # 没给回调 = 老行为(整集失败);给了就记下来继续跑其它批,
+            # 已经成功的前几批照常落库,用户至少能拿到那部分
+            if on_chunk_failed is None:
+                raise
+            reason = str(e)[:200]
+            log.warning("storyboard.chunk.failed episode=%s label=%s err=%s",
+                        episode_id, label, reason)
+            failed.append(label)
+            on_chunk_failed(label, reason)
+            if on_progress:
+                on_progress(min(90, int(bi / len(batches) * 90)))
+            continue
+        # 批次内先按模型给的号排(它可能从 3 开始),再统一编成连续号
+        got.sort(key=lambda b: (int(b.get("number") or 10 ** 6),))
+        for b in got:
+            saved += 1
+            b["number"] = saved
+            total_dur += _save_board(b, saved, episode_id, ts, name_to_id,
+                                     scene_by_name, prop_by_id, prop_names)
+        log.info("storyboard.chunk.done episode=%s chunk=%d/%d label=%s boards=%d total=%d",
+                 episode_id, bi, len(batches), label, len(got), saved)
+        if on_progress:
+            on_progress(min(90, int(bi / len(batches) * 90)))
+    if not saved:
+        raise RuntimeError(f"分镜结果为空({len(failed)} 批全部失败:{'、'.join(failed)})")
     db.ex("UPDATE episodes SET duration=?, updated_at=? WHERE id=?",
           (max(1, round(total_dur / 60)), ts, episode_id))
     db.touch("episodes", episode_id)
@@ -269,7 +320,7 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                   f"{n_e} 镜打情绪标", flush=True)
     except Exception as e:                                # noqa: BLE001
         print(f"[variant_detector] 检测失败,忽略:{e}", flush=True)
-    return len(boards)
+    return saved
 
 
 def _extract_boards(data) -> list:
@@ -384,7 +435,8 @@ def _refs_to_names(b: dict, key: str, id_by_name: dict, prop_by_id: dict) -> lis
             db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
                   (sb_id, prop_by_id[name]))
 
-def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
+def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str | None = None,
+                      on_progress=None) -> int:
     """批量补齐缺失的每镜 video_prompt(prompt_generator Agent);返回处理数。
 
     对齐原版:只处理 `video_prompt` 为空的镜头(已有的不覆盖),按镜头号顺序逐条生成。
@@ -401,7 +453,7 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
     drama_id = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))["drama_id"]
     style = _style_for(drama_id)
     done = 0
-    for r in rows:
+    for idx, r in enumerate(rows, start=1):
         prompt = f"""目标类型:storyboard(镜头视频提示词)
 视觉风格前缀: {style}
 
@@ -423,6 +475,9 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
                     pass
         except Exception:  # noqa: BLE001
             continue
+        finally:
+            if on_progress:
+                on_progress(int(idx / len(rows) * 100))
     return done
 
 
@@ -520,16 +575,40 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
 
     def job(tid: int):
         TM.set_stage(tid, "splitting")
+        failed_batches: list[tuple[str, str]] = []
         try:
-            n = split_storyboards(episode_id, aspect, config_id=config_id, lang=lang,
-                                  on_progress=lambda p: TM.set_task_progress(tid, p))
+            # 第一阶段:拆分(0-90%)。每批成功即落库,失败批次只影响自己 ——
+            # 不会再出现「最后一场失败 → 整集 0 个分镜」。
+            n = split_storyboards(
+                episode_id, aspect, config_id=config_id, lang=lang,
+                on_progress=lambda p: TM.set_task_progress(tid, min(90, int(p * 0.9))),
+                on_chunk_failed=lambda label, reason: failed_batches.append((label, reason)),
+            )
             removed = clean_junk_storyboards(episode_id)
             n = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
             if n == 0:
                 raise RuntimeError("拆分结束但没有写入任何分镜,请重试")
-            msg = f"拆出 {n} 个分镜"
+            # 第二阶段:逐镜补 video_prompt(90-100%)。失败不回滚拆分结果 ——
+            # 分镜本身已经可用,提示词还能从「批量视频提示词」按钮单独补。
+            vp = 0
+            try:
+                TM.set_stage(tid, "video_prompts")
+                vp = gen_video_prompts(
+                    episode_id, config_id=config_id, lang=lang,
+                    on_progress=lambda p: TM.set_task_progress(tid, 90 + int(p * 0.1)),
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("storyboard.video_prompts.failed episode=%s err=%s",
+                            episode_id, str(e)[:200])
+            msg = f"拆出 {n} 个分镜,补齐 {vp} 条视频提示词"
+            if vp < n:
+                msg += f"({n - vp} 条待补,可用「批量视频提示词」重试)"
+            if failed_batches:
+                # 已落库的部分照常可用;失败场次在消息里点名,方便只补那几场
+                msg += ";未完成:" + "、".join(lbl for lbl, _ in failed_batches)
+                msg += "(已保留其余分镜,可再次拆分补齐)"
             if removed:
-                msg += f"(已清理 {removed} 个残缺行)"
+                msg += f";已清理 {removed} 个残缺行"
             TM.finish_task(tid, "completed", result_url=str(n), local_path=msg)
             return n
         except Exception as e:  # noqa: BLE001
