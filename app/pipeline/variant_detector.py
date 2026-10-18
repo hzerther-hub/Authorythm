@@ -369,18 +369,22 @@ def ensure_variants_for_storyboard(storyboard: dict, drama_id: int) -> list[int]
                 (storyboard["id"],))
     cids = [r["character_id"] for r in rels]
     if not cids:
-        # 兜底:集级关联的角色都算
-        cids = [r["id"] for r in db.q(
+        # 兜底:集级关联的角色都算。
+        # 关联表 episode_characters 只有 (episode_id, character_id) 两列、**没有 id**,
+        # 这里原来读 `["id"]` 会 IndexError("No item with that key")。
+        # 该镜没绑角色时必踩:异常一路冒到 split_storyboards 的整集 try 里,
+        # 后果是**整集**的变体检测与情绪打标全被跳过(静默,用户只看到没打上标签)。
+        cids = [r["character_id"] for r in db.q(
             "SELECT character_id FROM episode_characters WHERE episode_id=?",
             (ep_id,))]
     # 2. 场景变体
     scene_changes = detect_scene_changes(storyboard)
-    # 该镜关联的场景(若空 → 兜底用集级关联)
+    # 该镜关联的场景(若空 → 兜底用集级关联;列名同上,关联表没有 id)
     scenes = db.q("SELECT scene_id FROM storyboard_scenes WHERE storyboard_id=?",
                   (storyboard["id"],))
     sids = [s["scene_id"] for s in scenes]
     if not sids:
-        sids = [s["id"] for s in db.q(
+        sids = [s["scene_id"] for s in db.q(
             "SELECT scene_id FROM episode_scenes WHERE episode_id=?", (ep_id,))]
     # 3. 道具变体
     prop_changes = detect_prop_changes(storyboard)
@@ -388,7 +392,7 @@ def ensure_variants_for_storyboard(storyboard: dict, drama_id: int) -> list[int]
                  (storyboard["id"],))
     pids = [p["prop_id"] for p in props]
     if not pids:
-        pids = [p["id"] for p in db.q(
+        pids = [p["prop_id"] for p in db.q(
             "SELECT prop_id FROM episode_props WHERE episode_id=?", (ep_id,))]
 
     shot = storyboard.get("storyboard_number", 0)
