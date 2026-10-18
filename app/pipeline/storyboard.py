@@ -7,55 +7,66 @@ import re
 
 from ..agents import runner
 from ..core import db
+from ..core.logging_setup import get_logger
 
-# 起始输出预算:整集分镜一次要吐 20-30 镜 × (description 3-6 句 + atmosphere 2-4 句 +
-# video_prompt 每 3 秒一段),实测一集 26 镜 = 50,787 completion tokens / 115k 字符。
-# 默认 8192 连一个 <think> 都装不下,按阶梯爬上去要连烧 4 次(≈16 分钟);
-# 这里直接按实测值起步。供应商若不认这个上限,runner 会退回到低档阶梯重爬。
+log = get_logger(__name__)
+
+# 单次调用的输出预算:整集分镜一次要吐 20-30 镜 × (description 3-6 句 + atmosphere
+# 2-4 句 + video_prompt 每 3 秒一段),实测一集 26 镜 = 50,787 completion tokens /
+# 115k 字符,且**波动极大** —— 同一条 prompt 换一次跑就顶满 65,536 被 length 截断
+# (128,980 字符全是半截 JSON)。所以除了把预算抬到 65536,更要按场景分批。
 STORYBOARD_MAX_TOKENS = 65536
+# 每批剧本的字数上限:一集 8 场 ≈ 3000 字拆 3 批,单批 ≈ 8-10 镜 ≈ 20k 输出 tokens,
+# 离 65536 上限有足够余量。
+STORYBOARD_CHUNK_CHARS = 1400
 
 
-def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
-                    lang: str | None = None) -> int:
-    """整集重新拆分分镜;返回数量(对齐原版 save_storyboards:全量替换 + 资产绑定)。
+def _script_batches(script: str, limit: int = STORYBOARD_CHUNK_CHARS) -> list[tuple[str, str]]:
+    """把剧本按场景切成若干批,每批一次 LLM 调用。
 
-    与原版对齐的关键点:
-    - 落库 **全字段**(title/shot_type/angle/movement/location/time/description/result/
-      atmosphere/image_prompt/video_prompt/bgm_prompt/sound_effect/scene_id/setting_tags/duration);
-      setting_tags 为空时从场景继承 —— 缺这些字段时 `refs.build_shot_reference_list`
-      拿不到绑定、reference injection 就是空的,生图只能每次现调 Agent。
-    - 同步写 `storyboard_characters`(带 variant_id)与 `storyboard_props`;
-    - 按 shot_number **幂等 upsert**(重拆不丢已生成的视频/首帧);
-    - 重算 `episodes.duration = ceil(Σ分镜时长 / 60)`。
+    为什么必须切:整集一次调用实测 50,787+ completion tokens 且波动极大,
+    65536 档仍被 finish_reason=length 截断。切批后单次只要 1/3 输出,
+    既不会顶到供应商上限,也能把批间进度反馈到任务面板。
     """
-    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
-    if not ep:
-        raise RuntimeError("剧集不存在")
-    script = ep["script_content"] or ""
-    if not script.strip():
-        raise RuntimeError("请先完成剧本改写")
-    chars = db.q("SELECT id, name, appearance, styling FROM characters WHERE drama_id=? AND deleted_at IS NULL",
-                 (ep["drama_id"],))
-    scenes = db.q("SELECT id, name, location, time, prompt, lighting, setting_tags FROM scenes "
-                  "WHERE drama_id=? AND deleted_at IS NULL", (ep["drama_id"],))
-    props = db.q("SELECT id, name, type, description FROM props WHERE drama_id=? AND deleted_at IS NULL",
-                 (ep["drama_id"],))
-    # 资产清单对齐参考项目 read_storyboard_context 的返回:角色带完整样貌/妆造(不截断),
-    # 场景带 location/time/prompt(空间陈设年代质感)/lighting,道具带类型与外观描述。
-    # atmosphere 的光线/色调/环境感受三层都要从这里取材:只喂 lighting 模型只能凭空编,
-    # 这正是之前氛围比参考项目差一截的根因。
-    char_lines = [f"- {r['name']}(样貌:{r['appearance'] or ''};妆造:{r['styling'] or ''})"
-                  for r in chars] or ["- 无"]
-    scene_lines = [f"- {r['name']} / 地点:{r['location']} / 时间:{r['time'] or ''} / "
-                   f"环境:{r['prompt'] or ''} / 光影:{r['lighting'] or ''}"
-                   for r in scenes] or ["- 无"]
-    prop_lines = [f"- {r['name']}({r['type'] or ''}:{r['description'] or ''})"
-                  for r in props] or ["- 无"]
-    assets = ("角色(@角色名引用):\n" + "\n".join(char_lines)
-              + "\n场景(@场景名引用,含光影供 atmosphere 取材):\n" + "\n".join(scene_lines)
-              + "\n道具(@道具名引用):\n" + "\n".join(prop_lines))
+    blocks = [b for b in re.split(r"(?m)^(?=##\s*S\d+\s*\|)", script) if b.strip()]
+    if len(blocks) <= 1:
+        # 没有场景头的老剧本:按空行切段再合并,避免整集塞进一次调用
+        blocks = [b for b in re.split(r"\n\s*\n", script) if b.strip()]
+    batches: list[tuple[str, str]] = []
+    cur: list[str] = []
+    cur_len = 0
+    for b in blocks:
+        if cur and cur_len + len(b) > limit:
+            batches.append((_batch_label(cur), "".join(cur)))
+            cur, cur_len = [], 0
+        cur.append(b if b.endswith("\n") else b + "\n")
+        cur_len += len(b)
+    if cur:
+        batches.append((_batch_label(cur), "".join(cur)))
+    # 收尾合并:最后一个场景常常很短(实测 S06 只有 189 字,单独一次调用
+    # 要多花一整轮 prompt 与思维链),把它并进相邻批;允许略微超过 limit。
+    merged: list[tuple[str, str]] = []
+    for label, part in batches:
+        if (merged and len(part) < limit / 3
+                and len(merged[-1][1]) + len(part) <= limit * 1.25):
+            prev_part = merged.pop()[1]
+            merged.append((_batch_label([prev_part, part]), prev_part + part))
+        else:
+            merged.append((label, part))
+    return merged or [("全剧", script)]
+
+
+def _batch_label(parts: list[str]) -> str:
+    nums = re.findall(r"(?m)^##\s*S(\d+)\s*\|", "".join(parts))
+    if not nums:
+        return "本批"
+    return f"第 {nums[0]}-{nums[-1]} 场" if nums[0] != nums[-1] else f"第 {nums[0]} 场"
+
+
+def _storyboard_prompt(ep, aspect: str, assets: str, script_part: str,
+                       label: str = "", total: int = 1) -> str:
     prompt = f"""剧本(第 {ep['episode_number']} 集,画面比例 {aspect}):
-{script[:14000]}
+{script_part}
 
 可用资产:
 {assets}"""
@@ -99,9 +110,74 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                'number/title/content/shot_type/angle/movement/location/time/description/'
                'atmosphere/result/image_prompt/video_prompt/bgm_prompt/sound_effect/'
                'setting_tags(数组)/characters(角色名数组)/props(道具名数组)')
-    data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang, config_id=config_id,
-                                 max_tokens=STORYBOARD_MAX_TOKENS)
-    boards = _extract_boards(data)
+    if total > 1:
+        # 分批时镜号必须每批从 1 起(落库前统一重编号);否则模型会接着上一批
+        # 编出 20、21… 而我们按批追加,排序就会把批次顺序打乱
+        prompt += (f"\n\n【分批说明】本次只输出 {label} 的分镜,不要输出其它场次;"
+                   "镜号从 1 开始连续编号(落库时会统一重编号),"
+                   "不要重复前面批次已经写过的镜头。")
+    return prompt
+
+
+def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
+                      lang: str | None = None, on_progress=None) -> int:
+    """整集重新拆分分镜;返回数量(对齐原版 save_storyboards:全量替换 + 资产绑定)。
+
+    与原版对齐的关键点:
+    - 落库 **全字段**(title/shot_type/angle/movement/location/time/description/result/
+      atmosphere/image_prompt/video_prompt/bgm_prompt/sound_effect/scene_id/setting_tags/duration);
+      setting_tags 为空时从场景继承 —— 缺这些字段时 `refs.build_shot_reference_list`
+      拿不到绑定、reference injection 就是空的,生图只能每次现调 Agent。
+    - 同步写 `storyboard_characters`(带 variant_id)与 `storyboard_props`;
+    - 按 shot_number **幂等 upsert**(重拆不丢已生成的视频/首帧);
+    - 重算 `episodes.duration = ceil(Σ分镜时长 / 60)`。
+    """
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("剧集不存在")
+    script = ep["script_content"] or ""
+    if not script.strip():
+        raise RuntimeError("请先完成剧本改写")
+    chars = db.q("SELECT id, name, appearance, styling FROM characters WHERE drama_id=? AND deleted_at IS NULL",
+                 (ep["drama_id"],))
+    scenes = db.q("SELECT id, name, location, time, prompt, lighting, setting_tags FROM scenes "
+                  "WHERE drama_id=? AND deleted_at IS NULL", (ep["drama_id"],))
+    props = db.q("SELECT id, name, type, description FROM props WHERE drama_id=? AND deleted_at IS NULL",
+                 (ep["drama_id"],))
+    # 资产清单对齐参考项目 read_storyboard_context 的返回:角色带完整样貌/妆造(不截断),
+    # 场景带 location/time/prompt(空间陈设年代质感)/lighting,道具带类型与外观描述。
+    # atmosphere 的光线/色调/环境感受三层都要从这里取材:只喂 lighting 模型只能凭空编,
+    # 这正是之前氛围比参考项目差一截的根因。
+    char_lines = [f"- {r['name']}(样貌:{r['appearance'] or ''};妆造:{r['styling'] or ''})"
+                  for r in chars] or ["- 无"]
+    scene_lines = [f"- {r['name']} / 地点:{r['location']} / 时间:{r['time'] or ''} / "
+                   f"环境:{r['prompt'] or ''} / 光影:{r['lighting'] or ''}"
+                   for r in scenes] or ["- 无"]
+    prop_lines = [f"- {r['name']}({r['type'] or ''}:{r['description'] or ''})"
+                  for r in props] or ["- 无"]
+    assets = ("角色(@角色名引用):\n" + "\n".join(char_lines)
+              + "\n场景(@场景名引用,含光影供 atmosphere 取材):\n" + "\n".join(scene_lines)
+              + "\n道具(@道具名引用):\n" + "\n".join(prop_lines))
+    batches = _script_batches(script)
+    boards: list[dict] = []
+    for bi, (label, part) in enumerate(batches, start=1):
+        prompt = _storyboard_prompt(ep, aspect, assets, part, label, len(batches))
+        data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
+                                     config_id=config_id,
+                                     max_tokens=STORYBOARD_MAX_TOKENS)
+        got = _extract_boards(data)
+        if not got:
+            raise RuntimeError(f"分镜结果为空({label})")
+        # 批次内先按模型给的号排(它可能从 3 开始),再统一编成连续号:
+        # 后面的全局排序只用于兜底,不能指望跨批次的原始编号是连续的
+        got.sort(key=lambda b: (int(b.get("number") or 10 ** 6),))
+        for b in got:
+            b["number"] = len(boards) + 1
+            boards.append(b)
+        log.info("storyboard.chunk.done episode=%s chunk=%d/%d label=%s boards=%d total=%d",
+                 episode_id, bi, len(batches), label, len(got), len(boards))
+        if on_progress:
+            on_progress(min(95, int(bi / len(batches) * 90)))
     if not boards:
         raise RuntimeError("分镜结果为空")
     ts = db.now()
@@ -445,7 +521,8 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
     def job(tid: int):
         TM.set_stage(tid, "splitting")
         try:
-            n = split_storyboards(episode_id, aspect, config_id=config_id, lang=lang)
+            n = split_storyboards(episode_id, aspect, config_id=config_id, lang=lang,
+                                  on_progress=lambda p: TM.set_task_progress(tid, p))
             removed = clean_junk_storyboards(episode_id)
             n = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
             if n == 0:

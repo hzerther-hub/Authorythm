@@ -219,6 +219,10 @@ def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
     while i < len(ladder):
         budget = ladder[i]
         t0 = time.perf_counter()
+        # 先记一条「已发出」:分解一集分镜要 6-8 分钟,只有事后日志的话,
+        # 用户看到任务卡在 processing 时完全无法判断是在正常等还是已经挂死
+        log.info("agent.budget.call agent=%s budget=%d attempt=%d/%d timeout=%ds",
+                 agent_type, budget, i + 1, len(ladder), _timeout_for(budget))
         try:
             raw, meta = run_agent(agent_type, prompt, lang=lang, json_output=True,
                                   temperature=0.4, config_id=config_id,
