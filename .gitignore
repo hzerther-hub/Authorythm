@@ -19,3 +19,15 @@ skills-lock.json
 # 会话计划文件与 UI 设计原型:都不是产品代码,别进版本库
 .zcode/plans/
 design-demos/
+
+# 运行时数据:日志 + 指标 + 加密盐(data/ 已被整体忽略,显式列出便于追责)
+# (data/ 在上面已整体忽略;这里再列具体路径方便 git status 显式标注)
+data/logs/
+data/metrics.jsonl
+data/.secret_salt
+# 缓存与覆盖率
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage

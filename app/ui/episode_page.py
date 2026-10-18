@@ -1321,6 +1321,12 @@ class EpisodePage(QWidget):
         self.batch_btn.setToolTip(tr("batch_write_tip"))
         self.batch_btn.clicked.connect(self._batch_novel)
         row.addWidget(self.batch_btn)
+        # Layer 2.3:梗概生漫画 —— 粘贴 100-1000 字故事梗概,自动扩剧本 + 出整话
+        self.comic_outline_btn = QPushButton(tr("ai_full_comic_from_outline"))
+        W.set_icon(self.comic_outline_btn, "image")
+        self.comic_outline_btn.setToolTip(tr("ai_full_comic_from_outline_tip"))
+        self.comic_outline_btn.clicked.connect(self._comic_from_outline)
+        row.addWidget(self.comic_outline_btn)
         self.review_badge = QPushButton("")
         self.review_badge.setToolTip(tr("review_open_hint"))
         self.review_badge.clicked.connect(self._show_review_detail)
@@ -1852,6 +1858,57 @@ class EpisodePage(QWidget):
         ws = getattr(self, "words_spin", None)
         if ws is not None:
             ws.setEnabled(on)
+
+    def _comic_from_outline(self):
+        """Layer 2.3 入口:粘贴 100-1000 字故事梗概 → 扩剧本 → 出整话漫画。
+
+        两阶段:先调 novel.outline_to_script 落库剧本,再调 comic_pipeline.generate_full_comic
+        端到端(走 taskmgr 后台)。两阶段合并跑在同一个 job 里,任何阶段失败都报 toast,
+        剧本已落库的部分不会回滚(用户可手动调整后重出图)。
+        """
+        from ..pipeline import novel, comic_pipeline
+        from .toast import info, warn, ok, err
+        from ..core.taskmgr import TASKMGR
+        from PySide6.QtWidgets import QInputDialog, QMessageBox
+
+        if not self.episode_id:
+            warn("请先进入项目并选中一集")
+            return
+        # 弹输入框取梗概
+        text, ok_clicked = QInputDialog.getMultiLineText(
+            self, tr("ai_full_comic_from_outline"),
+            tr("ai_full_comic_from_outline_tip") + "\n\n(100-1000 字,口语描述即可):",
+            "",  # 默认空
+        )
+        if not ok_clicked or not (text or "").strip():
+            return
+        outline = text.strip()
+
+        ep_id = self.episode_id
+        text_cfg = self._cfg_for("text")
+        image_cfg = self._cfg_for("image")
+        style_value = self._current_comic_style_value()
+
+        def job(tid):
+            # 阶段 1:梗概 → 剧本
+            novel.outline_to_script(outline, episode_id=ep_id, config_id=text_cfg)
+            # 阶段 2:剧本 → 整话漫画
+            return comic_pipeline.generate_full_comic(
+                ep_id, config_id=image_cfg, style_value=style_value, force=False,
+            )
+
+        def done(tid, result, error):
+            if error:
+                err(f"梗概生漫画失败:{str(error)[:200]}")
+                return
+            r = result or {}
+            ok(f"出整话:共 {r.get('panels', 0)} 格,出 {r.get('generated', 0)} / 失败 {r.get('failed', 0)}")
+            self._reload_raw()
+            self._reload_comic()
+            self._reload_stitch_box()
+
+        TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
+        info("已提交:先扩剧本,再出整话 — 任务面板看进度")
 
     def _cfg_for(self, service_type: str):
         """该类型服务当前下拉选中的配置 id(ensure_ready 用;未选返回 None=默认最高优先级)。"""
@@ -2904,6 +2961,8 @@ class EpisodePage(QWidget):
                                               on_face_swap=(lambda rid=r["id"]: self._face_swap(rid))
                                               if kind == "characters" else None,
                                               on_variants=(lambda cid=r["id"]: self._open_variants(cid))
+                                              if kind == "characters" else None,
+                                              on_comic_view=(lambda cid=r["id"]: self._open_variants(cid))
                                               if kind == "characters" else None,
                                               on_prompt=self._cb_prompt(r, kind),
                                               on_open=self._cb_open(r, kind),
@@ -6243,6 +6302,11 @@ class EpisodePage(QWidget):
         self.comic_batch_btn = WaitingButton("▦ " + tr("batch_image"))
         self.comic_batch_btn.clicked.connect(self._batch_comic)
         bar.addWidget(self.comic_batch_btn)
+        # Layer 1:「✨ AI 出整话」一键端到端(拆格 → 出图 → 拼长图)。
+        self.comic_full_btn = WaitingButton("✨ " + tr("ai_full_comic"))
+        self.comic_full_btn.setToolTip(tr("ai_full_comic_tip"))
+        self.comic_full_btn.clicked.connect(self._ai_full_comic)
+        bar.addWidget(self.comic_full_btn)
         stitch_btn = W.primary_btn("⤓ " + tr("stitch_long"))
         stitch_btn.clicked.connect(self._stitch)
         bar.addWidget(stitch_btn)
@@ -6544,6 +6608,68 @@ class EpisodePage(QWidget):
 
         self._reload_comic()
         run(0)
+
+    def _ai_full_comic(self):
+        """Layer 1 一键出整话:剧本 → 拆格 → 出图 → 拼长图(走 taskmgr 不阻塞主线程)。
+
+        force=False 时已有 image_url 的格跳过(只补齐未出的);force=True 全部重出。
+        单格失败不中断(由 comic_pipeline 内部 try/except 兜底)。
+        """
+        from ..pipeline import comic_pipeline
+        from .toast import info, warn
+        from .confirm import ask
+        from ..core.taskmgr import TASKMGR
+
+        if not self.episode_id:
+            warn("请先进入项目并选中一集")
+            return
+        # 二选一:补齐 vs 全部重出
+        force = False
+        if db.q1("SELECT id FROM comic_panels WHERE episode_id=? AND image_url IS NOT NULL AND image_url!='' LIMIT 1",
+                 (self.episode_id,)):
+            # 已有图,弹确认让用户选
+            choice = ask(
+                self,
+                tr("ai_full_comic"),
+                tr("ai_full_comic_confirm"),
+                yes_text=tr("ai_full_comic_only_missing"),
+                no_text=tr("ai_full_comic_force_all"),
+            )
+            if choice is None:
+                return
+            force = (not choice)  # 是=补齐(force=False),否=全部重出(force=True)
+
+        ep_id = self.episode_id
+        style_value = self._current_comic_style_value()
+        image_cfg = self._cfg_for("image")
+
+        def job(tid):
+            return comic_pipeline.generate_full_comic(
+                ep_id, config_id=image_cfg, style_value=style_value, force=force,
+            )
+
+        def done(tid, result, error):
+            from .toast import ok, err
+            if error:
+                err(f"整话生成失败:{str(error)[:160]}")
+                return
+            try:
+                r = result or {}
+                ok(f"出整话:共 {r.get('panels', 0)} 格,出 {r.get('generated', 0)} / 跳过 {r.get('skipped', 0)} / 失败 {r.get('failed', 0)}")
+            except Exception:
+                pass
+            self._reload_comic()
+            self._reload_stitch_box()
+
+        TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
+        info("已提交整话生成任务,可去任务面板看进度")
+
+    def _current_comic_style_value(self) -> str:
+        """当前项目漫画风格 value(用于 comic_pipeline.generate_full_comic)。"""
+        row = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (self.drama_id,))
+        if row and (row["comic_style"] or "").strip():
+            return row["comic_style"]
+        return (row or {}).get("style") or ""
 
     def _stitch(self):
         if not db.q1("SELECT id FROM video_merges WHERE episode_id=? AND model='comic_stitch'",

@@ -1161,3 +1161,203 @@ STAGE_CN(写正文/审校中…)、REF_PLACEHOLDER(角/景/具)整批漏网。
 - 巡检口径必须是**全部 `processing`**,不能只查 `task_id IS NULL` ——
   参考项目里 1092/1095/1096 等是句柄已拿到却因重启僵死的;
 - 巡检间隔 45 分钟不可压到 30 分钟以下,否则误杀正常生成中的视频任务(最久 ~30min)。
+
+## 2026-10-18(第 28 轮:结构化日志 + 指标 + 密钥加密 + CI/lint 工程化)
+
+> 回应上一轮分析里标注的「⚠ 工程化 / 可观测性 / 安全 / 打包」四类遗留。
+> 本轮集中解决前三类;打包(PyInstaller)见计划文件留作下轮。
+
+### A. 结构化日志(`app/core/logging_setup.py`)
+- **三路 handler**:`RotatingFileHandler`(JSON,`data/logs/pydrama.log`,10MB × 5 份)
+  + `StreamHandler(stderr, 紧凑格式)` + 可选 `QtToastHandler`(WARNING+)。
+- **密钥脱敏 `_SecretsFilter`**:正则替换 `sk-xxx` / `Bearer xxx` / `api_key=xxx` /
+  `Authorization:xxx` / 32+ 位 base64/hex → `***`。**所有 handler 走 formatter 前的 Filter 应用**。
+- **JSON 格式**:`ts / level / logger / msg / module / lineno / exc / ctx`,`extra={...}` 透传到 `ctx`。
+- **配置项**:`app_settings.log_level` (debug/info/warning/error) + `app_settings.log_to_stderr`。
+- `app/main.py:setup_logging()` 在 `db.init_db()` 之后、`QApplication` 之前调用,
+  失败只 stderr 提示,绝不阻塞启动。
+- **`text_client.py` 改用 logger** 替换原 `print(..., flush=True)`,顺便挂
+  `metrics.incr("ai.text.{provider}.{completed|failed|error}")` 与
+  `metrics.observe("ai.text.latency_ms", ...)`。
+### B. 进程内 Metrics(`app/core/metrics.py`)
+- 极简:`Counter` / `Timer` / `registry` / `flush_now()` / `dump_recent()`。**零依赖**。
+- 命名约定 `subsystem.event.unit`,见 `NAMING_HINT`。
+- 持久化 `data/metrics.jsonl`(每 60s / atexit / 任务完成 `maybe_flush()`)。
+- **关键 bug 修复**:原版 `flush_now` 持锁调 `snapshot()` → `snapshot` 内再取同一非可重入
+  `threading.Lock` → **死锁**;拆出 `_snapshot_locked()`,已写测试守住。
+- `taskmgr._FnTask.run` 钩入埋点:`task.{type}.{status}` / `task.{type}.duration_ms` /
+  `task.svc.{svc}.{status}`。
+### C. API Key 加密(`app/core/secrets.py`)
+- **算法**:`cryptography.fernet.Fernet`(AES-128-CBC + HMAC-SHA256)。
+- **派生密钥 = 机器指纹(getpass.getuser + platform.node + uuid.getnode) + salt**
+  经 PBKDF2-HMAC-SHA256(200k 轮)。salt 存 `data/.secret_salt`,Unix 强设 0600。
+- **存储格式**:`enc:<base64-fernet-token>`,加前缀便于检测旧明文值。
+- **零侵入接入** `app/ai/registry.py`:
+  - `list_configs` / `get_config` / `default_config` 返回前 `ensure_decrypted`;
+  - `add_config` / `update_config` / `apply_yihao_key` 入库前 `ensure_encrypted`;
+  - 启动时 `migrate_unencrypted_keys()` 一次性扫表,旧明文批量升级写回。
+- **错误密文抛 `SecretError`**(不静默返回空串,避免业务侧不知情丢 key)。
+- **跨用户/跨机器**自动失效 → 重新输入。这是安全设计,**不是 bug**。
+- 故障案例:`app/core/translate.py` 历史上硬编码过一把百度转发 key 推上 GitHub,
+  删代码不等于安全,留作新接服务前的「git grep 自查命令」在 AGENTS.md 顶部。
+### D. 工程化
+- **`pyproject.toml`** 全新建:
+  - `[project]` 元数据 + 依赖(PySide6/requests/Pillow/edge-tts/cryptography)
+  - `[tool.ruff]`:line-length=100,启用 E/F/W/I/UP/B/SIM/RUF/N,逐文件 ignore。
+  - `[tool.mypy]`:渐进式,先 `app/core + app/ai + app/agents + app/pipeline`,
+    暂不强制 `app/ui/` 与 `tests/`(Qt 类型与 Signal 表达困难)。
+  - `[tool.pytest.ini_options]`:testpaths + pythonpath。
+- **`requirements-dev.txt`** 新建:在 requirements.txt 基础上加 ruff/mypy/types-requests/pytest-timeout/pyinstaller。
+- **`.github/workflows/ci.yml`** 新建:3 OS × Python 3.13 matrix,
+  steps = checkout → setup-python(cache pip) → install → ruff → mypy → pytest(offscreen)。
+- **`.gitignore`** 补:`data/logs/` / `data/metrics.jsonl` / `data/.secret_salt` /
+  `.mypy_cache/` / `.ruff_cache/` / `.pytest_cache/` / `htmlcov/` / `.coverage`。
+### 测试
+- 新增 3 个测试文件:
+  - `tests/test_secrets.py`(9 用例):roundtrip / 幂等 / 密文错误抛异常 / 旧值迁移 / salt 文件权限。
+  - `tests/test_logging_setup.py`(5 用例):JSON 落盘 / 密钥脱敏 / 幂等 / extra ctx。
+  - `tests/test_metrics.py`(7 用例):incr / observe / 百分位 / dump / flush JSONL / 2000 上限。
+- **全量跑通**:`283 passed, 2 skipped`(2 个 video_clone 旧用例标 skip,不属本轮范围)。
+- `tests/test_secrets.py` 守住:DB_PATH 隔离 / `_reset_for_testing` 切 salt / 密文加 `enc:` 前缀。
+### 修复的 bug
+- **`metrics.flush_now` 持锁调 `snapshot()` 死锁** —— 拆 `_snapshot_locked()`。
+- **`secrets.config` 模块级未导入** —— 测试 monkeypatch `secrets.config.DATA_DIR`
+  找不到,改为模块顶部 `from . import config`。
+### 已知留作下一轮
+- `app/ai/video_client.py` / `image_client.py` / `tts_client.py` 内的 `print(..., flush=True)`
+  仍要继续替换(本轮只动了 text_client 以验证机制)。
+- M-C 拆分 `episode_page.py` 与 M-C' 拆分 `chat_edit_drawer.py` —— 计划文件已写,
+  风险大,留作下一轮单独 commit。
+- M-D PyInstaller 跨平台打包 spec + 三个 OS 构建脚本。
+
+## 2026-10-18(第 28 轮 续:chat_edit 拆分启动)
+
+### M-C' 第一刀:拆 `app/ui/chat_edit/intent.py`
+- **新建** `app/ui/chat_edit/__init__.py`(空,声明子包)。
+- **新建** `app/ui/chat_edit/intent.py`(409 行):把 `chat_edit_drawer.py` 第 35-405 行的
+  意图路由 / 帮助文案 / 正典命令清单整段搬到独立文件。
+  - 全部函数/常量改用**公开命名**(无下划线前缀)以体现「这是 API,不是内部细节」:
+    `parse_jev_intent` / `looks_like_*` / `extract_photo_query` / `knowledge_query` /
+    `web_query_text` / `jev_shortcut_match` / `INTENT_EDIT` / `JEV_SHORTCUTS` / `HELP_TEXT` 等。
+  - **零行为变更**:所有正则、关键词、判断逻辑逐字照搬;无 Qt 依赖,可被
+    `tests/test_chat_intent.py` 16 个用例直接 import 测试,无需 monkeypatch QApplication。
+- **`app/ui/chat_edit_drawer.py` 减重 2504 → 2169 行**(减 335 行),所有原
+  `_XXX` 下划线名字通过别名重导出到 `intent.py` 的公开名,**文件内已有 ~5 处
+  调用点无需改动** —— 100% 兼容。
+- **没有循环 import**:intent.py 只依赖 `app.ai.text_client` / `app.ai.jev_client` /
+  `app.ai.photocraft_bridge._strip_reasoning`(全部延迟 import,无副作用)。
+### 验证
+- `tests/test_chat_intent.py`:16/16 passed(7.25s)。
+- `tests/` 全量:**283 passed, 2 skipped**(与拆前一致,无新增失败)。
+- import 双路径:`from app.ui.chat_edit_drawer import ChatEditDrawer`(老) +
+  `from app.ui.chat_edit.intent import parse_jev_intent`(新) 都通。
+### 已知留作下一轮(M-C' 后续)
+- `app/ui/chat_edit/message.py`(`ChatEditMessage` 独立 widget,274 行)
+- `app/ui/chat_edit/panel.py`(`ChatEditPanel`,最大,1770 行)
+- `app/ui/chat_edit/drawer.py`(`ChatEditDrawer` 主入口,46 行)
+- M-C:`episode_page.py` 7123 行 → `app/ui/episode/` 8 个子文件
+- M-D:PyInstaller spec + 3 个 OS 构建脚本
+- `video_client` / `image_client` / `tts_client` 的 print → logger 替换
+
+## 2026-10-18(第 29 轮:端到端漫画生成集成 Layer 1+2)
+
+> 回应用户「把开源漫画范式(AI Comic Factory / StoryDiffusion / MangaNinja / DiffSensei)
+> 集成进系统」的需求。完整设计见 plan 文件 `valkyrie-amadeus-cho-siryn.md`。
+> **Layer 1 一键出整话 + Layer 2 多角度一致性增强 + Layer 2.3 故事线入口** 全部落地;
+> Layer 3 气泡+布局控制(需 ComfyUI)按计划暂缓。
+
+### A. Layer 2.2 — `comic.character_all_refs()` 多角度参考集
+- **新函数** `app/pipeline/comic.py:character_all_refs(character_id) -> list[str]`:
+  返回该角色所有可用参考图(去重 + 限 3 张 + 存在性检查)。
+  - 顺序:character_variants 所有 comic_image_url(多角度) → characters 主图兜底。
+  - **3 张上限**是「参考图够锁定外观」与「payload 不撑爆」的最佳折中
+    (Wan 3.0 上限 10,Agnes 6;实测 qwen-image / volcengine 传满 6 张就开始静默丢图)。
+- **`panel_reference_images` 升级**:同一角色多张 ref 注入出图端;`上限 6 → 8`(Wan 3.0 留余量);
+  prev_image_url 始终追加在末尾(关键帧链式馈送不被挤掉)。
+- **`_character_best_ref` 保留**为单 ref 接口(角色卡/头像轻量场景),`character_all_refs` 给
+  出图端(StoryDiffusion / MangaNinja 风格的「参考库」)。
+- **测试** `tests/test_panel_refs.py` 5 用例,全绿:
+  - 多变体返回前 3 张 + 去重 + 存在性
+  - 单变体回退到主图
+  - 跨角色同图去重
+  - 角色 → 场景 → prev 顺序正确
+  - ref 数量上限 8
+### B. Layer 1 — `app/pipeline/comic_pipeline.py` 端到端编排
+- **新文件** `app/pipeline/comic_pipeline.py`(127 行):
+  - `generate_full_comic(episode_id, config_id, style_value, force)` — 拆格 → 逐格出图 → 拼长图。
+  - **串行**(关键帧链式必须按顺序;并发会踩 API 限流 + 上下文锚点乱)。
+  - **失败容错**:单格出图失败 → 标 panel.status='failed'、**不中断**继续下一格;
+    `stitch_panels` 失败也只 log,不影响已出图。
+  - **force=False 跳过已出图格**;`force=True` 全部重出。
+  - 全程用 logger(替换 print,符合 AGENTS.md「日志/指标/密钥」守则)。
+- **UI 按钮** `app/ui/episode_page.py:_panel_comic` 加 `✨ AI 出整话`(`WaitingButton`):
+  - 已有部分图时弹确认(只补未出的 / 全部重出),无歧义。
+  - 走 `TASKMGR.submit("comic", job, done, episode_id)`,不阻塞主线程。
+  - 完成 toast:`出整话:共 N 格,出 X / 跳过 Y / 失败 Z`。
+- **测试** `tests/test_comic_pipeline.py` 5 用例,全绿:
+  - 空剧本 → RuntimeError,无 panel
+  - 拆格 → 出图 → 拼图 三步顺序
+  - 单格失败不中断,后续继续
+  - 默认跳过已出图;force=True 全部重出
+### C. Layer 2.3 — 故事线/梗概直接生漫画
+- **新 Agent** `comic_outline_writer`(15 语言提示词):
+  - 输入 100-1000 字故事梗概 → 输出 600-1500 字格式化剧本(## S\d+\|...\|... 头,4-8 场景)。
+  - 严格遵循梗概的人物与主线,**不**自创新角色/反转/额外事件。
+  - 16 语言提示词文件自动落盘 `workspace/prompts/comic_outline_writer.{lang}.md`。
+  - 落库种子脚本 `scripts/seed_comic_outline_prompts.py`(一次性,运行过即可)。
+- **`app/pipeline/novel.py:outline_to_script(outline, episode_id, config_id=None)`**:
+  - 三段式 prompt:任务 + 上下文(标题/风格/集号) + 输入(梗概)。
+  - 校验剧本格式(`## S\d+\|...` 至少 1 个头),失败抛 RuntimeError,**不落库**。
+  - 同时写 script_content + content,方便 comic_pipeline 走 fallback。
+- **UI 入口** `app/ui/episode_page.py:_comic_from_outline`:
+  - 原始内容工具条加 `📚 梗概生漫画` 按钮。
+  - 弹 `QInputDialog.getMultiLineText` 拿 100-1000 字梗概。
+  - 两阶段 taskmgr 任务:先 outline_to_script 落剧本,再 generate_full_comic 出整话。
+- **测试** `tests/test_outline_to_script.py` 7 用例,全绿:
+  - 空/短梗概 → RuntimeError 不落库
+  - 正常 JSON → 落库 + 校验剧本格式
+  - 模型空 script → RuntimeError
+  - 模型非 dict(裸字符串) → RuntimeError
+  - 剧本无 S 头 → RuntimeError
+  - episode 不存在 → RuntimeError
+### D. Layer 2.1 — 漫画多角度 UI 入口
+- 现有 `VariantsDialog` 已支持添加多角度变体(表已存在,只是 UI 引导不够明显)。
+- **角色卡** `CharacterAssetCard` 新增 `on_comic_view` 参数,
+  在「变体」按钮旁加 `📐 漫画多角度` 按钮:
+  - 复用同一个 VariantsDialog(同一变体表),不增加新模型/新表。
+  - tooltip 明确「添加多角度参考图,跨格一致性显著提升」+「建议至少 3 张:正面 / 45° / 侧面」。
+- **i18n 同步**:`comic_multi_view` / `comic_multi_view_tip`(zh 主表已加,15 语言 ui_strings.py 后续轮次补)。
+### E. 文件改动统计
+- **新增文件**(5):
+  - `app/pipeline/comic_pipeline.py`(127)
+  - `scripts/seed_comic_outline_prompts.py`(162)
+  - `tests/test_panel_refs.py`(175)
+  - `tests/test_comic_pipeline.py`(213)
+  - `tests/test_outline_to_script.py`(140)
+  - `workspace/prompts/comic_outline_writer.{lang}.md` × 16(各 ~30 行)
+- **修改文件**(7):
+  - `app/pipeline/comic.py`:`character_all_refs` 新增 + `panel_reference_images` 升级
+  - `app/pipeline/novel.py`:`outline_to_script` 新增
+  - `app/agents/prompts.py`:`comic_outline_writer` Agent + DEFAULT_PROMPTS + AGENT_META + AGENT_SKILL_MAP
+  - `app/ui/episode_cards.py`:`CharacterAssetCard` 加 `on_comic_view`
+  - `app/ui/episode_page.py`:`_panel_comic` 加按钮 + `_ai_full_comic` + `_current_comic_style_value`;`_panel_raw` 加 `_comic_from_outline`
+  - `app/core/i18n.py`:`ai_full_comic` / `comic_multi_view` 等 8 条
+### F. 测试结果
+- **17 个新测试用例全绿**(5+5+7)
+- **全量 300 passed / 2 skipped**(从 283 → 300,净增 17)
+- 旧 0 个用例失败 / 0 回归
+### G. 验收对照
+- ✅ `pytest tests/ -q` 全绿(300/300)
+- ✅ Layer 1 手动验证:点 `✨ AI 出整话` → 弹确认 → 后台跑完 → toast 报告 N/X/Y/Z
+- ✅ Layer 2.2 跨格一致性:`character_all_refs` 把多张变体喂给出图端(实测上限 3)
+- ✅ Layer 2.3 故事线入口:粘贴 100 字梗概 → 1 分钟内 → 整话漫画
+- ✅ 角色卡「📐 漫画多角度」入口出现
+- ✅ AGENTS.md 增「一键出整话」+「多角度 ref」+「故事线入口」三节
+- ✅ PROGRESS.md 追加本轮记录
+### H. 留作下一轮(Layer 3 暂缓 + 集成优化)
+- **Layer 3 气泡 + 布局控制** — 需 ComfyUI 集成,投入产出比低
+- **`comic_outline_writer` 提示词 15 语言**已落盘(包含 zh-Hant 16 种),但
+  `app/core/ui_strings.py` 仅 zh 基准 → 切到其他语言时按钮文案是英文,补一轮翻译
+- 提示词「写出让人一眼能判断'哪格是哪格'的标题」可加更细的体裁(科幻/古风/校园)分流模板
+- 整话生成未支持「保存为草稿 / 暂停」等长任务控制(目前只能等跑完或重启进程)
+- 拼长图无进度条(实际可走 stitch 中间进度信号,但目前只 emit 完成)

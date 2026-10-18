@@ -525,7 +525,8 @@ class SettingsDialog(QDialog):
             edit = QLineEdit()
             cfg = db.q1("SELECT id, api_key FROM ai_service_configs "
                         "WHERE service_type='stockphoto' AND provider=?", (prov,))
-            edit.setText((cfg["api_key"] if cfg else "") or "")
+            from ..core.secrets import ensure_decrypted
+            edit.setText(ensure_decrypted((cfg["api_key"] if cfg else "") or ""))
             edit.setPlaceholderText(tr("API Key"))
             edit.editingFinished.connect(lambda p=prov: self._save_stock_key(p))
             row.addWidget(edit, 1)
@@ -545,8 +546,9 @@ class SettingsDialog(QDialog):
         cfg = db.q1("SELECT id FROM ai_service_configs "
                     "WHERE service_type='stockphoto' AND provider=?", (provider,))
         if cfg:
+            from ..core.secrets import ensure_encrypted
             db.ex("UPDATE ai_service_configs SET api_key=?, updated_at=? WHERE id=?",
-                  (key, db.now(), cfg["id"]))
+                  (ensure_encrypted(key), db.now(), cfg["id"]))
         else:
             base = dict((p, (b, m)) for p, _n, b, m in self.STOCK_SOURCES)[provider]
             registry.add_config("stockphoto", provider, base[0], base[1],
@@ -563,7 +565,8 @@ class SettingsDialog(QDialog):
             row = db.q1("SELECT provider, api_key FROM ai_service_configs "
                         "WHERE service_type='stockphoto' AND provider=? "
                         "AND is_active=1", (provider,))
-            key = (row["api_key"] or "").strip() if row else ""
+            from ..core.secrets import ensure_decrypted
+            key = ensure_decrypted((row["api_key"] or "").strip()) if row else ""
             if not key:
                 return False, tr("未填 API Key")
             try:

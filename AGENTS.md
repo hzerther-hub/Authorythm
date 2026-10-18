@@ -7,9 +7,11 @@ ffmpeg 走外部二进制(`config.find_ffmpeg()` 探测)。
 ## 运行与校验
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt           # 最小依赖(PySide6 / requests / Pillow / edge-tts / cryptography)
+pip install -r requirements-dev.txt       # 开发期(rust + mypy + pytest + pyinstaller)
 python -m app.main          # 启动(GUI,需显示环境)
-python -m pytest tests/ -q  # 32 个回归测试,约 1.5s
+python -m pytest tests/ -q  # 283 个回归测试,约 1 分钟
+ruff check . && mypy        # lint + 类型检查(pyproject.toml 已配)
 ```
 
 Git Bash 里**不要**用 `cmd //c start.bat` 启动(路径编码会炸,用 `start.ps1`)。
@@ -18,9 +20,11 @@ Git Bash 里**不要**用 `cmd //c start.bat` 启动(路径编码会炸,用 `sta
 
 ```
 app/main.py        入口
-app/core/          db(SQLite)/ config(路径·ffmpeg)/ i18n / theme(QSS)/ taskmgr(线程池)
+app/core/          db(SQLite)/ config(路径·ffmpeg)/ i18n / theme(QSS)/ taskmgr(线程池)/
+                   logging_setup(结构化日志)/ metrics(进程内计数)/ secrets(Fernet API Key 加密)
 app/agents/        runner(调 LLM + 抽 JSON)/ prompts(System Prompt 种子与注册表)
-app/ai/            各供应商客户端: image_client / video_client / text_client / inpaint
+app/ai/            各供应商客户端: image_client / video_client / text_client / inpaint /
+                   registry(API Key 自动加密存取)
 app/pipeline/      业务编排: storyboard / comic / novel / shot_tools / erase / extract
 app/ui/            36 个 widget/page,最大的 episode_page.py ≈ 5.8k 行
 workspace/prompts/ 150 个 Agent System Prompt(.md,15 语言 × 10 Agent),用户可改
@@ -37,8 +41,10 @@ workspace/skills/  技能文件
 环境变量可覆盖:`YIHAO_DATA_DIR` / `SQLITE_PATH` / `STORAGE_PATH`。
 
 **密钥一律不进版本库。** 本仓库是 **public**,任何提交过的 key 都等同公开泄露。
-用户的 API Key 存在 `ai_service_configs.api_key`(SQLite,`data/` 已被 gitignore),
-代码里只读不写。需要某把 key 的地方一律「本机读」,别内置常量:
+用户的 API Key 加密后存 `ai_service_configs.api_key`(SQLite,`data/` 已被 gitignore),
+**由 `app/core/secrets.py` 自动加密**(Fernet + 机器指纹派生密钥,见上文「日志 / 指标 / 密钥」节)。
+代码里只读不写 —— 业务侧统一从 `registry.get_config()` / `default_config()` 取明文。
+需要某把 key 的地方一律「本机读」,别内置常量:
 
 - 环境变量(如 `YIHAO_BAIDU_FORWARD_KEY`),或
 - 设置表 `app_settings`(`db.get_setting(key)`,与 `photocraft_install_dir` 同机制)。
@@ -161,6 +167,27 @@ def some_new_entry(..., config_id: int | None = None):
    经 extra_negative 追加,不覆盖公用负面词)。漫画格/场景**不要**带这两样
    —— 那里需要环境。
 
+## 漫画端到端生成(Layer 1+2,2026-10-18)
+
+- **一键出整话**:`app.pipeline.comic_pipeline.generate_full_comic(episode_id, ...)` 是
+  串行编排(拆格 → 出图 → 拼长图);**单格失败不中断**;走 `TASKMGR.submit("comic", ...)` 不阻塞主线程。
+  - 不要并发 — 关键帧链式馈送(prev panel → next panel ref)依赖**按序**;
+  - force=False 跳过已出图格;force=True 全部重出。
+- **多角度 ref**:`comic.character_all_refs(character_id)` 返回该角色所有可用
+  参考图(去重 + 限 3 张 + 存在性检查);`comic.panel_reference_images` 用它替换
+  原单 ref,跨格一致性显著提升(StoryDiffusion / MangaNinja 风格「参考库」)。
+  - **3 张上限**是「锁定外观」与「payload 不撑爆」的最佳折中(实测
+    qwen-image / volcengine 传满 6 张就开始静默丢图)。
+  - 新增变体走 `app/ui/variants_dialog.VariantsDialog`;角色卡「📐 漫画多角度」
+    按钮是同一对话框的便捷入口(tooltip 强调「跨格一致性」)。
+- **故事线入口**:`app.pipeline.novel.outline_to_script(outline, episode_id)` 把
+  100-1000 字梗概扩成 4-8 场景的格式化剧本;失败不落库。
+  - UI 在原始内容工具条「📚 梗概生漫画」按钮,弹多行输入框,两阶段 taskmgr
+    任务(先扩剧本,再出整话),任一阶段失败都报 toast。
+  - 校验:剧本必须含至少 1 个 `## S\d+\|...` 头,否则 RuntimeError。
+- **新增 Agent** `comic_outline_writer`(16 语言提示词已落盘 `workspace/prompts/`);
+  严格遵循梗概的人物与主线,**不**自创新角色/反转/额外事件。
+
 ## 文本编码
 
 `app/core/encoding.py` 是乱码防护:`repair()` 只能救回 latin-1/cp1252 误读,
@@ -197,6 +224,25 @@ def some_new_entry(..., config_id: int | None = None):
 - 网格容器要 `addWidget(host, 0, Qt.AlignLeft)` —— 默认 `stretch=1` 会让它吃满父宽。
 - 主题有三套(light/dark/slate),改样式要同步 `app/core/theme.py` 的三处 QSS。
 - 改 `QSS` 后重启要清 `__pycache__`,否则会加载旧字节码。
+
+## 日志 / 指标 / 密钥(三件套)
+
+- **结构化日志**:`app/core/logging_setup.py` 提供 `setup_logging()` / `get_logger(name)`。
+  业务模块用 `log = get_logger(__name__)`;**不要再用 `print(..., flush=True)` 作业务日志**
+  (调试桩仍可用)。配置项:`app_settings.log_level` / `app_settings.log_to_stderr`。
+  - JSON 落 `data/logs/pydrama.log`(10MB × 5 份轮转)。
+  - 密钥脱敏:`_SecretsFilter` 自动替换 `sk-xxx` / `Bearer xxx` / `api_key=xxx` / 长 base64。
+  - WARNING+ 可选挂到 toast(`logging_setup.attach_qt_toast_handler(toast_callable)`)。
+- **指标**:`app/core/metrics.py` 极简实现 —— `incr(name)` / `observe(name, val)` /
+  `snapshot()` / `flush_now()`。**埋点用 try/except 包住**(库内部 `incr/observe` 已自带,
+  不要再套)。**关键**:snapshot 内部会取锁,flush_now 持锁调它 → 死锁,要走
+  `_snapshot_locked()`。命名约定 `subsystem.event.unit`,见 `metrics.NAMING_HINT`。
+- **API Key 加密**:`app/core/secrets.py` 提供 `encrypt` / `decrypt` / `ensure_*` /
+  `migrate_unencrypted_keys`。库内对用户完全透明 —— 业务侧 `registry.get_config()` /
+  `default_config()` 拿到的就是明文,落库前自动 `ensure_encrypted`。
+  - **派生密钥 = 机器指纹 + salt**(PBKDF2 200k 轮)。换机器 / 换用户 / 删
+    `data/.secret_salt` 都会让旧 key 解不出来 → 重新输入。
+  - **不要在代码里硬编码 key**;AGENTS.md 顶部已说明自查命令。
 
 ## 并行会话协作(本项目常见冲突)
 

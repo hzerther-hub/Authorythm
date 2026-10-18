@@ -127,6 +127,13 @@ Z = {  # 中文(基准)
  "gen_panels": "生成分镜", "gen_panels_tip": "将本集原文或剧本改编为 8-16 格漫画分镜",
  "comic_style": "画风", "comic_style_custom": "自定义画风…", "follow_project": "跟随项目视觉风格",
  "stitch_long_img": "整话长条图", "stitch_done": "长条图已生成",
+ # Layer 1 一键出整话
+ "ai_full_comic": "AI 出整话", "ai_full_comic_tip": "端到端:拆格 → 出图 → 拼长图,跑在后台任务",
+ "ai_full_comic_confirm": "已有部分漫画格。补齐未出的 / 全部重出?",
+ "ai_full_comic_only_missing": "只补未出的", "ai_full_comic_force_all": "全部重出",
+ "ai_full_comic_from_outline": "📚 梗概生漫画", "ai_full_comic_from_outline_tip": "粘贴 100-1000 字故事梗概,自动扩成剧本并出整话漫画",
+ # Layer 2.1 漫画多角度
+ "comic_multi_view": "📐 漫画多角度", "comic_multi_view_tip": "添加角色的多角度参考图(同一角色不同视角),出漫画时跨格一致性显著提升。建议至少 3 张:正面 / 45° / 侧面",
  "comic_empty_title": "开始生成漫画分镜",
  "comic_empty_desc": "将本集原文或剧本改编为 8-16 格漫画分镜,逐格出图后拼接为整话长条图。",
  "draw": "出图", "out_prompt": "出图提示词", "narration_note": "旁白说明",

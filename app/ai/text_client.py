@@ -93,9 +93,11 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     # 胡话,却一路走到生图才暴露)。这里只提示不拦 —— 名字判定只是启发式,
     # 万一标错了不该把用户的活儿挡下来。
     if image_urls and not registry.is_vision_model(cfg.get("model")):
-        print(f"[text] ⚠ 模型 {cfg.get('model')!r} 不是多模态,却收到 "
-              f"{len(image_urls)} 个媒体文件;返回内容很可能与素材无关。"
-              f"在「设置 → AI 服务」里换一个带「多模态」标记的模型。", flush=True)
+        from ..core.logging_setup import get_logger
+        get_logger("ai.text").warning(
+            "model %r 不是多模态,却收到 %d 个媒体文件;返回内容很可能与素材无关",
+            cfg.get("model"), len(image_urls),
+        )
     url = cfg["base_url"].rstrip("/") + "/chat/completions"
     headers = {"Content-Type": "application/json"}
     if cfg.get("api_key"):
@@ -103,13 +105,25 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     body = _build_body(cfg, prompt, system, temperature, max_tokens, json_mode, image_urls)
     # 网关要求 messages 里出现 json 字样才肯用 json_object;被拒就摘掉该参数重发
     # (runner.run_agent_json 已保证用户消息含该词,这里是兜底)。
-    resp = requests.post(url, json=body, headers=headers, timeout=timeout)
-    if resp.status_code != 200 and json_mode and _needs_json_word(resp.text):
-        body.pop("response_format", None)
+    import time as _t
+    t0 = _t.perf_counter()
+    try:
         resp = requests.post(url, json=body, headers=headers, timeout=timeout)
-    if resp.status_code != 200:
-        raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {_err_text(resp)[:400]}")
-    data = resp.json()
+        if resp.status_code != 200 and json_mode and _needs_json_word(resp.text):
+            body.pop("response_format", None)
+            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        if resp.status_code != 200:
+            from ..core import metrics
+            metrics.incr(f"ai.text.{cfg.get('provider', 'unknown')}.failed")
+            raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {_err_text(resp)[:400]}")
+        data = resp.json()
+    except Exception:
+        from ..core import metrics
+        metrics.incr(f"ai.text.{cfg.get('provider', 'unknown')}.error")
+        raise
+    from ..core import metrics
+    metrics.incr(f"ai.text.{cfg.get('provider', 'unknown')}.completed")
+    metrics.observe("ai.text.latency_ms", int((_t.perf_counter() - t0) * 1000))
     try:
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError) as e:

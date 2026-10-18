@@ -1,0 +1,16 @@
+# 开发与构建依赖(在 requirements.txt 基础上累加)
+# 装法:pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+# 类型与 lint
+ruff>=0.6
+mypy>=1.10
+types-requests
+
+# 测试
+pytest>=8.0
+pytest-timeout>=2.0
+
+# 打包
+pyinstaller>=6.0

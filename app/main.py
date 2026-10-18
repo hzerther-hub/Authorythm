@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication
 from .agents.prompts import seed_prompt_files
 from .core import db
 from .core.i18n import detect_system_language, set_language
+from .core.logging_setup import get_logger, setup_logging
 from .core.theme import apply_theme, load_bundled_fonts
 
 
@@ -56,6 +57,9 @@ def main() -> int:
 
     db.init_db()
     seed_prompt_files()
+    # 日志必须在 db.init_db 之后(QApplication 之前),才能读 app_settings.log_level
+    setup_logging()
+    log = get_logger("app.main")
     _apply_proxy_preference()
     # 僵尸任务看门狗:启动清理只跑一次,运行期新生的孤儿无人回收,界面会永远
     # 停在「生成中」(对齐参考项目 3e1a3f2)
@@ -64,6 +68,21 @@ def main() -> int:
     seed_tts_default()
     seed_faceswap_default()
     seed_jev_default()      # 仅当环境变量给了 JEV_API_KEY 才落一条启用配置
+    # 老用户数据库迁移:把 ai_service_configs.api_key 里没加密的旧值升级为 enc:...
+    # 失败只警告,不阻塞启动(原值不动)
+    try:
+        from .core.secrets import migrate_unencrypted_keys
+        m = migrate_unencrypted_keys()
+        if m.get("migrated", 0) > 0:
+            log.info("api_key 加密迁移完成 migrated=%d scanned=%d", m["migrated"], m["scanned"])
+    except Exception as e:  # noqa: BLE001
+        log.warning("api_key 加密迁移失败(原值未改动): %s", e)
+    # 启动 metrics 周期刷盘
+    try:
+        from .core import metrics
+        metrics.setup_periodic_flush()
+    except Exception:  # noqa: BLE001
+        pass
 
     # 界面语言:用户明确选过的(ui_language_explicit=1)尊重所存值;
     # 从没选过的跟随系统语言,系统不在 15 语种内/判断失败回退英文。

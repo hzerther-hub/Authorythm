@@ -176,26 +176,50 @@ def on_main(fn):
 
 class _FnTask(QRunnable):
     def __init__(self, task_id: int, fn: Callable[..., object], signals: TaskSignals,
-                 done_cb: Callable | None, svc: str = ""):
+                 done_cb: Callable | None, svc: str = "", task_type: str = ""):
         super().__init__()
         self.task_id, self.fn, self.signals, self.done_cb = task_id, fn, signals, done_cb
         self.svc = svc                   # 服务类型:收尾时按类型递减忙计数
+        self.task_type = task_type       # 任务类型(用于 metrics 埋点)
         self.setAutoDelete(True)
 
     def run(self):  # noqa: D102
+        import time as _t
+        t0 = _t.perf_counter()
         try:
             result = self.fn(self.task_id)
             finish_task(self.task_id, "completed")
             self._emit_done(self.done_cb, result, None)
+            self._record_metric("completed", _t.perf_counter() - t0)
         except Exception:  # noqa: BLE001
             err = traceback.format_exc(limit=6)
             finish_task(self.task_id, "failed", err)
             self._emit_done(self.done_cb, None, err)
+            self._record_metric("failed", _t.perf_counter() - t0)
         finally:
             self._emit(self.signals.finished, self.task_id, "done")
             self._emit(self.signals.busy_changed, active_count() > 0, "")
             if self.svc:
                 self._emit(self.signals.type_finished, self.svc)
+            # 周期性刷盘(避免每次都 IO)
+            try:
+                from . import metrics
+                metrics.maybe_flush()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _record_metric(self, status: str, duration_sec: float) -> None:
+        """埋点:失败也只静默(埋点本身不能抛)。"""
+        try:
+            from . import metrics
+            if self.task_type:
+                metrics.incr(f"task.{self.task_type}.{status}")
+                metrics.observe(f"task.{self.task_type}.duration_ms",
+                                int(duration_sec * 1000))
+            if self.svc:
+                metrics.incr(f"task.svc.{self.svc}.{status}")
+        except Exception:  # noqa: BLE001
+            pass
 
     def _emit_done(self, cb, result, error):
         try:
@@ -337,7 +361,7 @@ class TaskManager(QObject):
                 return 0
         tid = create_task(task_type, **links)
         self._enter_busy(task_type)
-        self.pool.start(_FnTask(tid, fn, self.signals, done_cb, svc))
+        self.pool.start(_FnTask(tid, fn, self.signals, done_cb, svc, task_type))
         self.signals.busy_changed.emit(True, task_type)
         self.updated.emit()
         return tid
