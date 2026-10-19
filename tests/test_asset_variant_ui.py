@@ -278,7 +278,8 @@ def test_character_refs_dedupes_styles(monkeypatch):
         comic_image_url="/static/images/comic.png", image_url="/static/images/real.png"))
     monkeypatch.setattr(comic_pipe.config, "media_url_to_path",
                         lambda u: __import__("pathlib").Path(__file__))  # 必须真实存在
-    monkeypatch.setattr(comic_pipe, "_single_pose_ref", lambda p: p)
+    picked = []
+    monkeypatch.setattr(comic_pipe, "_single_pose_ref", lambda p: picked.append(p) or p)
     refs = comic_pipe.character_all_refs(1)
     assert len(refs) == 1, f"应只取漫画版一张,得到 {len(refs)} 张"
-    assert "comic" in refs[0]
+    assert "comic" in picked[0], f"必须优先取漫画版,却取了 {picked[0]}"
