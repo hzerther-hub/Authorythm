@@ -6712,22 +6712,15 @@ class EpisodePage(QWidget):
             # qwen-image / volcengine 等会丢参考图,直接走纯文生图避免误导预期
             refs = comic_pipe.panel_reference_images(panel_id) if image_client.supports_reference_images(
                 (registry.check_ready("image", snap_img) or {}).get("provider")) else []
-            # 漫画格专项负向词(叠加全局守卫):强调「不要鬼影/复制人/参考图翻拍」。
-            # 之前默认守卫词太软,模型常出「主体+主体半透明副本」「参考图三视图当成画面背景」等
-            # 错误(实测会议室场景多出 2 个透明人物 → 改后清除)。参考视频守卫的力道。
-            extra_neg = ("ghost figure, ghost copy, ghost in background, transparent body, "
-                         "translucent figure, semi-transparent person, faded silhouette, "
-                         "second copy of same character, mirror image of character, "
-                         "character lined up in row, character turnaround sheet in background, "
-                         "no faces turned away, no profile shot, no 3/4 angle, "
-                         "no standing figure in background, no extra body silhouette behind subject, "
-                         "no faded body in mist, no echo figure, no reflection of same person")
+            # 漫画格专项负向词:统一用 comic.PANEL_NEGATIVE_GUARD(单格重绘/批量/
+            # 整话三处共用,不再各写各的 —— 此前批量与整话没带守卫,
+            # 实测 ep79 整话前 3 格全部同一角色出现 3-4 次)。
             out, _p = image_client.generate_image(
                 fp, config_id=snap_img,
                 size="1024x1536",
                 reference_images=refs or None,
                 people=comic_pipe.panel_people_count(panel_id),
-                extra_negative=extra_neg)
+                extra_negative=comic_pipe.PANEL_NEGATIVE_GUARD)
             db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                   (config.path_to_media_url(out), db.now(), panel_id))
             return str(out)
@@ -6799,7 +6792,10 @@ class EpisodePage(QWidget):
                     fp, config_id=snap_img,
                     size="1024x1536",
                     reference_images=refs or None,
-                    people=comic_pipe.panel_people_count(pid))
+                    people=comic_pipe.panel_people_count(pid),
+                    # 批量链路同样必须带 ghost 守卫(此前只有单格重绘带,
+                    # 整话与批量裸奔 —— 实测 ep79 整话前 3 格同一角色出现 3-4 次)
+                    extra_negative=comic_pipe.PANEL_NEGATIVE_GUARD)
                 url = config.path_to_media_url(out)
                 db.ex("UPDATE comic_panels SET image_url=?, updated_at=? WHERE id=?",
                       (url, db.now(), pid))

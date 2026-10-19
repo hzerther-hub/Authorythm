@@ -162,6 +162,27 @@ def _current_style_value(drama_id: int, style_value: str = "") -> str:
     return "3d"
 
 
+# 漫画格专项负向词(叠加全局守卫)。**所有出漫画格的链路都必须带上它**——
+# 单格重绘 / 批量出图 / 整话 pipeline 三处共用这一个常量,不许各写各的
+# (此前只有单格重绘带守卫,批量与整话裸奔,实测 2026-10-19 ep79 整话 10 格里
+#  前3格全部「同一角色出现 3-4 次」:床上躺一个+站着一个+镜子里一个+窗外一个)。
+# 力道对齐视频守卫:之前默认守卫词太软,模型常出「主体+半透明副本」
+# 「参考图三视图当成画面背景」(实测会议室场景多出 2 个透明人物)。
+PANEL_NEGATIVE_GUARD = (
+    "ghost figure, ghost copy, ghost in background, transparent body, "
+    "translucent figure, semi-transparent person, faded silhouette, "
+    "second copy of same character, mirror image of character, "
+    "character lined up in row, character turnaround sheet in background, "
+    "same person appearing twice, duplicate person in scene, one character only, "
+    "no faces turned away, no profile shot, no 3/4 angle, "
+    "no standing figure in background, no extra body silhouette behind subject, "
+    "no faded body in mist, no echo figure, "
+    "no reflection of same person in mirror, second person in mirror, "
+    "no figure outside the window, no person seen through window, "
+    "no reflection in window glass"
+)
+
+
 def panel_people_count(panel_id: int) -> int:
     """该格绑定的人物数(对齐原版 routes/comic.ts 的 peopleCount)。"""
     n = db.q1("SELECT COUNT(*) c FROM comic_panel_characters WHERE panel_id=?", (panel_id,))["c"]

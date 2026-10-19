@@ -184,3 +184,31 @@ def test_split_panels_wires_busy_and_auto_draw():
     assert "setEnabled(False)" in src and "setEnabled(True)" in src, \
         "拆格期间按钮必须禁用(88 秒级 LLM 调用,不能让用户干等无提示)"
     assert "self._batch_comic()" in src, "拆格完成后必须自动接批量出图"
+
+
+# ------------------------------------------------------------------ 鬼影守卫
+
+def test_panel_negative_guard_exists_and_covers_observed_failures():
+    """守卫常量必须覆盖实测出现过的失败形态(ep79:床上+站着+镜中+窗外 4 个复制人)。"""
+    from app.pipeline import comic as comic_pipe
+    g = comic_pipe.PANEL_NEGATIVE_GUARD
+    for phrase in ("ghost", "duplicate person", "mirror", "window",
+                   "same person appearing twice"):
+        assert phrase in g, f"守卫词缺 {phrase!r}"
+
+
+def test_all_panel_draw_paths_use_the_guard():
+    """三条出漫画格的链路(单格/批量/整话)都必须带守卫,不许再裸奔。
+
+    此前只有单格重绘带 ghost 守卫,批量与整话没传 —— 实测整话 10 格前 3 格
+    全部「同一角色出现 3-4 次」。这里用源码检查锁死三处。
+    """
+    import inspect
+    from app.pipeline import comic_pipeline
+    full_src = inspect.getsource(comic_pipeline.generate_full_comic)
+    assert "PANEL_NEGATIVE_GUARD" in full_src, "整话 pipeline 必须带鬼影守卫"
+    assert "panel_people_count" in full_src, "整话 pipeline 必须传 people 数"
+    page_src = inspect.getsource(EP.EpisodePage)
+    # 单格(_one_panel_image)与批量(_batch_comic)各至少一处 extra_negative= 守卫
+    assert page_src.count("PANEL_NEGATIVE_GUARD") >= 2, \
+        "单格与批量链路必须共用 comic.PANEL_NEGATIVE_GUARD"

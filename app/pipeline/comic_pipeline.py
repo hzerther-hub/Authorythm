@@ -104,6 +104,11 @@ def generate_full_comic(
             out, _provider = image_client.generate_image(
                 prompt, config_id=config_id, size="1024x1024",
                 reference_images=refs or None,
+                # people 数喂给全局人数守卫;ghost 守卫防「同一角色一格出现多次」。
+                # 两者此前只存在于 UI 的单格重绘链路,整话这里裸奔 ——
+                # 实测 2026-10-19 ep79 前 3 格全部同一角色出现 3-4 次。
+                people=_comic.panel_people_count(pid),
+                extra_negative=_comic.PANEL_NEGATIVE_GUARD,
             )
             url = config.path_to_media_url(out)
             db.ex(
