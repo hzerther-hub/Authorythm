@@ -219,6 +219,81 @@ def _character_best_ref(character_id: int) -> str:
 _MAX_REFS_PER_CHARACTER = 3
 
 
+def _sheet_view_boxes(path: str) -> list[tuple[int, int]]:
+    """检测设定图里各「人物立绘」的列范围 [(x0,x1),...];单姿势图返回 []。
+
+    原理:设定图的立绘之间是**空白背景列**(亮且均匀),按列统计灰度,
+    均值高且方差低的连续段是背景,其余聚成前景簇。≥2 个簇 = 多立绘设定图。
+    不依赖「恰好四格」的假设 —— 特写/正面/侧面/背面、三视图都能处理。
+    """
+    import numpy as np
+    from PIL import Image
+    try:
+        im = Image.open(path).convert("L")
+    except Exception:  # noqa: BLE001 —— 打不开就当单姿势处理
+        return []
+    w, h = im.size
+    a = np.asarray(im.resize((min(w, 512), min(h, 512))), dtype=np.float32)
+    col_std = a.std(axis=0)
+    col_mean = a.mean(axis=0)
+    fg = ~((col_mean > 175.0) & (col_std < 22.0))     # 前景列 = 不够「亮且均匀」
+    min_w = max(4, int(len(fg) * 0.04))               # 簇最小宽度 4%,滤掉噪点
+    clusters: list[tuple[int, int]] = []
+    start = None
+    for i, f in enumerate(fg):
+        if f and start is None:
+            start = i
+        elif not f and start is not None:
+            if i - start >= min_w:
+                clusters.append((start, i))
+            start = None
+    if start is not None and len(fg) - start >= min_w:
+        clusters.append((start, len(fg)))
+    return clusters if len(clusters) >= 2 else []
+
+
+def _single_pose_ref(path_str: str) -> str:
+    """角色参考图若为多立绘设定图,裁出**单姿势**那一格再用;否则原样返回。
+
+    为什么必须裁:角色设定图 = 1 特写 + 3 全身,同一角色出现 4 次。原样喂给
+    生图模型当参考,模型照着「参考图里有多个人」画,漫画格必然复制人
+    (实测 ep79:前 3 格全部 3-4 个复制人,负向词压不住 —— 视觉证据强于提示词)。
+    裁完参考里只有 1 个人,复制人问题从源头消失。
+
+    选格:四格规格([特写|正面|侧面|背面])取第 2 簇 = 正面全身;
+    三视图([正面|侧面|背面])取第 1 簇;两簇取更宽的(特写窄、全身宽)。
+    缓存到同目录 <stem>_single<k>.png:stem 是出图时的 uuid,角色重绘换图后
+    文件名变化,缓存自然失效,不需要额外失效逻辑。
+    """
+    from pathlib import Path
+    from PIL import Image
+    p = Path(path_str)
+    try:
+        clusters = _sheet_view_boxes(path_str)
+        if not clusters:
+            return path_str
+        w, _h = Image.open(path_str).size
+        scale = w / 512 if w > 512 else 1.0     # 检测时缩过宽,坐标按比例还原
+        if len(clusters) >= 4:
+            x0, x1 = clusters[1]                # [特写|正面|...] → 正面全身
+        elif len(clusters) == 3:
+            x0, x1 = clusters[1]                # 取中间:不会是特写(特写总在最左),
+            # [正面|侧面|背面] 的中簇是侧面全身;[特写|正面|侧面+背面粘连] 的
+            # 中簇是正面全身 —— 两种布局都拿到单姿势全身(实测漫画设定图
+            # 特写带彩色背景与正面粘连成 1 簇,首簇裁出来是特写,只有脸没有身)
+        else:
+            x0, x1 = max(clusters, key=lambda c: c[1] - c[0])
+        cache = p.with_name(f"{p.stem}_single{x0}.png")
+        if cache.exists():
+            return str(cache)
+        im = Image.open(path_str).convert("RGB")
+        box = (int(x0 * scale), 0, int(x1 * scale), im.size[1])
+        im.crop(box).save(cache)
+        return str(cache)
+    except Exception:  # noqa: BLE001 —— 裁剪失败就退回原图,别挡出图
+        return path_str
+
+
 def character_all_refs(character_id: int) -> list[str]:
     """返回该角色所有可用参考图(去重 + 限长 + 存在性检查)。
 
@@ -227,6 +302,10 @@ def character_all_refs(character_id: int) -> list[str]:
 
     顺序:variants 表多张 comic_image_url 优先(每张是不同视角的同角色),
     然后是 characters 主图兜底;去重;只取本地文件存在的;最多 3 张。
+
+    每张 ref 出口统一过 `_single_pose_ref`:多立绘设定图裁成单姿势再用。
+    此前把四格设定图整张喂给模型,「参考里有 4 个人」直接导致漫画格复制人
+    (实测 ep79 前 3 格每格 3-4 个复制人,负向词压不住视觉证据)。
     """
     seen: set[str] = set()
     out: list[str] = []
@@ -241,7 +320,7 @@ def character_all_refs(character_id: int) -> list[str]:
                 continue
             try:
                 if config.media_url_to_path(u).exists():
-                    out.append(str(config.media_url_to_path(u)))
+                    out.append(_single_pose_ref(str(config.media_url_to_path(u))))
                     seen.add(u)
             except Exception:  # noqa: BLE001
                 continue
@@ -255,7 +334,7 @@ def character_all_refs(character_id: int) -> list[str]:
                 continue
             try:
                 if config.media_url_to_path(u).exists():
-                    out.append(str(config.media_url_to_path(u)))
+                    out.append(_single_pose_ref(str(config.media_url_to_path(u))))
                     seen.add(u)
             except Exception:  # noqa: BLE001
                 continue

@@ -212,3 +212,55 @@ def test_all_panel_draw_paths_use_the_guard():
     # 单格(_one_panel_image)与批量(_batch_comic)各至少一处 extra_negative= 守卫
     assert page_src.count("PANEL_NEGATIVE_GUARD") >= 2, \
         "单格与批量链路必须共用 comic.PANEL_NEGATIVE_GUARD"
+
+
+# ------------------------------------------------------------------ 设定图裁单姿势
+
+def test_sheet_view_boxes_detects_multi_figure_sheet(tmp_path):
+    """白底 + 3 个深色立绘 → 检测出 ≥2 簇;单姿势竖图 → 返回空。"""
+    from PIL import Image
+    import numpy as np
+    from app.pipeline import comic as comic_pipe
+
+    sheet = Image.new("L", (1024, 1024), 235)          # 近白背景
+    d = np.asarray(sheet).copy()
+    for x0 in (140, 460, 780):                          # 三个立绘,各 ~120px 宽
+        d[:, x0:x0 + 120] = 60
+    p = tmp_path / "sheet.png"
+    Image.fromarray(d).save(p)
+    boxes = comic_pipe._sheet_view_boxes(str(p))
+    assert len(boxes) >= 2, f"三个立绘应检出多簇,得到 {boxes}"
+
+    single = Image.new("L", (700, 1000), 235)
+    d2 = np.asarray(single).copy()
+    d2[:, 250:450] = 60                                 # 单个立绘
+    p2 = tmp_path / "single.png"
+    Image.fromarray(d2).save(p2)
+    assert comic_pipe._sheet_view_boxes(str(p2)) == [], "单立绘不该被当设定图"
+
+
+def test_single_pose_ref_crops_second_view(tmp_path):
+    """四格设定图([特写|正面|侧面|背面])裁第 2 簇;裁剪结果落缓存文件。"""
+    from PIL import Image
+    import numpy as np
+    from app.pipeline import comic as comic_pipe
+
+    im = Image.new("RGB", (1024, 1024), (235, 235, 235))
+    d = np.asarray(im).copy()
+    for x0 in (30, 400, 720, 940):                      # 特写|正面|侧面|背面
+        d[:, x0:x0 + 90] = (60, 60, 60)
+    p = tmp_path / "char.png"
+    Image.fromarray(d).save(p)
+    out = comic_pipe._single_pose_ref(str(p))
+    assert out != str(p), "四格设定图必须被裁"
+    w, h = Image.open(out).size
+    assert w < 1024 // 2, f"裁出的应只有一格宽,得到 {w}"
+    assert comic_pipe._single_pose_ref(str(p)) == out, "二次调用走缓存"
+
+
+def test_single_pose_ref_passes_portrait_through(tmp_path):
+    from PIL import Image
+    from app.pipeline import comic as comic_pipe
+    p = tmp_path / "portrait.png"
+    Image.new("RGB", (700, 1000), (120, 120, 120)).save(p)
+    assert comic_pipe._single_pose_ref(str(p)) == str(p)
