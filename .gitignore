@@ -31,3 +31,5 @@ data/.secret_salt
 .pytest_cache/
 htmlcov/
 .coverage
+.tmp_*.py
+.tmp_*.log
