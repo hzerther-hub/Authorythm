@@ -264,3 +264,21 @@ def test_single_pose_ref_passes_portrait_through(tmp_path):
     p = tmp_path / "portrait.png"
     Image.new("RGB", (700, 1000), (120, 120, 120)).save(p)
     assert comic_pipe._single_pose_ref(str(p)) == str(p)
+
+
+def test_character_refs_dedupes_styles(monkeypatch):
+    """同一角色的漫画版与写实版只取其一(两版长相差异大,一起喂=两个角色)。"""
+    from app.pipeline import comic as comic_pipe
+
+    class _R(dict):
+        pass
+
+    monkeypatch.setattr(comic_pipe.db, "q", lambda *a, **k: [])
+    monkeypatch.setattr(comic_pipe.db, "q1", lambda *a, **k: _R(
+        comic_image_url="/static/images/comic.png", image_url="/static/images/real.png"))
+    monkeypatch.setattr(comic_pipe.config, "media_url_to_path",
+                        lambda u: __import__("pathlib").Path(__file__))  # 必须真实存在
+    monkeypatch.setattr(comic_pipe, "_single_pose_ref", lambda p: p)
+    refs = comic_pipe.character_all_refs(1)
+    assert len(refs) == 1, f"应只取漫画版一张,得到 {len(refs)} 张"
+    assert "comic" in refs[0]

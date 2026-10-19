@@ -306,40 +306,41 @@ def character_all_refs(character_id: int) -> list[str]:
     每张 ref 出口统一过 `_single_pose_ref`:多立绘设定图裁成单姿势再用。
     此前把四格设定图整张喂给模型,「参考里有 4 个人」直接导致漫画格复制人
     (实测 ep79 前 3 格每格 3-4 个复制人,负向词压不住视觉证据)。
+
+    **同一来源漫画版与写实版只取其一**:comic_image_url 优先,没有才退
+    image_url。两版是同一个人的不同画风重绘,五官/脸型差异明显 —— 一起喂
+    会被模型当成**两个角色**,实测 ep79 第 2 格在单姿势参考下仍出 2 人,
+    去掉写实版后单人格才稳定。
     """
     seen: set[str] = set()
     out: list[str] = []
+
+    def _add_pair(comic_url: str | None, plain_url: str | None) -> None:
+        for u in (comic_url, plain_url):          # 漫画版优先,取到即止
+            if not u or u in seen:
+                continue
+            try:
+                if config.media_url_to_path(u).exists():
+                    out.append(_single_pose_ref(str(config.media_url_to_path(u))))
+                    seen.add(u)
+                    return
+            except Exception:  # noqa: BLE001
+                continue
+
     for r in db.q(
         "SELECT comic_image_url, image_url FROM character_variants "
         "WHERE character_id=? AND COALESCE(comic_image_url, image_url)!='' "
         "ORDER BY sort_order, id",
         (character_id,),
     ):
-        for u in (r["comic_image_url"], r["image_url"]):
-            if not u or u in seen:
-                continue
-            try:
-                if config.media_url_to_path(u).exists():
-                    out.append(_single_pose_ref(str(config.media_url_to_path(u))))
-                    seen.add(u)
-            except Exception:  # noqa: BLE001
-                continue
-            if len(out) >= _MAX_REFS_PER_CHARACTER:
-                return out
-    c = db.q1("SELECT comic_image_url, image_url FROM characters WHERE id=?",
-              (character_id,))
-    if c and len(out) < _MAX_REFS_PER_CHARACTER:
-        for u in (c["comic_image_url"], c["image_url"]):
-            if not u or u in seen:
-                continue
-            try:
-                if config.media_url_to_path(u).exists():
-                    out.append(_single_pose_ref(str(config.media_url_to_path(u))))
-                    seen.add(u)
-            except Exception:  # noqa: BLE001
-                continue
-            if len(out) >= _MAX_REFS_PER_CHARACTER:
-                break
+        _add_pair(r["comic_image_url"], r["image_url"])
+        if len(out) >= _MAX_REFS_PER_CHARACTER:
+            return out
+    if len(out) < _MAX_REFS_PER_CHARACTER:
+        c = db.q1("SELECT comic_image_url, image_url FROM characters WHERE id=?",
+                  (character_id,))
+        if c:
+            _add_pair(c["comic_image_url"], c["image_url"])
     return out
 
 
@@ -477,6 +478,13 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
     # 人数硬前缀放在最前:模型先读到「恰好 N 人」,比只在末尾写约束更稳
     from ..ai.prompt_guards import comic_people_prefix
     fp = comic_people_prefix(panel_people_count(panel_id)) + "\n" + fp
+    # 单实例硬规则拼在末尾:负向词与 people 前缀都压不住「链式关键帧把上一格
+    # 的成图(躺着)当参考、本格描述是另一状态(站着)」的组合 —— 实测 ep79 重出后
+    # 第 2/3 格仍画出「躺着+站着」两个状态并存。正面明确写出「只画此刻」,比
+    # 侧面禁止更有效。镜像/玻璃/窗外人影也是本次实测的复制形态,一并点名。
+    fp += ("\n\n【单实例硬规则】画面中每个角色只出现一次,只画剧情此刻的状态与位置;"
+           "禁止同时画出同一角色的其它状态(如既躺着又站着、既有背影又有正面);"
+           "镜面、玻璃、窗外、水面不得出现任何人影或倒影。")
     db.ex("UPDATE comic_panels SET image_prompt=?, updated_at=? WHERE id=?", (fp, db.now(), panel_id))
     return fp
 
