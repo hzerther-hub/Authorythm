@@ -266,18 +266,21 @@ def test_single_pose_ref_passes_portrait_through(tmp_path):
     assert comic_pipe._single_pose_ref(str(p)) == str(p)
 
 
-def test_character_refs_dedupes_styles(monkeypatch):
+def test_character_refs_dedupes_styles(monkeypatch, tmp_path):
     """同一角色的漫画版与写实版只取其一(两版长相差异大,一起喂=两个角色)。"""
+    from pathlib import Path
     from app.pipeline import comic as comic_pipe
 
-    class _R(dict):
-        pass
+    # media_url_to_path 按 URL 生成真实存在的临时文件,文件名保留 comic/real
+    def fake_m2p(u):
+        f = tmp_path / u.rsplit("/", 1)[-1]
+        f.write_bytes(b"x")
+        return f
 
     monkeypatch.setattr(comic_pipe.db, "q", lambda *a, **k: [])
-    monkeypatch.setattr(comic_pipe.db, "q1", lambda *a, **k: _R(
+    monkeypatch.setattr(comic_pipe.db, "q1", lambda *a, **k: dict(
         comic_image_url="/static/images/comic.png", image_url="/static/images/real.png"))
-    monkeypatch.setattr(comic_pipe.config, "media_url_to_path",
-                        lambda u: __import__("pathlib").Path(__file__))  # 必须真实存在
+    monkeypatch.setattr(comic_pipe.config, "media_url_to_path", fake_m2p)
     picked = []
     monkeypatch.setattr(comic_pipe, "_single_pose_ref", lambda p: picked.append(p) or p)
     refs = comic_pipe.character_all_refs(1)
