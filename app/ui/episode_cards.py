@@ -1204,6 +1204,10 @@ class ComicPanelCard(QFrame):
                 self._busy_spin.start("")
                 _sl.addWidget(self._busy_spin)
                 cl2.addWidget(spin_host, 0, Qt.AlignCenter)
+                hint = QLabel(tr("生成中…"))
+                hint.setObjectName("muted")
+                hint.setAlignment(Qt.AlignCenter)
+                cl2.addWidget(hint, 0, Qt.AlignCenter)
             else:
                 ph = QLabel("▣")
                 ph.setAlignment(Qt.AlignCenter)

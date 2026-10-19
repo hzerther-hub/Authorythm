@@ -6837,8 +6837,16 @@ class EpisodePage(QWidget):
 
         def done(tid, result, error):
             from .toast import ok, err
+            # 按钮退出等待态:以前这里不 idle,生成中按钮也一直可点(会重复
+            # 提交整话链路);即使任务结束按钮也只是靠整页重建才恢复
+            btn = getattr(self, "comic_full_btn", None)
+            if btn:
+                btn.idle()
+            if hasattr(self, "_comic_busy"):
+                self._comic_busy.clear()
             if error:
                 err(f"整话生成失败:{str(error)[:160]}")
+                self._reload_comic()
                 return
             try:
                 r = result or {}
@@ -6848,8 +6856,64 @@ class EpisodePage(QWidget):
             self._reload_comic()
             self._reload_stitch_box()
 
-        TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
+        tid = TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
         info("已提交整话生成任务,可去任务面板看进度")
+        # 出图全程要有动态提示:整话是**一个大 job**(拆格→逐格出图→拼长图),
+        # 以前全程不标 busy、也不逐格刷新 —— 所有格子挂着静态「出图」按钮,
+        # 看起来像没点上(实测反馈:「出图时要有动态提示」)。
+        # 单格/批量链路都有转圈(ComicPanelCard busy=True → BrailleSpinner),
+        # 这里对齐:提交即把待出格全部标 busy,再起轮询逐格摘牌亮图。
+        full_btn = getattr(self, "comic_full_btn", None)
+        if full_btn:
+            full_btn.busy()
+        if not hasattr(self, "_comic_busy"):
+            self._comic_busy = set()
+        self._comic_busy.update(r["id"] for r in db.q(
+            "SELECT id FROM comic_panels WHERE episode_id=? "
+            "AND (image_url IS NULL OR image_url='')", (self.episode_id,)))
+        self._reload_comic()
+        self._poll_full_comic(tid)
+
+    def _reconcile_full_comic_busy(self, running: bool, pend: set[int]) -> bool:
+        """把 _comic_busy 对账成「当前该集还没图的格」;有变化返回 True。
+
+        出整话运行中 busy 应恰好等于待出格集合:force 重拆后 panel id 会变,
+        所以由调用方每轮按 episode 重查 pend,这里不缓存旧 id。
+        任务结束(running=False)清空全部转圈。
+        """
+        busy = getattr(self, "_comic_busy", None)
+        if busy is None:
+            return False
+        want = set(pend) if running else set()
+        if busy == want:
+            return False
+        busy.clear()
+        busy.update(want)
+        return True
+
+    def _poll_full_comic(self, tid: int):
+        """整话生成进行中:每 3 秒读库对账,哪格落库就摘掉哪格的转圈并亮图。
+
+        只在主线程跑(QTimer);job 侧只写 comic_panels 表,两边靠库解耦。
+        任务不在 processing 即停表(收尾的 reload/idle 由 done 回调负责)。
+        """
+        from PySide6.QtCore import QTimer
+
+        def tick():
+            try:
+                row = db.q1("SELECT status FROM sys_task WHERE id=?", (tid,))
+                pend = {r["id"] for r in db.q(
+                    "SELECT id FROM comic_panels WHERE episode_id=? "
+                    "AND (image_url IS NULL OR image_url='')", (self.episode_id,))}
+            except Exception:  # noqa: BLE001 —— 轮询失败不该打断生成任务本身
+                row, pend = None, set()
+            running = bool(row and row["status"] == "processing")
+            if self._reconcile_full_comic_busy(running, pend):
+                self._reload_comic()
+            if running:
+                QTimer.singleShot(3000, tick)
+
+        QTimer.singleShot(3000, tick)
 
     def _current_comic_style_value(self) -> str:
         """当前项目漫画风格 value(用于 comic_pipeline.generate_full_comic)。"""

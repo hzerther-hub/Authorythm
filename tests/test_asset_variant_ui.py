@@ -127,3 +127,46 @@ def test_bound_refs_height_grows_with_picker():
     without = fake.sb_bound_scroll.h
     fake._sync_bound_refs_height(has_picker=True)
     assert fake.sb_bound_scroll.h == without + 22
+
+
+# ------------------------------------------------------------------ 出整话动态提示
+
+def test_reconcile_busy_marks_pending(monkeypatch):
+    """出整话运行中:busy 应恰好等于「还没图的格」集合。"""
+    fake = EP.EpisodePage.__new__(EP.EpisodePage)
+    fake._comic_busy = {1, 2, 3}
+    assert fake._reconcile_full_comic_busy(True, {2, 3, 4, 5}) is True
+    assert fake._comic_busy == {2, 3, 4, 5}, "完成的摘掉,新拆出来的(重拆换 id)补上"
+
+
+def test_reconcile_busy_clears_when_finished():
+    """任务结束:全部转圈清掉(收尾亮图由 done 回调的 reload 负责)。"""
+    fake = EP.EpisodePage.__new__(EP.EpisodePage)
+    fake._comic_busy = {1, 2}
+    assert fake._reconcile_full_comic_busy(False, {1, 2}) is True
+    assert fake._comic_busy == set()
+
+
+def test_reconcile_busy_noop_when_already_consistent():
+    """没变化就不返回 True —— 轮询靠它避免每 3 秒重建一次网格。"""
+    fake = EP.EpisodePage.__new__(EP.EpisodePage)
+    fake._comic_busy = {2, 3}
+    assert fake._reconcile_full_comic_busy(True, {2, 3}) is False
+
+
+def test_reconcile_busy_survives_missing_attr():
+    fake = EP.EpisodePage.__new__(EP.EpisodePage)
+    assert fake._reconcile_full_comic_busy(True, {1}) is False
+
+
+def test_full_comic_wires_busy_and_poll():
+    """守住「出整话要有动态提示」的接线:提交即 busy + 轮询 + done 恢复。"""
+    import inspect
+    src = inspect.getsource(EP.EpisodePage._ai_full_comic)
+    assert "comic_full_btn" in src and ".busy()" in src, \
+        "提交后按钮必须进等待态(防重复提交)"
+    assert "self._poll_full_comic(tid)" in src, "必须启动逐格亮图轮询"
+    assert "self._comic_busy.update(" in src, "待出格必须立即标 busy(转圈)"
+    done_src = src.split("def done", 1)[1].split("def job", 1)[0]
+    assert ".idle()" in done_src, "done 回调必须恢复按钮"
+    assert "self._comic_busy.clear()" in done_src, "done 必须清干净转圈集合"
