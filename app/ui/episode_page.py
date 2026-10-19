@@ -6485,6 +6485,7 @@ class EpisodePage(QWidget):
         re_panel = W.primary_btn(tr("gen_panels"))
         re_panel.setToolTip(tr("gen_panels_tip"))
         re_panel.clicked.connect(self._split_panels)
+        self.re_panel_btn = re_panel     # 等待态引用:_split_panels 里 busy/idle 用
         bar.addWidget(re_panel)
         self.comic_batch_btn = WaitingButton("▦ " + tr("batch_image"))
         self.comic_batch_btn.clicked.connect(self._batch_comic)
@@ -6665,12 +6666,30 @@ class EpisodePage(QWidget):
             err(e)
 
     def _split_panels(self):
+        # 等待态:拆格是一次 88 秒级的 LLM 调用(实测 sys_task#1430),以前按钮
+        # 无任何变化、可重复点击,用户以为没点上(实测反馈「没有看到等待过程」)。
+        btn = getattr(self, "re_panel_btn", None)
+        if btn:
+            btn.setEnabled(False)
+        info(tr("正在生成分镜格,约 1-2 分钟…"))
+
         def job(tid):
             return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
+
         def done(tid, result, error):
+            if btn:
+                btn.setEnabled(True)
             if error:
                 err(error)
+                self._reload_comic()
+                return
             self._reload_comic()
+            # 拆完直接接批量出图:用户的心智模型是「生成分镜 = 要漫画」,
+            # 以前拆完停在 0/N 的静态格子,出图要再点一次「▦ 批量出图」,
+            # 用户等在那里以为出图坏了(实测反馈「没有看到出画的结果」)。
+            # _batch_comic 自带转圈 + 逐格亮图,已有图的格不会重出。
+            self._batch_comic()
+
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
 
     def _one_panel_image(self, panel_id: int):

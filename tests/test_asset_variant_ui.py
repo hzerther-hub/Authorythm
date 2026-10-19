@@ -170,3 +170,17 @@ def test_full_comic_wires_busy_and_poll():
     done_src = src.split("def done", 1)[1].split("def job", 1)[0]
     assert ".idle()" in done_src, "done 回调必须恢复按钮"
     assert "self._comic_busy.clear()" in done_src, "done 必须清干净转圈集合"
+
+
+def test_split_panels_wires_busy_and_auto_draw():
+    """「生成分镜」必须有等待态,且拆完自动接出图。
+
+    实测:拆格是一次 88 秒的 LLM 调用(sys_task#1430),按钮全程无变化,
+    用户以为没点上;拆完停在 0/10 静态格子,出图要再点一次「▦ 批量出图」,
+    用户等在那里以为出图坏了。
+    """
+    import inspect
+    src = inspect.getsource(EP.EpisodePage._split_panels)
+    assert "setEnabled(False)" in src and "setEnabled(True)" in src, \
+        "拆格期间按钮必须禁用(88 秒级 LLM 调用,不能让用户干等无提示)"
+    assert "self._batch_comic()" in src, "拆格完成后必须自动接批量出图"
