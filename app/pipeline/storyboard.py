@@ -90,6 +90,15 @@ def _boards_for_part(ep, aspect: str, assets: str, part: str, label: str, *,
         reason = "模型返回了空分镜列表"
     except RuntimeError as e:
         reason = str(e)[:200]
+    except Exception as e:  # noqa: BLE001
+        # **网络异常也必须走「这一批失败」的路径**,不能直接冒上去。
+        # 原来只捕 RuntimeError,而 requests 的 ProxyError / ConnectionError /
+        # ReadTimeout / IncompleteRead 都不是 RuntimeError —— 本机代理掐断长连接时
+        # (实测 2026-10-19 ep79 第 4 批)一个批次失败会**整集任务死掉**,
+        # 前面几批已经落库的分镜也跟着白拆。这与本函数「整批没拿到就拆半重试、
+        # 而不是让整集失败」的设计意图正好相反。降级成 RuntimeError 后,
+        # 多场景的批次还能拆成单场再试一次。
+        reason = f"{type(e).__name__}: {str(e)[:160]}"
     if len(blocks) <= 1 or depth >= 2:
         raise RuntimeError(f"分镜结果为空({label}):{reason}")
     mid = len(blocks) // 2

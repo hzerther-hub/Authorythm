@@ -74,6 +74,51 @@ def _err_text(resp) -> str:
         return str(resp.text or "")
 
 
+# 单次 chat 的网络重试:只针对**瞬时**故障,不碰 HTTP 4xx(鉴权/参数错重试没意义)。
+#
+# 为什么必须加:本机系统代理(Clash 127.0.0.1:56561)会**掐长连接** ——
+# 短请求 1 秒就过,但动辄几分钟的生成会被 RemoteDisconnected / IncompleteRead
+# 掐掉(实测 2026-10-19:分镜拆分第 4 批整个任务就死在
+# ProxyError('Unable to connect to proxy, Remote end closed connection')。
+# 以前这里一次 requests.post 就完事,任何瞬时抖动都直接冒给业务层,
+# 而业务层把它当成「模型不会写 JSON」,方向完全错了。
+NET_RETRY_ATTEMPTS = 3
+NET_RETRY_BACKOFF_S = (2, 6)
+# requests 里这些异常都表示「连接层面的瞬时问题」,重发一次是有意义的。
+_TRANSIENT = (
+    requests.exceptions.ProxyError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+)
+
+
+def _post_with_retry(url: str, body: dict, headers: dict, timeout: int):
+    """POST,遇瞬时网络故障按退避重试;最终失败把最后一次异常原样抛出。"""
+    import time as _t
+    last: Exception | None = None
+    for i in range(NET_RETRY_ATTEMPTS):
+        try:
+            return requests.post(url, json=body, headers=headers, timeout=timeout)
+        except _TRANSIENT as e:
+            last = e
+            if i >= NET_RETRY_ATTEMPTS - 1:
+                break
+            from ..core.logging_setup import get_logger
+            from ..core import metrics
+            log = get_logger("ai.text")
+            delay = NET_RETRY_BACKOFF_S[min(i, len(NET_RETRY_BACKOFF_S) - 1)]
+            log.warning("text.net_retry attempt=%d/%d in %ds err=%s",
+                        i + 1, NET_RETRY_ATTEMPTS, delay, type(e).__name__)
+            try:
+                metrics.incr("ai.text.net_retry")
+            except Exception:  # noqa: BLE001
+                pass
+            _t.sleep(delay)
+    assert last is not None
+    raise last
+
+
 def _guarded(text: str) -> str:
     """模型产出过乱码闸门:能还原就还原,还原不了直接抛 —— 绝不把乱码传下去。"""
     from ..core.encoding import MojibakeError, ensure_text
@@ -109,10 +154,10 @@ def chat(prompt: str, system: str | None = None, config_id: int | None = None,
     import time as _t
     t0 = _t.perf_counter()
     try:
-        resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+        resp = _post_with_retry(url, body, headers, timeout)
         if resp.status_code != 200 and json_mode and _needs_json_word(resp.text):
             body.pop("response_format", None)
-            resp = requests.post(url, json=body, headers=headers, timeout=timeout)
+            resp = _post_with_retry(url, body, headers, timeout)
         if resp.status_code != 200:
             from ..core import metrics
             metrics.incr(f"ai.text.{cfg.get('provider', 'unknown')}.failed")

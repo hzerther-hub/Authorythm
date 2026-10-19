@@ -760,6 +760,7 @@ class EpisodePage(QWidget):
         self._loading = False
         self._sb_split_running = False
         self._sb_split_task = 0
+        self._sb_split_seen = 0   # 轮询里已刷新到界面的分镜数(逐批增量刷新用)
 
     # ── 数据加载 ──
     def load(self, drama_id: int, episode_id: int):
@@ -5662,6 +5663,10 @@ class EpisodePage(QWidget):
             err(e); return
         self._sb_split_running = True
         self._sb_split_task = tid
+        # 记下起始分镜数,轮询时只在「变多了」才重建列表(分批落库,逐批刷)
+        self._sb_split_seen = db.q1(
+            "SELECT COUNT(*) c FROM storyboards WHERE episode_id=? AND deleted_at IS NULL",
+            (self.episode_id,))["c"]
         info(tr("分镜拆解已开始(后台运行,约 5-10 分钟)"))
         self._poll_sb_split(tid, 0)
 
@@ -5718,6 +5723,22 @@ class EpisodePage(QWidget):
         TASKMGR.submit("sb_repair", repair_job, repair_done, episode_id=self.episode_id,
                        drama_id=self.drama_id)
 
+    def _refresh_sb_split_progress(self):
+        """拆分进行中:分镜数变了就重建列表(只在变的时候刷,避免每 6 秒空转)。
+
+        调用点在 QTimer.singleShot 回调里,已经在主线程,可以安全碰控件。
+        """
+        try:
+            n = db.q1("SELECT COUNT(*) c FROM storyboards "
+                      "WHERE episode_id=? AND deleted_at IS NULL",
+                      (self.episode_id,))["c"]
+        except Exception:  # noqa: BLE001 —— 轮询里的读库失败不该打断任务监控
+            return
+        if n == self._sb_split_seen:
+            return
+        self._sb_split_seen = n
+        self._reload_storyboard()
+
     def _poll_sb_split(self, tid: int, attempt: int):
         """每 6 秒轮询拆分任务(对齐原版 6000ms)。"""
         from PySide6.QtCore import QTimer
@@ -5731,6 +5752,14 @@ class EpisodePage(QWidget):
             row = db.q1("SELECT status, local_path, error_msg FROM sys_task WHERE id=?", (tid,))
             st = row["status"] if row else "failed"
             if st == "processing":
+                # **分批拆分是逐批落库的**(`pipeline/storyboard.split_storyboards`:
+                # 每批成功即写库,失败批次只影响自己),所以任务还在跑的时候库里
+                # 就已经有分镜了。以前这里是直接 return、等 completed 才刷新,
+                # 于是一集 6 批要跑的十几分钟里,界面一直显示 0 段落和
+                # 「开始拆分分镜」的空状态 —— 用户看到的就是「一直进行中、没有结果」,
+                # 哪怕库里已经躺着二十几条。批量生图早就踩过同一个坑并改成
+                # 逐项刷新,分批拆分这条新链路需要同样的处理。
+                self._refresh_sb_split_progress()
                 QTimer.singleShot(6000, lambda: self._poll_sb_split(tid, attempt + 1))
                 return
             self._sb_split_running = False
@@ -5738,8 +5767,10 @@ class EpisodePage(QWidget):
             if st != "completed":
                 if sb:
                     sb.idle()
-                err(row["error_msg"] or tr("分镜拆分失败"))
+                # row 可能为 None(任务行被清掉/换了库),不能直接下标
+                err((row["error_msg"] if row else None) or tr("分镜拆分失败"))
                 return
+            self._sb_split_seen = -1      # 强制下一次进度刷新重建一次
             self._reload_storyboard()
             ok(row["local_path"] or tr("分镜拆分完成"))
             # ── 自动串(对齐参考项目 split → repair → video-prompts 链):──
