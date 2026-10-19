@@ -14,6 +14,8 @@ from __future__ import annotations
 from ..agents import runner
 from ..core import db
 
+from . import character_spec
+
 
 def _style_prefix(drama_id: int) -> str:
     """常规资产风格前缀:严格用 dramas.style(3D/写实/...)。"""
@@ -86,12 +88,15 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
     if not c:
         raise RuntimeError("角色不存在")
+    # 出图前最后一道兜底:库里已有的历史角色若仍是 45~70 字的关键词串,
+    # 这里自动补写并回写,不必人工逐个重写。失败则用原值,不阻断出图。
+    ap, st = character_spec.ensure_for_prompt(c, config_id=config_id, lang=lang)
     prompt = f"""目标类型:character(角色三视图参考图)
 视觉风格前缀: {_style_prefix(c['drama_id'])}
 
 角色: {c['name']}({'主角' if c['role_type']=='lead' else '配角' if c['role_type']=='supporting' else '龙套'})
-样貌: {c['appearance'] or '未提供'}
-妆造: {c['styling'] or '未提供'}"""
+样貌: {ap or '未提供'}
+妆造: {st or '未提供'}"""
     data = _robust_json("prompt_generator", prompt, lang=lang, config_id=config_id)
     fp = (data or {}).get("final_prompt", "")
     if not fp:

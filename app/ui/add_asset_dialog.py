@@ -10,8 +10,9 @@ from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout,
 
 from ..core import db
 from ..core.i18n import tr
+from ..pipeline import character_spec
 from . import widgets as W
-from .toast import err, ok
+from .toast import err, ok, warn
 
 ROLE_ITEMS = [("lead", "主角"), ("supporting", "配角")]
 KIND_TABLE = {"character": "characters", "scene": "scenes", "prop": "props"}
@@ -43,8 +44,16 @@ class AddAssetDialog(QDialog):
         self.type.addItem(tr("道具"), "prop")
         self.desc = QPlainTextEdit()
         self.desc.setMaximumHeight(110)
-        self.appearance = QLineEdit()
-        self.styling = QLineEdit()
+        # 样貌/妆造是出图提示词的原料,单行输入框连 150 字都看不全 -> 改多行,
+        # 并把规格提示写在占位符里(真正的兜底在 character_spec,不靠用户自觉)。
+        self.appearance = QPlainTextEdit()
+        self.appearance.setMaximumHeight(80)
+        self.appearance.setPlaceholderText(tr(
+            "150 字以上连贯描述:身高体型、五官逐项、肤质、发型、惯常神情"))
+        self.styling = QPlainTextEdit()
+        self.styling.setMaximumHeight(70)
+        self.styling.setPlaceholderText(tr(
+            "80 字以上:逐件服装/颜色/材质/穿着方式/鞋袜配饰/使用痕迹"))
         self.location = QLineEdit()
         self.time = QLineEdit()
         self.lighting = QLineEdit()
@@ -89,7 +98,14 @@ class AddAssetDialog(QDialog):
                     "INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at)"
                     " VALUES(?,?,?,?,?,?,?)",
                     (self.drama_id, name, self.role.currentData(),
-                     self.appearance.text().strip(), self.styling.text().strip(), ts, ts))
+                     self.appearance.toPlainText().strip(),
+                     self.styling.toPlainText().strip(), ts, ts))
+                # 不阻断手工录入(用户可能就是要先占位),但明确告知不达标,
+                # 否则又是"存进去看着正常、出图才发现没细节"。
+                issues = character_spec.audit(self.appearance.toPlainText(),
+                                              self.styling.toPlainText())
+                if issues:
+                    warn(tr("外观描述偏简,出图细节会不足:") + issues[0])
             elif self.kind == "scene":
                 loc = self.location.text().strip()
                 if not loc:

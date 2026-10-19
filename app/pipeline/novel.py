@@ -11,6 +11,8 @@ from ..core.i18n import tr       # 分批阶段提示文案(漏导入会让整�
 from ..ai import registry
 from ..core import config, db
 
+from . import character_spec
+
 
 # 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
 NOVEL_STYLES = [
@@ -117,7 +119,7 @@ def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
 
 def outline_to_script(outline: str, episode_id: int,
                       *, config_id: int | None = None) -> str:
-    """故事梗概 → 格式化剧本(可直接进 `comic.split_panels`)。
+    r"""故事梗概 → 格式化剧本(可直接进 `comic.split_panels`)。
 
     给 `comic_outline_writer` Agent 提供 100-1000 字的梗概,扩成 600-1500 字
     的格式化剧本:4-8 个场景,每个带 `## S\d+\|内外景·地点\|时间` 头。
@@ -722,6 +724,11 @@ CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与章节计�
 输出 JSON:{{"characters":[{{"name":"","role":"","identity":"","motivation":"",
 "appearance":"","styling":""}}]}}只输出 JSON。"""
 
+# 规格块由软件层统一注入(不再依赖某个语言变体的提示词文件)。小说策划这条
+# 链路原先只有一句「要能直接转成文生图提示词」,实测产出 45~70 字,远低于
+# extractor 要求的 150 字  同一个字段,两条链路两套标准,出图质量自然分层。
+# 具体注入发生在 plan_characters() 里(按项目内容语言选中/英文规格块)。
+
 
 def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     """AI 生成主要角色。章节计划缺失时先在后台补章节计划(依赖先行)。"""
@@ -734,12 +741,18 @@ def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
         chapters = db.jload(d["novel_chapters"], []) or []
     ctx = _novel_settings_ctx(drama_id)
     plan_txt = chapters_to_text(chapters)[:6000]
+    # 规格块按内容语言注入(软件层单一来源,不再依赖提示词文件手工维护)
+    lang = config.resolve_content_language(drama_id)
     raw = runner.run_agent("novel_planner",
-                           f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}",
+                           f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}"
+                           f"\n\n{character_spec.rules_for(lang)}",
                            temperature=0.5, config_id=config_id)
     chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
     if not chars:
         raise RuntimeError("AI 未返回角色,请重试或检查文本模型配置")
+    # 与 extractor 同一条软件层规格:不达标先定向补写,再进 novel_meta / characters。
+    # 失败原样返回,不阻断策划流程。
+    chars = character_spec.expand_many(chars, config_id=config_id, lang=lang)
     meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
     meta["main_characters"] = chars
     db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",

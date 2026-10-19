@@ -27,16 +27,20 @@ def create_task(task_type: str, **links) -> int:
     return db.ex(f"INSERT INTO sys_task({keys}) VALUES({marks})", tuple(cols.values()))
 
 
-def set_stage(task_id: int, stage: str) -> None:
+def set_stage(task_id: int, stage: str, cycle: int | None = None) -> None:
     """写任务阶段标记到 sys_task.params.stage(不改表结构,批量面板据此显示"当前在做什么")。
 
     阶段:writing 正文生成 / reviewing 审校 / repairing 问题修复 / compressing 卷段压缩。
+    cycle:审校循环的轮次(1 起),写进 params.stage_cycle 供界面显示「第 N/3 轮」;
+    不传则保留 params 里已有的旧值(别的阶段可能写过)。
     失败只记日志,不阻断主流程。
     """
     try:
         row = db.q1("SELECT params FROM sys_task WHERE id=?", (task_id,))
         params = jload_safe(row["params"] if row else None)
         params["stage"] = stage
+        if cycle is not None:
+            params["stage_cycle"] = int(cycle)
         db.ex("UPDATE sys_task SET params=?, updated_at=? WHERE id=?",
               (json.dumps(params, ensure_ascii=False), db_now(), task_id))
     except Exception:  # noqa: BLE001

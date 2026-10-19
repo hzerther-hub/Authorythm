@@ -559,11 +559,12 @@ class CharacterAssetCard(QFrame):
 
 
 class AssetCard(QFrame):
-    """场景 / 道具卡:16:9 封面 + 名称 + 描述 + 光照 + 最终提示词 + 状态点/重绘/上传。"""
+    """场景 / 道具卡:16:9 封面 + 名称 + 描述 + 光照 + 最终提示词 + 状态点/重绘/上传/变体。"""
 
     def __init__(self, row: dict, labels: dict, kind: str, *,
                  on_gen=None, on_upload=None, on_prompt=None, on_open=None,
-                 on_delete=None, on_gen_text=None, on_gen_vary=None, busy: bool = False):
+                 on_delete=None, on_gen_text=None, on_gen_vary=None,
+                 on_variants=None, busy: bool = False):
         super().__init__()
         self.setObjectName("assetCard")
         lay = QVBoxLayout(self)
@@ -606,6 +607,33 @@ class AssetCard(QFrame):
             blay.addWidget(ll)
         blay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                          labels["prompt_ph"], on_prompt))
+        # 统一橙色 outline(品牌色 #f97316),hover 浅橙填充,与角色卡按钮同款。
+        # **必须定义在第一次使用之前** —— 下面变体按钮行就引用它。
+        # 原先这行定义在页脚那一段(用到之后),于是任何带 on_variants 的
+        # 场景/道具卡一进 __init__ 就 UnboundLocalError
+        # (cannot access local variable 'BTN_QSS'),资产页直接刷不出来。
+        BTN_QSS = ("QPushButton{font-size:11px;padding:3px 4px;"
+                   "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
+                   "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
+                   "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
+        # 变体按钮行(道具/场景与角色同款:与 VariantsDialog 同一套数据,
+        # 加新变体后即出现在分镜侧栏的下拉里;用户要求「资产道具都有变型」)。
+        if on_variants:
+            var_row = QHBoxLayout()
+            var_row.setSpacing(4)
+            var = QPushButton(labels.get("variants", "◑ 造型变体"))
+            # 不同 kind 的 tooltip 文案不同(scene→季节/光线,prop→升级/破损)
+            var.setToolTip(labels.get(
+                "variants_tip_scene" if kind == "scene" else "variants_tip_prop"
+                if kind == "prop" else "variants_tip",
+                "同一资产的多套变体"))
+            var.setCursor(Qt.PointingHandCursor)
+            var.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            var.setMinimumWidth(0)
+            var.setStyleSheet(BTN_QSS)
+            var.clicked.connect(lambda _=False: on_variants())
+            var_row.addWidget(var, 1)
+            blay.addLayout(var_row)
         lay.addWidget(body)
         foot = QWidget()
         foot.setStyleSheet("border:none; border-top:1px solid rgba(128,128,128,0.18);")
@@ -614,11 +642,6 @@ class AssetCard(QFrame):
         flay.setSpacing(4)
         flay.addWidget(status_pill("ready" if has else "todo",
                                    labels["gen_done"] if has else labels["gen_todo"]))
-        # 统一橙色 outline(品牌色 #f97316),hover 浅橙填充,与角色卡按钮同款。
-        BTN_QSS = ("QPushButton{font-size:11px;padding:3px 4px;"
-                   "border:1px solid #fed7aa;border-radius:6px;background:#fff8f1;color:#9a3412;}"
-                   "QPushButton:hover{background:#fff0e1;border-color:#f97316;}"
-                   "QPushButton:disabled{color:#c9cdd4;background:#f7f8fa;border-color:#e8eaef;}")
         gen_btns = []
         for text, tip, cb, enabled in (
             (labels["gen_text"], labels["gen_text_tip"], on_gen_text, True),

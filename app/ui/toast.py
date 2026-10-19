@@ -35,9 +35,12 @@ def map_error(err: object) -> str:
     # 后台任务传进来的是整段 traceback,真正的原因在最后一行;
     # 不先取出来的话,弹窗只会显示 "Traceback (most recent call last): ...",
     # 头几行永远占满窗口,报错内容反而看不见,后面所有分支也都匹配不上。
-    if s.lstrip().startswith("Traceback"):
+    # 兼容「前缀 + traceback」的拼法(老调用写成 "▣ 尾帧失败:" + traceback),
+    # 整段里只要含 "Traceback" 就先剥出最后一行,再做后续匹配。
+    if "Traceback" in s:
         tail = next((l.strip() for l in reversed(s.splitlines())
-                     if l[:1] not in (" ", "\t") and l.strip()), "")
+                     if l[:1] not in (" ", "\t") and l.strip() and
+                     not l.strip().startswith("Traceback")), "")
         if tail:
             s = tail
     low = s.lower()

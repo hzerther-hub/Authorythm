@@ -14,6 +14,8 @@ import re
 from ..agents import runner
 from ..core import db
 
+from . import character_spec
+
 MIN_CHARS = 1000
 MAX_CHARS = 100_000_000
 GROUP = 12                 # 每组章数
@@ -321,14 +323,27 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
                    json.dumps({"intro": settings["description"], "genre": settings["genre"]},
                               ensure_ascii=False),
                    ts, ts))
+    # 旧实现把 personality 当 appearance、identity 当 styling  语义就不对
+    # (性格不是长相),长度也远低于出图规格。这里把 identity/personality/arc
+    # 合并成"素材",交给软件层统一补写成可出图的 appearance + styling;
+    # 一次批量调用,失败原样返回,不阻断建项目。
+    seed = []
     for idx, c in enumerate(settings["characters"]):
         name = (c.get("name") or "").strip()
         if not name:
             continue
+        material = "；".join(
+            x for x in (c.get("identity"), c.get("personality"), c.get("arc")) if x)
+        seed.append({"name": name,
+                     "role": "lead" if idx == 0 else "supporting",
+                     "appearance": material, "styling": ""})
+    seed = character_spec.expand_many(
+        seed, lang=db.get_setting("content_language", "zh"))
+    for idx, c in enumerate(seed):
         db.ex("""INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at)
                VALUES(?,?,?,?,?,?,?)""",
-              (new_id, name, "lead" if idx == 0 else "supporting",
-               c.get("personality", ""), c.get("identity", ""), ts, ts))
+              (new_id, c["name"], "lead" if idx == 0 else "supporting",
+               c.get("appearance") or "", c.get("styling") or "", ts, ts))
     db.ex("""INSERT INTO episodes(drama_id,episode_number,title,status,resolution,created_at,updated_at)
            VALUES(?,1,?,'pending','720p',?,?)""",
           (new_id, "第1集", ts, ts))

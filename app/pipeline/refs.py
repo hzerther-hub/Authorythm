@@ -26,25 +26,37 @@ def ref_image_limit(provider: str | None = None, model: str | None = None) -> in
     return 9
 
 
-def _variant_image_of(character_id: int, sb: dict) -> str | None:
-    """角色造型图:优先取该分镜人工覆盖的变体,否则按场景标签自动匹配,最后回退基础形象。"""
-    row = db.q1("""SELECT variant_id FROM storyboard_characters
-                  WHERE storyboard_id=? AND character_id=?""", (sb["id"], character_id))
+def _variant_image_of(character_id: int, sb: dict, kind: str = "character") -> str | None:
+    """造型图:优先取该分镜人工覆盖的变体,否则按场景标签自动匹配,最后回退基础形象。
+
+    kind ∈ {"character", "scene", "prop"} —— 同一份逻辑复用给三表
+    (character_variants / scene_variants / prop_variants)。
+    """
+    # 三个关联表 + 三个变体表的 schema 平行,集中查一次省得散写
+    cfg = {
+        "character": ("storyboard_characters", "character_variants", "character_id",
+                      "characters", "image_url"),
+        "scene":     ("storyboard_scenes",   "scene_variants",     "scene_id",
+                      "scenes",     "image_url"),
+        "prop":      ("storyboard_props",    "prop_variants",      "prop_id",
+                      "props",      "image_url"),
+    }[kind]
+    link_t, var_tbl, ref_col, base_tbl, img_col = cfg
+    row = db.q1(f"SELECT variant_id FROM {link_t} "
+                f"WHERE storyboard_id=? AND {ref_col}=?", (sb["id"], character_id))
     if row and row["variant_id"]:
-        v = db.q1("SELECT image_url FROM character_variants WHERE id=?", (row["variant_id"],))
+        v = db.q1(f"SELECT image_url FROM {var_tbl} WHERE id=?", (row["variant_id"],))
         if v and v["image_url"]:
             return v["image_url"]
-    # 按 setting_tags 自动解析造型变体
+    # 按 setting_tags 自动解析变体
     tags = set(db.jload(sb.get("setting_tags"), []) or [])
     if tags:
-        c = db.q1("SELECT id FROM characters WHERE id=?", (character_id,))
-        if c:
-            for v in db.q("SELECT * FROM character_variants WHERE character_id=?", (character_id,)):
-                vtags = set(db.jload(v["tags"], []) or [])
-                if tags & vtags and v["image_url"]:
-                    return v["image_url"]
-    base = db.q1("SELECT image_url FROM characters WHERE id=?", (character_id,))
-    return base["image_url"] if base else None
+        for v in db.q(f"SELECT * FROM {var_tbl} WHERE {ref_col}=?", (character_id,)):
+            vtags = set(db.jload(v["tags"], []) or [])
+            if tags & vtags and v["image_url"]:
+                return v["image_url"]
+    base = db.q1(f"SELECT {img_col} FROM {base_tbl} WHERE id=?", (character_id,))
+    return base[img_col] if base else None
 
 
 def build_shot_reference_list(sb: dict, limit: int | None = None) -> list[dict]:
@@ -69,22 +81,21 @@ def build_shot_reference_list(sb: dict, limit: int | None = None) -> list[dict]:
                     ORDER BY character_id""", (sb["id"],)):
         cid = r["character_id"]
         c = db.q1("SELECT name FROM characters WHERE id=?", (cid,))
-        push("character", cid, c["name"] if c else None, _variant_image_of(cid, sb))
-    # 2) 场景(单选)
+        push("character", cid, c["name"] if c else None, _variant_image_of(cid, sb, "character"))
+    # 2) 场景(单选):也走变体优先级链,与角色/道具同套逻辑
     if sb.get("scene_id"):
         # 提前绑定到本地变量 —— Row 反复访问会触发奇怪行为(实测
         # `db.q1(..., (sb["scene_id"],))` 偶尔抛 parameters unsupported),
         # 绑给 _sid 后稳定。
         _sid = sb["scene_id"]
-        s = db.q1("SELECT name, image_url FROM scenes WHERE id=?", (_sid,))
-        if s:
-            push("scene", _sid, s["name"], s["image_url"])
+        s = db.q1("SELECT name FROM scenes WHERE id=?", (_sid,))
+        push("scene", _sid, s["name"] if s else None, _variant_image_of(_sid, sb, "scene"))
     # 3) 道具
     for r in db.q("""SELECT prop_id FROM storyboard_props WHERE storyboard_id=?
                     ORDER BY prop_id""", (sb["id"],)):
-        pr = db.q1("SELECT name, image_url FROM props WHERE id=?", (r["prop_id"]))
-        if pr:
-            push("prop", r["prop_id"], pr["name"], pr["image_url"])
+        pid = r["prop_id"]
+        p = db.q1("SELECT name FROM props WHERE id=?", (pid,))
+        push("prop", pid, p["name"] if p else None, _variant_image_of(pid, sb, "prop"))
     return out
 
 

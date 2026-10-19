@@ -806,8 +806,8 @@ class AssetDetailDialog(QDialog):
         self._fp_gen_btns = (gen_fp, regen_fp)
         root.addWidget(fp_box)
 
-        # 角色变体
-        if kind == "character":
+        # 角色 / 场景 / 道具 变体 —— 同款按钮,只是打开的对话框按 kind 切表
+        if kind in ("character", "scene", "prop"):
             var_btn = QPushButton(tr("◑ 造型变体"))
             var_btn.clicked.connect(self._open_variants)
             root.addWidget(var_btn)
@@ -1187,9 +1187,12 @@ class AssetDetailDialog(QDialog):
 
     def _open_variants(self):
         from .variants_dialog import VariantsDialog
-        c = db.q1("SELECT * FROM characters WHERE id=?", (self.row["id"],))
-        if c:
-            VariantsDialog(self, dict(c)).exec()
+        # 复用 kind 字段(在 __init__ 里存为 self.kind):
+        # 角色 / 场景 / 道具 都能开变体对话框,表自动切。
+        tbl = {"character": "characters", "scene": "scenes", "prop": "props"}[self.kind]
+        row = db.q1(f"SELECT * FROM {tbl} WHERE id=?", (self.row["id"],))
+        if row:
+            VariantsDialog(self, dict(row), self.kind).exec()
             if self._on_changed:
                 self._on_changed()
 

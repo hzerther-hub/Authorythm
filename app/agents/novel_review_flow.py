@@ -92,7 +92,7 @@ def writer_node(state: NovelReviewState) -> dict:
     if task_id:
         try:
             from app.core import taskmgr as TM
-            TM.set_stage(task_id, "writing")
+            TM.set_stage(task_id, "writing", cycle)
         except Exception:  # noqa: BLE001
             pass
     write_chapter(episode_id, config_id=config_id, lang=lang)
@@ -112,7 +112,7 @@ def critic_node(state: NovelReviewState) -> dict:
     if task_id:
         try:
             from app.core import taskmgr as TM
-            TM.set_stage(task_id, "reviewing")
+            TM.set_stage(task_id, "reviewing", state.get("cycle", 0))
         except Exception:  # noqa: BLE001
             pass
     try:
@@ -163,7 +163,7 @@ def repair_node(state: NovelReviewState) -> dict:
     if task_id:
         try:
             from app.core import taskmgr as TM
-            TM.set_stage(task_id, "repairing")
+            TM.set_stage(task_id, "repairing", state.get("cycle", 0))
         except Exception:  # noqa: BLE001
             pass
 
@@ -205,6 +205,14 @@ def jev_gate_node(state: NovelReviewState) -> dict:
     项目决策门控(TypeSafe AI):长篇连续性自动判读。未配置时台账照常维护,
     跳过矛盾判定 —— 与已有 .env 兼容逻辑一致。
     """
+    # 上报阶段:修完后的连续性检查也是审校过程的一环,界面上要有「正在做什么」,
+    # 否则修复(可能十几秒)和 JEV 检查之间红框状态栏是静止的
+    if state.get("task_id"):
+        try:
+            from app.core import taskmgr as TM
+            TM.set_stage(state["task_id"], "jev_gate", state.get("cycle", 0))
+        except Exception:  # noqa: BLE001
+            pass
     try:
         from app.ai.jev_gate import get_jev_gate
         gate = get_jev_gate()
@@ -375,6 +383,7 @@ def run_novel_review_loop(*, episode_id: int, outline: str = "",
                 jev_out = jev_gate_node({
                     "episode_id": episode_id, "draft": draft,
                     "outline": outline, "task_id": task_id,
+                    "cycle": cycles,       # 阶段上报用:界面上显示「第 N 轮」
                 })
             except Exception:  # noqa: BLE001
                 jev_out = {"jev_decision": None}

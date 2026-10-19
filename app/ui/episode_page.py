@@ -238,6 +238,8 @@ ASSET_LABELS = {
     "upload": "上传", "upload_tip": "上传资产图",
     "face_swap": "换脸", "face_swap_tip": "换脸:用一张参考图替换当前形象",
     "variants": "◑ 造型变体", "variants_tip": "同一角色的多套服装造型",
+    "variants_tip_scene": "同一场景的多套状态(季节/装修/光线等)",
+    "variants_tip_prop": "同一道具的多套状态(升级/破损/版本等)",
     "prompt_ph": "首次生成图片时由提示词 Agent 自动生成",
     "redraw": "重绘", "generate": "生成", "prop": "道具", "desc_empty": "暂无描述",
     "gen_done": "已就绪", "gen_todo": "待生成",
@@ -1819,8 +1821,12 @@ class EpisodePage(QWidget):
                 return novel_pipe.write_chapter_with_review(
                     self.episode_id, config_id=snap_text_cfg, task_id=tid,
                     content=text)
-            TASKMGR.submit("novel", job, lambda t, r, e: self._novel_done(r, e),
-                           episode_id=self.episode_id, drama_id=self.drama_id)
+            tid = TASKMGR.submit("novel", job, lambda t, r, e: self._novel_done(r, e),
+                                 episode_id=self.episode_id, drama_id=self.drama_id)
+            # 审校是多轮循环(critic → repair → JEV 门控,最多 3 轮),全程可能
+            # 好几分钟。只靠上面那句静态提示,用户看不出它是在干活还是卡死了
+            # (实测反馈:「审校中的过程出现在红色框中」)。轮询任务阶段刷进红框。
+            self._poll_review_stage(tid)
 
         def on_failed(msg):
             self._novel_stream = None
@@ -1832,6 +1838,63 @@ class EpisodePage(QWidget):
         # 启动前先在红框里给个静态占位,流一来就被 on_delta 覆盖
         self._set_raw_status("⏳ 等待模型响应…")
         worker.start()
+
+    # 审校阶段 → 红框状态栏文案。stage 写在 sys_task.params.stage(review flow
+    # 各节点上报),cycle 写在 params.stage_cycle。轮次上限与
+    # novel.write_chapter_with_review 的 max_cycles=3 保持一致。
+    _REVIEW_STAGE_CN = {
+        "writing":     "✍️ 第{n}轮 · 重写正文中…",
+        "reviewing":   "🔍 第{n}轮 · 六维审校中…",
+        "repairing":   "🛠 第{n}轮 · 审校发现问题,修复中…",
+        "jev_gate":    "🧭 第{n}轮 · 剧情连续性检查…",
+        "compressing": "🗜 第{n}轮 · 压缩上下文中…",
+    }
+
+    @classmethod
+    def _review_stage_text(cls, params_raw: str | None) -> str:
+        """sys_task.params → 红框状态文案;阶段未知/解析失败返回空(保留原提示)。"""
+        import json as _json
+        try:
+            params = _json.loads(params_raw or "{}")
+        except Exception:  # noqa: BLE001
+            return ""
+        stage = str(params.get("stage") or "")
+        if not stage:
+            return ""
+        try:
+            cycle = int(params.get("stage_cycle") or 0)
+        except (TypeError, ValueError):
+            cycle = 0
+        tmpl = cls._REVIEW_STAGE_CN.get(stage)
+        if tmpl is None:
+            return ""
+        return tmpl.format(n=f"{cycle}/3" if cycle > 0 else "?")
+
+    def _poll_review_stage(self, tid: int):
+        """审校进行中:每 2 秒读一次 sys_task.params.stage,把过程刷进红框状态栏。
+
+        只在主线程跑(QTimer),读库在 UI 线程是本页既有做法;job 的更新侧
+        (worker 线程)只写 DB,不碰控件 —— 两边靠 sys_task 这张表解耦。
+        任务结束(_novel_done 置 _novel_in_flight=False)轮询自然停止。
+        """
+        from PySide6.QtCore import QTimer
+
+        def tick():
+            if not self._novel_in_flight:
+                return
+            try:
+                row = db.q1("SELECT status, params FROM sys_task WHERE id=?", (tid,))
+            except Exception:  # noqa: BLE001 —— 轮询失败不该打断任务本身
+                row = None
+            if row is None:
+                return
+            text = self._review_stage_text(row["params"])
+            if text:
+                self._set_raw_status(text)
+            if row["status"] == "processing":
+                QTimer.singleShot(2000, tick)
+
+        QTimer.singleShot(2000, tick)
 
     def _novel_done(self, result, error):
         self._novel_in_flight = False
@@ -2911,6 +2974,9 @@ class EpisodePage(QWidget):
         TASKMGR.submit("extract", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _reload_assets(self):
+        # 变体有无的判定缓存在 _has_variants;变体增删后必须失效,
+        # 否则「造型变体」按钮该出现时不出现、该消失时还赖着。
+        self.__dict__.pop("_var_has_cache", None)
         if not getattr(self, "asset_sections", None):
             return
         from . import episode_cards as C
@@ -2961,9 +3027,13 @@ class EpisodePage(QWidget):
                                               on_upload=self._cb_upload(r, kind),
                                               on_face_swap=(lambda rid=r["id"]: self._face_swap(rid))
                                               if kind == "characters" else None,
-                                              on_variants=(lambda cid=r["id"]: self._open_variants(cid))
+                                              # 「造型变体」按钮**永远展示** —— 这是添加
+                                              # 第一个变体的入口;_has_variants 判定只
+                                              # 控下拉/分镜侧栏的可见性,因为分镜里的
+                                              # picker 选不出东西就没意义。
+                                              on_variants=(lambda cid=r["id"]: self._open_variants(cid, "character"))
                                               if kind == "characters" else None,
-                                              on_comic_view=(lambda cid=r["id"]: self._open_variants(cid))
+                                              on_comic_view=(lambda cid=r["id"]: self._open_variants(cid, "character"))
                                               if kind == "characters" else None,
                                               on_prompt=self._cb_prompt(r, kind),
                                               on_open=self._cb_open(r, kind),
@@ -2978,6 +3048,8 @@ class EpisodePage(QWidget):
                                         on_prompt=self._cb_prompt(r, kind),
                                         on_open=self._cb_open(r, kind),
                                         on_delete=self._cb_delete_asset(r, kind),
+                                        on_variants=(lambda rid=r["id"]: self._open_variants(rid, kind[:-1]))
+                                        if kind in ("scenes", "props") else None,
                                         busy=_busy))
                 grid.addWidget(card, n // cols[kind], n % cols[kind])
                 n += 1
@@ -3057,11 +3129,36 @@ class EpisodePage(QWidget):
         """资产生图统一跟随顶栏的图片模型(资产页重复下拉已移除)。"""
         return self.image_model.currentData()
 
-    def _open_variants(self, character_id: int):
+    _VAR_TABLES = {"character": "character_variants", "scene": "scene_variants",
+                   "prop": "prop_variants"}
+    _VAR_REF_COL = {"character": "character_id", "scene": "scene_id", "prop": "prop_id"}
+
+    def _has_variants(self, ref_id: int, kind: str) -> bool:
+        """该角色/场景/道具 是否已经有变体。
+
+        只有一张资产图时**不给「造型变体」按钮**:变体存在的意义是从多套形象里
+        挑一套,只有一套时点进去只能看到一个空列表(用户反馈「只有一张人物资产时
+        不要变型」)。按钮本身在 episode_cards 里由 `if on_variants:` 决定要不要建,
+        所以这里直接在传参处置 None 即可,不必改卡片类。
+
+        结果按 (kind, ref_id) 缓存 —— 一屏几十张卡时每张都查一次库没必要。
+        缓存在 _reload_assets 开头失效(变体增删后要能重新出现/消失按钮)。
+        """
+        cache = self.__dict__.setdefault("_var_has_cache", {})
+        key = (kind, ref_id)
+        if key not in cache:
+            n = db.q1(f"SELECT COUNT(*) c FROM {self._VAR_TABLES[kind]} "
+                      f"WHERE {self._VAR_REF_COL[kind]}=?", (ref_id,))["c"]
+            cache[key] = n > 0
+        return cache[key]
+
+    def _open_variants(self, ref_id: int, kind: str = "character"):
+        """打开造型/状态变体对话框 —— 角色/场景/道具 三种 kind 都支持。"""
         from .variants_dialog import VariantsDialog
-        c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
-        if c:
-            VariantsDialog(self, dict(c)).exec()
+        tbl = {"character": "characters", "scene": "scenes", "prop": "props"}[kind]
+        row = db.q1(f"SELECT * FROM {tbl} WHERE id=?", (ref_id,))
+        if row:
+            VariantsDialog(self, dict(row), kind).exec()
             self._reload_assets()
 
     def _gen_prompt(self, row_id: int, kind: str):
@@ -4108,7 +4205,10 @@ class EpisodePage(QWidget):
         self.sb_bound_scroll.setFrameShape(QFrame.NoFrame)
         self.sb_bound_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.sb_bound_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.sb_bound_scroll.setFixedHeight(122)
+        # 高度不写死,由 _sync_bound_refs_height 按实际内容调:
+        # 写死 122 时,没有绑定素材也是同样高度的一片空白(浅色底一大块),
+        # 用户反馈「白色的区域要跟文字一样高」。
+        self.sb_bound_scroll.setFixedHeight(32)
         self.sb_bound_scroll.setStyleSheet(
             "QScrollArea{border:none;background:transparent;}"
             "QScrollArea QScrollBar:horizontal{height:9px;}")
@@ -4162,6 +4262,10 @@ class EpisodePage(QWidget):
         self.sb_effective = QLabel("")
         self.sb_effective.setObjectName("effective")
         self.sb_effective.setAlignment(Qt.AlignCenter)
+        # 单行 chip:不允许被父布局纵向拉成大白块(实测三栏等高时,Preferred + 无
+        # 最大高度会把整段拉成「几十像素高的大白按钮」假象),只取文字 + padding 高度。
+        self.sb_effective.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self.sb_effective.setMaximumHeight(28)
         rl3.addWidget(self.sb_effective)
         self.sb_action_btn = WaitingButton(tr("generate"), primary=True)
         self.sb_action_btn.clicked.connect(self._generate_selected)
@@ -5038,7 +5142,9 @@ class EpisodePage(QWidget):
             empty.setAlignment(Qt.AlignCenter)
             lay.addWidget(empty)
             lay.addStretch(1)
+            self._sync_bound_refs_height(empty_only=True)
             return
+        has_picker = False
         for row, kind in cells:
             host = QWidget()
             host.setStyleSheet("border:none;")
@@ -5049,11 +5155,12 @@ class EpisodePage(QWidget):
             thumb = QLabel()
             thumb.setFixedSize(78, 60)
             thumb.setAlignment(Qt.AlignCenter)
-            # 角色按「人工指定变体 → 按场景标签自动匹配 → 基础形象」的顺序取图,
-            # 与 refs._variant_image_of 同一套优先级,保证缩略图 = 实际送进视频的参考图
-            if kind == "character":
+            # 角色 / 场景 / 道具 都按「人工指定变体 → 按场景标签自动匹配 →
+            # 基础形象」的顺序取图,与 refs._variant_image_of 同一套优先级,
+            # 保证缩略图 = 实际送进视频的参考图
+            if kind in ("character", "scene", "prop"):
                 from ..pipeline import refs as _refs
-                url = _refs._variant_image_of(row["id"], r)
+                url = _refs._variant_image_of(row["id"], r, kind)
             else:
                 url = row.get("image_url")
             thumb.setPixmap(W.pixmap_from_media(url, 78, 60))
@@ -5063,28 +5170,72 @@ class EpisodePage(QWidget):
             nm.setAlignment(Qt.AlignCenter)
             nm.setToolTip(row.get("name") or row.get("location") or "")
             hl.addWidget(nm)
-            if kind == "character":
-                hl.addWidget(self._variant_picker(row["id"]))
+            # 该 ref 一条变体都没有 → 不给下拉(只有「自动解析」一项,点了不变),
+            # 见 _variant_picker 的说明
+            picker = None
+            if kind in ("character", "scene", "prop"):
+                picker = self._variant_picker(row["id"], kind)
+            if picker is not None:
+                hl.addWidget(picker)
+                has_picker = True
             else:
                 hl.addStretch(1)
             lay.addWidget(host)
         lay.addStretch(1)
 
-    def _variant_picker(self, character_id: int) -> QComboBox:
-        """单个角色的造型变体选择器(对齐参考项目的「自动解析」下拉)。
+    def _sync_bound_refs_height(self, *, empty_only: bool = False,
+                                has_picker: bool = False):
+        """绑定参考图区的高度跟着内容走。
+
+        原来在构造期写死 `setFixedHeight(122)` —— 那是「缩略图 60 + 名字 + 变体下拉
+        22」满配时的高度。没有素材时也是同样 122px 的一片空白,只有一张资产、
+        不显示变体下拉时也仍然撑着 122px(用户反馈「白色的区域要跟文字一样高」)。
+        """
+        if empty_only:
+            h = 32                       # 只够一行「暂无绑定素材」文字
+        else:
+            h = 60 + 2 + 14 + 2 + (22 if has_picker else 0) + 8
+        self.sb_bound_scroll.setFixedHeight(h)
+
+    def _variant_picker(self, ref_id: int, kind: str = "character"):
+        """单个角色/场景/道具 的造型/状态变体选择器(对齐参考项目的「自动解析」下拉)。
+
+        kind ∈ {"character", "scene", "prop"} —— 三个表的 schema 平行,
+        一个 picker 复用三次,只是 link_t / var_t / ref_col 三处不同。
 
         首项「自动解析」= 不写variant_id,交由 refs 按分镜 setting_tags 自动匹配;
-        其余项为该角色的造型变体,选中即人工锁定。
+        其余项为该 ref 的变体,选中即人工锁定。
+
+        **该 ref 一条变体都没有时返回 None**(不建控件):此时下拉里只有
+        「自动解析」一项,选什么都不变 —— 只有一张资产图时它是个纯粹的死控件
+        (用户反馈「只有一张人物资产时不要变型」)。
+        注意悬空 variant_id 的清理必须照做:那个字段可能指向已删除的变体,
+        清掉它和「要不要显示下拉」是两件独立的事。
         """
-        cur = db.q1("SELECT variant_id FROM storyboard_characters "
-                    "WHERE storyboard_id=? AND character_id=?", (self._sb_id, character_id))
+        cfg = {
+            "character": ("storyboard_characters", "character_variants", "character_id"),
+            "scene":     ("storyboard_scenes",   "scene_variants",     "scene_id"),
+            "prop":      ("storyboard_props",    "prop_variants",      "prop_id"),
+        }[kind]
+        link_t, var_t, ref_col = cfg
+        cur = db.q1(f"SELECT variant_id FROM {link_t} "
+                    f"WHERE storyboard_id=? AND {ref_col}=?", (self._sb_id, ref_id))
         cur_vid = (cur["variant_id"] if cur else None) or None
+        variants = db.q(f"SELECT id,label FROM {var_t} WHERE {ref_col}=? "
+                        f"ORDER BY is_default DESC, sort_order ASC, id", (ref_id,))
+        if not variants:
+            # 一条变体都没有 → 只剩「自动解析」一项的死控件,直接不给。
+            # 悬空的 variant_id 仍然要清:变体可能刚被删掉,
+            # 不清的话 refs 会拿着一个不存在的 variant_id 去查图。
+            if cur_vid is not None:
+                db.ex(f"UPDATE {link_t} SET variant_id=NULL "
+                      f"WHERE storyboard_id=? AND {ref_col}=?", (self._sb_id, ref_id))
+            return None
         combo = QComboBox()
         combo.setFixedSize(78, 22)
         combo.setToolTip(tr("auto_resolve_variant"))
         combo.addItem(tr("auto_resolve_variant"), None)
-        for v in db.q("SELECT id,label FROM character_variants WHERE character_id=? "
-                       "ORDER BY is_default DESC, sort_order ASC, id", (character_id,)):
+        for v in variants:
             combo.addItem((v["label"] or "")[:9], v["id"])
         if cur_vid is not None:
             idx = combo.findData(cur_vid)
@@ -5092,21 +5243,25 @@ class EpisodePage(QWidget):
                 combo.setCurrentIndex(idx)
             else:
                 # 变体已被删除:退回自动解析,并清掉悬空的 variant_id
-                db.ex("UPDATE storyboard_characters SET variant_id=NULL "
-                      "WHERE storyboard_id=? AND character_id=?", (self._sb_id, character_id))
-        if combo.count() == 1:
-            combo.setToolTip(tr("no_variants_yet"))
+                db.ex(f"UPDATE {link_t} SET variant_id=NULL "
+                      f"WHERE storyboard_id=? AND {ref_col}=?", (self._sb_id, ref_id))
         combo.currentIndexChanged.connect(
-            lambda _i, cid=character_id, cb=combo: self._set_sb_variant(cid, cb.currentData()))
+            lambda _i, _id=ref_id, _k=kind, cb=combo: self._set_sb_variant(_id, cb.currentData(), _k))
         return combo
 
-    def _set_sb_variant(self, character_id: int, variant_id):
-        """写入分镜↔角色的变体覆盖,并重绘参考图缩略图。"""
+    def _set_sb_variant(self, ref_id: int, variant_id, kind: str = "character"):
+        """写入分镜↔角色/场景/道具 的变体覆盖,并重绘参考图缩略图。"""
         if not self._sb_id:
             return
-        db.ex("UPDATE storyboard_characters SET variant_id=? "
-              "WHERE storyboard_id=? AND character_id=?",
-              (variant_id, self._sb_id, character_id))
+        cfg = {
+            "character": ("storyboard_characters", "character_id"),
+            "scene":     ("storyboard_scenes",   "scene_id"),
+            "prop":      ("storyboard_props",    "prop_id"),
+        }[kind]
+        link_t, ref_col = cfg
+        db.ex(f"UPDATE {link_t} SET variant_id=? "
+              f"WHERE storyboard_id=? AND {ref_col}=?",
+              (variant_id, self._sb_id, ref_id))
         row = db.q1("SELECT * FROM storyboards WHERE id=?", (self._sb_id,))
         if row:
             self._render_bound_refs(dict(row))
@@ -5352,6 +5507,7 @@ class EpisodePage(QWidget):
             if btn is not None and hasattr(btn, "idle"):
                 btn.idle()
             if error:
+                # 弹窗宽度有限,只显末行真实异常(toast.map_error 会再翻译)
                 err("▣ 尾帧失败:" + str(error)[:280])
             self._reload_storyboard()
             if self._sb_id == sb_id:

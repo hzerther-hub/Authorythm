@@ -212,8 +212,8 @@ DDL: list[str] = [
       emotion_tags TEXT, video_seed INTEGER, status TEXT DEFAULT 'pending',
       created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
     """CREATE TABLE IF NOT EXISTS storyboard_characters (storyboard_id INTEGER NOT NULL, character_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, character_id))""",
-    """CREATE TABLE IF NOT EXISTS storyboard_scenes (storyboard_id INTEGER NOT NULL, scene_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, scene_id))""",
-    """CREATE TABLE IF NOT EXISTS storyboard_props (storyboard_id INTEGER NOT NULL, prop_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, prop_id))""",
+    """CREATE TABLE IF NOT EXISTS storyboard_scenes (storyboard_id INTEGER NOT NULL, scene_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, scene_id))""",
+    """CREATE TABLE IF NOT EXISTS storyboard_props (storyboard_id INTEGER NOT NULL, prop_id INTEGER NOT NULL, variant_id INTEGER, PRIMARY KEY(storyboard_id, prop_id))""",
     # 漫画格
     """CREATE TABLE IF NOT EXISTS comic_panels (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -483,6 +483,11 @@ def init_db() -> None:
                 "ALTER TABLE storyboards ADD COLUMN video_seed INTEGER",
                 # storyboard_scenes 表 DDL 漏了 → 老库建表后缺失;补上
                 "CREATE TABLE IF NOT EXISTS storyboard_scenes (storyboard_id INTEGER NOT NULL, scene_id INTEGER NOT NULL, PRIMARY KEY(storyboard_id, scene_id))",
+                # 道具 / 场景 的分镜↔变体覆盖列(对齐 storyboard_characters.variant_id):
+                # 没有这两列时,scene_variants / prop_variants 永远只是「无人选」的摆设,
+                # refs._variant_image_of 也无法做道具/场景的造型/状态切换。
+                "ALTER TABLE storyboard_scenes ADD COLUMN variant_id INTEGER",
+                "ALTER TABLE storyboard_props ADD COLUMN variant_id INTEGER",
                 "ALTER TABLE dramas ADD COLUMN language TEXT DEFAULT 'auto'",
                 "ALTER TABLE dramas ADD COLUMN intro_title TEXT",
                 "ALTER TABLE dramas ADD COLUMN intro_font TEXT",

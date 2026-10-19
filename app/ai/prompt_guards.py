@@ -39,11 +39,16 @@ BODY_INTEGRITY_GUARD = (
 
 # 单人物负面词:positive 强调人物数量约束,negative 显式列出禁止出现的「额外人类」。
 # 绝大多数出图模型原生支持 negative_prompt,命中后权重远高于在 positive 末尾追加同类描述。
+# 实际场景:模型最爱往「窗户/门/远景/画面边缘/模糊背景」塞人 —— 「bystander」拦不下,
+# 必须把具体藏人位置一一列名,实测有效把 5+ 个路人砍回到 1。
 IMAGE_NEGATIVE_GUARD = (
     "multiple people, second person, extra person, bystander, onlooker, crowd, audience, "
     "duplicate character, copy of subject, second copy, doppelganger, ghostly double, "
     "transparent figure in background, blurred person watching, mannequin, silhouette in mist, "
-    "extra heads, crowd in background, friends standing behind, coworkers watching"
+    "extra heads, crowd in background, friends standing behind, coworkers watching, "
+    "people in background, people in distance, people in doorway, people in window, "
+    "people at edges of frame, people in periphery, blurry figures in background, "
+    "out-of-focus person behind, face visible through window, person standing behind glass"
 )
 
 # 角色「形象图/三视图」白底守卫 —— 公共词表里没有背景条目,形象图生成点共用
@@ -138,12 +143,14 @@ def build_image_quality_guard(people: int = 1) -> str:
                      f"no additional figures beyond the {people} characters, "
                      "no duplicate character, no blurred figures watching")
     else:
-        figure_cn = "画面中自始至终只有 1 个人(主角本人),背景、远景、雾气和倒影里都没有任何其他人"
+        figure_cn = ("画面中自始至终只有 1 个人(主角本人),背景、远景、雾气和倒影里都没有任何其他人,"
+                     "窗户、门口、画面边缘和模糊背景里也不出现任何人脸或人形")
         figure_en = ("Single-figure composition: exactly one person in frame, no onlookers, "
                      "no extras, no bystanders, no background silhouettes of people, no crowd, "
                      "no ghostly doppelganger in mist, no duplicate character, "
                      "no blurred figures watching, no second copy of the subject in the background "
-                     "or periphery")
+                     "or periphery, no face visible through window, no person in doorway, "
+                     "no one standing at the edges or behind the main character")
     return (
         "画面质量要求：手部五指、脚部五趾，没有六指、并指、缺指或融合畸形；两臂两腿，"
         f"没有三只手三条腿、多余肢体、复制或扭曲；{figure_cn},五官稳定不畸变、不融化；"
@@ -176,6 +183,12 @@ def build_image_negative_guard(people: int = 1) -> str:
             "second copy of same character, mirror image of character, "
             "blurred person watching, mannequin, silhouette in mist, "
             "extra heads, crowd in background, friends standing behind, coworkers watching, "
+            # 用户实测:模型最喜欢在「窗户 / 门 / 远景 / 画面边缘 / 模糊背景」里塞
+            # 路人 —— 单写 bystander 拦不下,得把「具体藏人位置」点名禁掉。
+            # 这条加在多人分支,挡住 2 人 → 5 人 这种扩散。
+            "people in background, people in distance, people in doorway, "
+            "people in window, people at edges of frame, people in periphery, "
+            "blurry figures in background, out-of-focus person behind, "
             "no character turnaround sheet in background, no reference photo in scene"
         )
     return IMAGE_NEGATIVE_GUARD
