@@ -6668,6 +6668,8 @@ class EpisodePage(QWidget):
     def _split_panels(self):
         # 等待态:拆格是一次 88 秒级的 LLM 调用(实测 sys_task#1430),以前按钮
         # 无任何变化、可重复点击,用户以为没点上(实测反馈「没有看到等待过程」)。
+        from ..core.logging_setup import get_logger
+        get_logger("ui.comic").info("comic.split_start episode=%s", self.episode_id)
         btn = getattr(self, "re_panel_btn", None)
         if btn:
             btn.setEnabled(False)
@@ -6752,8 +6754,14 @@ class EpisodePage(QWidget):
         """
         rows = db.q("SELECT id FROM comic_panels WHERE episode_id=? AND image_url IS NULL", (self.episode_id,))
         if not rows:
-            info(tr("没有待生成的资产"))
+            # 措辞要指路:只说「没有待生成的资产」用户不知道下一步该干嘛
+            # (实测:在没有漫画格的分集点批量出图,toast 一闪就没了,
+            # 用户以为按钮坏了 —— 「批量提示状态没有出现」)
+            info(tr("本集还没有漫画格,请先点「生成分镜」拆格"))
             return
+        from ..core.logging_setup import get_logger
+        get_logger("ui.comic").info(
+            "comic.batch_start episode=%s panels=%d", self.episode_id, len(rows))
         if not hasattr(self, "_comic_busy"):
             self._comic_busy = set()
         ids = [r["id"] for r in rows]
@@ -6825,6 +6833,9 @@ class EpisodePage(QWidget):
         from .toast import info, warn
         from .confirm import ask
         from ..core.taskmgr import TASKMGR
+        from ..core.logging_setup import get_logger
+        get_logger("ui.comic").info(
+            "comic.full_start episode=%s", self.episode_id)
 
         if not self.episode_id:
             warn("请先进入项目并选中一集")
