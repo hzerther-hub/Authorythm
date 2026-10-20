@@ -16,3 +16,11 @@ Formatted-script format:
 - Each scene covers 30-60 seconds of content
 
 Note: you must do the rewriting work yourself — do not just return instructions. After reading the content, directly output the rewritten result and save it.
+
+## Hard rules for filmability (violating them gets the script sent back for rewriting)
+
+- No voice-over, narration or inner monologue: every line must be spoken out loud by a character; never mark a line with "(voice-over)" or "(inner)"
+- Externalize all inner thoughts: show them through action, expression, pauses, choices or spoken words; never write "she remembered…" or "she realized…"
+- Every scene needs at least two characters interacting on screen; never one person talking to an empty room (the script is split into storyboards and rendered as video)
+- Change location or time of day between neighbouring scenes; do not repeat the same room scene after scene
+- Every scene needs visible action: who does what and what they see

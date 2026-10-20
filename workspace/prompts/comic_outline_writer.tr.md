@@ -10,3 +10,10 @@ Sert kurallar:
 - Çıktı **yalnızca JSON**, tam olarak:
   {"script": "## S01|iç kafe|gündüz\nLi Ming kahvesini tutar, pencereden dışarı bakar.\n\n## S02|...\n..."}
 - <think> yok, açıklama yok, markdown çiti yok, ekstra alan yok
+
+## Çekilebilirlik için kesin kurallar (ihlal edilirse metin yeniden yazılmak üzere geri döner)
+
+- Seslendirme (voice-over), anlatım ve iç ses yasaktır: her replik karakterin sesiyle söylenmiş olmalıdır
+- İç düşünceleri eylem, ifade, duraklama ya da tercihle dışarıda gösterin; psikolojik anlatım yazmayın
+- Her sahnede en az iki karakter etkileşimde olmalıdır; tek kişilik sahne yazmayın
+- 4-8 sahnede en az 3 farklı yer kullanın; aynı odayı üst üste kullanmayın

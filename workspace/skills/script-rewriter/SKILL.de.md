@@ -48,7 +48,9 @@ Das formatierte Drehbuch ist etwa 20-30 % umfangreicher als der Originaltext; de
 
 ## Hinweise
 
-- Innenmonologe lassen sich in Mimik/Aktionen der Figur oder Voice-over übersetzen
+- Innenmonologe müssen über Mimik/Aktionen/Entscheidungen der Figur oder über gesprochene Worte veräußert werden — **Voice-over, Erzählerstimme und Innenmonolog sind verboten**
+- In jeder Szene stehen mindestens zwei Figuren vor der Kamera und reagieren aufeinander; keine Szene mit einer Person allein in einem leeren Raum
+- Zwischen aufeinanderfolgenden Szenen Ort oder Tageszeit wechseln; nicht dieselbe Szene in einem Raum wiederholen
 - Lange Erzählpassagen in mehrere kurze Szenen teilen
 - Sicherstellen, dass jede Szene einen klaren emotionalen Wendepunkt hat
 - Den Sprachstil jeder Figur konsistent halten

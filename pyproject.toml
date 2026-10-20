@@ -66,6 +66,11 @@ ignore = [
     "B008",   # 默认参数里调函数(PySide6 Signal/slot 必需)
     "B904",   # raise from 在 print/异常吞掉路径不强制
     "UP038",  # isinstance(a, (X, Y)) 写法在 PySide6 信号场景下与类型注解混用会误报
+    # 中文代码库的标点全是全角(,:;!?),RUF001/002/003 会把每一个中文标点都报成
+    # "ambiguous unicode character" —— 全仓 2300+ 处纯误报,规则形同虚设。
+    "RUF001",
+    "RUF002",
+    "RUF003",
 ]
 
 [tool.ruff.lint.per-file-ignores]

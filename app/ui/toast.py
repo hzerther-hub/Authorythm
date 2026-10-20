@@ -144,6 +144,17 @@ class ToastManager:
     def toast(cls, text: str, kind: str = "info", msec: int = 3600):
         if cls._host is None:
             return
+        # worker 线程里调 toast 会在**非主线程创建 QWidget** —— Qt 不支持,
+        # 轻则 toast 不显示,重则进程崩。批量任务的失败提示以前就是这么调的
+        # (episode_page 的批量生图 job 里直接 err(...))。
+        # 统一:非主线程 → 调度回主线程再建。
+        from PySide6.QtCore import QThread
+        from PySide6.QtWidgets import QApplication
+        _app = QApplication.instance()
+        if _app is not None and QThread.currentThread() is not _app.thread():
+            from ..core.taskmgr import on_main
+            on_main(lambda: cls.toast(text, kind, msec))
+            return
         # 最多 5 条(弹出前把已销毁的僵尸引用清掉,否则 len 虚高挤掉活 toast)
         alive = []
         for t in cls._stack:

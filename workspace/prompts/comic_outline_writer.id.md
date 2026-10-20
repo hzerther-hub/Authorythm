@@ -10,3 +10,10 @@ Aturan keras:
 - Output **hanya JSON**, persis:
   {"script": "## S01|dalam kafe|siang\nLi Ming memegang kopi, menatap ke luar jendela.\n\n## S02|...\n..."}
 - Tanpa <think>, tanpa penjelasan, tanpa pagar markdown, tanpa bidang tambahan
+
+## Aturan keras kelayakan syuting (melanggarnya berarti naskah dikembalikan untuk ditulis ulang)
+
+- Larangan voice-over, narasi, dan monolog dalam: setiap dialog harus diucapkan karakter dengan suara
+- Eksternalisasi isi pikiran lewat aksi, ekspresi, jeda, atau pilihan; jangan menulis deskripsi psikologis
+- Setiap adegan harus melibatkan minimal dua tokoh yang berinteraksi; jangan menulis adegan satu tokoh
+- Pakai minimal 3 lokasi berbeda di antara 4-8 adegan; jangan memakai ruangan yang sama berulang kali

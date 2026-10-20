@@ -10,7 +10,7 @@ import json
 import traceback
 from collections.abc import Callable
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
 
 from . import db
 
@@ -158,24 +158,50 @@ class TaskSignals(QObject):
     done_cb = Signal(object, object, object)   # task_id, result, error
 
 
-def on_main(fn):
-    """把 UI 更新调度回主线程(后台线程直接调 Qt 会跨线程报错)。
+class _MainDispatcher(QObject):
+    """主线程调度器:任何线程 emit,都在**主线程**执行槽。
 
-    异常必须显式暴露,否则 QTimer.singleShot 会把它静默吞掉,表现为"点了没反应"。
+    **必须用 queued 信号,不能用 QTimer.singleShot** ——
+    QTimer.singleShot 创建的定时器归属**调用线程**,worker 线程没有事件循环,
+    定时器永远不触发 → 回调静默不执行(实测 2026-10-20:分镜首帧「生成一张
+    显示一张」的单镜缩略图刷新、Agnes 参数体检提示,全都栽在这上面 ——
+    提示与缩略图永远不出现,用户看到的是「按了没反应」)。
     """
-    from PySide6.QtCore import QTimer
-    from PySide6.QtWidgets import QApplication
-    app = QApplication.instance()
-    if app is None:
-        return
 
-    def _wrapped():
+    _sig = Signal(object)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._sig.connect(self._run, Qt.QueuedConnection)
+
+    def _run(self, fn) -> None:
         try:
             fn()
         except Exception:  # noqa: BLE001
             import traceback
             traceback.print_exc()
-    QTimer.singleShot(0, _wrapped)
+
+
+# 本模块在主线程 import(main.py 启动链),所以调度器归属主线程 —— queued
+# 连接才能把回调投递回主线程。
+_DISPATCHER = _MainDispatcher()
+
+
+def on_main(fn):
+    """把 UI 更新调度回主线程(后台线程直接调 Qt 会跨线程报错)。
+
+    线程安全:主线程/worker 线程调用都有效,统一经 queued 信号投递到主线程,
+    在下一个事件循环迭代执行。
+
+    异常必须显式暴露,否则会被静默吞掉,表现为"点了没反应"。
+    """
+    from PySide6.QtWidgets import QApplication
+    if QApplication.instance() is None:
+        return
+    try:
+        _DISPATCHER._sig.emit(fn)
+    except RuntimeError:  # noqa: BLE001 —— 进程退出中,C++ 端已删
+        pass
 
 
 class _FnTask(QRunnable):

@@ -14,9 +14,24 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
                                QSizePolicy, QVBoxLayout, QWidget)
 
+from ..core import config
 from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
+
+
+def _utc_offset_label() -> str:
+    """本机时区偏移,形如 UTC+08:00。
+
+    不用 time.tzname:Windows 上会返回本地化的「中国标准时间」,
+    塞进这条等宽状态栏不好看;UTC 偏移本身也跨平台一致。
+    """
+    from datetime import datetime, timedelta
+    off = datetime.now().astimezone().utcoffset() or timedelta(0)
+    mins = int(off.total_seconds() // 60)
+    sign = "+" if mins >= 0 else "-"
+    hh, mm = divmod(abs(mins), 60)
+    return f"UTC{sign}{hh:02d}:{mm:02d}"
 
 
 class _Panel(QFrame):
@@ -340,8 +355,23 @@ class DashboardWidget(QWidget):
             "font-size:10px; color:#6B727A; letter-spacing:0.5px;"
             "padding:8px 0; border-top:1px solid #DCDAD3;"
         )
+        # 池容量/运行数/数据目录/时区一律取真实值。
+        # 这里原是硬编码的 "TASK POOL 6/6 · QUEUED 0 · DATA ~/Library/Application
+        # Support/PyDrama · TZ Asia/Shanghai" —— 从 macOS 版整段抄过来的,
+        # 在 Windows 上会把根本不存在的 macOS 路径和时区显示给用户。
+        pool_max, pool_active = 6, 0
+        try:
+            from ..core.taskmgr import TASKMGR
+            pool_max = TASKMGR.pool.maxThreadCount()
+            pool_active = TASKMGR.pool.activeThreadCount()
+        except Exception:  # noqa: BLE001
+            pass
+        # create_task() 在 submit 时就把 status 置为 'processing',
+        # 所以库里 'processing' 的条数含"池里排队但还没开跑"的,
+        # 减去线程池已占用的线程数才是真正的排队数。
+        cnt_queued = max(0, cnt_prog - pool_active)
         sb.setText(
-            f"TASK POOL 6/6   ·   QUEUED 0   ·   RUNNING {cnt_prog}   ·   "
-            f"DATA ~/Library/Application Support/PyDrama   ·   TZ Asia/Shanghai"
+            f"TASK POOL {pool_max}/{pool_max}   ·   QUEUED {cnt_queued}   ·   "
+            f"RUNNING {pool_active}   ·   DATA {config.DATA_DIR}   ·   TZ {_utc_offset_label()}"
         )
         root.addWidget(sb)

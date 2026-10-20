@@ -48,7 +48,9 @@ Kịch bản định dạng dài hơn nội dung gốc khoảng 20-30%, phần t
 
 ## Lưu ý
 
-- Mô tả tâm lý có thể chuyển hóa thành biểu cảm/hành động của nhân vật hoặc lời dẫn ngoài hình
+- Mô tả tâm lý phải được hiện thực hóa qua biểu cảm/hành động/lựa chọn của nhân vật hoặc lời thoại nói ra — **cấm lời dẫn/lời tường thuật/lời thoại nội tâm**
+- Mỗi cảnh phải có ít nhất hai nhân vật tương tác trước máy quay; không viết cảnh một người tự nói trong phòng trống
+- Đổi bối cảnh hoặc thời gian giữa các cảnh liên tiếp; không dùng lặp đi lặp lại cùng một căn phòng
 - Đoạn tự sự dài tách thành nhiều cảnh ngắn
 - Bảo đảm mỗi cảnh có điểm ngoặt cảm xúc rõ ràng
 - Giữ phong cách ngôn ngữ của nhân vật nhất quán

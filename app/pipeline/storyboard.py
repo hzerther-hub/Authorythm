@@ -6,7 +6,7 @@ import json
 import re
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 from ..core.logging_setup import get_logger
 
 log = get_logger(__name__)
@@ -209,7 +209,7 @@ def _save_board(b: dict, num: int, episode_id: int, ts: str, name_to_id: dict,
 
 def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | None = None,
                       lang: str | None = None, on_progress=None,
-                      on_chunk_failed=None) -> int:
+                      on_chunk_failed=None, on_purged=None) -> int:
     """整集重新拆分分镜;返回数量(对齐原版 save_storyboards:全量替换 + 资产绑定)。
 
     与原版对齐的关键点:
@@ -218,7 +218,8 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
       setting_tags 为空时从场景继承 —— 缺这些字段时 `refs.build_shot_reference_list`
       拿不到绑定、reference injection 就是空的,生图只能每次现调 Agent。
     - 同步写 `storyboard_characters`(带 variant_id)与 `storyboard_props`;
-    - 按 shot_number **幂等 upsert**(重拆不丢已生成的视频/首帧);
+    - **先清空本集旧分镜与已生成的视频文件**(purge_episode_storyboards),
+      再从零拆 —— 用户要求「重新拆分」= 彻底重来(2026-10-20);
     - 重算 `episodes.duration = ceil(Σ分镜时长 / 60)`。
     """
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
@@ -227,6 +228,17 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     script = ep["script_content"] or ""
     if not script.strip():
         raise RuntimeError("请先完成剧本改写")
+    # ── 从零重来:清掉本集旧分镜 + 已生成的视频/首帧文件 ──
+    # 以前是「按镜号幂等 upsert」,旧镜号没被覆盖就残留:新描述配旧视频,
+    # 还白占着列表和合片(用户反馈「重新拆分,以前生成的怎么办」)。
+    # UI 侧已先弹二次确认告知会删什么,这里才真删。
+    purge_stats = purge_episode_storyboards(episode_id)
+    if purge_stats.get("shots"):
+        log.info("storyboard.resplit.purged episode=%s shots=%d files=%d bytes=%d merges=%d",
+                 episode_id, purge_stats["shots"], purge_stats["files"],
+                 purge_stats["bytes"], purge_stats["merges"])
+    if on_purged:
+        on_purged(purge_stats)
     chars = db.q("SELECT id, name, appearance, styling FROM characters WHERE drama_id=? AND deleted_at IS NULL",
                  (ep["drama_id"],))
     scenes = db.q("SELECT id, name, location, time, prompt, lighting, setting_tags FROM scenes "
@@ -354,6 +366,93 @@ def _clear_episode_bindings(episode_id: int) -> None:
           "(SELECT id FROM storyboards WHERE episode_id=?)", (episode_id,))
     db.ex("DELETE FROM storyboard_props WHERE storyboard_id IN "
           "(SELECT id FROM storyboards WHERE episode_id=?)", (episode_id,))
+
+
+# ── 「重新拆分」= 彻底清空重来 ──
+# 「重新拆分」时会被删掉的生成物字段(本集分镜行自己引用的媒体文件)
+_PURGE_FILE_FIELDS = ("video_url", "composed_video_url", "first_frame_image",
+                      "last_frame_image", "composed_image",
+                      "narration_audio_url", "subtitle_url")
+# 合片里只有这些扩展名算「视频」;漫画拼接长图(jpg/png)留着 —— 它跟漫画格绑定,
+# 不在这次重拆的范围内,删了等于白丢一次拼接。
+_VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
+
+
+def _purge_media_files(urls: list[str]) -> tuple[int, int]:
+    """删掉 media url 指向的本地文件;返回(删掉几个文件, 释放多少字节)。
+
+    只删 **static 目录内** 的文件 —— url 存在数据库里,理论上可被外部写入,
+    不做边界检查就可能删到项目外的文件。
+    """
+    root = config.STATIC_DIR.resolve()
+    removed = 0
+    freed = 0
+    seen: set[str] = set()
+    for u in urls:
+        u = (u or "").strip()
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        try:
+            p = config.media_url_to_path(u).resolve()
+            p.relative_to(root)          # 越界 → ValueError → 跳过
+        except (ValueError, OSError):
+            continue
+        try:
+            if p.is_file():
+                freed += p.stat().st_size
+                p.unlink()
+                removed += 1
+        except OSError:
+            continue
+    return removed, freed
+
+
+def purge_episode_storyboards(episode_id: int, delete_files: bool = True) -> dict:
+    """彻底清空本集分镜:DB 行 + 磁盘上的生成物文件。返回清掉的统计。
+
+    「重新拆分」按用户要求是**从零重来**(2026-10-20):旧分镜行、已生成的
+    视频/首帧/尾帧/合图/配音/字幕文件全部清掉,拆完就是干干净净的新一集。
+
+    为什么以前会错位:旧实现是「按 storyboard_number 幂等 upsert」—— 重拆出
+    6 镜时只覆盖 1..6,原来第 7..10 镜的行**根本没人碰**。而绑定已经被
+    `_clear_episode_bindings` 全清(新拆分只重建 1..6 的绑定),于是 7..10
+    变成「描述还是旧的、绑定是空的、视频还在」的半残状态,还继续占着镜号
+    出现在分镜列表和合片里(用户反馈:「重新拆分,以前生成的怎么办」)。
+
+    只删**本集分镜行自己引用**的文件:
+    - 角色/场景/道具资产图不在列 —— 它们跨集共用,删了别的集就废了;
+    - 同一文件被多行引用时只删一次;
+    - 路径必须落在 static 目录内,否则跳过(防越界删到别处)。
+    """
+    rows = db.q("SELECT * FROM storyboards WHERE episode_id=?", (episode_id,))
+    urls: list[str] = []
+    for r in rows:
+        for f in _PURGE_FILE_FIELDS:
+            v = (r[f] or "").strip()
+            if v:
+                urls.append(v)
+    # 合片:只收视频文件(漫画拼接长图保留)
+    merge_ids: list[int] = []
+    for r in db.q("SELECT id, merged_url FROM video_merges WHERE episode_id=?", (episode_id,)):
+        v = (r["merged_url"] or "").strip()
+        if v and v.lower().endswith(_VIDEO_SUFFIXES):
+            merge_ids.append(r["id"])
+            urls.append(v)
+    removed_files = 0
+    freed = 0
+    if delete_files:
+        removed_files, freed = _purge_media_files(urls)
+    # 子表先删,再删本体
+    db.ex("DELETE FROM storyboard_characters WHERE storyboard_id IN "
+          "(SELECT id FROM storyboards WHERE episode_id=?)", (episode_id,))
+    db.ex("DELETE FROM storyboard_props WHERE storyboard_id IN "
+          "(SELECT id FROM storyboards WHERE episode_id=?)", (episode_id,))
+    db.ex("DELETE FROM storyboards WHERE episode_id=?", (episode_id,))
+    for mid in merge_ids:
+        db.ex("DELETE FROM video_merges WHERE id=?", (mid,))
+    return {"shots": len(rows), "files": removed_files, "bytes": freed,
+            "merges": len(merge_ids)}
 
 
 def _match_scene(b: dict, scene_by_name: dict) -> int | None:
@@ -585,6 +684,7 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
     def job(tid: int):
         TM.set_stage(tid, "splitting")
         failed_batches: list[tuple[str, str]] = []
+        purged: dict = {}
         try:
             # 第一阶段:拆分(0-90%)。每批成功即落库,失败批次只影响自己 ——
             # 不会再出现「最后一场失败 → 整集 0 个分镜」。
@@ -592,6 +692,7 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
                 episode_id, aspect, config_id=config_id, lang=lang,
                 on_progress=lambda p: TM.set_task_progress(tid, min(90, int(p * 0.9))),
                 on_chunk_failed=lambda label, reason: failed_batches.append((label, reason)),
+                on_purged=purged.update,
             )
             removed = clean_junk_storyboards(episode_id)
             n = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
@@ -610,6 +711,9 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
                 log.warning("storyboard.video_prompts.failed episode=%s err=%s",
                             episode_id, str(e)[:200])
             msg = f"拆出 {n} 个分镜,补齐 {vp} 条视频提示词"
+            if purged.get("shots"):
+                msg += (f";已清空旧分镜 {purged['shots']} 个"
+                        f"(删除生成文件 {purged.get('files', 0)} 个)")
             if vp < n:
                 msg += f"({n - vp} 条待补,可用「批量视频提示词」重试)"
             if failed_batches:

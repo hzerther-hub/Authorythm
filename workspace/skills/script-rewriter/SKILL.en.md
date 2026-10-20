@@ -48,7 +48,9 @@ The formatted script is about 20-30% longer than the original content; the incre
 
 ## Notes
 
-- Inner monologue can be converted into character expressions/actions or voiceover
+- Inner monologue must be externalized into the character's expressions/actions/choices or spoken words — **voice-over, narration and inner monologue are forbidden**
+- Every scene needs at least two characters interacting on screen; never one person talking to an empty room
+- Change location or time of day between neighbouring scenes; do not repeat the same room scene after scene
 - Split long narrative passages into multiple short scenes
 - Make sure every scene has a clear emotional turning point
 - Keep each character's language style consistent

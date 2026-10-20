@@ -48,7 +48,9 @@ Biçimlendirilmiş senaryo, özgün içeriğe göre yaklaşık %20-30 daha uzund
 
 ## Dikkat Edilecekler
 
-- İç dünya betimleri karakter ifadesi/eylemi ya da seslendirme (voice-over) olarak dönüştürülebilir
+- İç dünya betimleri karakterin ifadesi/eylemi/tercihi veya söylenen sözlerle dışa vurulmalıdır — **seslendirme (voice-over), anlatım ve iç ses yasaktır**
+- Her sahnede en az iki karakter kameranın önünde birbiriyle etkileşimde olmalı; tek kişinin boş bir odada kendi kendine konuştuğu sahne yazmayın
+- Ardışık sahnelerde yer ya da saat değişmeli; aynı odayı üst üste kullanmayın
 - Uzun anlatım paragrafları birden çok kısa sahneye bölünür
 - Her sahnenin net bir duygu dönüm noktası olduğundan emin ol
 - Karakterlerin dil üslubunun tutarlılığını koru

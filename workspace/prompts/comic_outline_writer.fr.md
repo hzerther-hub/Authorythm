@@ -10,3 +10,10 @@ Règles strictes:
 - Sortie **JSON uniquement**, exactement:
   {"script": "## S01|intérieur café|jour\nLi Ming tient son café, regardant par la fenêtre.\n\n## S02|...\n..."}
 - Pas de <think>, pas d'explication, pas de fences markdown, pas de champs supplémentaires
+
+## Règles impératives de filmabilité (toute violation renvoie le texte à réécriture)
+
+- Voix off, narration et monologue intérieur interdits: chaque réplique doit être dite à voix haute par un personnage
+- Extérialisez la vie intérieure par l'action, l'expression, le silence ou le choix; pas de narration psychologique
+- Chaque scène doit mettre en présence au moins deux personnages qui interagissent; pas de scène à personnage unique
+- Utilisez au moins 3 lieux différents sur les 4-8 scènes; ne recommencez pas la même pièce

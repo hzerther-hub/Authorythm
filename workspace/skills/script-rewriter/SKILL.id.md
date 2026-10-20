@@ -48,7 +48,9 @@ Skenario terformat bertambah sekitar 20-30% dibanding konten aslinya; pertambaha
 
 ## Catatan
 
-- Deskripsi psikologis dapat diubah menjadi ekspresi/aksi karakter atau voice-over
+- Deskripsi psikologis wajib diekspresikan lewat ekspresi/aksi/pilihan karakter atau kalimat yang diucapkan — **voice-over, narasi, dan monolog dalam hati dilarang**
+- Setiap adegan harus melibatkan minimal dua tokoh yang berinteraksi di depan kamera; jangan menulis adegan satu orang talking sendirian di kamar kosong
+- Ganti lokasi atau waktu antara adegan yang berurutan; jangan memakai ruangan yang sama berulang kali
 - Narasi panjang dipecah menjadi beberapa adegan pendek
 - Pastikan setiap adegan memiliki titik balik emosi yang jelas
 - Jaga konsistensi gaya bahasa tiap karakter

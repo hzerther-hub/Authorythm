@@ -2458,6 +2458,12 @@ class EpisodePage(QWidget):
                 err(tr("模型未产出有效剧本,请重试"))
                 self._reload_rewrite()
                 return
+            # 可拍性质量门:满篇画外音/一个人自说自话的稿子不落库,后台返工重写
+            from ..pipeline import script_quality
+            problems = script_quality.check(clean)
+            if problems:
+                self._repair_script(clean, problems, lang)
+                return
             db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?",
                   (clean, db.now(), self.episode_id))
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
@@ -2483,6 +2489,45 @@ class EpisodePage(QWidget):
         worker.failed.connect(on_failed)
         worker.start()
         QTimer.singleShot(0, _tick)
+
+    def _repair_script(self, script: str, problems: list[str], lang: str | None = None):
+        """剧本可拍性不合格 → 后台返工重写,合格才落库。
+
+        坏剧本(满篇画外音/一个人在一间屋里自说自话)进不了下游分镜与视频生成,
+        所以这里宁可不写库,也不能让一份拍不出来的稿子流下去。
+        """
+        from ..agents import runner
+        from ..core.taskmgr import TASKMGR
+        from ..pipeline import script_quality
+        prompt = script_quality.repair_instruction(problems, lang=lang)
+        cfg = self.text_model.currentData()
+
+        def job(tid):
+            return runner.run_agent("script_rewriter", prompt, config_id=cfg, lang=lang)
+
+        def done(tid, result, error):
+            if error:
+                err(tr("剧本质量不合格,请重试") + ":" + ";".join(problems))
+                return
+            from ..pipeline import novel as novel_pipe
+            from ..pipeline import script_quality as sq
+            text = novel_pipe._strip_think(result or "")
+            left = sq.check(text)
+            if left:
+                err(tr("剧本质量不合格,请重试") + ":" + ";".join(left))
+                return
+            db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?",
+                  (text, db.now(), self.episode_id))
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            self._reload_rewrite()
+            ok(tr("剧本已重写并通过可拍性检查"))
+            try:
+                self.maybe_auto_expand_pipeline()
+            except Exception:  # noqa: BLE001
+                pass
+
+        TASKMGR.submit("script_repair", job, done,
+                       episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _save_script(self):
         db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?",
@@ -2973,18 +3018,14 @@ class EpisodePage(QWidget):
                 ok(tr("提取完成:没有新增(同名资产已存在)。要重新生成请用「重提角色/场景/道具」,或先「清空资产」"))
         TASKMGR.submit("extract", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
-    def _reload_assets(self):
-        # 变体有无的判定缓存在 _has_variants;变体增删后必须失效,
-        # 否则「造型变体」按钮该出现时不出现、该消失时还赖着。
-        self.__dict__.pop("_var_has_cache", None)
-        if not getattr(self, "asset_sections", None):
-            return
-        from . import episode_cards as C
-        cols = {kind: ASSET_GRID_COLS for kind in self.asset_sections}
-        # 列表只显示「本集已关联」的资产(INNER JOIN episode_X),不再是整个项目
-        # 的资产 —— 「清空资产」要的就是去掉本集关联,改这里后点了立刻看得见
-        # 列表清空。其它集还在用的角色会留在它自己的列表里,不会跟着被清。
-        groups = {
+    def _asset_rows(self) -> dict:
+        """本集已关联的角色/场景/道具行(与 _reload_assets 同源)。
+
+        列表只显示「本集已关联」的资产(INNER JOIN episode_X),不再是整个项目
+        的资产 —— 「清空资产」要的就是去掉本集关联,改这里后点了立刻看得见
+        列表清空。其它集还在用的角色会留在它自己的列表里,不会跟着被清。
+        """
+        return {
             "characters": [dict(r) for r in db.q(
                 "SELECT c.* FROM characters c "
                 "JOIN episode_characters ec ON ec.character_id = c.id "
@@ -3001,6 +3042,19 @@ class EpisodePage(QWidget):
                 "WHERE p.drama_id=? AND ep.episode_id=? ORDER BY p.id",
                 (self.drama_id, self.episode_id))],
         }
+
+    def _reload_assets(self):
+        # 变体有无的判定缓存在 _has_variants;变体增删后必须失效,
+        # 否则「造型变体」按钮该出现时不出现、该消失时还赖着。
+        self.__dict__.pop("_var_has_cache", None)
+        if not getattr(self, "asset_sections", None):
+            return
+        from . import episode_cards as C
+        cols = {kind: ASSET_GRID_COLS for kind in self.asset_sections}
+        # (kind, id) -> 卡片控件:批量生图逐项刷新时按 id 找到那张卡,
+        # 只换它的封面,不动其它卡(整表 rebuild 在 15 张规模要 1.5s+/次)。
+        self._asset_cards = {}
+        groups = self._asset_rows()
         total = ready = 0
         comic_total = comic_ready = 0
         # 标签现场翻译:字典值是中文基准,当 tr 键用
@@ -3051,6 +3105,7 @@ class EpisodePage(QWidget):
                                         on_variants=(lambda rid=r["id"]: self._open_variants(rid, kind[:-1]))
                                         if kind in ("scenes", "props") else None,
                                         busy=_busy))
+                self._asset_cards[(kind, r["id"])] = card
                 grid.addWidget(card, n // cols[kind], n % cols[kind])
                 n += 1
             sec["host"].setVisible(n > 0)
@@ -3095,6 +3150,62 @@ class EpisodePage(QWidget):
             tr("ready_n").format(ready, total) if self._asset_mode == "regular"
             else tr("comic_asset_ready_n").format(comic_ready, comic_total))
         self._refresh_asset_model_combo()
+
+    def _refresh_asset_stat(self):
+        """资产就绪计数(逐项刷新用 —— 不做整表 reload)。"""
+        stat = getattr(self, "asset_stat", None)
+        if stat is None:
+            return
+        ready = total = comic_ready = comic_total = 0
+        for rows in self._asset_rows().values():
+            for r in rows:
+                total += 1
+                comic_total += 1
+                if (r.get("image_url") or "").strip():
+                    ready += 1
+                if (r.get("comic_image_url") or "").strip():
+                    comic_ready += 1
+        stat.setText(
+            tr("ready_n").format(ready, total) if self._asset_mode == "regular"
+            else tr("comic_asset_ready_n").format(comic_ready, comic_total))
+
+    def _refresh_asset_cover(self, kind: str, row_id: int, url: str | None = None):
+        """单张资产出图后**原地**刷新那一张卡(必须在主线程调用)。
+
+        批量生图逐项调用:图一张张冒出来,而不是等整批跑完再整表刷新。
+        只换封面 + 解除该卡的等待态,其余卡原样不动 —— 整表 _reload_assets()
+        在 15 张规模要 1.5s+/次,还会把滚动位置弹回顶部。
+        """
+        cards = getattr(self, "_asset_cards", None)
+        if not cards:
+            return
+        card = cards.get((kind, row_id))
+        if card is None:
+            return
+        if url is None:
+            row = db.q1(f"SELECT image_url, comic_image_url FROM {kind} WHERE id=?", (row_id,))
+            if not row:
+                return
+            url = (row["image_url"] or "").strip() or (row["comic_image_url"] or "").strip()
+        # 这张已经出完图 —— 从等待态集合里摘掉,否则中途任何一次
+        # _reload_assets() 会把它又标回「生成中」。
+        busy = getattr(self, "_asset_busy", None)
+        if busy is not None:
+            busy.discard(f"{kind}:{row_id}")
+        try:
+            card.set_cover_url(url)
+        except Exception:  # noqa: BLE001
+            return
+        self._refresh_asset_stat()
+
+    def _batch_refresh_one(self, kind: str, row_id: int, url: str | None = None):
+        """worker 线程:出完一张就把那张卡换掉(调度回主线程执行)。
+
+        用户要的是「一张一张地生成」—— 图要一张张冒出来,
+        而不是等整批跑完才一次性出现。
+        """
+        from ..core.taskmgr import on_main
+        on_main(lambda: self._refresh_asset_cover(kind, row_id, url))
 
     def _cb_gen_image(self, r: dict, kind: str):
         """图绘回调:基于已有形象图重绘(无图时内部会提示先文绘)。"""
@@ -3342,8 +3453,11 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)      # 延时:上一个完成后再等 3 秒
                 try:
-                    self._gen_one(r["id"], table, by_text=True)
+                    url = self._gen_one(r["id"], table, by_text=True)
                     done_cnt += 1
+                    # **生成一张显示一张**:出完立刻原地换掉那一张卡 ——
+                    # 等整批跑完再整表 reload 的话,用户全程看不到任何进展。
+                    self._batch_refresh_one(table, r["id"], url)
                 except Exception as exc:  # noqa: BLE001
                     err(tr("资产 {} 失败:{}").format(r["id"], str(exc)[:100]))
             return {"done": done_cnt, "total": n}
@@ -3416,8 +3530,11 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 try:
-                    self._gen_one(r["id"], table, by_text=True)
+                    url = self._gen_one(r["id"], table, by_text=True)
                     done_cnt += 1
+                    # **生成一张显示一张**:出完立刻原地换掉那一张卡 ——
+                    # 等整批跑完再整表 reload 的话,用户全程看不到任何进展。
+                    self._batch_refresh_one(table, r["id"], url)
                 except Exception as exc:  # noqa: BLE001
                     err(tr("资产 {} 失败:{}").format(r["id"], str(exc)[:100]))
             return {"done": done_cnt, "total": n}
@@ -3479,8 +3596,10 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 try:
-                    self._gen_one(rid, table, by_text=True)
+                    url = self._gen_one(rid, table, by_text=True)
                     done_cnt += 1
+                    # **生成一张显示一张**(见 _batch_images 的同名注释)
+                    self._batch_refresh_one(table, rid, url)
                 except Exception as exc:  # noqa: BLE001
                     err(tr("资产 {}/{} 失败:{}").format(table, rid, str(exc)[:100]))
             return {"done": done_cnt, "total": n}
@@ -3543,8 +3662,11 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 try:
-                    self._gen_one(r["id"], table, by_text=True)
+                    url = self._gen_one(r["id"], table, by_text=True)
                     done_cnt += 1
+                    # **生成一张显示一张**:出完立刻原地换掉那一张卡 ——
+                    # 等整批跑完再整表 reload 的话,用户全程看不到任何进展。
+                    self._batch_refresh_one(table, r["id"], url)
                 except Exception as exc:  # noqa: BLE001
                     err(tr("资产 {} 失败:{}").format(r["id"], str(exc)[:100]))
             return {"done": done_cnt, "total": n}
@@ -3597,8 +3719,10 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 try:
-                    self._gen_one(rid, table, by_text=True)
+                    url = self._gen_one(rid, table, by_text=True)
                     done_cnt += 1
+                    # **生成一张显示一张**(见 _batch_images 的同名注释)
+                    self._batch_refresh_one(table, rid, url)
                 except Exception as exc:  # noqa: BLE001
                     err(tr("资产 {}/{} 失败:{}").format(table, rid, str(exc)[:100]))
             return {"done": done_cnt, "total": n}
@@ -5796,6 +5920,41 @@ class EpisodePage(QWidget):
         except Exception as e:                                  # noqa: BLE001
             err(f"写入失败:{e}")
 
+    def _resplit_purge_stats(self) -> dict:
+        """重拆前统计「会被删掉」的东西,给二次确认弹窗用。
+
+        重拆 = 彻底清空重来(见 pipeline.storyboard.purge_episode_storyboards):
+        旧分镜行 + 它们引用的视频/首帧/尾帧/合图/配音文件全删。
+        弹窗要把「删几个、删多大」如实报给用户,不能只说一句「确定吗」。
+        """
+        rows = db.q("SELECT video_url, composed_video_url, first_frame_image, "
+                    "last_frame_image, composed_image, narration_audio_url, "
+                    "subtitle_url FROM storyboards "
+                    "WHERE episode_id=? AND deleted_at IS NULL", (self.episode_id,))
+        n_shot = db.q1("SELECT COUNT(*) c FROM storyboards "
+                       "WHERE episode_id=? AND deleted_at IS NULL",
+                       (self.episode_id,))["c"]
+        n_vid = db.q1("""SELECT COUNT(*) c FROM storyboards
+                        WHERE episode_id=? AND deleted_at IS NULL
+                        AND (COALESCE(video_url,'')!='' OR COALESCE(composed_video_url,'')!='')""",
+                      (self.episode_id,))["c"]
+        urls: set[str] = set()
+        for r in rows:
+            for k in r.keys():
+                v = str(r[k] or "").strip()
+                if v:
+                    urls.add(v)
+        total = 0
+        for u in urls:
+            try:
+                p = config.media_url_to_path(u)
+                if p.exists():
+                    total += p.stat().st_size
+            except Exception:  # noqa: BLE001
+                continue
+        return {"n": n_shot, "v": n_vid, "f": len(urls),
+                "size": f"{total / 1024 / 1024:.1f} MB"}
+
     def _split_sb(self):
         if self._gen_blocked("text", "文本"):
             return
@@ -5806,6 +5965,16 @@ class EpisodePage(QWidget):
         if not ensure_ready("text", combo.currentData() if combo else None):
             return
         if self._sb_split_running:
+            return
+        # ── 二次确认:重拆会删掉旧分镜与已生成的视频文件(不可恢复)──
+        # 不确认就开跑 = 十几分钟的拆分 + 烧 token + 旧素材全没了。
+        _st = self._resplit_purge_stats()
+        if _st["n"] and not ask(
+                self, tr("re_split"),
+                tr("本集已有 {n} 个分镜(含 {v} 个已出视频、{f} 个生成文件,共约 {size})。"
+                   "\n\n重新拆分将删除全部旧分镜与已生成的视频文件(不可恢复),"
+                   "并从零重新拆分。\n\n确定继续?").format(**_st),
+                danger=True):
             return
         split_btn = getattr(self, "split_btn", None)
         if split_btn:

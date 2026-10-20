@@ -48,7 +48,9 @@ El guion formateado crece alrededor de un 20-30 % respecto al contenido original
 
 ## Notas
 
-- El monólogo interior puede convertirse en expresiones/acciones del personaje o en voz en off
+- El monólogo interior debe exteriorizarse en expresiones/acciones/decisiones del personaje o en palabras dichas en voz alta — **se prohíben la voz en off, la narración y el monólogo interior**
+- Cada escena debe tener al menos dos personajes interactuando ante la cámara; no escribas una escena de una sola persona en una habitación vacía
+- Cambia lugar u hora entre escenas consecutivas; no repitas la misma habitación una y otra vez
 - Divide los pasajes narrativos largos en varias escenas cortas
 - Asegúrate de que cada escena tiene un punto de giro emocional claro
 - Mantén la coherencia del estilo de habla de cada personaje

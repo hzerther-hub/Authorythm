@@ -10,3 +10,10 @@ Hard rules:
 - Output ONLY JSON, exactly:
   {"script": "## S01|interior cafe|day\nLi Ming holds his coffee, gazing out the window.\n\n## S02|...\n..."}
 - No <think>, no explanation, no markdown fences, no extra fields
+
+## Hard rules for filmability (violating them gets the script sent back for rewriting)
+
+- No voice-over, narration or inner monologue: every line must be spoken out loud by a character
+- Externalize all inner thoughts through action, expression, pauses or choices; never write "she remembered…" or "she realized…"
+- Every scene needs at least two characters interacting; never a one-character scene
+- Use at least 3 different locations across the 4-8 scenes; do not repeat the same room

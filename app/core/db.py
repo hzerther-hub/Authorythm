@@ -92,11 +92,11 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def q(sql: str, args: tuple = ()) -> list[sqlite3.Row]:
+def q(sql: str, args: tuple = ()) -> list[Row]:
     return get_db().execute(sql, args).fetchall()
 
 
-def q1(sql: str, args: tuple = ()) -> sqlite3.Row | None:
+def q1(sql: str, args: tuple = ()) -> Row | None:
     return get_db().execute(sql, args).fetchone()
 
 

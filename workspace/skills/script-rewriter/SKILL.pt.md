@@ -48,7 +48,9 @@ O roteiro formatado fica cerca de 20-30% mais longo que o conteúdo original; o 
 
 ## Observações
 
-- Monólogo interior pode ser convertido em expressão/ação do personagem ou voz off
+- O monólogo interior deve ser exteriorizado em expressões/ações/decisões da personagem ou em palavras ditas em voz alta — **voz off, narração e monólogo interior são proibidos**
+- Cada cena precisa de pelo menos duas personagens interagindo diante da câmera; não escreva uma cena de uma só pessoa em um quarto vazio
+- Troque o lugar ou a hora entre cenas consecutivas; não repita a mesma sala vez após vez
 - Divida narrações longas em várias cenas curtas
 - Garanta que cada cena tenha um ponto de virada emocional claro
 - Mantenha a consistência do estilo de fala de cada personagem

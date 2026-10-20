@@ -48,7 +48,9 @@ La sceneggiatura formattata è circa il 20-30% più lunga del contenuto original
 
 ## Avvertenze
 
-- Le descrizioni psicologiche possono essere trasformate in espressioni/azioni dei personaggi o in voice-over
+- Il monologo interiore deve essere esteriorizzato in espressioni/azioni/scelte del personaggio o in parole dette ad alta voce — **voice-over, narratore e monologo interiore sono vietati**
+- In ogni scena devono esserci almeno due personaggi che interagiscono davanti alla camera; non scrivere una scena di una sola persona in una stanza vuota
+- Cambia luogo o momento della giornata fra scene consecutive; non ripetere la stessa stanza
 - Spezza i lunghi passaggi narrativi in più scene brevi
 - Assicurati che ogni scena abbia un chiaro punto di svolta emotivo
 - Mantieni la coerenza dello stile linguistico dei personaggi

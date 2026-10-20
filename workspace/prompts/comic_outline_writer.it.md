@@ -10,3 +10,10 @@ Regole rigide:
 - Output **solo JSON**, esattamente:
   {"script": "## S01|interno bar|giorno\nLi Ming tiene il caffè, guardando fuori.\n\n## S02|...\n..."}
 - Niente <think>, niente spiegazioni, niente fence markdown, niente campi extra
+
+## Regole obbligatorie di filmabilità (se violate, il copione torna indietro per essere riscritto)
+
+- Vietati voice-over, narratore e monologo interiore: ogni battuta deve essere pronunciata ad alta voce da un personaggio
+- Esternalizza il mondo interiore con azioni, espressioni, silenzi o scelte; niente narrazione psicologica
+- In ogni scena devono esserci almeno due personaggi che interagiscono; niente scene con un solo personaggio
+- Usa almeno 3 luoghi diversi nelle 4-8 scene; non ripetere la stessa stanza

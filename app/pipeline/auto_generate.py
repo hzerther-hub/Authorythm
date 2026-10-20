@@ -16,6 +16,8 @@ from ..agents import runner
 from ..core import db
 from ..core.taskmgr import TASKMGR
 
+from . import script_quality
+
 AGENT_FOR = {
     "novel": ("novel_writer", "novel_content"),
     "drama": ("script_rewriter", "script"),
@@ -126,6 +128,13 @@ def auto_generate_first_episode(drama_id: int, episode_id: int, config_id: int |
             last = text
         if not (text or "").strip():
             raise RuntimeError(f"首集生成返回空内容({last[:80]})")
+        if work_type == "drama":
+            # 可拍性质量门:满篇画外音/单人独角戏的首集剧本判失败(不落库)。
+            # 剧本要拿去分镜和生成视频,一个人在一间屋里自说自话的稿子拍不出来。
+            text = script_quality.enforce(
+                text,
+                lambda p: runner.run_agent(agent_type, p, lang=lang, config_id=config_id),
+            )
         return _persist(episode_id, work_type, text)
 
     def done(tid, result, error):

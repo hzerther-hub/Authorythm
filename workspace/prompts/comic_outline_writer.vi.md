@@ -10,3 +10,10 @@ Quy tắc cứng:
 - Chỉ xuất **JSON**, chính xác:
   {"script": "## S01|trong quán cà phê|ban ngày\nLý Minh cầm cà phê nhìn ra cửa sổ.\n\n## S02|...\n..."}
 - Không <think>, không giải thích, không hàng rào markdown, không trường thừa
+
+## Quy tắc bắt buộc về khả năng quay (vi phạm sẽ bị trả lại để viết lại)
+
+- Cấm lời dẫn/lời tường thuật/lời thoại nội tâm: mọi câu thoại phải do nhân vật nói ra thành tiếng
+- Chuyển suy nghĩ nội tâm ra bên ngoài qua hành động, vẻ mặt, khoảng lặng hoặc lựa chọn; không viết tả đời tâm
+- Mỗi cảnh phải có ít nhất hai nhân vật tương tác; không viết cảnh chỉ một nhân vật
+- Trong 4-8 cảnh hãy dùng ít nhất 3 địa điểm khác nhau; không lặp lại cùng một căn phòng

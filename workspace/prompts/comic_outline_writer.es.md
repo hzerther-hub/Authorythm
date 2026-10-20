@@ -10,3 +10,10 @@ Reglas estrictas:
 - Salida **solo JSON**, exactamente:
   {"script": "## S01|interior cafeter\u00eda|d\u00eda\nLi Ming sostiene el caf\u00e9, mirando por la ventana.\n\n## S02|...\n..."}
 - Sin <think>, sin explicación, sin fences markdown, sin campos extra
+
+## Reglas obligatorias de filmabilidad (si se incumplen, el guion se devuelve para reescribirlo)
+
+- Prohibido el voice-over, la narración y el monólogo interior: cada línea debe decirla un personaje en voz alta
+- Exterioriza la vida interior con acciones, expresión, pausas o decisiones; sin narración psicológica
+- Cada escena debe tener al menos dos personajes interactuando; nada de escenas de un solo personaje
+- Usa al menos 3 lugares distintos en las 4-8 escenas; no repitas la misma habitación

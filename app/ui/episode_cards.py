@@ -285,35 +285,56 @@ class CoverBox(QFrame):
         super().__init__()
         self.setFixedHeight(h)
         self._w = w
+        self._h = h
+        # 原地换图要用到的引用:批量生图逐项刷新时不能重建整张卡
+        # (15 张规模整表 rebuild 要 1.5s+/次,还会把滚动位置弹回顶部)。
+        self._placeholder = placeholder
+        self._on_click = on_click
+        self._content = None      # 当前显示的内容控件(图 or 占位符)
+        self._badge = None        # 左上角标 QLabel
         self.setStyleSheet(
             "QFrame#coverBox{border:1px solid rgba(128,128,128,0.22); border-radius:8px;}"
             "QLabel#coverInner{border:none;}")
         g = QGridLayout(self)
         g.setContentsMargins(0, 0, 0, 0)
         g.setSpacing(0)
+        self._g = g
+        # 图与占位符**都建出来**叠在同一格(占位符先加 → 图画在它上面),
+        # 两者都在下载钮/遮罩/角标之前入列 → 天然垫在遮罩与角标之下。
+        # 切换时只改可见性:**不做布局增删** —— 增删会打乱同格叠放的 z 序,
+        # 图会盖到「生成中」遮罩和角标上面(而且 QGridLayout 根本没有
+        # insertWidget,想插回原位也做不到)。
+        ph = QLabel(placeholder)
+        ph.setObjectName("coverInner")
+        ph.setObjectName("placeholderIcon")
+        ph.setAlignment(Qt.AlignCenter)
+        g.addWidget(ph, 0, 0)
+        img = QLabel()
+        img.setObjectName("coverInner")
+        img.setAlignment(Qt.AlignCenter)
+        # 水平方向用 Ignored:QLabel 的 minimumSizeHint = pixmap 宽度(不缩),
+        # 一张 320px 的图能把 ASSET_CARD_W=210 的卡片顶到几百 px,
+        # 5 列布局直接失效(卡片挤左边 + 右侧大片空白)。
+        # **垂直方向必须留 Preferred**:也设 Ignored 会让 grid 把高度按
+        # 比例砍半(实测 CoverBox 180 高、label 只拿到 90),图片只占上半
+        # 部分、下面留一块空白(用户蓝框标的就是它)。
+        img.setMinimumWidth(0)
+        img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        if on_click:
+            img.setCursor(Qt.PointingHandCursor)
+            img.mousePressEvent = lambda _e: on_click()
+        g.addWidget(img, 0, 0)
+        self._img = img
+        self._ph = ph
         if url:
-            img = QLabel()
-            img.setObjectName("coverInner")
-            img.setAlignment(Qt.AlignCenter)
-            # 水平方向用 Ignored:QLabel 的 minimumSizeHint = pixmap 宽度(不缩),
-            # 一张 320px 的图能把 ASSET_CARD_W=210 的卡片顶到几百 px,
-            # 5 列布局直接失效(卡片挤左边 + 右侧大片空白)。
-            # **垂直方向必须留 Preferred**:也设 Ignored 会让 grid 把高度按
-            # 比例砍半(实测 CoverBox 180 高、label 只拿到 90),图片只占上半
-            # 部分、下面留一块空白(用户蓝框标的就是它)。
-            img.setMinimumWidth(0)
-            img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             img.setPixmap(W.pixmap_cover_media(url, w, h))   # 铺满裁切,与参考一致
-            if on_click:
-                img.setCursor(Qt.PointingHandCursor)
-                img.mousePressEvent = lambda _e: on_click()
-            g.addWidget(img, 0, 0)
+            img.show()
+            ph.hide()
+            self._content = img
         else:
-            ph = QLabel(placeholder)
-            ph.setObjectName("coverInner")
-            ph.setObjectName("placeholderIcon")
-            ph.setAlignment(Qt.AlignCenter)
-            g.addWidget(ph, 0, 0)
+            img.hide()
+            ph.show()
+            self._content = ph
         # 预览图右上角下载钮(对齐参考项目 asset-cover 的 ⬇)。
         # 原先用 '⬇' 字符 + 24×24:该码位没字形,且撞上全局 padding,渲染成纯空白
         # (实测颜色数=1)。改用 Qt 原生下箭头,跨字体稳定。
@@ -342,6 +363,7 @@ class CoverBox(QFrame):
             b = QLabel(badge)
             b.setObjectName("coverBadge")
             b.setProperty("state", badge_state)
+            self._badge = b
             g.addWidget(b, 0, 0, Qt.AlignLeft | Qt.AlignTop)
         if tag_text:
             t = QLabel(tag_text)
@@ -351,6 +373,33 @@ class CoverBox(QFrame):
     def set_pending(self, on: bool):
         """显示/隐藏生成中遮罩(生成期间封面盖转圈,按钮禁用)。"""
         self._overlay.setVisible(on)
+
+    def set_cover(self, url: str | None, badge: str | None = None,
+                  badge_state: str | None = None):
+        """原地换封面图(批量生图逐项刷新用 —— 不重建整张卡,保住滚动位置)。
+
+        图与占位符在构造期就都建好叠在同一格,这里只切可见性 + 换 pixmap:
+        **不做布局增删** —— 同格叠放的 z 序靠"谁先入列"决定,增删会打乱它,
+        图会盖到「生成中」遮罩和角标上面。
+        """
+        if url:
+            self._img.setPixmap(W.pixmap_cover_media(url, self._w, self._h))
+            self._img.show()
+            self._ph.hide()
+            self._content = self._img
+        else:
+            self._img.hide()
+            self._ph.show()
+            self._content = self._ph
+        self._dl_btn.setVisible(bool(url))
+        if self._badge is not None:
+            if badge is not None:
+                self._badge.setText(badge)
+            if badge_state:
+                self._badge.setProperty("state", badge_state)
+                # 改 property 后必须重新 polish,否则 QSS 的 [state="ready"] 不生效
+                self._badge.style().unpolish(self._badge)
+                self._badge.style().polish(self._badge)
 
 
 def final_prompt_block(text: str, placeholder: str, on_edit=None) -> QFrame:
@@ -402,19 +451,32 @@ def apply_asset_busy(card, cover, gen_btns: list, busy: bool):
     防止用户在生成途中再点造成并发任务或状态错乱。
 
     卡片 busy=False 时:原按钮文字 + 启用;True 时:全卡按钮禁用 + 旋转字。
+
+    **原文字必须快照**,不能 busy=False 时现读 button.text():
+    转圈时每个按钮的文字都被改成盲文帧,现读拿到的就是盲文帧,
+    还原后按钮上会永久留着盲文(实测批量生成结束后「上传/换脸/删除/变体」
+    全变成盲文方块)。快照存在 card._busy_labels,首次调用时抓一次即可。
+
+    同理,busy=False 必须**停掉转圈定时器** —— 它每 90ms 把按钮文字改回
+    盲文帧,不停的话「解除等待态」等于没解除(原地刷新路径必踩)。
     """
     if cover is not None:
         cover.set_pending(busy)
     # 收集卡上**所有** QPushButton(上传/换脸/删除/变体/文绘/图绘 都算)
     all_btns = list(card.findChildren(QPushButton))
-    # 把 gen_btns 里没有的按钮也补进去(它们的原文字直接读 button.text())
-    known_ids = {id(b) for b, _ in gen_btns}
-    extra = [(b, b.text()) for b in all_btns if id(b) not in known_ids]
-    full_btns = list(gen_btns) + extra
+    cache = getattr(card, "_busy_labels", None)
+    if cache is None:
+        cache = {id(b): b.text() for b in all_btns}
+        card._busy_labels = cache
+    full_btns = [(b, cache.get(id(b), "")) for b in all_btns]
     if not busy:
         for b, orig in full_btns:
             b.setEnabled(True)
             b.setText(orig)
+        t = getattr(card, "_busy_timer", None)
+        if t is not None:
+            t.stop()
+            card._busy_timer = None
         return
     from PySide6.QtCore import QTimer
     from .braille import BRAILLE_FRAMES
@@ -555,7 +617,28 @@ class CharacterAssetCard(QFrame):
         lay.addWidget(final_prompt_block(row.get("final_prompt") or "",
                                         labels["prompt_ph"], on_prompt))
         _snug_card(self)
+        # 存引用:批量生图逐项刷新时只动这一张卡,不重建整张
+        self._cover = cover
+        self._gen_btns = gen_btns
+        self._labels = labels
         apply_asset_busy(self, cover, gen_btns, busy)
+
+    def set_cover_url(self, url: str) -> None:
+        """原地换封面图 + 解除等待态(批量生图逐项刷新用)。
+
+        整卡重建在 15 张规模要 1.5s+/次,而且会把滚动位置弹回顶部;
+        批量生成时逐张调本方法,用户能看着图一张张出来。
+        """
+        cover = getattr(self, "_cover", None)
+        if cover is None:
+            return
+        labels = getattr(self, "_labels", {}) or {}
+        url = (url or "").strip()
+        cover.set_cover(
+            url,
+            badge=labels.get("cover_done" if url else "cover_todo"),
+            badge_state="ready" if url else "todo")
+        apply_asset_busy(self, cover, getattr(self, "_gen_btns", []), False)
 
 
 class AssetCard(QFrame):
@@ -686,7 +769,28 @@ class AssetCard(QFrame):
             flay.addWidget(dp, 1)
         lay.addWidget(foot)
         _snug_card(self)
+        # 存引用:批量生图逐项刷新时只动这一张卡,不重建整张
+        self._cover = cover
+        self._gen_btns = gen_btns
+        self._labels = labels
         apply_asset_busy(self, cover, gen_btns, busy)
+
+    def set_cover_url(self, url: str) -> None:
+        """原地换封面图 + 解除等待态(批量生图逐项刷新用)。
+
+        整卡重建在 15 张规模要 1.5s+/次,而且会把滚动位置弹回顶部;
+        批量生成时逐张调本方法,用户能看着图一张张出来。
+        """
+        cover = getattr(self, "_cover", None)
+        if cover is None:
+            return
+        labels = getattr(self, "_labels", {}) or {}
+        url = (url or "").strip()
+        cover.set_cover(
+            url,
+            badge=labels.get("cover_done" if url else "cover_todo"),
+            badge_state="ready" if url else "todo")
+        apply_asset_busy(self, cover, getattr(self, "_gen_btns", []), False)
 
 
 def _click_to(widget, fn):

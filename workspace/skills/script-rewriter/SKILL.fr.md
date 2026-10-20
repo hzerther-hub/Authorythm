@@ -48,7 +48,9 @@ Le scénario formaté est environ 20-30 % plus long que le contenu d'origine ; l
 
 ## Points d'attention
 
-- Le monologue intérieur peut se convertir en expressions / actions du personnage ou en voix off
+- Le monologue intérieur doit être extériorisé par les expressions/actions/choix du personnage ou par une réplique dite à voix haute — **voix off, narration et monologue intérieur sont interdits**
+- Chaque scène doit mettre en présence au moins deux personnages qui interagissent devant la caméra; n'écrivez pas une scène d'une seule personne dans une pièce vide
+- Changez de lieu ou d'heure entre deux scènes consécutives; ne recommencez pas la même pièce
 - Décomposez les longues plages narratives en plusieurs scènes courtes
 - Assurez-vous que chaque scène possède un point de bascule émotionnel clair
 - Maintenez la cohérence du style de langage de chaque personnage

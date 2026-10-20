@@ -12,6 +12,7 @@ from ..ai import registry
 from ..core import config, db
 
 from . import character_spec
+from . import script_quality
 
 
 # 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
@@ -149,6 +150,7 @@ def outline_to_script(outline: str, episode_id: int,
                   (int(ep["drama_id"]),))
     title = (drama or {}).get("title") or "未命名项目"
     style = (drama or {}).get("novel_style") or ""
+    content_lang = (drama or {}).get("language") or None
     # 三段式 prompt:任务 + 上下文(标题/风格) + 输入(梗概)
     prompt = (
         f"项目: {title}\n"
@@ -165,7 +167,7 @@ def outline_to_script(outline: str, episode_id: int,
     data = runner.run_agent_json(
         "comic_outline_writer", prompt,
         config_id=config_id,
-        lang=(drama or {}).get("language") or None,
+        lang=content_lang,
     )
     if not isinstance(data, dict):
         raise RuntimeError(f"梗概扩写失败:模型返回非 JSON({type(data).__name__})")
@@ -175,6 +177,13 @@ def outline_to_script(outline: str, episode_id: int,
     # 校验剧本格式:至少 1 个 ## S 头
     if not re.search(r"^##\s*S\d+\s*\|", script, re.MULTILINE):
         raise RuntimeError("梗概扩写失败:剧本不含 ## S\\d+\\| 格式头")
+    # 可拍性质量门:满篇画外音 / 单人独角戏的剧本打回重写,仍不合格不落库
+    def _repair(prompt: str) -> str:
+        d = runner.run_agent_json("comic_outline_writer", prompt,
+                                  config_id=config_id, lang=content_lang)
+        return (d.get("script") or "") if isinstance(d, dict) else ""
+
+    script = script_quality.enforce(script, _repair)
     db.ex(
         "UPDATE episodes SET script_content=?, content=?, updated_at=? WHERE id=?",
         (script, script, db.now(), episode_id),
