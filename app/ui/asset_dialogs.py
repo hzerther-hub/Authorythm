@@ -112,10 +112,22 @@ class ProjectSettingsDialog(QDialog):
         self.intro.setPlaceholderText(tr("u_whole_placeholder"))
         _row_full(tr("u_intro"), self.intro)
 
-        # 题材 — 全宽(短文本输入)
-        self.genre = QLineEdit(meta.get("genre", ""))
-        self.genre.setPlaceholderText(tr("u_genre"))
-        _row_full(tr("u_genre"), self.genre)
+        # 题材 — 预设下拉(12 大类)。**不提供「自定义」**(用户 2026-10-21 定):
+        # 下拉里给一个没地方填的条目,只会让人以为能填。
+        # 仍然落在 meta["genre"] —— extractor / novel / auto_generate 都读这个键,
+        # 不另开新列,免得两套题材语义打架。
+        # 存量/AI 起草产生的非预设题材,作为额外条目显示,保存时原样写回。
+        from ..pipeline.project_concept import GENRE_PRESETS
+        self.genre_combo = QComboBox()
+        for g in GENRE_PRESETS:
+            self.genre_combo.addItem(g, g)
+        _cur_genre = (meta.get("genre") or "").strip()
+        if _cur_genre and self.genre_combo.findData(_cur_genre) < 0:
+            self.genre_combo.addItem(_cur_genre, _cur_genre)
+        _gi = self.genre_combo.findData(_cur_genre) if _cur_genre else 0
+        self.genre_combo.setCurrentIndex(_gi if _gi >= 0 else 0)
+        _row_full(tr("u_genre"), self.genre_combo)
+        _row_hint_full(tr("genre_hint"))
 
         # AI 起草简介/题材 + 提示 — 全宽放一行
         meta_row = QWidget()
@@ -258,6 +270,21 @@ class ProjectSettingsDialog(QDialog):
         row.addWidget(save)
         root.addLayout(row)
 
+    # ── 题材(纯预设下拉)──
+    def _set_genre(self, value: str):
+        """外部(AI 起草 / 项目说明)回填题材:命中预设就选预设,否则加一条额外条目。"""
+        v = (value or "").strip()
+        if not v:
+            return
+        i = self.genre_combo.findData(v)
+        if i < 0:
+            self.genre_combo.addItem(v, v)
+            i = self.genre_combo.count() - 1
+        self.genre_combo.setCurrentIndex(i)
+
+    def _genre_value(self) -> str:
+        """当前题材值(下拉选中项)。"""
+        return str(self.genre_combo.currentData() or "")
 
     def _on_comic_style_pick(self, _idx=0):
         """漫画画风下拉切换:选中即落库(只有预设可选,没有自定义输入框)。"""
@@ -291,7 +318,7 @@ class ProjectSettingsDialog(QDialog):
             if result.get("description"):
                 self.intro.setText(str(result["description"]).strip())
             if result.get("genre"):
-                self.genre.setText(str(result["genre"]).strip())
+                self._set_genre(str(result["genre"]).strip())
             ok(tr("已填入简介与题材,确认无误后点保存"))
 
         from ..core.taskmgr import TASKMGR
@@ -301,7 +328,7 @@ class ProjectSettingsDialog(QDialog):
         d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
         meta = db.jload(d["metadata"], {}) if d else {}
         meta["intro"] = self.intro.text().strip()
-        meta["genre"] = self.genre.text().strip()
+        meta["genre"] = self._genre_value()
         meta["tts_gender"] = self.tts_gender.currentData() or "female"
         novel_style = self.novel_style.currentData() or ""
         db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
@@ -1057,8 +1084,6 @@ class AssetDetailDialog(QDialog):
             return
         # 大图与图库预览同款:带「换画风」(可选风格下拉)。转换结果**写回该
         # 资产** image_url —— 资产预览与图库预览语义不同:这是资产自己的参考图。
-        from ..core import config as _cfg
-        from ..core.taskmgr import TASKMGR
         styles = [(r["value"], tr(r["name"])) for r in
                   db.q("SELECT value, name FROM style_presets "
                        "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]

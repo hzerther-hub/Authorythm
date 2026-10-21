@@ -349,7 +349,7 @@ class TaskManager(QObject):
         "storyboard_split": "拆分镜", "comic": "生成漫画", "prompt": "生成提示词",
         "promo": "写宣传文案", "face_swap": "换脸", "face_swap_batch": "批量换脸",
         "merge": "拼接成片", "stitch": "拼接长图", "episode_cover": "生成章封面",
-        "chat_edit": "PhotoCraft 修图",
+        "chat_edit": "PhotoCraft 修图", "concept": "生成项目说明",
     }
 
     # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)
@@ -367,6 +367,8 @@ class TaskManager(QObject):
         # auto-generate.ts 里 clone_understand 的 taskType;不注册的话 submit 会跳过
         # 就绪校验,缺配置也得等模型把请求打回来才失败。
         "clone_understand": "text",
+        # 新建项目的「项目说明」:从一句想法生成 名称/简介/创意描述/题材
+        "concept": "text",
     }
 
     def _run_done_cb(self, cb, result, error):

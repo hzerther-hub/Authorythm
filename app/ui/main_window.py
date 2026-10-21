@@ -473,10 +473,12 @@ class MainWindow(QMainWindow):
         data = dlg.result_data()
         ts = db.now()
         drama_id = db.ex(
-            "INSERT INTO dramas(title,style,aspect_ratio,work_type,ethnicity,metadata,status,created_at,updated_at)"
-            " VALUES(?,?,?,?,?,?, 'pending', ?, ?)",
+            "INSERT INTO dramas(title,style,aspect_ratio,work_type,ethnicity,metadata,"
+            "creative_description,status,created_at,updated_at)"
+            " VALUES(?,?,?,?,?,?,?, 'pending', ?, ?)",
             (data["title"], data["style"], data["aspect_ratio"], data["work_type"],
-             data["ethnicity"], data["metadata"], ts, ts))
+             data["ethnicity"], data["metadata"],
+             data.get("creative_description") or "", ts, ts))
         ep_id = db.ex(
             "INSERT INTO episodes(drama_id,episode_number,title,status,resolution,created_at,updated_at)"
             " VALUES(?,1,?,'pending','720p',?,?)",

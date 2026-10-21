@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QPushButton,
-                               QRadioButton, QScrollArea, QVBoxLayout, QWidget)
+                               QHBoxLayout, QLineEdit, QPushButton,
+                               QRadioButton, QVBoxLayout, QWidget)
 
 from ..core import db
 from ..core.i18n import tr
@@ -63,6 +63,8 @@ class NewProjectDialog(QDialog):
         self._ref_video = ""
         self._product_img = ""
         self._presenter_img = ""
+        # 「项目说明」生成的 简介/创意描述/题材 —— 不可见,随表单一起落库
+        self._concept: dict = {}
         root = QVBoxLayout(self)
 
         root.addWidget(W.h2(tr("new_project")))
@@ -70,8 +72,18 @@ class NewProjectDialog(QDialog):
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText(tr("name_placeholder"))
+        # 项目名称与「项目说明」按钮同一行(对齐 Web 版 title-gen-row):
+        # 名称是「项目说明」的种子(想法框预填它),所以没填名时按钮置灰。
+        name_row = QHBoxLayout()
+        name_row.setSpacing(6)
+        name_row.addWidget(self.name_edit, 1)
+        self.concept_btn = W.slate_button(tr("concept_btn"))
+        W.set_icon(self.concept_btn, "magic", tr("concept_btn"), 14)
+        self.concept_btn.setToolTip(tr("concept_btn_tip"))
+        self.concept_btn.clicked.connect(self._open_concept)
+        name_row.addWidget(self.concept_btn)
         form = QFormLayout()
-        form.addRow(tr("project_name") + " *", self.name_edit)
+        form.addRow(tr("project_name") + " *", name_row)
         root.addLayout(form)
 
         # 创作目标
@@ -122,7 +134,54 @@ class NewProjectDialog(QDialog):
 
         for rb in self._radios.values():
             rb.toggled.connect(self._rebuild_dynamic)
+        # 项目名变化 → 「项目说明」按钮可用性(没名字就没种子,AI 只能凭空瞎编)
+        self.name_edit.textChanged.connect(self._sync_concept_btn)
         self._rebuild_dynamic()
+        self._sync_concept_btn()
+
+    # ── 项目说明 ──
+    def _sync_concept_btn(self, *_):
+        """按钮可用性:必须有项目名(想法框以它为种子),且不能是同款复刻。"""
+        ok_name = bool(self.name_edit.text().strip())
+        btn = getattr(self, "concept_btn", None)
+        if btn is None:
+            return
+        if self.work_type() == "video_clone":
+            btn.setEnabled(False)
+            btn.setToolTip(tr("concept_not_supported"))
+        elif not ok_name:
+            btn.setEnabled(False)
+            btn.setToolTip(tr("concept_need_name"))
+        else:
+            btn.setEnabled(True)
+            btn.setToolTip(tr("concept_btn_tip"))
+
+    def _open_concept(self):
+        """弹「项目说明」窗口;确认后把结果写回本表单。"""
+        from .project_concept_dialog import ProjectConceptDialog
+        dlg = ProjectConceptDialog(
+            self, work_type=self.work_type(),
+            title=self.name_edit.text().strip(),
+            config_id=self._text_config_id(), lang=None)
+        if dlg.exec() != ProjectConceptDialog.Accepted:
+            return
+        data = dlg.result_data()
+        # 名称回填新建表单;简介/创意描述/题材不可见,随表单一起落库
+        self.name_edit.setText(data.get("title") or "")
+        self._concept = {
+            "description": data.get("description") or "",
+            "creative_description": data.get("creative_description") or "",
+            "genre": data.get("genre") or "",
+        }
+
+    def _text_config_id(self):
+        """文本模型 config_id —— 项目说明要调文本模型。"""
+        try:
+            from ..ai import registry
+            cfg = registry.default_config("text")
+            return (cfg or {}).get("id")
+        except Exception:  # noqa: BLE001
+            return None
 
     # ── 动态字段 ──
     def _clear_dynamic(self):
@@ -135,6 +194,8 @@ class NewProjectDialog(QDialog):
     def _rebuild_dynamic(self):
         self._clear_dynamic()
         wt = self.work_type()
+        # 创作目标变了 → 「项目说明」可用性也跟着变(同款复刻不给这个入口)
+        self._sync_concept_btn()
         self.style_combo.blockSignals(True)
         self.style_combo.clear()
         for v, name in style_choices(wt):
@@ -226,6 +287,13 @@ class NewProjectDialog(QDialog):
             meta = {"clone": {"reference_src": self._ref_video,
                               "product_src": self._product_img,
                               "presenter_src": self._presenter_img}}
+        # 「项目说明」生成的简介与题材写进 metadata —— 复用项目里既有的
+        # meta["intro"] / meta["genre"] 槽位(extractor / novel / auto_generate
+        # 都已经按这两个键读上下文),不另开新列,免得两套语义打架。
+        if self._concept.get("description"):
+            meta["intro"] = self._concept["description"]
+        if self._concept.get("genre"):
+            meta["genre"] = self._concept["genre"]
         return {
             "title": self.name_edit.text().strip(),
             "work_type": wt,
@@ -233,4 +301,6 @@ class NewProjectDialog(QDialog):
             "aspect_ratio": self.aspect_combo.currentData(),
             "ethnicity": self.eth_combo.currentData(),
             "metadata": json.dumps(meta, ensure_ascii=False),
+            # 创意描述是 dramas 表上的独立列
+            "creative_description": self._concept.get("creative_description", ""),
         }
