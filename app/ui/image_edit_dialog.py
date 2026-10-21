@@ -23,8 +23,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
-                               QGridLayout, QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton, QSlider, QVBoxLayout, QWidget)
+                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
+                               QMessageBox, QPushButton, QSlider, QVBoxLayout,
+                               QWidget)
 
 from ..core import config, db
 from ..core.i18n import tr
@@ -141,7 +142,12 @@ class ImageEditDialog(QDialog):
         self.current_name = src.stem
 
         root = QHBoxLayout(self)
-        # ── 左:预览 ──
+        # ── 左:预览 + 图片下方的水印条 ──
+        # 水印控件从右列搬到图下后,左列不再是「一块预览」,而是「预览 + 底部横条」。
+        # 这里先建竖向布局:预览占伸缩,水印条固定贴在图片底下。
+        left = QVBoxLayout()
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(8)
         self.preview = QLabel()
         self.preview.setAlignment(Qt.AlignCenter)
         self.preview.setMinimumSize(560, 520)
@@ -159,7 +165,8 @@ class ImageEditDialog(QDialog):
         self._busy_overlay = BusyOverlay(self.preview)
         self._busy_overlay.setGeometry(self.preview.rect())
         self.preview.installEventFilter(self)
-        root.addWidget(self.preview, 1)
+        left.addWidget(self.preview, 1)
+        root.addLayout(left, 1)
         # 水印拖动定位:在预览图上按住拖动,松手即位置生效。
         # 位置以归一化坐标存储(相对当前画面),换尺寸/裁剪后仍相对正确。
         self.wm_pos = (0.86, 0.92)
@@ -279,85 +286,99 @@ class ImageEditDialog(QDialog):
         apply_f.clicked.connect(self._apply_filter)
         tools.addWidget(apply_f)
 
-        tools.addWidget(self._section_label(tr("文字水印")))
+        # ── 水印:整块从右侧工具列搬到「图片下方」的横条 ──
+        # 原来水印控件全塞在右列里竖着排,一路拖到「水印位置」九宫格;更糟的是
+        # 「水印文字」输入框的容器 wm_text 晚一步 addWidget,孤零零掉到九宫格
+        # 底下,跟同组的颜色/字体/字号隔了老远,看着像另一个功能的输入框。
+        # 现在整体搬到图下做成一条横条:上行调内容(文字/颜色/字体/字号/竖排),
+        # 下行定位置(透明度/九宫格)+ 两个动作按钮,一眼看全,右列也短了一截。
+        self.wm_box = QGroupBox(tr("文字水印"))
+        wl = QVBoxLayout(self.wm_box)
+        wl.setContentsMargins(10, 6, 10, 8)
+        wl.setSpacing(6)
+
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
         # ── 水印类型:文字 / 图片 ──
         # 用户可选用文字还是图片当水印。两者参数不同(文字有字体/竖排,图片有
         # 缩放/形状),所以做成互斥切换,各自显示自己的参数行。
-        type_row = QHBoxLayout()
-        type_row.setSpacing(6)
-        type_row.addWidget(QLabel(tr("水印类型")))
+        row1.addWidget(QLabel(tr("水印类型")))
         self.wm_type = QComboBox()
         self.wm_type.addItem(tr("文字水印"), "text")
         self.wm_type.addItem(tr("图片水印"), "image")
         self.wm_type.currentIndexChanged.connect(self._on_wm_type)
-        type_row.addWidget(self.wm_type, 1)
-        tools.addLayout(type_row)
-
+        row1.addWidget(self.wm_type)
         # ── 预设样式(点一下即填好文字+颜色+字号+位置)──
-        preset_row = QHBoxLayout()
-        preset_row.setSpacing(4)
-        preset_row.addWidget(QLabel(tr("水印预设")))
+        row1.addWidget(QLabel(tr("水印预设")))
         self.wm_preset = QComboBox()
         self.wm_preset.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.wm_preset.setMaximumWidth(110)
         for name in _WM_PRESETS:
             self.wm_preset.addItem(name, name)
         self.wm_preset.currentIndexChanged.connect(self._apply_wm_preset)
-        preset_row.addWidget(self.wm_preset, 1)
-        tools.addLayout(preset_row)
+        row1.addWidget(self.wm_preset)
+        # 透明度跟类型/预设同属「一次性设定」,留在第一行,整行下方给内容参数
+        self.wm_opacity = self._slider(row1, tr("透明度"), 10, 100, 80, compact=True)
+        self.wm_opacity.setFixedWidth(110)
+        row1.addStretch(1)
+        wl.addLayout(row1)
 
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+        # ── 文字水印参数:文字 + 颜色 + 字体 + 字号 + 竖排 ──
+        # 颜色/字体/字号在横条里不再各挂一个文字标签(宽度不够,标签会把输入框
+        # 挤没),改成 tooltip 说明 + 控件自身可读(色块/字体名/百分比)。
         self.wm_text = QWidget()
-        wl = QVBoxLayout(self.wm_text)
-        wl.setContentsMargins(0, 0, 0, 0)
+        tl = QHBoxLayout(self.wm_text)
+        tl.setContentsMargins(0, 0, 0, 0)
+        tl.setSpacing(6)
         from PySide6.QtWidgets import QLineEdit as _QLE
         self.wm_input = _QLE()
         self.wm_input.setPlaceholderText(tr("水印文字"))
+        self.wm_input.setMinimumWidth(60)
+        # 主题里 QLineEdit 的边框是 transparent(浅色下输入框直接融进底色),
+        # 摆在灰底的水印条里看不出是输入框,这里补一个中性描边,深浅色都认。
+        self.wm_input.setStyleSheet(
+            "QLineEdit{background:rgba(255,255,255,0.06);"
+            "border:1px solid rgba(128,128,128,110);border-radius:6px;padding:4px 8px;}"
+            "QLineEdit:focus{border-color:#f97316;}")
         self.wm_input.textChanged.connect(lambda: self._render())
-        wl.addWidget(self.wm_input)
+        tl.addWidget(self.wm_input, 1)
         # 颜色 / 字体 / 字号:此前只有白色+固定字号+固定右下角,白字压亮背景几乎隐形
-        crow = QHBoxLayout()
-        crow.setSpacing(6)
-        crow.addWidget(QLabel(tr("cover_text_color")))
         self.wm_color_btn = QPushButton()
         self.wm_color_btn.setFixedSize(40, 24)
         self.wm_color_btn.setCursor(Qt.PointingHandCursor)
+        self.wm_color_btn.setToolTip(tr("cover_text_color"))
         self.wm_color_btn.clicked.connect(self._pick_wm_color)
-        crow.addWidget(self.wm_color_btn)
-        crow.addSpacing(8)
-        crow.addWidget(QLabel(tr("cover_text_font")))
+        tl.addWidget(self.wm_color_btn)
         self.wm_font = QComboBox()
         self.wm_font.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.wm_font.setMaximumWidth(100)
+        self.wm_font.setToolTip(tr("cover_text_font"))
         from ..pipeline import intro as _INTRO
         for _it in _INTRO.list_fonts():
             self.wm_font.addItem(_it["name"], _it["file"])
-        crow.addWidget(self.wm_font, 1)
-        tools.addLayout(crow)
-
-        srow = QHBoxLayout()
-        srow.setSpacing(6)
-        srow.addWidget(QLabel(tr("cover_text_size")))
-        self.wm_size = self._slider(srow, "", 3, 20, 8, compact=True)
+        tl.addWidget(self.wm_font)
+        self.wm_size = self._slider(tl, "", 3, 20, 8, compact=True)
+        self.wm_size.setFixedWidth(70)
+        self.wm_size.setToolTip(tr("cover_text_size"))
         from PySide6.QtWidgets import QLabel as _QLab
         self.wm_size_lab = _QLab("")
         self.wm_size_lab.setObjectName("muted")
-        self.wm_size_lab.setFixedWidth(40)
-        srow.addWidget(self.wm_size_lab)
+        self.wm_size_lab.setFixedWidth(34)
+        tl.addWidget(self.wm_size_lab)
         from PySide6.QtWidgets import QCheckBox as _QChk
         self.wm_vertical = _QChk(tr("wm_vertical"))
         self.wm_vertical.setToolTip(tr("wm_vertical_tip"))
         self.wm_vertical.toggled.connect(lambda: self._render())
-        srow.addWidget(self.wm_vertical)
-        srow.addStretch(1)
-        tools.addLayout(srow)
-        # 这些接线依赖水印控件,必须在其创建之后(预览块在第 81 行就存在了)
-        self.wm_font.currentIndexChanged.connect(lambda: self._render())
-        self.wm_size.valueChanged.connect(self._on_wm_size)
-        self._sync_wm_color_btn()
+        tl.addWidget(self.wm_vertical)
+        row2.addWidget(self.wm_text, 1)
 
-        # ── 图片水印参数(切到「图片水印」时显示)──
+        # ── 图片水印参数(切到「图片水印」时占据文字参数的位置)──
         self.wm_image_box = QWidget()
         il = QVBoxLayout(self.wm_image_box)
         il.setContentsMargins(0, 0, 0, 0)
-        il.setSpacing(6)
+        il.setSpacing(4)
         pick_row = QHBoxLayout()
         pick_row.setSpacing(6)
         pick_row.addWidget(QLabel(tr("水印图片")))
@@ -373,29 +394,19 @@ class ImageEditDialog(QDialog):
         irow.setSpacing(6)
         irow.addWidget(QLabel(tr("图片大小")))
         self.wm_img_size = self._slider(irow, "", 5, 60, 20, compact=True)
+        self.wm_img_size.setFixedWidth(90)
         irow.addStretch(1)
         il.addLayout(irow)
         self.wm_image_box.setVisible(False)
-        tools.addWidget(self.wm_image_box)
+        row2.addWidget(self.wm_image_box, 1)
+        wl.addLayout(row2)
 
-        wrow = QHBoxLayout()
-        self.wm_opacity = self._slider(wrow, tr("透明度"), 10, 100, 80, compact=True)
-        add_wm = QPushButton(tr("add_watermark_item"))
-        add_wm.setToolTip(tr("add_watermark_item_tip"))
-        add_wm.clicked.connect(self._add_watermark_item)
-        wrow.addWidget(add_wm)
-        clear_wm = QPushButton(tr("clear_watermarks"))
-        clear_wm.setToolTip(tr("clear_watermarks_tip"))
-        clear_wm.clicked.connect(self._clear_watermarks)
-        wrow.addWidget(clear_wm)
-        tools.addLayout(wrow)
-
+        row3 = QHBoxLayout()
+        row3.setSpacing(6)
         # ── 水印位置:九宫格快捷 ──
         # 预览上可以拖,但拖拽对"文字 / 图片"两类水印都要先手上有水印才生效;
         # 这里给 9 个归一化坐标按钮(0.1/0.5/0.9),点一下即定位,文字图片通用。
-        pos_row = QHBoxLayout()
-        pos_row.setSpacing(6)
-        pos_row.addWidget(QLabel(tr("水印位置")))
+        row3.addWidget(QLabel(tr("水印位置")))
         grid = QWidget()
         gl = QGridLayout(grid)
         gl.setContentsMargins(0, 0, 0, 0)
@@ -410,10 +421,25 @@ class ImageEditDialog(QDialog):
                 b.clicked.connect(lambda _=False, x=fx, y=fy: self._set_wm_pos(x, y))
                 gl.addWidget(b, r, c)
                 self._pos_btns[(fx, fy)] = b
-        pos_row.addWidget(grid)
-        pos_row.addStretch(1)
-        tools.addLayout(pos_row)
-        tools.addWidget(self.wm_text)
+        row3.addWidget(grid)
+        row3.addStretch(1)
+        add_wm = QPushButton(tr("add_watermark_item"))
+        add_wm.setToolTip(tr("add_watermark_item_tip"))
+        add_wm.clicked.connect(self._add_watermark_item)
+        row3.addWidget(add_wm)
+        clear_wm = QPushButton(tr("clear_watermarks"))
+        clear_wm.setToolTip(tr("clear_watermarks_tip"))
+        clear_wm.clicked.connect(self._clear_watermarks)
+        row3.addWidget(clear_wm)
+        wl.addLayout(row3)
+
+        # 这些接线依赖水印控件,必须在其创建之后(预览块在第 81 行就存在了)
+        self.wm_font.currentIndexChanged.connect(lambda: self._render())
+        self.wm_size.valueChanged.connect(self._on_wm_size)
+        self._on_wm_size()         # 初始把「8%」写进标签(此前只在拖动时才刷新)
+        self._sync_wm_color_btn()
+        self._on_wm_type(0)      # 初始状态同步(类型块显隐 + 组标题)
+        left.addWidget(self.wm_box)
 
         tools.addWidget(self._section_label(tr("尺寸")))
         srow = QHBoxLayout()
@@ -777,6 +803,12 @@ class ImageEditDialog(QDialog):
         self.wm_text.setVisible(kind == "text")
         # 预设只对文字有意义(图片水印没有字体/文字内容)
         self.wm_preset.setEnabled(kind == "text")
+        # 面板标题跟着类型走(横条在图下,标题就是它唯一的分区说明)
+        box = getattr(self, "wm_box", None)
+        if box is not None:
+            box.setTitle(tr("图片水印") if kind == "image" else tr("文字水印"))
+        # 九宫格初始也要高亮当前位(此前只有点按钮/换预设时才刷新)
+        self._sync_pos_btns()
         self._render()
 
     def _set_wm_pos(self, fx: float, fy: float):
@@ -789,10 +821,12 @@ class ImageEditDialog(QDialog):
         """高亮当前所处九宫格位置(误差内算命中)。"""
         for (fx, fy), b in getattr(self, "_pos_btns", {}).items():
             hit = abs(fx - self.wm_pos[0]) < 0.02 and abs(fy - self.wm_pos[1]) < 0.02
+            # 未命中态用中性描边而不是写死的白底 —— 深色主题下九个白方块太刺眼
             b.setStyleSheet(
                 "QPushButton{background:#f97316;border:1px solid #f97316;border-radius:4px;}"
                 if hit else
-                "QPushButton{background:#fff;border:1px solid #dcdad3;border-radius:4px;}"
+                "QPushButton{background:transparent;border:1px solid rgba(128,128,128,120);"
+                "border-radius:4px;}"
                 "QPushButton:hover{border-color:#f97316;}")
 
     def _apply_wm_preset(self, _idx: int = 0):
