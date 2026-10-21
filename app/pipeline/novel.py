@@ -16,16 +16,20 @@ from . import script_quality
 
 
 # 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
-NOVEL_STYLES = [
-    ("爽感快节奏", "短句为主，情绪外露，段落简短，冲突直给，爽点前置，每章末尾必有小高潮"),
-    ("细腻情感流", "重人物内心与情绪层次，描写细腻，节奏舒缓，重氛围与共情"),
-    ("悬疑紧张", "信息差驱动，多伏笔，短段制造压迫感，章末反转"),
-    ("古风雅致", "文白相间，用词考究，意境优先，节奏沉稳"),
-    ("幽默轻松", "吐槽视角，反差与梗密集，轻松诙谐但不脱离主线"),
-    ("硬核写实", "细节考据，冷静克制但不冷漠——动作与器物描写精确，同时保留人物内心戏与环境氛围，强逻辑因果"),
-]
+# 清单本体放在 core.db.NOVEL_STYLE_PRESETS —— 与 style_presets 表里 novel 类的种子
+# 同源,避免「内置常量」和「库内种子」各写一份、改一处忘一处。
+NOVEL_STYLES = [(name, prompt) for name, _value, _order, _wt, prompt, _desc
+                in db.NOVEL_STYLE_PRESETS]
 NOVEL_STYLE_CUSTOM = "__custom__"
 DEFAULT_NOVEL_STYLE = NOVEL_STYLES[0][1]
+
+
+def novel_style_options() -> list[tuple[str, str]]:
+    """(显示名, prompt 全文) —— 内置 6 套 + 库内 style_type='novel' 的行。
+
+    按 prompt 全文去重;value 一律是 prompt 全文(dramas.novel_style 存的就是全文)。
+    """
+    return db.style_options(db.STYLE_TYPE_NOVEL)
 
 
 # ── 叙事人称(对齐参考项目 episode.vue 故事合约向导的 pov 四选项 + novel.ts 的「视角=」注入)──
@@ -1103,7 +1107,8 @@ def load_cover_asset_refs(drama_id: int, limit: int = 5) -> list[str]:
 
 def _cover_style(drama_id: int) -> str:
     d = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
-    return db.style_prompt((d["comic_style"] or d["style"] or "3d") if d else "3d")
+    # comic_style 现在存的是 prompt 全文(也可能是存量的 preset value)→ 用 flex 解析
+    return db.style_prompt_flex((d["comic_style"] or d["style"] or "3d") if d else "3d")
 
 
 def generate_cover(drama_id: int, prompt: str = "", config_id: int | None = None,

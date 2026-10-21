@@ -1298,14 +1298,14 @@ class EpisodePage(QWidget):
         row.addWidget(self.thinking_label)
         row.addStretch(1)        # 文风及之后按钮统统贴右
 
-        # 文风:6 预设 + 自定义
-        from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
+        # 文风:内置 6 预设 + 库内 novel 类条目 + 自定义
+        from ..pipeline.novel import NOVEL_STYLE_CUSTOM, novel_style_options
         row.addWidget(QLabel(tr("style_label")))
         self.style_combo = QComboBox()
         self.style_combo.setMinimumWidth(116)
         self.style_combo.addItem("", "")
-        for name, prompt in NOVEL_STYLES:
-            self.style_combo.addItem(tr(name), prompt)
+        for label, prompt in novel_style_options():
+            self.style_combo.addItem(label, prompt)
         self.style_combo.addItem(tr("style_custom"), NOVEL_STYLE_CUSTOM)
         self.style_combo.currentIndexChanged.connect(self._on_style_pick)
         row.addWidget(self.style_combo)
@@ -2286,8 +2286,8 @@ class EpisodePage(QWidget):
         self.style_combo2 = QComboBox()
         self.style_combo2.setMinimumWidth(116)
         self.style_combo2.addItem("", "")
-        for name, prompt in self.style_combo_items():
-            self.style_combo2.addItem(tr(name), prompt)
+        for label, prompt in self.style_combo_items():
+            self.style_combo2.addItem(label, prompt)
         self.style_combo2.addItem(tr("style_custom"), "__custom__")
         self.style_combo2.currentIndexChanged.connect(self._on_style_pick2)
         row.addWidget(self.style_combo2)
@@ -2365,8 +2365,9 @@ class EpisodePage(QWidget):
         lay.addWidget(bar)
 
     def style_combo_items(self):
-        from ..pipeline.novel import NOVEL_STYLES
-        return NOVEL_STYLES
+        """文风下拉条目:(显示名, prompt 全文) —— 内置 6 套 + 库内 style_type='novel' 的行。"""
+        from ..pipeline.novel import novel_style_options
+        return novel_style_options()
 
     def _on_style_pick2(self):
         from ..pipeline import novel as novel_pipe

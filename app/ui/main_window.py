@@ -1286,7 +1286,7 @@ class ClonePage(QWidget):
             self.clone_style_combo.blockSignals(True)
             self.clone_style_combo.clear()
             for r in db.q("SELECT value, name FROM style_presets "
-                          "WHERE is_active=1 ORDER BY sort_order, id"):
+                          "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id"):
                 self.clone_style_combo.addItem(tr(r["name"]), r["value"])
             cur = ""
             if self.drama_id:

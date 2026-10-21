@@ -130,6 +130,14 @@ def _coerce_str(val) -> str:
     return str(val).strip() if val is not None else ""
 
 
+def comic_style_options() -> list[tuple[str, str]]:
+    """(显示名, prompt 全文) —— 内置 6 套 + 库内 style_type='comic' 的行。
+
+    按 prompt 全文去重;value 一律是 prompt 全文(dramas.comic_style 存的就是全文)。
+    """
+    return db.style_options(db.STYLE_TYPE_COMIC)
+
+
 def _style_for(drama_id: int, style_value: str = "") -> str:
     """项目风格串 + 人物面孔文化片段(角色级覆盖由 prompts_gen 处理)。
 
@@ -139,7 +147,8 @@ def _style_for(drama_id: int, style_value: str = "") -> str:
     """
     d = db.q1("SELECT style, comic_style, ethnicity, language FROM dramas WHERE id=?",
               (drama_id,))
-    return db.style_prompt(
+    # comic_style 存的是 prompt 全文(存量项目里是 preset value)→ flex 解析两种都认
+    return db.style_prompt_flex(
         _current_style_value(drama_id, style_value),
         ethnicity=(d["ethnicity"] if d else "") or "",
         content_lang=(d["language"] if d else "") or "")

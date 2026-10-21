@@ -40,7 +40,10 @@ def formats() -> list[tuple[str, str]]:
 
 
 def style_choices(work_type: str) -> list[tuple[str, str]]:
-    rows = db.q("SELECT name,value,work_type FROM style_presets WHERE is_active=1 ORDER BY sort_order")
+    # 只列视觉风格(style_type='visual'):漫画画风/写作风格是另外两类,
+    # 混进来会让「视觉风格」选到漫画/文风 prompt。
+    rows = db.q("SELECT name,value,work_type FROM style_presets WHERE is_active=1 "
+                "AND style_type='visual' ORDER BY sort_order")
     out = []
     for r in rows:
         wt = r["work_type"]

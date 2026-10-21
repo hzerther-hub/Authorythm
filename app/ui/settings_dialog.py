@@ -694,33 +694,123 @@ class SettingsDialog(QDialog):
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
+        # 三个分类切换:视觉风格 / 漫画风格 / 写作风格
+        top = QHBoxLayout()
+        top.addWidget(W.muted(tr("style_category")))
+        self.style_type_combo = QComboBox()
+        for st in db.STYLE_TYPES:
+            self.style_type_combo.addItem(tr(db.STYLE_TYPE_LABEL_KEYS[st]), st)
+        self.style_type_combo.currentIndexChanged.connect(self._refresh_styles)
+        top.addWidget(self.style_type_combo)
+        top.addStretch(1)
+        lay.addLayout(top)
+        lay.addWidget(W.muted(tr("style_presets_hint")))
         self.style_list = QListWidget()
-        for r in db.q("SELECT * FROM style_presets ORDER BY sort_order"):
-            active = "✅" if r["is_active"] else "⛔"
-            item = QListWidgetItem(f"{active}  {r['name']}  ·  {r['description'] or ''}")
-            item.setData(Qt.UserRole, dict(r))
-            self.style_list.addItem(item)
         self.style_list.itemDoubleClicked.connect(self._edit_style)
-        lay.addWidget(W.muted(tr("双击编辑风格 · 电影质感提示词前缀")))
-        lay.addWidget(self.style_list)
+        lay.addWidget(self.style_list, 1)
+        btns = QHBoxLayout()
+        b_add = W.primary_btn(tr("add"))
+        b_add.clicked.connect(self._add_style)
+        b_toggle = QPushButton(tr("style_toggle"))
+        b_toggle.clicked.connect(self._toggle_style)
+        b_del = QPushButton(tr("delete"))
+        b_del.clicked.connect(self._delete_style)
+        btns.addWidget(b_add)
+        btns.addWidget(b_toggle)
+        btns.addWidget(b_del)
+        btns.addStretch(1)
+        lay.addLayout(btns)
+        self._refresh_styles()
         return w
+
+    def _refresh_styles(self, *_args):
+        """按当前分类(style_type)刷新风格预设列表(保持选中项)。"""
+        lst = getattr(self, "style_list", None)
+        if lst is None:
+            return
+        # 刷新前记住选中行 —— 启停后列表会重建,不记住的话第二次操作就没选中项了
+        sel_id = None
+        cur_item = lst.currentItem()
+        if cur_item is not None:
+            cur_data = cur_item.data(Qt.UserRole)
+            sel_id = cur_data.get("id") if cur_data else None
+        st = self.style_type_combo.currentData() or db.STYLE_TYPE_VISUAL
+        lst.clear()
+        for r in db.q("SELECT * FROM style_presets WHERE style_type=? ORDER BY sort_order, id",
+                      (st,)):
+            active = "✅" if r["is_active"] else "⛔"
+            # 内置条目显示本地化名,用户自建显示 name 原样
+            label = db.style_display_name(r["value"], r["name"])
+            item = QListWidgetItem(f"{active}  {label}  ·  {r['description'] or ''}")
+            item.setData(Qt.UserRole, dict(r))
+            lst.addItem(item)
+        if sel_id is not None:
+            for i in range(lst.count()):
+                data = lst.item(i).data(Qt.UserRole)
+                if data and data.get("id") == sel_id:
+                    lst.setCurrentRow(i)
+                    break
 
     def _edit_style(self, item: QListWidgetItem):
         row = item.data(Qt.UserRole)
+        if not row:
+            return
         dlg = _StyleDialog(dict(row), self)
         if dlg.exec() == QDialog.Accepted:
             d = dlg.data()
-            db.ex("UPDATE style_presets SET name=?, prompt=?, description=?, is_active=? WHERE id=?",
-                  (d["name"], d["prompt"], d["description"], d["is_active"], row["id"]))
+            db.ex("UPDATE style_presets SET name=?, prompt=?, description=?, is_active=?, style_type=? WHERE id=?",
+                  (d["name"], d["prompt"], d["description"], d["is_active"],
+                   d["style_type"], row["id"]))
             self._refresh_styles()
 
-    def _refresh_styles(self):
-        self.style_list.clear()
-        for r in db.q("SELECT * FROM style_presets ORDER BY sort_order"):
-            active = "✅" if r["is_active"] else "⛔"
-            item = QListWidgetItem(f"{active}  {r['name']}  ·  {r['description'] or ''}")
-            item.setData(Qt.UserRole, dict(r))
-            self.style_list.addItem(item)
+    def _add_style(self):
+        """新增一条预设:分类取当前分类,value 由用户填(全局唯一,创建后不可改)。"""
+        st = self.style_type_combo.currentData() or db.STYLE_TYPE_VISUAL
+        row = {"id": None, "name": "", "value": "", "prompt": "", "description": "",
+               "work_type": "all", "style_type": st, "is_active": 1, "sort_order": 0}
+        dlg = _StyleDialog(row, self, is_new=True)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        d = dlg.data()
+        value = (d.get("value") or "").strip()
+        if not value:
+            warn(self, tr("style_new_title"), tr("style_value_required"))
+            return
+        if db.q1("SELECT id FROM style_presets WHERE value=?", (value,)):
+            warn(self, tr("style_new_title"), tr("style_value_dup"))
+            return
+        row_max = db.q1("SELECT MAX(sort_order) m FROM style_presets WHERE style_type=?",
+                        (d["style_type"],))
+        order = int((row_max["m"] if row_max and row_max["m"] is not None else 0)) + 1
+        db.ex("""INSERT INTO style_presets(name,value,prompt,description,work_type,style_type,
+                      sort_order,is_active,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
+              (d["name"] or value, value, d["prompt"] or "", d["description"],
+               "all", d["style_type"], order, d["is_active"], db.now()))
+        self._refresh_styles()
+
+    def _toggle_style(self):
+        item = self.style_list.currentItem()
+        if not item:
+            return
+        row = item.data(Qt.UserRole)
+        db.ex("UPDATE style_presets SET is_active=? WHERE id=?",
+              (0 if row["is_active"] else 1, row["id"]))
+        self._refresh_styles()
+
+    def _delete_style(self):
+        item = self.style_list.currentItem()
+        if not item:
+            return
+        row = item.data(Qt.UserRole)
+        # 内置预设有种子兜底(启动时 INSERT OR IGNORE 会补回来),删了也白删
+        if row["value"] in db.BUILTIN_STYLE_NAMES:
+            warn(self, tr("style_presets"), tr("style_builtin_no_delete"))
+            return
+        label = db.style_display_name(row["value"], row["name"])
+        if not ask(self, tr("delete"), tr("style_delete_confirm", label), danger=True):
+            return
+        db.ex("DELETE FROM style_presets WHERE id=?", (row["id"],))
+        self._refresh_styles()
 
     # ── Agent 配置 ──
     def _page_agents(self) -> QWidget:
@@ -1755,21 +1845,35 @@ class ServiceDialog(QDialog):
 
 
 class _StyleDialog(QDialog):
-    def __init__(self, row: dict, parent=None):
+    def __init__(self, row: dict, parent=None, is_new: bool = False):
         super().__init__(parent)
-        self.setWindowTitle(row["name"])
+        self.is_new = is_new
+        self.setWindowTitle(tr("style_new_title") if is_new else (row.get("name") or ""))
         self.resize(560, 420)
         lay = QVBoxLayout(self)
         f = QFormLayout()
-        self.name = QLineEdit(row["name"])
+        self.name = QLineEdit(row.get("name") or "")
+        # value 是全局唯一键,创建后不可修改(沿用既有约定)
+        self.value = QLineEdit(row.get("value") or "")
+        if not is_new:
+            self.value.setReadOnly(True)
+        self.type_combo = QComboBox()
+        for st in db.STYLE_TYPES:
+            self.type_combo.addItem(tr(db.STYLE_TYPE_LABEL_KEYS[st]), st)
+        ti = self.type_combo.findData(row.get("style_type") or db.STYLE_TYPE_VISUAL)
+        self.type_combo.setCurrentIndex(ti if ti >= 0 else 0)
         self.desc = QLineEdit(row.get("description") or "")
         self.active = QCheckBox(tr("enabled"))
-        self.active.setChecked(bool(row["is_active"]))
-        f.addRow(tr("visual_style"), self.name)
+        self.active.setChecked(bool(row.get("is_active", 1)))
+        f.addRow(tr("名称"), self.name)
+        f.addRow(tr("style_value_label"), self.value)
+        f.addRow(tr("style_type_label"), self.type_combo)
         f.addRow(tr("描述"), self.desc)
         f.addRow("", self.active)
         lay.addLayout(f)
-        self.prompt = QPlainTextEdit(row["prompt"])
+        if is_new:
+            lay.addWidget(W.muted(tr("style_value_hint")))
+        self.prompt = QPlainTextEdit(row.get("prompt") or "")
         lay.addWidget(self.prompt, 1)
         btns = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         btns.accepted.connect(self.accept)
@@ -1777,5 +1881,8 @@ class _StyleDialog(QDialog):
         lay.addWidget(btns)
 
     def data(self) -> dict:
-        return {"name": self.name.text().strip(), "prompt": self.prompt.toPlainText(),
-                "description": self.desc.text().strip(), "is_active": 1 if self.active.isChecked() else 0}
+        return {"name": self.name.text().strip(), "value": self.value.text().strip(),
+                "style_type": self.type_combo.currentData() or db.STYLE_TYPE_VISUAL,
+                "prompt": self.prompt.toPlainText(),
+                "description": self.desc.text().strip(),
+                "is_active": 1 if self.active.isChecked() else 0}

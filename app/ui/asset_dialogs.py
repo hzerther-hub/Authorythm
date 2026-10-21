@@ -130,28 +130,24 @@ class ProjectSettingsDialog(QDialog):
         mr.addStretch(1)
         _row_full("", meta_row)
 
-        # 写法文风:6 预设 + 自定义(全宽)
-        from ..pipeline.novel import NOVEL_STYLES, NOVEL_STYLE_CUSTOM
+        # 写法文风:内置 6 预设 + 库内 style_type='novel' 的条目。**不提供「自定义…」**
+        # (用户 2026-10-21 定)——下拉里摆一个没有地方填的条目只会误导人以为能填
+        # (参考 Web 版就踩了这个坑)。存量项目里手写过的文风仍保留:作为额外条目
+        # 显示,保存时原样写回。
+        from ..core.db import merge_style_options
         self.novel_style = QComboBox()
         self.novel_style.addItem(tr("未选(跟随默认)"), "")
-        for name, prompt in NOVEL_STYLES:
-            self.novel_style.addItem(tr(name), prompt)
-        self.novel_style.addItem(tr("自定义…"), NOVEL_STYLE_CUSTOM)
+        _novel_rows = db.q("SELECT * FROM style_presets WHERE style_type='novel' "
+                           "AND is_active=1 ORDER BY sort_order, id")
+        for label, prompt in merge_style_options(_novel_rows, "novel"):
+            self.novel_style.addItem(label, prompt)
         _cur = (d["novel_style"] or "").strip()
+        if _cur and self.novel_style.findData(_cur) < 0:
+            self.novel_style.addItem(_cur[:24] + ("…" if len(_cur) > 24 else ""), _cur)
         _si = self.novel_style.findData(_cur) if _cur else 0
-        if _si < 0:
-            _si = self.novel_style.findData(NOVEL_STYLE_CUSTOM)
-        self.novel_style.setCurrentIndex(_si)
-        self.novel_style.currentIndexChanged.connect(self._on_style_pick)
+        self.novel_style.setCurrentIndex(_si if _si >= 0 else 0)
         _row_full(tr("写法文风"), self.novel_style)
-
-        self.novel_style_edit = QPlainTextEdit(_cur)
-        self.novel_style_edit.setPlaceholderText(tr("自定义文风:写清句式、节奏、视角与爽点节奏"))
-        self.novel_style_edit.setMaximumHeight(56)
-        self.novel_style_edit.setVisible(self.novel_style.currentData() == NOVEL_STYLE_CUSTOM)
-        self.novel_style_edit.textChanged.connect(self._on_style_text)
-        _row_full("", self.novel_style_edit)
-        _row_hint_full(tr("预设全文会作为 AI 写正文的「文风」指令;选自定义可自由描述"))
+        _row_hint_full(tr("novel_style_hint"))
 
         # 画面比例 | 视觉风格  (两列配对)
         self.aspect = QComboBox()
@@ -160,7 +156,10 @@ class ProjectSettingsDialog(QDialog):
         i = self.aspect.findData(d["aspect_ratio"])
         self.aspect.setCurrentIndex(i if i >= 0 else 0)
         self.style = QComboBox()
-        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
+        # 只列视觉风格(style_type='visual'):漫画画风/写作风格是另外两类,
+        # 混进来会让「视觉风格」选到漫画 prompt 当生图前缀。
+        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 "
+                      "AND style_type='visual' ORDER BY sort_order"):
             self.style.addItem(tr(r["name"]), r["value"])
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
@@ -168,11 +167,22 @@ class ProjectSettingsDialog(QDialog):
                  tr("visual_style"), self.style)
 
         # 画风(温画画风) | 内容语言  (两列配对)
+        # 画风 = 内置 6 套 + 库内 style_type='comic' 的行,按 prompt 全文去重;
+        # value 一律是 prompt 全文(dramas.comic_style 存的就是全文)。
         self.comic_style = QComboBox()
         self.comic_style.addItem(tr("未选(跟随默认)"), "")
-        for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 ORDER BY sort_order"):
-            self.comic_style.addItem(tr(r["name"]), r["value"])
-        self.comic_style.addItem(tr("comic_style_custom"), "__custom__")
+        _comic_rows = db.q("SELECT * FROM style_presets WHERE style_type='comic' "
+                           "AND is_active=1 ORDER BY sort_order, id")
+        for label, prompt in merge_style_options(_comic_rows, "comic"):
+            self.comic_style.addItem(label, prompt)
+        # **不提供「自定义」选项**(用户 2026-10-21 定):下拉里摆一个没有地方
+        # 填的条目,只会让人以为能填(参考 Web 版就踩了这个坑 —— 选中「自定义」
+        # 后值被清空、computed 又把空值映射回第一项,输入框永远不出现)。
+        # 存量项目里已手写过的画风仍保留:作为额外条目显示,保存时原样写回,
+        # 不会被悄悄清成「跟随默认」。
+        _cur_cs = (d["comic_style"] or "").strip()
+        if _cur_cs and self.comic_style.findData(_cur_cs) < 0:
+            self.comic_style.addItem(_cur_cs[:40] + ("…" if len(_cur_cs) > 40 else ""), _cur_cs)
         self.language = QComboBox()
         self.language.addItem(tr("跟随全局设置"), "auto")
         for code, name in LANGS:
@@ -181,25 +191,13 @@ class ProjectSettingsDialog(QDialog):
         self.language.setCurrentIndex(_li if _li >= 0 else 0)
         _row_pair(tr("u_comic_style"), self.comic_style,
                  tr("内容语言"), self.language)
-        _row_hint_full(tr("本项目的所有漫画资产图与漫画格共用此画风;选自定义可自由描述"))
+        _row_hint_full(tr("comic_style_hint"))
 
-        # 漫画画风自定义编辑框 — 全宽(展开条件)
-        # 顺序很关键:必须**先建 edit、再连信号、最后 setCurrentIndex**。
-        # 旧版 connect 写在 edit 之前,setCurrentIndex 同步触发 _on_comic_style_pick
-        # → 访问还没建的 self.comic_style_edit → AttributeError;Python 没真崩,
-        # 但 Qt 内部态已被搞坏,后续 dialog.show() 段错误,应用退出。
-        self.comic_style_edit = QPlainTextEdit(d["comic_style"] or "")
-        self.comic_style_edit.setPlaceholderText(tr("自定义画风:写清笔触、线条、色调、氛围"))
-        self.comic_style_edit.setMaximumHeight(56)
+        # 漫画画风只有预设可选(不再有自定义输入框)——选中即落库。
         self.comic_style.currentIndexChanged.connect(self._on_comic_style_pick)
-        self.comic_style_edit.textChanged.connect(self._on_comic_style_text)
         _cur_cs = (d["comic_style"] or "").strip()
         _cs_idx = self.comic_style.findData(_cur_cs) if _cur_cs else 0
-        if _cs_idx < 0:
-            _cs_idx = self.comic_style.findData("__custom__")
         self.comic_style.setCurrentIndex(_cs_idx if _cs_idx >= 0 else 0)
-        self.comic_style_edit.setVisible(self.comic_style.currentData() == "__custom__")
-        _row_full("", self.comic_style_edit)
 
         # 人物面孔文化 | 朗读音色  (两列配对)
         self.ethnicity = QComboBox()
@@ -260,59 +258,12 @@ class ProjectSettingsDialog(QDialog):
         row.addWidget(save)
         root.addLayout(row)
 
-    def _on_style_pick(self):
-        """选预设 → 填进自定义框(留作展示)并隐藏;选「自定义…」→ 展开编辑框。"""
-        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
-        data = self.novel_style.currentData()
-        custom = data == NOVEL_STYLE_CUSTOM
-        self.novel_style_edit.setVisible(custom)
-        if not custom:
-            self.novel_style_edit.blockSignals(True)
-            self.novel_style_edit.setPlainText(data or "")
-            self.novel_style_edit.blockSignals(False)
-        elif not self.novel_style_edit.toPlainText().strip():
-            self.novel_style_edit.setFocus()
-
-    def _on_style_text(self):
-        """自定义文风编辑:只要内容与某个预设不同,下拉就停在「自定义…」。"""
-        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
-        text = self.novel_style_edit.toPlainText().strip()
-        if text and self.novel_style.findData(text) < 0:
-            i = self.novel_style.findData(NOVEL_STYLE_CUSTOM)
-            if i >= 0 and self.novel_style.currentIndex() != i:
-                self.novel_style.blockSignals(True)
-                self.novel_style.setCurrentIndex(i)
-                self.novel_style.blockSignals(False)
-        self.novel_style_edit.setVisible(True)
 
     def _on_comic_style_pick(self, _idx=0):
-        """温画画风下拉切换:预设 → 实时回填、即时落库;自定义 → 展开编辑框。"""
-        data = self.comic_style.currentData()
-        custom = data == "__custom__"
-        self.comic_style_edit.setVisible(custom)
-        if data and not custom:
-            # 预设选中 → 把 value 同步到编辑框,立刻写入 DB
-            self.comic_style_edit.blockSignals(True)
-            self.comic_style_edit.setPlainText(data)
-            self.comic_style_edit.blockSignals(False)
-            db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
-                  (data, db.now(), self.drama_id))
-        elif custom and not self.comic_style_edit.toPlainText().strip():
-            self.comic_style_edit.setFocus()
-
-    def _on_comic_style_text(self):
-        """温画画风自由编辑:文本脱离当前预设时把下拉拨回「自定义…」,内容实时落库。"""
-        text = self.comic_style_edit.toPlainText().strip()
-        # 只有 text 不与任何预设吻合时才把下拉拨回「自定义」
-        if self.comic_style.findData(text) < 0:
-            i = self.comic_style.findData("__custom__")
-            if i >= 0 and self.comic_style.currentIndex() != i:
-                self.comic_style.blockSignals(True)
-                self.comic_style.setCurrentIndex(i)
-                self.comic_style.blockSignals(False)
-                self.comic_style_edit.setVisible(True)
+        """漫画画风下拉切换:选中即落库(只有预设可选,没有自定义输入框)。"""
+        data = self.comic_style.currentData() or ""
         db.ex("UPDATE dramas SET comic_style=?, updated_at=? WHERE id=?",
-              (text, db.now(), self.drama_id))
+              (data or None, db.now(), self.drama_id))
 
     def _draft_meta(self):
         """AI 起草简介与题材(不直接落库,填进输入框由用户确认后保存)。"""
@@ -347,15 +298,12 @@ class ProjectSettingsDialog(QDialog):
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
 
     def _save(self):
-        from ..pipeline.novel import NOVEL_STYLE_CUSTOM
         d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
         meta = db.jload(d["metadata"], {}) if d else {}
         meta["intro"] = self.intro.text().strip()
         meta["genre"] = self.genre.text().strip()
         meta["tts_gender"] = self.tts_gender.currentData() or "female"
-        style_data = self.novel_style.currentData()
-        novel_style = (self.novel_style_edit.toPlainText().strip()
-                       if style_data == NOVEL_STYLE_CUSTOM else (style_data or ""))
+        novel_style = self.novel_style.currentData() or ""
         db.ex("""UPDATE dramas SET title=?, aspect_ratio=?, style=?, ethnicity=?, metadata=?,
                creative_description=?, skip_creative=?, total_episodes=?, language=?,
                novel_style=?, updated_at=? WHERE id=?""",
@@ -1113,7 +1061,7 @@ class AssetDetailDialog(QDialog):
         from ..core.taskmgr import TASKMGR
         styles = [(r["value"], tr(r["name"])) for r in
                   db.q("SELECT value, name FROM style_presets "
-                       "WHERE is_active=1 ORDER BY sort_order, id")]
+                       "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]
         d_row = db.q1("SELECT drama_id FROM {} WHERE id=?".format(self.table),
                       (self.row["id"],))
         default_style = "3d"

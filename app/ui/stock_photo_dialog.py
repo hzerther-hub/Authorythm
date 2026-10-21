@@ -88,12 +88,18 @@ def _drama_id_of(widget) -> int | None:
 
 
 def _current_project_style(drama_id: int | None) -> str:
-    """当前项目生效的画风(漫画优先于通用视觉风格,与 comic._style_for 同口径)。"""
+    """当前项目生效的画风(漫画优先于通用视觉风格,与 comic._style_for 同口径)。
+
+    comic_style 现在存的是 prompt 全文(存量项目是 preset value)→ 先反解回
+    value,下拉才预选得上;解不出来就退回项目的通用视觉风格。
+    """
     from ..core import db
     if not drama_id:
         return "3d"
     r = db.q1("SELECT comic_style, style FROM dramas WHERE id=?", (drama_id,))
-    return (r["comic_style"] or r["style"] or "3d") if r else "3d"
+    if not r:
+        return "3d"
+    return db.style_value_for(r["comic_style"] or "") or r["style"] or "3d"
 
 
 def _is_local(url: str) -> bool:
@@ -394,11 +400,11 @@ class StockPhotoDialog(QDialog):
 
     # ── 预览里的「换画风」 ──
     def _style_choices(self) -> list[tuple[str, str]]:
-        """画风下拉的选项:全部启用的风格预设(与制作台画面风格同源)。"""
+        """画风下拉的选项:全部启用的**视觉风格**预设(与制作台画面风格同源)。"""
         from ..core import db
         return [(r["value"], tr(r["name"])) for r in
                 db.q("SELECT value, name FROM style_presets "
-                     "WHERE is_active=1 ORDER BY sort_order, id")]
+                     "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]
 
     def _default_style(self) -> str:
         """下拉预选值:有项目跟项目画风,没项目给 3d —— 聊天改图里经常没开

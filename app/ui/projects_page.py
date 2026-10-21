@@ -676,7 +676,7 @@ class ProjectsPage(QWidget):
             self.grid.addWidget(self._empty_state(bool(rows)), 0, 0)
         running = sum(1 for d in rows if d.get("status") == "active")
         # slate mono inline 统计:b 是大数字(粗)+ 后面是单位描述,中间留一个 nbsp
-        styles_n = len(db.q("SELECT id FROM style_presets WHERE is_active=1"))
+        styles_n = len(db.q("SELECT id FROM style_presets WHERE is_active=1 AND style_type='visual'"))
         self._stat_projects.setText(
             f"<b>{int(len(rows)):02d}</b>&nbsp; {tr('n_projects', len(rows))}")
         self._stat_running.setText(

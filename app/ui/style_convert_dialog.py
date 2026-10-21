@@ -112,7 +112,8 @@ def _current_style(drama_id: int) -> str:
         return "3d"
     if not r:
         return "3d"
-    return (r["comic_style"] or r["style"] or "3d")
+    # comic_style 现在存 prompt 全文(存量项目是 value)→ 反解回 value 才预选得上
+    return db.style_value_for(r["comic_style"] or "") or r["style"] or "3d"
 
 
 def _current_image(row_id: int, table: str) -> str:

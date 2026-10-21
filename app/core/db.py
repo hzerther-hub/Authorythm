@@ -232,12 +232,13 @@ DDL: list[str] = [
       api_key TEXT, model TEXT NOT NULL,
       priority INTEGER DEFAULT 0, is_default INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
       remark TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
-    # 风格预设
+    # 风格预设(style_type 三分类:visual 视觉风格 / comic 漫画画风 / novel 写作风格)
     """CREATE TABLE IF NOT EXISTS style_presets (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL, value TEXT NOT NULL UNIQUE,
       prompt TEXT NOT NULL, description TEXT,
       work_type TEXT NOT NULL DEFAULT 'all',
+      style_type TEXT NOT NULL DEFAULT 'visual',
       sort_order INTEGER DEFAULT 0, is_active INTEGER DEFAULT 1,
       created_at TEXT NOT NULL)""",
     # 统一任务表
@@ -363,6 +364,77 @@ STYLE_PRESETS: list[dict] = [
      "ultra-realistic cinematic live-action look, professional film photography, natural skin tones with detailed pores and realistic texture, true human anatomy and proportions, shallow depth of field with creamy bokeh, cinematic three-point lighting, subtle film grain, 35mm lens cinematic framing, true-to-life color grading, detailed real-world environments, consistent actor appearance across shots, avoid cartoon or anime features, avoid 3D render look, avoid illustration style, avoid plastic waxy skin, avoid over-smoothing beauty filter",
      "电影级真人质感(注意:真人影像过不了部分平台真人内容审核)"),
 ]
+
+# ── 风格预设三分类(style_type)──────────────────────────────────────────
+# visual —— 视觉风格:喂给生图模型的英文 prompt 片段(上面 20 条全是这类)
+# comic  —— 漫画画风:喂给漫画出图,注入在生图 prompt 最前
+# novel —— 写作风格:中文写法说明,注入小说 LLM 的写作要求
+STYLE_TYPE_VISUAL = "visual"
+STYLE_TYPE_COMIC = "comic"
+STYLE_TYPE_NOVEL = "novel"
+STYLE_TYPES: tuple[str, ...] = (STYLE_TYPE_VISUAL, STYLE_TYPE_COMIC, STYLE_TYPE_NOVEL)
+# 设置页分类切换 / 弹窗「分类」字段的 i18n key
+STYLE_TYPE_LABEL_KEYS: dict[str, str] = {
+    STYLE_TYPE_VISUAL: "style_type_visual",
+    STYLE_TYPE_COMIC: "style_type_comic",
+    STYLE_TYPE_NOVEL: "style_type_novel",
+}
+
+# ── 漫画画风预设(契约 2.1,6 条;work_type=comic,sort_order 200 起)──
+# ⚠️ 水彩画风的 value 是 comic_watercolor 而不是 watercolor:视觉风格里已占用
+#    watercolor(水彩绘本),而 value 是全局 UNIQUE,撞名会写库失败。
+#    改名不影响历史数据 —— dramas.comic_style 存的是 prompt 全文而不是 value。
+COMIC_STYLE_PRESETS: list[tuple] = [
+    ("日漫", "manga_jp", 200, "comic",
+     "Japanese shōnen manga style, clean ink line art, screentone shading, dynamic action lines",
+     "日式少年漫画，干净墨线 + 网点阴影"),
+    ("美漫", "comic_us", 201, "comic",
+     "American superhero comic book style, bold saturated colors, heavy ink outlines, dynamic poses",
+     "美式超级英雄漫画，粗墨线 + 高饱和"),
+    ("水彩", "comic_watercolor", 202, "comic",
+     "soft watercolor illustration style, gentle washes, traditional painting feel, paper texture",
+     "柔和水彩插画，传统画材 + 纸纹质感"),
+    ("黑白", "bw_manga", 203, "comic",
+     "black and white manga style, ink line art, crosshatch shading, screentone, no color",
+     "黑白漫，高对比墨线 + 网点"),
+    ("粗描", "bold_ink", 204, "comic",
+     "heavy bold ink line style, dark moody, thick strokes, pulp illustration feel",
+     "粗重墨线，暗调 pulp 插画感"),
+    ("国风2.5D", "guofeng25d", 205, "comic",
+     "Chinese guofeng 2.5D illustration style, semi-realistic donghua-quality character art, elegant flowing line work",
+     "国风 2.5D 半写实动画质感"),
+]
+
+# ── 写作风格预设(契约 2.2,6 条;work_type=novel,sort_order 300 起)──
+# 「硬核写实」用完整版(带「但不冷漠」「动作与器物描写精确」
+# 「保留人物内心戏与环境氛围」三层约束),与 pipeline.novel.NOVEL_STYLES 同源。
+NOVEL_STYLE_PRESETS: list[tuple] = [
+    ("爽感快节奏", "shuanggan_kuaijie", 300, "novel",
+     "短句为主，情绪外露，段落简短，冲突直给，爽点前置，每章末尾必有小高潮",
+     "短句直给、爽点前置、章末小高潮"),
+    ("细腻情感流", "xi_ganqing", 301, "novel",
+     "重人物内心与情绪层次，描写细腻，节奏舒缓，重氛围与共情",
+     "重视内心与情绪层次，舒缓共情"),
+    ("悬疑紧张", "xuanyi_jinzhang", 302, "novel",
+     "信息差驱动，多伏笔，短段制造压迫感，章末反转",
+     "信息差驱动、多伏笔、章末反转"),
+    ("古风雅致", "gufeng_yazhi", 303, "novel",
+     "文白相间，用词考究，意境优先，节奏沉稳",
+     "文白相间、用词考究、意境优先"),
+    ("幽默轻松", "youmo_qingsong", 304, "novel",
+     "吐槽视角，反差与梗密集，轻松诙谐但不脱离主线",
+     "吐槽视角、反差与梗密集"),
+    ("硬核写实", "yinghe_xieshi", 305, "novel",
+     "细节考据，冷静克制但不冷漠——动作与器物描写精确，同时保留人物内心戏与环境氛围，强逻辑因果",
+     "细节考据、冷静克制、强逻辑因果"),
+]
+
+# 内置预设清单:value → 中文名。设置页按它判断「内置条目」(显示本地化名,
+# 不显示用户改过的 name);用户自建条目不在清单里,显示 name 原样。
+BUILTIN_STYLE_NAMES: dict[str, str] = {}
+for _row in list(STYLE_PRESETS) + list(COMIC_STYLE_PRESETS) + list(NOVEL_STYLE_PRESETS):
+    BUILTIN_STYLE_NAMES[_row[1]] = _row[0]
+del _row
 
 # 示例项目(与原版演示数据同题材:《归乡的井》两界穿梭第 1 集)
 SAMPLE_RAW = """# 归乡的井
@@ -497,16 +569,28 @@ def init_db() -> None:
                 "ALTER TABLE dramas ADD COLUMN intro_duration REAL",
                 "ALTER TABLE dramas ADD COLUMN intro_card INTEGER DEFAULT 1",
                 "ALTER TABLE dramas ADD COLUMN intro_overlay INTEGER DEFAULT 0",
+                # 风格预设三分类:visual(视觉风格)/ comic(漫画画风)/ novel(写作风格)。
+                # ADD COLUMN 会把存量行填成 DEFAULT 'visual' —— 老库升级后行为不变。
+                # 重复执行报 duplicate column、库还没建表报 no such table,都被下面的
+                # try/except 吞掉(幂等)。
+                "ALTER TABLE style_presets ADD COLUMN style_type TEXT DEFAULT 'visual'",
                 "ALTER TABLE ai_service_configs ADD COLUMN api_format TEXT DEFAULT 'openai'"):
         try:
             db.execute(col)
         except Exception:  # noqa: BLE001
             pass
-    # 风格种子(幂等:存在则跳过)
+    # 风格种子(幂等:存在则跳过;value UNIQUE 保证不覆盖用户编辑)
     for name, value, order, wt, prompt, desc in STYLE_PRESETS:
         db.execute(
-            "INSERT OR IGNORE INTO style_presets(name,value,prompt,description,work_type,sort_order,is_active,created_at) VALUES(?,?,?,?,?,?,1,?)",
-            (name, value, prompt, desc, wt, order, now()))
+            "INSERT OR IGNORE INTO style_presets(name,value,prompt,description,work_type,sort_order,is_active,style_type,created_at) VALUES(?,?,?,?,?,?,1,?,?)",
+            (name, value, prompt, desc, wt, order, STYLE_TYPE_VISUAL, now()))
+    # 漫画画风 / 写作风格种子(同上,幂等)
+    for style_type, presets in ((STYLE_TYPE_COMIC, COMIC_STYLE_PRESETS),
+                                (STYLE_TYPE_NOVEL, NOVEL_STYLE_PRESETS)):
+        for name, value, order, wt, prompt, desc in presets:
+            db.execute(
+                "INSERT OR IGNORE INTO style_presets(name,value,prompt,description,work_type,sort_order,is_active,style_type,created_at) VALUES(?,?,?,?,?,?,1,?,?)",
+                (name, value, prompt, desc, wt, order, style_type, now()))
     # 默认设置(ui_language_explicit=0:未手选过语言,启动时跟随系统,判断不出回退英文)
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('content_language','zh',?)", (now(),))
     db.execute("INSERT OR IGNORE INTO app_settings(key,value,updated_at) VALUES('ui_language','zh',?)", (now(),))
@@ -626,6 +710,131 @@ def style_prompt(style_value: str, ethnicity: str = "", content_lang: str = "") 
         ethnicity = LANG_TO_ETHNICITY.get((content_lang or "").lower(), DEFAULT_ETHNICITY)
     from ..pipeline.ethnicity import append_ethnicity_fragment
     return append_ethnicity_fragment(base, ethnicity)
+
+
+def style_prompt_flex(raw: str, ethnicity: str = "", content_lang: str = "") -> str:
+    """风格提示词解析:**既认预设 value,也认 prompt 全文**。
+
+    漫画画风下拉现在存的是 prompt 全文(契约 5.1),而存量项目里存的还是老的
+    value(如 '3d')。这里两种都收:
+      - 命中 style_presets.value → 用该行的 prompt(行被停用则为空串,与
+        老 style_prompt() 行为一致);
+      - 没命中 → 视为 prompt 全文原样使用(用户自建条目 / 新下拉写入的全文)。
+
+    style_prompt() 的既有调用方一律不动,本函数只给漫画链路用。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    row = q1("SELECT prompt,is_active FROM style_presets WHERE value=?", (raw,))
+    base = (row["prompt"] if row["is_active"] else "") if row else raw
+    if not ethnicity:
+        from ..pipeline.ethnicity import DEFAULT_ETHNICITY, LANG_TO_ETHNICITY
+        ethnicity = LANG_TO_ETHNICITY.get((content_lang or "").lower(), DEFAULT_ETHNICITY)
+    from ..pipeline.ethnicity import append_ethnicity_fragment
+    return append_ethnicity_fragment(base, ethnicity)
+
+
+def style_display_name(value: str, name: str) -> str:
+    """预设显示名:内置条目用本地化名(16 语言),用户自建条目用 name 原样。
+
+    内置条目的多语名称写在代码里(i18n 词典按中文名作 key),不在库里 ——
+    所以库里 name 被改过也不影响内置显示。
+    """
+    from .i18n import tr
+    builtin = BUILTIN_STYLE_NAMES.get(value or "")
+    if builtin:
+        return tr(builtin)
+    return name or ""
+
+
+def style_value_for(raw: str) -> str:
+    """把存进 dramas.comic_style 的原始串反解回预设 value(「换画风」下拉预选用)。
+
+    存量项目存的是 value → 原样返回;新下拉存的是 prompt 全文 → 反查 prompt
+    命中那一行的 value;都不是 → 空串(下拉不预选,回到第一项)。
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        return ""
+    row = q1("SELECT value FROM style_presets WHERE value=?", (raw,))
+    if row:
+        return row["value"]
+    row = q1("SELECT value FROM style_presets WHERE prompt=? LIMIT 1", (raw,))
+    return row["value"] if row else ""
+
+
+def _style_type_work_ok(work_type: str, style_type: str) -> bool:
+    """预设的 work_type 是否适用于该分类下拉。
+
+    work_type 是逗号分隔的创作目标(all=全适用);漫画/写作分类只收
+    「本类」或 all 的行 —— 这也顺带修掉了老画风下拉把 promotion 类
+    一并列出来的问题。
+    """
+    wt = [w.strip() for w in (work_type or "").split(",") if w.strip()]
+    if not wt or "all" in wt:
+        return True
+    return style_type in wt
+
+
+def merge_style_options(rows, style_type: str) -> list[tuple[str, str]]:
+    """(显示名, prompt 全文) —— 内置常量 + 库内该分类的行,按 prompt 全文去重。
+
+    **纯函数,不碰数据库**:rows 由调用方查好传进来(UI 层用 db.q 查,便于测试替换
+    db 句柄;pipeline 层用 style_options 一步到位)。
+
+    - 内置条目:库里有同名行就以库里的 prompt/启用态为准(用户在设置页改过
+      prompt 或停用它都算数);库里没有(被删了/还没初始化)才用内置常量兜底。
+    - 库内自建条目:显示 name 原样,prompt 全文作为下拉的 value。
+    - 去重按 prompt 全文:内置的 comic_watercolor 与库内那行 prompt 相同,只出现一次。
+    """
+    from .i18n import tr
+    presets = {STYLE_TYPE_COMIC: COMIC_STYLE_PRESETS,
+               STYLE_TYPE_NOVEL: NOVEL_STYLE_PRESETS}.get(style_type, [])
+    builtin_values = {row[1] for row in presets}
+    by_value = {}
+    for r in rows or []:
+        # Row/dict 都有 .get();不能用 `in` —— sqlite3.Row 的 in 走的是「值」不是「列名」
+        by_value[r.get("value", "")] = r
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def _push(label: str, prompt: str) -> None:
+        p = (prompt or "").strip()
+        if not p or p in seen:
+            return
+        seen.add(p)
+        out.append((label, p))
+
+    for name, value, _order, _wt, prompt, _desc in presets:
+        r = by_value.get(value)
+        if r is not None:
+            if not r.get("is_active", 1):
+                continue
+            if not _style_type_work_ok(r.get("work_type") or "", style_type):
+                continue
+            _push(style_display_name(value, r.get("name") or ""), r.get("prompt") or "")
+        else:
+            _push(tr(name), prompt)
+    for value, r in by_value.items():
+        if value in builtin_values:
+            continue
+        if not r.get("is_active", 1):
+            continue
+        if not _style_type_work_ok(r.get("work_type") or "", style_type):
+            continue
+        _push(style_display_name(value, r.get("name") or ""), r.get("prompt") or "")
+    return out
+
+
+def style_options(style_type: str) -> list[tuple[str, str]]:
+    """(显示名, prompt 全文) —— 查库 + 合并(内置常量 + 库内该分类的行)。"""
+    try:
+        rows = q("SELECT * FROM style_presets WHERE style_type=? ORDER BY sort_order, id",
+                 (style_type,))
+    except Exception:  # noqa: BLE001 —— 库还没建好(没跑 init_db)时只用内置常量
+        rows = []
+    return merge_style_options(rows, style_type)
 
 
 def drama_style(drama_id: int) -> str:
