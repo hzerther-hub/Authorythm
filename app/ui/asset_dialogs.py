@@ -237,6 +237,11 @@ class ProjectSettingsDialog(QDialog):
         # 锁定条件是「**已经按这份创意生成出真实文字**」,不是「项目里存在第 1 集」——
         # 新建项目必定会建一个空的第 1 集,按前者判会导致创意描述从创建那一刻就永远改不了。
         self._generated = _has_generated_content(drama_id)
+        # 但**空创意描述不锁**:锁一个空值没有任何东西可保护(「保持已生成章节与创意一致」
+        # 这件事对空值不成立),却会让老项目永远填不进去(实测 3 个项目:内容早就生成好了,
+        # 创意描述一直是空的,框却是禁用的 —— 用户想补一份却补不上)。
+        _has_creative = bool((d["creative_description"] or "").strip())
+        self._creative_locked = bool(self._generated and _has_creative)
         self.skip_creative = QCheckBox(tr("不需要创意描述 — 我会自己粘贴文章"))
         self.skip_creative.setChecked(bool(d["skip_creative"]))
         self.skip_creative.setDisabled(self._generated)
@@ -245,11 +250,15 @@ class ProjectSettingsDialog(QDialog):
         self.creative = QPlainTextEdit(d["creative_description"] or "")
         self.creative.setPlaceholderText(tr("例:女主车祸重生回到高中时代,这一世她要阻止闺蜜嫁给渣男、拿回母亲遗产……"))
         self.creative.setMaximumHeight(72)
-        self.creative.setDisabled(self._generated or bool(d["skip_creative"]))
+        self.creative.setDisabled(self._creative_locked or bool(d["skip_creative"]))
         _row_full(tr("u_creative_desc"), self.creative)
-        _row_hint_full(
-            tr("creative_locked_hint") if self._generated
-            else tr("creative_free_hint"))
+        if self._creative_locked:
+            _row_hint_full(tr("creative_locked_hint"))
+        elif self._generated:
+            # 已产出内容但本来没写创意描述 → 现在能补,但要说清只影响后续
+            _row_hint_full(tr("creative_refill_hint"))
+        else:
+            _row_hint_full(tr("creative_free_hint"))
 
         from ..pipeline.novel import POV_LABELS, get_novel_pov
         self.pov_combo = QComboBox()
@@ -265,7 +274,7 @@ class ProjectSettingsDialog(QDialog):
         _row_hint_full(tr("项目计划产出多少集。设为 1 表示单集完结,「添加一集」将禁用。"))
 
         self.skip_creative.toggled.connect(
-            lambda on: self.creative.setDisabled(on or self._generated))
+            lambda on: self.creative.setDisabled(on or self._creative_locked))
         root.addLayout(f)
         row = QHBoxLayout()
         cancel = QPushButton(tr("cancel"))

@@ -198,6 +198,47 @@ def test_creative_locked_is_not_overwritten(qt_app, monkeypatch):
         dlg.deleteLater()
 
 
+# ── 4b. 锁定条件:空创意描述不锁 ───────────────────────────
+def test_empty_creative_stays_editable_after_content(qt_app, monkeypatch):
+    """创意描述本来是空的 + 已产出内容 → **不锁**。
+
+    锁一个空值没有任何东西可保护(「保持已生成章节与创意一致」对空值不成立),
+    却会让老项目永远补不上一份创意描述(实测 3 个项目卡在这)。
+    """
+    dlg, _ = _make_settings(monkeypatch,
+                            drama=_drama(creative_description=""), generated=1)
+    try:
+        assert dlg._generated is True            # 内容确实已产出
+        assert dlg._creative_locked is False      # 但空值不锁
+        assert dlg.creative.isEnabled() is True
+    finally:
+        dlg.deleteLater()
+
+
+def test_existing_creative_stays_locked_after_content(qt_app, monkeypatch):
+    """已有创意描述 + 已产出内容 → 锁(保护已生成章节与这份创意一致)。"""
+    dlg, _ = _make_settings(monkeypatch,
+                            drama=_drama(creative_description="旧创意描述"), generated=1)
+    try:
+        assert dlg._creative_locked is True
+        assert dlg.creative.isEnabled() is False
+    finally:
+        dlg.deleteLater()
+
+
+def test_empty_creative_can_be_filled_by_concept(qt_app, monkeypatch):
+    """老项目(有内容、创意描述为空)用「项目说明」补写 → 真能填进去。"""
+    from app.ui import project_concept_dialog as PCD
+    monkeypatch.setattr(PCD, "ProjectConceptDialog", _FakeConceptDialog)
+    dlg, _ = _make_settings(monkeypatch,
+                            drama=_drama(creative_description=""), generated=1)
+    try:
+        dlg._open_concept()
+        assert dlg.creative.toPlainText() == "新创意描述内容"
+    finally:
+        dlg.deleteLater()
+
+
 # ── 5. 想法预填带上现有上下文 ─────────────────────────────
 def test_open_concept_prefills_current_context(qt_app, monkeypatch):
     """想法框要带上现有名称/简介/创意,让 AI 在既有内容上改写。"""
