@@ -23,6 +23,7 @@ import pytest
 
 from app.agents.prompts import load_prompt
 from app.core.config import PROMPTS_DIR, WORKSPACE_DIR
+from app.core.i18n import LANG_NAMES
 
 # 提示词语言:zh 用无后缀的 <agent>.md;comic_outline_writer 另有 zh-Hant
 PROMPT_LANGS = ["en", "ja", "ko", "ar", "hi", "id", "th", "tr", "vi", "fr", "de", "es", "pt", "it"]
@@ -57,13 +58,23 @@ def _skill_files() -> list:
     return sorted((WORKSPACE_DIR / "skills" / "script-rewriter").glob("SKILL*.md"))
 
 
+def _lang_of(path, prefix):
+    """从文件名取语言:``<prefix>.md`` → zh,<prefix>.<lang>.md`` → <lang>。"""
+    return path.name[len(prefix):-3].lstrip(".") or "zh"
+
+
 def test_skill_files_cover_all_languages():
-    """15 个语言各一份 SKILL,少一个都不行。"""
-    files = _skill_files()
-    assert len(files) == 15, f"SKILL 文件数 {len(files)},应为 15(15 语言各一份)"
-    langs = {f.name[len("SKILL"):-3].lstrip(".") or "zh" for f in files}
-    expected = set(PROMPT_LANGS) | {"zh"}
-    assert langs == expected, f"SKILL 语言集合不符:缺 {sorted(expected - langs)} / 多 {sorted(langs - expected)}"
+    """SKILL 必须覆盖 script_rewriter 提示词覆盖的每一种语言。
+
+    不写死"15 个":项目正在补第 16 种语言(zh-Hant),写死数量会把"合法新增语言"
+    误报成故障。改成**跨文件一致性** —— 少了某个语言的文件会报,加了新语言不会误报。
+    """
+    skill_langs = {_lang_of(f, "SKILL") for f in _skill_files()}
+    prompt_langs = {_lang_of(f, "script_rewriter") for f in _prompt_files("script_rewriter")}
+    assert skill_langs == prompt_langs, (
+        f"SKILL 与 script_rewriter 提示词的语言集合不一致:"
+        f"SKILL 缺 {sorted(prompt_langs - skill_langs)} / 多 {sorted(skill_langs - prompt_langs)}")
+    assert "zh" in skill_langs, "SKILL 缺少中文基准文件(SKILL.md)"
 
 
 def test_skill_files_no_longer_allow_voice_over():
@@ -81,11 +92,27 @@ def test_skill_files_keep_three_filmability_rules():
 
 # ---------------------------------------------------------------- 提示词文件
 
-@pytest.mark.parametrize("agent,expect", [("script_rewriter", 15), ("comic_outline_writer", 16)])
-def test_prompt_files_cover_all_languages(agent, expect):
-    """每个 agent 的提示词文件数对齐,少一个语言就是漏。"""
-    files = _prompt_files(agent)
-    assert len(files) == expect, f"{agent} 提示词文件数 {len(files)},应为 {expect}"
+def test_prompt_languages_are_consistent_across_agents():
+    """两个 agent 的提示词语言集合要一致(zh-Hant 允许只出现在其中一个)。
+
+    少一个语言 = 那个语言下照样会产出拍不出来的剧本,必须报出来。
+    """
+    script_langs = {_lang_of(f, "script_rewriter") for f in _prompt_files("script_rewriter")}
+    comic_langs = {_lang_of(f, "comic_outline_writer") for f in _prompt_files("comic_outline_writer")}
+    assert "zh" in script_langs and "zh" in comic_langs, "缺中文基准文件"
+    assert script_langs - {"zh-Hant"} == comic_langs - {"zh-Hant"}, (
+        f"两个 agent 的语言集合不一致:"
+        f"script_rewriter 缺 {sorted(comic_langs - script_langs - {'zh-Hant'})} / "
+        f"comic_outline_writer 缺 {sorted(script_langs - comic_langs - {'zh-Hant'})}")
+
+
+def test_prompt_languages_are_supported():
+    """提示词文件的语言必须在项目支持的界面语言集合内(防写错后缀)。"""
+    supported = set(LANG_NAMES)
+    for agent in ("script_rewriter", "comic_outline_writer"):
+        for f in _prompt_files(agent):
+            lang = _lang_of(f, agent)
+            assert lang in supported, f"{f.name} 的语言 {lang} 不在支持列表内"
 
 
 @pytest.mark.parametrize("agent,min_bullets", [("script_rewriter", 5), ("comic_outline_writer", 4)])
