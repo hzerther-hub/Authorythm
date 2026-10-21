@@ -7,7 +7,7 @@ import pathlib
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit, QMessageBox,
+                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
                                QVBoxLayout, QWidget)
 
@@ -1104,6 +1104,8 @@ class AssetDetailDialog(QDialog):
 
     def _convert_viewed_image(self, viewer):
         """大图里点「换画风」:按选定风格转换并**写回该资产**。"""
+        from ..ai import image_client
+        from ..core.taskmgr import TASKMGR
         from ..pipeline import style_convert as SC
         from .toast import err as _err, ok as _ok
         style = (viewer.selected_style() or "3d")
