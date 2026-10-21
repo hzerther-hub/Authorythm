@@ -6835,7 +6835,52 @@ class EpisodePage(QWidget):
         except Exception as e:  # noqa: BLE001
             err(e)
 
+    def _comic_resplit_purge_stats(self) -> dict:
+        """漫画重拆前统计「会被删掉」的东西,给二次确认弹窗用。
+
+        重拆 = 彻底清空重来(见 pipeline.comic.purge_episode_comic_panels):
+        旧漫画格行 + 它们引用的格子图 + 整话拼接长图全删。
+        弹窗要把「删几个、删多大」如实报给用户,不能只说一句「确定吗」。
+        """
+        rows = db.q("SELECT image_url FROM comic_panels WHERE episode_id=?",
+                    (self.episode_id,))
+        n_panel = len(rows)
+        n_img = sum(1 for r in rows if (r["image_url"] or "").strip())
+        urls: set[str] = set()
+        for r in rows:
+            v = str(r["image_url"] or "").strip()
+            if v:
+                urls.add(v)
+        # 整话长图也算一份产物(它是旧格拼出来的,留着就是错的)
+        stitch = db.q1("SELECT merged_url FROM video_merges WHERE episode_id=? "
+                       "AND model='comic_stitch' ORDER BY id DESC LIMIT 1",
+                       (self.episode_id,))
+        sv = str((stitch or {}).get("merged_url") or "").strip()
+        if sv:
+            urls.add(sv)
+        total = 0
+        for u in urls:
+            try:
+                p = config.media_url_to_path(u)
+                if p.exists():
+                    total += p.stat().st_size
+            except Exception:  # noqa: BLE001
+                continue
+        return {"n": n_panel, "v": n_img, "f": len(urls),
+                "size": f"{total / 1024 / 1024:.1f} MB"}
+
     def _split_panels(self):
+        # ── 二次确认:重拆会删掉旧漫画格与已生成的格子图/整话长图(不可恢复)──
+        # 不确认就开跑 = 一分多钟的拆分 + 烧 token + 旧素材全没了
+        # (对齐分镜重拆的护栏 —— 见 _split_sb)。
+        _st = self._comic_resplit_purge_stats()
+        if _st["n"] and not ask(
+                self, tr("重新拆分漫画格"),
+                tr("本集已有 {n} 个漫画格(含 {v} 个已出图、{f} 个生成文件,共约 {size})。"
+                   "\n\n重新拆分会删除全部旧漫画格、已生成的格子图片与整话长图(不可恢复),"
+                   "并从零重新拆分。\n\n确定继续?").format(**_st),
+                danger=True):
+            return
         # 等待态:拆格是一次 88 秒级的 LLM 调用(实测 sys_task#1430),以前按钮
         # 无任何变化、可重复点击,用户以为没点上(实测反馈「没有看到等待过程」)。
         from ..core.logging_setup import get_logger

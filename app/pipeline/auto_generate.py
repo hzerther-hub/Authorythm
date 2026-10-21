@@ -87,6 +87,14 @@ def _persist(episode_id: int, work_type: str, text: str) -> int:
     if work_type == "comic":
         panels = runner.extract_json(text)
         if isinstance(panels, list) and panels:
+            # 绑定子表先删 —— comic_panels 的行删掉后,子查询就找不到 panel_id 了
+            # (旧实现漏了这一步,绑定行变成孤儿,一直堆在表里)
+            db.ex("DELETE FROM comic_panel_characters WHERE panel_id IN "
+                  "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
+            db.ex("DELETE FROM comic_panel_scenes WHERE panel_id IN "
+                  "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
+            db.ex("DELETE FROM comic_panel_props WHERE panel_id IN "
+                  "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
             db.ex("DELETE FROM comic_panels WHERE episode_id=?", (episode_id,))
             n = 0
             for i, p in enumerate(panels):

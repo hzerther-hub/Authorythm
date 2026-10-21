@@ -4,9 +4,61 @@ from __future__ import annotations
 
 from ..agents import runner
 from ..core import config, db
+from ..core.logging_setup import get_logger
+from . import media_files
+
+log = get_logger(__name__)
 
 
-def split_panels(episode_id: int, config_id: int | None = None, lang: str | None = None) -> int:
+# ── 「重新拆分漫画格」= 彻底清空重来 ────────────────────────
+# 漫画格是独立轨道(comic_panels 没有 storyboard_id),不随分镜重拆走;
+# 但它自己的重拆必须把旧格与旧图清干净 —— 否则界面上留下的是
+# 「旧图 + 新描述」的半残状态,和分镜重拆当年踩的坑一模一样。
+
+def purge_episode_comic_panels(episode_id: int, delete_files: bool = True) -> dict:
+    """彻底清空本集漫画格:DB 行 + 绑定子表 + 磁盘上的格子图 + 整话长图。
+
+    只删**本集漫画格自己引用**的文件:
+      - 角色/场景/道具资产图不在列 —— 它们跨集共用,删了别的集就废了;
+      - 整话长图(stitch_*.jpg)跟漫画格绑定,必须一起清,否则界面上
+        还挂着旧格拼出来的长图;
+      - 同一文件被多行引用时只删一次;
+      - 路径必须落在 static 目录内,否则跳过(防越界删到别处)。
+    """
+    rows = db.q("SELECT id, image_url FROM comic_panels WHERE episode_id=?", (episode_id,))
+    urls: list[str] = []
+    for r in rows:
+        v = (r["image_url"] or "").strip()
+        if v:
+            urls.append(v)
+    # 整话长图:video_merges 里 model='comic_stitch' 的那行
+    stitch_ids: list[int] = []
+    for r in db.q("SELECT id, merged_url FROM video_merges "
+                  "WHERE episode_id=? AND model='comic_stitch'", (episode_id,)):
+        stitch_ids.append(int(r["id"]))
+        v = (r["merged_url"] or "").strip()
+        if v:
+            urls.append(v)
+    removed_files = 0
+    freed = 0
+    if delete_files:
+        removed_files, freed = media_files.purge_media_files(urls)
+    # 绑定子表先删(子查询要用 comic_panels 的行),再删本体
+    db.ex("DELETE FROM comic_panel_characters WHERE panel_id IN "
+          "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
+    db.ex("DELETE FROM comic_panel_scenes WHERE panel_id IN "
+          "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
+    db.ex("DELETE FROM comic_panel_props WHERE panel_id IN "
+          "(SELECT id FROM comic_panels WHERE episode_id=?)", (episode_id,))
+    db.ex("DELETE FROM comic_panels WHERE episode_id=?", (episode_id,))
+    for mid in stitch_ids:
+        db.ex("DELETE FROM video_merges WHERE id=?", (mid,))
+    return {"panels": len(rows), "files": removed_files, "bytes": freed,
+            "stitch": len(stitch_ids)}
+
+
+def split_panels(episode_id: int, config_id: int | None = None, lang: str | None = None,
+                 on_purged=None) -> int:
     """整集重新生成漫画分镜格;返回格数。"""
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
@@ -60,8 +112,18 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
         panels = data.get("panels") or []
     if not panels:
         raise RuntimeError("漫画分镜结果为空")
+    # ── 从零重来:清掉本集旧漫画格 + 已出图 + 整话长图 ──
+    # UI 侧已先弹二次确认告知会删什么,这里才真删。
+    # 放在 LLM 成功**之后**:拆格失败时旧格子原样留着,不至于两头空
+    # (分镜那边是拆之前清,因为它分批落库;漫画只有一次 LLM 调用)。
+    purge_stats = purge_episode_comic_panels(episode_id)
+    if purge_stats.get("panels"):
+        log.info("comic.resplit.purged episode=%s panels=%d files=%d bytes=%d stitch=%d",
+                 episode_id, purge_stats["panels"], purge_stats["files"],
+                 purge_stats["bytes"], purge_stats["stitch"])
+    if on_purged:
+        on_purged(purge_stats)
     ts = db.now()
-    db.ex("DELETE FROM comic_panels WHERE episode_id=?", (episode_id,))
     # 先删旧绑定(整集替换语义),panel id 在 INSERT 后才能拿到 → 暂存到 list
     pending_links: list[tuple[int, list[int], int | None, list[int]]] = []
     for i, p in enumerate(panels, start=1):

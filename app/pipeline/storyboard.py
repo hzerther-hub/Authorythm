@@ -6,8 +6,9 @@ import json
 import re
 
 from ..agents import runner
-from ..core import config, db
+from ..core import db
 from ..core.logging_setup import get_logger
+from . import media_files
 
 log = get_logger(__name__)
 
@@ -381,31 +382,10 @@ _VIDEO_SUFFIXES = (".mp4", ".mov", ".mkv", ".webm", ".avi", ".m4v")
 def _purge_media_files(urls: list[str]) -> tuple[int, int]:
     """删掉 media url 指向的本地文件;返回(删掉几个文件, 释放多少字节)。
 
-    只删 **static 目录内** 的文件 —— url 存在数据库里,理论上可被外部写入,
-    不做边界检查就可能删到项目外的文件。
+    实现在 `pipeline.media_files` —— 漫画链路(`comic.purge_episode_comic_panels`)
+    要用同一套边界检查,而 comic.py 不能 import 本模块(反向复用会成环)。
     """
-    root = config.STATIC_DIR.resolve()
-    removed = 0
-    freed = 0
-    seen: set[str] = set()
-    for u in urls:
-        u = (u or "").strip()
-        if not u or u in seen:
-            continue
-        seen.add(u)
-        try:
-            p = config.media_url_to_path(u).resolve()
-            p.relative_to(root)          # 越界 → ValueError → 跳过
-        except (ValueError, OSError):
-            continue
-        try:
-            if p.is_file():
-                freed += p.stat().st_size
-                p.unlink()
-                removed += 1
-        except OSError:
-            continue
-    return removed, freed
+    return media_files.purge_media_files(urls)
 
 
 def purge_episode_storyboards(episode_id: int, delete_files: bool = True) -> dict:

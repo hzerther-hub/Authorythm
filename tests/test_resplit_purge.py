@@ -75,12 +75,17 @@ def _shot(**kw):
 
 @pytest.fixture()
 def static_dir(tmp_path, monkeypatch):
-    """把 static 目录指向临时目录 —— 测试绝不能删真实媒体文件。"""
+    """把 static 目录指向临时目录 —— 测试绝不能删真实媒体文件。
+
+    打桩打在 `app.core.config` 模块属性上:真正的删除逻辑已经挪到
+    `pipeline.media_files`,它读的就是同一个模块属性。
+    """
+    from app.core import config as core_config
     root = tmp_path / "static"
     (root / "videos").mkdir(parents=True)
     (root / "images").mkdir(parents=True)
     (root / "comics").mkdir(parents=True)
-    monkeypatch.setattr(sb.config, "STATIC_DIR", root)
+    monkeypatch.setattr(core_config, "STATIC_DIR", root)
     return root
 
 
