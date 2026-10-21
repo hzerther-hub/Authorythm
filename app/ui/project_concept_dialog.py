@@ -34,7 +34,7 @@ class ProjectConceptDialog(QDialog):
     """项目说明生成器。result_data() 返回 title/description/creative_description/genre。"""
 
     def __init__(self, parent=None, *, work_type: str = "drama",
-                 title: str = "", config_id: int | None = None,
+                 title: str = "", idea: str = "", config_id: int | None = None,
                  lang: str | None = None):
         super().__init__(parent)
         self.setWindowTitle(tr("concept_dialog_title"))
@@ -72,7 +72,9 @@ class ProjectConceptDialog(QDialog):
         self.idea_edit = QPlainTextEdit()
         self.idea_edit.setPlaceholderText(tr("concept_idea_ph"))
         self.idea_edit.setMaximumHeight(96)
-        self.idea_edit.setPlainText(title or "")
+        # idea 优先:项目设置里从「现有名称/简介/创意描述」拼一段上下文预填,
+        # 让 AI 知道这个项目已经长什么样,而不是从零另起炉灶。
+        self.idea_edit.setPlainText(idea or title or "")
         root.addWidget(self.idea_edit)
         root.addWidget(W.muted(tr("concept_idea_hint")))
 

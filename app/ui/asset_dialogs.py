@@ -138,6 +138,13 @@ class ProjectSettingsDialog(QDialog):
         self.meta_btn.setToolTip(tr("按「首章正文 → 创意描述 → 项目名称」的优先级取材,自动填简介与题材"))
         self.meta_btn.clicked.connect(self._draft_meta)
         mr.addWidget(self.meta_btn)
+        # 「项目说明」:一句想法 → AI 出「简介 + 创意描述 + 题材」一整套,
+        # 直接回填到下面那几个框(项目建好之后也能用,不用回新建流程重来)。
+        self.concept_btn = W.slate_button(tr("concept_btn"))
+        W.set_icon(self.concept_btn, "magic", tr("concept_btn_tip_settings"), 14)
+        self.concept_btn.setToolTip(tr("concept_btn_tip_settings"))
+        self.concept_btn.clicked.connect(self._open_concept)
+        mr.addWidget(self.concept_btn)
         mr.addWidget(_muted(tr("简介与题材会作为小说策划 / 分镜 / 画面生成的上下文")))
         mr.addStretch(1)
         _row_full("", meta_row)
@@ -323,6 +330,46 @@ class ProjectSettingsDialog(QDialog):
 
         from ..core.taskmgr import TASKMGR
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+    def _open_concept(self):
+        """「项目说明」:一句想法 → AI 生成简介 / 创意描述 / 题材,回填到本弹窗。
+
+        与「AI 起草简介/题材」同一个约定:**只填框不落库**,由用户点「保存」才写 ——
+        项目设置里的东西多半直接进生成上下文,写错了要重跑一遍生成才看得出来。
+
+        预填的「想法」带上现有名称/简介/创意描述,让 AI 在既有内容上改写,
+        而不是当成全新项目另起炉灶。
+        """
+        from .project_concept_dialog import ProjectConceptDialog
+        from .toast import info
+        d = db.q1("SELECT work_type, language FROM dramas WHERE id=?", (self.drama_id,))
+        # 用 replace 而不是 format:项目名/简介里可能有花括号,format 会炸
+        idea = (tr("concept_idea_current")
+                .replace("{title}", self.title.text().strip())
+                .replace("{intro}", self.intro.text().strip())
+                .replace("{creative}", self.creative.toPlainText().strip()))
+        dlg = ProjectConceptDialog(
+            self,
+            work_type=((d["work_type"] or "drama") if d else "drama"),
+            title=self.title.text().strip(), idea=idea,
+            config_id=None, lang=(d["language"] if d else None))
+        if dlg.exec() != ProjectConceptDialog.Accepted:
+            return
+        r = dlg.result_data()
+        if r.get("title"):
+            self.title.setText(r["title"])
+        if r.get("description"):
+            self.intro.setText(r["description"])
+        if r.get("genre"):
+            self._set_genre(r["genre"])
+        if r.get("creative_description"):
+            if self.creative.isEnabled():
+                self.creative.setPlainText(r["creative_description"])
+            else:
+                # 已按旧创意生成过内容(或勾了「不需要创意描述」)→ 创意描述是锁的,
+                # 硬塞进去用户还看不见也改不了,如实说一声,别让人以为填上了。
+                info(tr("concept_creative_locked"))
+        ok(tr("concept_filled_settings"))
 
     def _save(self):
         d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
