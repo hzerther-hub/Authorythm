@@ -599,7 +599,10 @@ class ImageViewerDialog(QDialog):
         self._img_label = None
         self._style_combo = None
         self.setWindowTitle(title or tr("预览"))
-        self.resize(760, 620)
+        # 大图窗口按原图比例自适应:三视图这类宽图(1200×800)在固定 700×540 里
+        # 会被缩到很小看不清;竖图同理。先量原图,再把窗口放到合适尺寸
+        # (上限受屏幕约束,超了按比例缩窗口)。
+        self._fit_window_to_image(url)
         root = QVBoxLayout(self)
         img = QLabel()
         img.setAlignment(Qt.AlignCenter)
@@ -612,6 +615,8 @@ class ImageViewerDialog(QDialog):
             img.setPixmap(W.pixmap_from_media(None, 700, 540))
         else:
             img.setPixmap(W.pixmap_from_media(url, 700, 540))
+        # 窗口已按原图尺寸定好,图要**铺满窗口**(否则窗口变大了、图还是 700×540)
+        self._resize_pixmap_to_window()
         # 起线程补一次网络取图;不阻塞主线程 —— 图库响应可能好几秒,
         # 同步下会让窗口"点了没反应"。
         if remote:
@@ -652,6 +657,49 @@ class ImageViewerDialog(QDialog):
         row.addStretch(1)
         row.addWidget(close)
         root.addLayout(row)
+
+    def _resize_pixmap_to_window(self):
+        """按当前窗口尺寸重铺图片(KeepAspectRatio,不变形)。"""
+        if self._img_label is None:
+            return
+        w = max(200, self.width() - 40)
+        h = max(160, self.height() - 110)
+        src = self._img_label.pixmap()
+        if src is None or src.isNull():
+            return
+        from PySide6.QtGui import QPixmap
+        from PySide6.QtCore import Qt as _Qt
+        dpr = src.devicePixelRatio() or 1.0
+        scaled = src.scaled(int(w * dpr), int(h * dpr), _Qt.KeepAspectRatio,
+                            _Qt.SmoothTransformation)
+        scaled.setDevicePixelRatio(dpr)
+        self._img_label.setPixmap(scaled)
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._resize_pixmap_to_window()
+
+    def _fit_window_to_image(self, url: str):
+        """按原图尺寸定窗口大小(上限 1400×900,且不超屏幕可用区)。"""
+        try:
+            from PySide6.QtWidgets import QApplication
+            p = (config.media_url_to_path(url)
+                 if str(url).startswith(("/static/", "static/"))
+                 else pathlib.Path(str(url)))
+            if not p.exists():
+                self.resize(760, 620)
+                return
+            from PIL import Image
+            with Image.open(p) as im:
+                iw, ih = im.size
+            scr = QApplication.primaryScreen().availableGeometry()
+            max_w, max_h = min(1400, int(scr.width() * 0.92)), min(900, int(scr.height() * 0.88))
+            # 图片区留边距(底部按钮条 ~70px)
+            w = min(max_w, iw + 40)
+            h = min(max_h, ih + 110)
+            self.resize(max(760, w), max(620, h))
+        except Exception:  # noqa: BLE001
+            self.resize(760, 620)
 
     def _on_extra_clicked(self):
         if self._on_extra:
@@ -1151,8 +1199,8 @@ class AssetDetailDialog(QDialog):
                       (self.row["id"],))
         default_style = "3d"
         if d_row and d_row.get("drama_id"):
-            from ..pipeline import style_convert as _SC
-            default_style = _SC.current_project_style(d_row["drama_id"])
+            # 项目当前画风:drama_style 已是全项目通用口径(dramas.style / comic_style)
+            default_style = db.drama_style(d_row["drama_id"]) or "3d"
         viewer = ImageViewerDialog(
             self, url, self.row.get("name") or "",
             confirm_text=tr("使用这张"), extra_text=tr("换画风"),
