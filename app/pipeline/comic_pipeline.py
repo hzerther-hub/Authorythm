@@ -13,7 +13,8 @@
 - `app/pipeline/novel.py` 的 `outline_to_script` 走完后再调它(梗概 → 整话)。
 
 公开 API:
-    generate_full_comic(episode_id, *, config_id=None, style_value="", force=False) -> int
+    generate_full_comic(episode_id, *, config_id=None, text_config_id=None,
+                        style_value="", force=False) -> dict
 """
 from __future__ import annotations
 
@@ -47,6 +48,7 @@ def generate_full_comic(
     episode_id: int,
     *,
     config_id: int | None = None,
+    text_config_id: int | None = None,
     style_value: str = "",
     force: bool = False,
 ) -> dict:
@@ -54,9 +56,16 @@ def generate_full_comic(
 
     Args:
         episode_id:剧集 id;必须已有 script_content(content 留空也能跑,优先用 script)。
-        config_id:生图模型 config_id;None 时由 episode_page 顶栏的 image_config_id 决定。
+        config_id:**生图**模型 config_id;None 时由 episode_page 顶栏的 image_config_id 决定。
+        text_config_id:**文本**模型 config_id;拆格(comic_board)与出图提示词改写
+            (prompt_generator)都用它。None 时走全局默认文本模型。
         style_value:漫画风格 value;留空走项目级 comic_style。
         force:True 时把已有 image_url 的格也重新出图(默认跳过已出的)。
+
+    ⚠️ 这两个 id 曾经是同一个参数(config_id),结果**生图**配置被传进**文本**调用:
+    registry.check_ready("text", <生图id>) 永远匹配不上 → 每格都抛
+    「所选配置不存在」→ 被单格 except 吞掉 → 用户只看到「出 0 / 失败 N」。
+    「AI 出整话」「梗概生漫画」两条入口整条链路 100% 失效。现在拆成两个参数。
 
     Returns:
         {"panels": int, "generated": int, "skipped": int, "failed": int}
@@ -83,7 +92,7 @@ def generate_full_comic(
     # 1) 拆格:有 force 时或当前集没有 panel 时才重拆
     existing = panel_ids_in_order(episode_id)
     if force or not existing:
-        _comic.split_panels(episode_id, config_id=config_id)
+        _comic.split_panels(episode_id, text_config_id=text_config_id)
     panel_ids = panel_ids_in_order(episode_id)
     if not panel_ids:
         raise RuntimeError("拆格后漫画分镜为空,可能剧本太短或模型未返回")
@@ -98,7 +107,7 @@ def generate_full_comic(
             continue
         try:
             prompt = _comic.panel_image_prompt(
-                pid, drama_id, config_id=config_id, style_value=style_value,
+                pid, drama_id, text_config_id=text_config_id, style_value=style_value,
             )
             refs = _comic.panel_reference_images(pid, prev_image_url=prev_url)
             out, _provider = image_client.generate_image(

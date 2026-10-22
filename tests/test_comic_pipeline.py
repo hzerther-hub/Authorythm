@@ -91,7 +91,7 @@ def test_end_to_end_runs_split_then_image_then_stitch(tmp_db):
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels") as m_stitch:
 
         # split 落 2 个 panel
-        def fake_split(ep_id, config_id=None, lang=None):
+        def fake_split(ep_id, text_config_id=None, lang=None):
             from app.core import db as _db
             for n in (1, 2):
                 _db.ex(
@@ -137,7 +137,7 @@ def test_per_panel_image_failure_does_not_abort(tmp_db):
          mock.patch("app.pipeline.comic_pipeline.image_client.generate_image") as m_img, \
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels"):
 
-        def fake_split(ep_id, config_id=None, lang=None):
+        def fake_split(ep_id, text_config_id=None, lang=None):
             for n in (1, 2):
                 db.ex(
                     "INSERT INTO comic_panels(episode_id,panel_number,description,created_at,updated_at)"

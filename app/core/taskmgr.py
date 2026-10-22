@@ -155,7 +155,9 @@ class TaskSignals(QObject):
     busy_changed = Signal(bool, str)  # 是否忙, 任务类型(D 类全局 running 态)
     type_finished = Signal(str)       # 某服务类型的任务跑完一个(image/video/tts/…)
     # 任务完成回调走 Qt 跨线程队列(比 QTimer 可靠,不会因事件循环状态丢失)
-    done_cb = Signal(object, object, object)   # task_id, result, error
+    # 第一个参数是**真实 task_id**:以前靠 "SELECT MAX(id) FROM sys_task" 猜,
+    # 并发(线程池 6)时拿到的是别的任务的 id —— 回调里按 tid 查库/更新会张冠李戴。
+    done_cb = Signal(object, object, object, object)   # task_id, cb, result, error
 
 
 class _MainDispatcher(QObject):
@@ -223,6 +225,13 @@ class _FnTask(QRunnable):
             self._record_metric("completed", _t.perf_counter() - t0)
         except Exception:  # noqa: BLE001
             err = traceback.format_exc(limit=6)
+            # 落库前脱敏:error_msg 是明文列,任务面板直接展示;
+            # 异常文本里常带完整 URL(部分供应商的 key 就在 query 里)。
+            try:
+                from .logging_setup import scrub_secrets
+                err = scrub_secrets(err)
+            except Exception:  # noqa: BLE001
+                pass
             finish_task(self.task_id, "failed", err)
             self._emit_done(self.done_cb, None, err)
             self._record_metric("failed", _t.perf_counter() - t0)
@@ -253,7 +262,7 @@ class _FnTask(QRunnable):
 
     def _emit_done(self, cb, result, error):
         try:
-            self.signals.done_cb.emit(cb, result, error)
+            self.signals.done_cb.emit(self.task_id, cb, result, error)
         except RuntimeError:  # noqa: BLE001 —— 进程退出中,C++ 端已删;任务状态已落库,无需回调
             pass
 
@@ -371,15 +380,15 @@ class TaskManager(QObject):
         "concept": "text",
     }
 
-    def _run_done_cb(self, cb, result, error):
-        """在主线程执行完成回调(信号 queued 连接保证线程安全)。"""
-        tid = None
-        try:
-            tid = db.get_db().execute("SELECT MAX(id) id FROM sys_task").fetchone()["id"]
-        except Exception:  # noqa: BLE001
-            pass
+    def _run_done_cb(self, task_id, cb, result, error):
+        """在主线程执行完成回调(信号 queued 连接保证线程安全)。
+
+        task_id 由 _FnTask 随信号带出 —— 不用 "SELECT MAX(id)" 去猜:
+        线程池并发 6 个任务时,MAX(id) 是**别的**任务的 id,回调里按 tid
+        查库/更新会张冠李戴(实测批量生图时进度写到别的任务上)。
+        """
         if cb:
-            cb(tid, result, error)
+            cb(task_id, result, error)
 
     def submit(self, task_type: str, fn: Callable[..., object],
                done_cb: Callable | None = None, **links) -> int:

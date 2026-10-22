@@ -16,6 +16,8 @@ from __future__ import annotations
 import pathlib
 import uuid
 
+from pathlib import Path
+
 from ..core import config, db
 
 # 画风里的 "dramatic" 系词汇在**图生图**场景会被模型当成"把场面戏剧化"的指令,

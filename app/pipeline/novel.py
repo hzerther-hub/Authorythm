@@ -270,25 +270,36 @@ _PROSE_CFG_KEY = "yihao.novel.prose_cfg"
 
 
 def plan_config_id() -> int | None:
-    """规划用文本服务配置 id(未单独设置时回退全局默认)。"""
+    """规划用文本服务配置 id(未单独设置时回退全局默认)。
+
+    ⚠️ `registry.default_config("text", None)` 在**没有可用文本配置**时返回
+    None(不是空 dict)—— 直接 `.get("id")` 会 AttributeError,设置页初始化
+    直接崩,用户看到的不是「请先配置文本服务」而是 Python 栈。
+    参照 agents/runner.py 的写法:default_config(...) or {}。
+    """
     v = db.get_setting(_PLAN_CFG_KEY, "")
     if v:
         try:
             return int(v)
         except (TypeError, ValueError):
             pass
-    return registry.default_config("text", None).get("id")
+    cfg = registry.default_config("text", None) or {}
+    return cfg.get("id")
 
 
 def prose_config_id() -> int | None:
-    """正文写作用文本服务配置 id(未单独设置时回退全局默认)。"""
+    """正文写作用文本服务配置 id(未单独设置时回退全局默认)。
+
+    同 plan_config_id:default_config 可能返回 None,必须兜底。
+    """
     v = db.get_setting(_PROSE_CFG_KEY, "")
     if v:
         try:
             return int(v)
         except (TypeError, ValueError):
             pass
-    return registry.default_config("text", None).get("id")
+    cfg = registry.default_config("text", None) or {}
+    return cfg.get("id")
 
 
 def _plan_scale(drama_id: int, chapter_count: int | None, word_count: int | None) -> tuple[int, int]:
@@ -688,8 +699,10 @@ def persist_chapters(drama_id: int, raw: str, chapter_count: int | None = None,
                    or {"novel_meta": None})["novel_meta"], {}) or {}
     nm.pop("chapter_count", None)    # 真源统一为 total_episodes
     nm["word_count"] = words
+    # 落库前的乱码闸门(章节计划也是模型产出,流式路径没有 text_client._guarded 兜底)
+    _chapters_json = _gate_content(json.dumps(chapters, ensure_ascii=False), "章节计划")
     db.ex("UPDATE dramas SET novel_chapters=?, novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
-          (json.dumps(chapters, ensure_ascii=False), json.dumps(nm, ensure_ascii=False),
+          (_chapters_json, json.dumps(nm, ensure_ascii=False),
            n, db.now(), drama_id))
     return {"count": len(chapters), "word_count": words, "chapters": chapters}
 
@@ -1702,6 +1715,9 @@ def persist_draft(drama_id: int, key: str, raw: str) -> dict:
         raise RuntimeError(f"{spec['name']}这次只返回了过程说明,没有实际内容(前 80 字:{text[:80]})")
     if key == "volume" and not structured:      # 分卷战略必须要卷/章结构,纯散文不算数
         raise RuntimeError(f"{spec['name']}没有返回分卷结构(前 80 字:{text[:80]})")
+    # 落库前的乱码闸门:流式路径的文本没经过 text_client._guarded,
+    # 网关少带一个 charset 就能把整段中文按 latin-1 解开糊进库(乱码不可逆)。
+    text = _gate_content(text, f"{spec['name']}起草结果")
     ts = db.now()
     extra = ""
     if key == "volume" and structured:

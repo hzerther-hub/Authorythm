@@ -1583,11 +1583,20 @@ S: dict[str, list[str]] = {
 
 
 def ui_lookup(lang: str, key: str) -> str | None:
-    """查 UI 补充词典;未命中返回 None(交由主词典/回退处理)。"""
+    """查 UI 补充词典;未命中返回 None(交由主词典/回退处理)。
+
+    **不在本表语种清单里的语言(目前只有 zh-Hant)返回 None,而不是回落第 0 槽**
+    —— 第 0 槽是简体。繁体界面原本会在这里 ValueError → row[0] → 显示简体,
+    而主词典那侧又显示英文,两种语言混在一屏。
+    返回 None 后由 tr() 走它自己的回落链(主词典 → 英文 → key),
+    至少不会出现「一半繁体一半简体」,简体也不会冒充繁体。
+    """
     row = S.get(key)
     if not row:
+        return None
+    if lang not in LANGS:
         return None
     try:
         return row[LANGS.index(lang)]
     except (ValueError, IndexError):
-        return row[0]
+        return None

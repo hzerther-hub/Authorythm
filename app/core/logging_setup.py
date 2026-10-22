@@ -39,6 +39,38 @@ DEFAULT_BACKUPS = 5
 DEFAULT_APP_NAME = "pydrama"
 
 
+# 密钥脱敏规则(模块级,供 filter / formatter / 落库前共用)
+_SECRET_PATTERNS = [
+    # OpenAI 风格 sk- 开头
+    (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "sk-***"),
+    # Bearer token
+    (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9_\-\.=]{20,}"), r"\1***"),
+    # api_key=value / api_key: value / "api_key":"..." 三种写法
+    (re.compile(r'(?i)(api[_-]?key["\']?\s*[:=]\s*["\']?)([A-Za-z0-9_\-\.]{8,})(["\']?)'),
+     r"\1***\3"),
+    # Authorization: <token> / X-Api-Key: <token>
+    (re.compile(r'(?i)((?:Authorization|X-Api-Key|api[-_]?key)\s*[:=]\s*)([^\s,"\'}]{8,})'),
+     r"\1***"),
+    # 32+ 位连续 base64/hex(可能是 JWT/secret)
+    (re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"), "***"),
+]
+
+
+def scrub_secrets(text: str) -> str:
+    """把文本里的密钥/Bearer/token 换成 `***`。
+
+    脱敏要覆盖**所有**出口,不只是 log 的 msg:
+    - 异常文本(exc / stack)里常带完整 URL,而部分供应商的 key 就在 query 里;
+    - 落库的 sys_task.error_msg 是明文列,任务面板直接展示。
+    """
+    if not text:
+        return text
+    out = text
+    for pat, repl in _SECRET_PATTERNS:
+        out = pat.sub(repl, out)
+    return out
+
+
 class _SecretsFilter(logging.Filter):
     """在所有 handler 输出前对 record.getMessage() 做密钥脱敏。
 
@@ -46,29 +78,14 @@ class _SecretsFilter(logging.Filter):
     命中后替换为 `***`,但保留可识别的尾 4 位便于排错。
     """
 
-    PATTERNS = [
-        # OpenAI 风格 sk- 开头
-        (re.compile(r"sk-[A-Za-z0-9_\-]{16,}"), "sk-***"),
-        # Bearer token
-        (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9_\-\.=]{20,}"), r"\1***"),
-        # api_key=value / api_key: value / "api_key":"..." 三种写法
-        (re.compile(r'(?i)(api[_-]?key["\']?\s*[:=]\s*["\']?)([A-Za-z0-9_\-\.]{8,})(["\']?)'),
-         r"\1***\3"),
-        # Authorization: <token> / X-Api-Key: <token>
-        (re.compile(r'(?i)((?:Authorization|X-Api-Key|api[-_]?key)\s*[:=]\s*)([^\s,"\'}]{8,})'),
-         r"\1***"),
-        # 32+ 位连续 base64/hex(可能是 JWT/secret)
-        (re.compile(r"\b[A-Za-z0-9_\-]{32,}\b"), "***"),
-    ]
+    PATTERNS = _SECRET_PATTERNS
 
     def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
         try:
             msg = record.getMessage()
         except Exception:  # noqa: BLE001
             return True
-        scrubbed = msg
-        for pat, repl in self.PATTERNS:
-            scrubbed = pat.sub(repl, scrubbed)
+        scrubbed = scrub_secrets(msg)
         if scrubbed != msg:
             # 用替换后的字符串覆盖 msg,args 置空
             record.msg = scrubbed
@@ -102,9 +119,12 @@ class _JsonFormatter(logging.Formatter):
                 "lineno": record.lineno,
             }
             if record.exc_info:
-                out["exc"] = self.formatException(record.exc_info)
+                # 异常文本也要脱敏:requests 的 HTTPError/ConnectionError 消息里
+                # 带着**完整 URL**,而部分供应商的 key 就在 query 里
+                # (例:params={"key": key, ...})→ 之前只洗 msg,exc 是明文。
+                out["exc"] = scrub_secrets(self.formatException(record.exc_info))
             if record.stack_info:
-                out["stack"] = record.stack_info
+                out["stack"] = scrub_secrets(record.stack_info)
             ctx = {k: v for k, v in record.__dict__.items() if k not in self.RESERVED}
             if ctx:
                 out["ctx"] = ctx

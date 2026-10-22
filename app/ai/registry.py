@@ -11,10 +11,23 @@ SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev", "stockphoto
 
 
 def _decrypt_row(row) -> dict:
-    """把 sqlite3.Row 变 dict,并对 api_key 字段做解密。"""
+    """把 sqlite3.Row 变 dict,并对 api_key 字段做解密。
+
+    **解不开不能抛** —— 派生密钥 = 机器指纹 + salt,换机器 / 换用户 / 删掉
+    `data/.secret_salt` 之后,库里那把 key 就再也解不出来了(decrypt 抛
+    SecretError)。原先这里直接让它冒泡 → list_configs / default_config /
+    check_ready 全线崩,用户不但没法重新填 key,连设置页都打不开。
+    现在按「这一行的 key 缺了」处理:置空 + 打 key_error 标记,原始密文
+    保留在库里(不覆盖),用户重新填一次即可。
+    """
     d = dict(row)
     if "api_key" in d:
-        d["api_key"] = ensure_decrypted(d.get("api_key") or "")
+        raw = d.get("api_key") or ""
+        try:
+            d["api_key"] = ensure_decrypted(raw)
+        except Exception as exc:  # noqa: BLE001 —— SecretError 等一律降级
+            d["api_key"] = ""
+            d["key_error"] = str(exc)[:200]
     return d
 
 # 手动模板预设(对齐原版「添加服务」对话框:模板快选自动填入 Base URL 与默认模型)

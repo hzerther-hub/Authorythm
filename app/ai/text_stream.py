@@ -44,6 +44,17 @@ def chat_stream(prompt: str, system: str | None = None, config_id: int | None = 
             return _fallback_once(url, body, headers, timeout, json_mode)
         raise AIError(f"文本模型请求失败 HTTP {resp.status_code}: {text}")
 
+    # ⚠️ 编码闸门(根因修复):SSE 规范规定 UTF-8,但 requests 对 `text/*` 且
+    # **响应头没带 charset** 的响应一律按 ISO-8859-1 解码
+    # (requests.utils.get_encoding_from_headers)。OpenAI 兼容网关最常见的形态
+    # 就是 `Content-Type: text/event-stream`(不带 charset)→ 整段中文被当
+    # latin-1 解开 → "你好" 变成 "ä½ å¥½"。
+    # 非流式路径有 text_client._guarded 兜底能修回来,流式路径没有这一层,
+    # 乱码一路流到 novel.persist_draft 直接落库(AGENTS.md:GBK 误读不可逆)。
+    # 这里显式钉死 utf-8;响应头真带了 charset 就尊重它。
+    if not resp.encoding or resp.encoding.lower() in ("iso-8859-1", "latin-1"):
+        resp.encoding = "utf-8"
+
     got_any = False
     try:
         for raw in resp.iter_lines(decode_unicode=True):

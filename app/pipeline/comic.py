@@ -57,9 +57,15 @@ def purge_episode_comic_panels(episode_id: int, delete_files: bool = True) -> di
             "stitch": len(stitch_ids)}
 
 
-def split_panels(episode_id: int, config_id: int | None = None, lang: str | None = None,
+def split_panels(episode_id: int, text_config_id: int | None = None, lang: str | None = None,
                  on_purged=None) -> int:
-    """整集重新生成漫画分镜格;返回格数。"""
+    """整集重新生成漫画分镜格;返回格数。
+
+    text_config_id 是**文本模型**的配置 id(拆格是 LLM 活)。历史上这个参数叫
+    config_id,和生图配置同名 → comic_pipeline 顺手把**生图** config 传了进来,
+    registry.check_ready("text", 生图id) 必然不匹配 → 整话链路 100% 失效。
+    改名就是防呆:类型不同就别共用一个名字。
+    """
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集不存在")
@@ -101,7 +107,7 @@ def split_panels(episode_id: int, config_id: int | None = None, lang: str | None
               + "  scene_id: int 或 null      本格主场景的 id(无明确场景则 null)\n"
               + "  prop_ids: [int,...]        本格出现的道具 id 列表(无道具则空数组)\n"
               + "没有的字段就当 null / 空数组,缺字段的格子仍会被保留(不会丢掉)。")
-    data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=config_id)
+    data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=text_config_id)
     # 兼容三种返回形态:{"panels":[…]} / {"parameters":{"panels":[…]}} / 裸数组
     if isinstance(data, list):
         panels = data
@@ -483,7 +489,8 @@ def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) 
             if sp not in seen:
                 out.append(sp)
                 seen.add(sp)
-    # keyframe 链式馈送:始终追加到末尾,这样若资产参考图很多时 prev 不会被挤掉。
+    # keyframe 链式馈送:追加到末尾(prev 放最后,保持「资产在前、关键帧在后」的顺序)。
+    prev_ref: str | None = None
     if prev_image_url:
         from pathlib import Path
         if prev_image_url.startswith(("/static/", "static/")):
@@ -493,15 +500,27 @@ def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) 
         if plp.exists():
             sp = str(plp)
             if sp not in seen:
-                out.append(sp)
-                seen.add(sp)
+                prev_ref = sp
     # 参考图上限:防止绑定过多撑爆生图 payload。
-    return out[:8]
+    #
+    # ⚠️ 这里原来直接 `return out[:8]`,而 prev 是**追加在末尾**的 → 资产参考
+    # 超过 7 张时,prev 正好落在第 8 位之后被切掉,「上一格关键帧」静默消失,
+    # 链式一致性在最需要的那一步断掉(实测:一格绑 3 个角色 ×3 张多角度图
+    # 就已经 9 张)。docstring 写的「prev_image_url 始终保留」与实现相反。
+    # 现在给 prev 留一个**固定槽位**:资产参考按顺序裁,prev 永远在。
+    max_refs = 8
+    if prev_ref:
+        return out[:max_refs - 1] + [prev_ref]
+    return out[:max_refs]
 
 
-def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = None,
+def panel_image_prompt(panel_id: int, drama_id: int, text_config_id: int | None = None,
                        style_value: str = "") -> str:
     """单格出图提示词:画面+构图+对白气泡说明,注入项目风格前缀 + 人数硬前缀。
+
+    text_config_id 是**文本模型**的配置 id(这里调 prompt_generator 改写提示词)。
+    与生图配置同名过一次(config_id)→ 整话链路把生图配置传进来,LLM 改写环节
+    直接报「所选配置不存在」,每格都失败。改名即防呆。
 
     style_value 不为空时,优先于 dramas.comic_style 和 dramas.style —— 让界面上
     的「画风」下拉框真正影响图像;否则一律落回 _style_for 的默认拼装。
@@ -540,7 +559,7 @@ def panel_image_prompt(panel_id: int, drama_id: int, config_id: int | None = Non
 画面: {p['description']}
 构图: {p['composition']}
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
-    data = runner.run_agent_json("prompt_generator", prompt, config_id=config_id)
+    data = runner.run_agent_json("prompt_generator", prompt, config_id=text_config_id)
     fp = _pick_prompt_text(data)
     if not fp:
         # 模型没给出可用字段(键名随模型自由发挥,见过 final_prompt / panel_prompt / prompt)

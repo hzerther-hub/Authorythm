@@ -1958,7 +1958,8 @@ class EpisodePage(QWidget):
             novel.outline_to_script(outline, episode_id=ep_id, config_id=text_cfg)
             # 阶段 2:剧本 → 整话漫画
             return comic_pipeline.generate_full_comic(
-                ep_id, config_id=image_cfg, style_value=style_value, force=False,
+                ep_id, config_id=image_cfg, text_config_id=text_cfg,
+                style_value=style_value, force=False,
             )
 
         def done(tid, result, error):
@@ -1975,11 +1976,23 @@ class EpisodePage(QWidget):
         info("已提交:先扩剧本,再出整话 — 任务面板看进度")
 
     def _cfg_for(self, service_type: str):
-        """该类型服务当前下拉选中的配置 id(ensure_ready 用;未选返回 None=默认最高优先级)。"""
-        return {"text": getattr(self, "text_model", None),
-                "image": getattr(self, "image_model", None),
-                "video": getattr(self, "video_model", None),
-                "faceswap": getattr(self, "face_model", None)}.get(service_type)
+        """该类型服务当前下拉选中的**配置 id**(未选返回 None = 默认最高优先级)。
+
+        原来这里返回的是 **QComboBox 控件本身**,与 docstring 对不上 ——
+        「梗概生漫画」「AI 出整话」两处把它当 config_id 传下去,
+        registry.check_ready 拿控件去比 r["id"] 永远不匹配,报「所选配置不存在」,
+        两个功能整个不可用。现在统一返回 id。
+        """
+        combo = {"text": getattr(self, "text_model", None),
+                 "image": getattr(self, "image_model", None),
+                 "video": getattr(self, "video_model", None),
+                 "faceswap": getattr(self, "face_model", None)}.get(service_type)
+        if combo is None:
+            return None
+        try:
+            return combo.currentData()
+        except Exception:  # noqa: BLE001
+            return None
 
     def _batch_novel(self):
         """批量写本章及后续(对齐原版未提交批次的语义重定义 + 进度条 + 阶段)。"""
@@ -1990,7 +2003,7 @@ class EpisodePage(QWidget):
             warn(hint)
             return
         combo = self._cfg_for("text")
-        if not ensure_ready("text", combo.currentData() if combo else None):
+        if not ensure_ready("text", combo):
             return
         self._save_raw_silent()
         all_eps = [dict(r) for r in db.q(
@@ -4780,7 +4793,9 @@ class EpisodePage(QWidget):
         if not ff or not path.exists():
             return None
         out = config.DATA_DIR / "thumbs" / f"task_{path.stem}.jpg"
-        if out.exists():
+        # 缓存命中也要看大小:ffmpeg 失败可能留下 0 字节 jpg,一旦当成命中
+        # 就永远返回这个坏缩略图(QPixmap 读不出画面)而且永远不重试。
+        if out.exists() and out.stat().st_size > 0:
             return str(out)
         out.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -5847,7 +5862,9 @@ class EpisodePage(QWidget):
         def done(tid, result, error):
             self.repair_btn.setEnabled(True)
             if error:
-                err(e_)
+                # 原来写的是 err(e_) —— e_ 根本不存在,回调自己 NameError,
+                # 失败提示永远不弹(项目里已修过一次同型问题,这里是复发)。
+                err(str(error)[:200])
                 return
             r = result or {}
             if r.get("failed"):
@@ -5963,7 +5980,7 @@ class EpisodePage(QWidget):
         """重新拆分分镜(改后台任务 + 轮询,对齐原版 split-async)。"""
         from ..core.preflight import ensure_ready
         combo = self._cfg_for("text")
-        if not ensure_ready("text", combo.currentData() if combo else None):
+        if not ensure_ready("text", combo):
             return
         if self._sb_split_running:
             return
@@ -6767,6 +6784,7 @@ class EpisodePage(QWidget):
 
     def _scroll_to_panel(self, panel_id: int):
         """点警告里的「跳到重复格」→ 滚动到对面那格,顺手 highlight 一下。"""
+        from . import episode_cards as C
         for w in self.comic_host.findChildren(C.ComicPanelCard):
             if getattr(w, "_panel_id", None) == panel_id:
                 self.comic_host.ensureWidgetVisible(w)
@@ -6891,7 +6909,8 @@ class EpisodePage(QWidget):
         info(tr("正在生成分镜格,约 1-2 分钟…"))
 
         def job(tid):
-            return comic_pipe.split_panels(self.episode_id, config_id=self.text_model.currentData(), lang=self._drama_lang)
+            # text_config_id:拆格是 LLM 活,要的是**文本**模型配置
+            return comic_pipe.split_panels(self.episode_id, text_config_id=self.text_model.currentData(), lang=self._drama_lang)
 
         def done(tid, result, error):
             if btn:
@@ -6921,7 +6940,7 @@ class EpisodePage(QWidget):
         # 画风统一走项目级(dramas.comic_style),不再有 snap_style。
         def job(tid):
             fp = comic_pipe.panel_image_prompt(panel_id, self.drama_id,
-                                                config_id=snap_text)
+                                                text_config_id=snap_text)
             # 绑定资产(comic_panel_characters/scenes/props)的镜像图作为参考图;
             # 仅白名单内的 provider 真支持才走这条路(agnes/local/comfyui/sdwebui/fooocus),
             # qwen-image / volcengine 等会丢参考图,直接走纯文生图避免误导预期
@@ -6996,7 +7015,7 @@ class EpisodePage(QWidget):
 
             def job(tid):
                 fp = comic_pipe.panel_image_prompt(pid, self.drama_id,
-                                                    config_id=snap_text)
+                                                    text_config_id=snap_text)
                 # 见 _one_panel_image 的注释:仅在白名单 provider 真支持时传参考图
                 if image_client.supports_reference_images(
                         (registry.check_ready("image", snap_img) or {}).get("provider")):
@@ -7029,7 +7048,10 @@ class EpisodePage(QWidget):
                 self._reload_comic()
                 run(i + 1)          # done 在主线程回调,链式提交下一格
 
-        TASKMGR.submit("image", job, done, episode_id=self.episode_id)
+            # 提交必须**在 run 里面**:job/done 是 run 的局部函数。
+            # 原来这行写在 run 外面(缩进错位)→ NameError: name 'job' is not defined,
+            # 「AI 出整话」一点就炸,整条链式出图从来没跑起来过。
+            TASKMGR.submit("image", job, done, episode_id=self.episode_id)
 
         self._reload_comic()
         run(0)
@@ -7070,10 +7092,14 @@ class EpisodePage(QWidget):
         ep_id = self.episode_id
         style_value = self._current_comic_style_value()
         image_cfg = self._cfg_for("image")
+        # 文本模型单独取:拆格与出图提示词改写都走文本模型,生图配置传过去会
+        # 触发 registry.check_ready("text", <生图id>) 不匹配 → 整话 0 图。
+        text_cfg = self._cfg_for("text")
 
         def job(tid):
             return comic_pipeline.generate_full_comic(
-                ep_id, config_id=image_cfg, style_value=style_value, force=force,
+                ep_id, config_id=image_cfg, text_config_id=text_cfg,
+                style_value=style_value, force=force,
             )
 
         def done(tid, result, error):
@@ -7479,6 +7505,12 @@ class EpisodePage(QWidget):
             pv.setStyleSheet("background:rgba(0,0,0,0.55); color:white; border:none; border-radius:4px;")
             pv.clicked.connect(lambda _=False, u=vid: self._preview_shot(u))
         bot.addWidget(pv)
+        # 删除本镜(用户要求「要有地方删除」):删分镜行本身,连带它的视频
+        del_btn = QPushButton("🗑")
+        del_btn.setFixedSize(30, 22)
+        del_btn.setToolTip(tr("删除该镜头(连同其视频)"))
+        del_btn.clicked.connect(lambda _=False, i=sid: self._delete_shot(i))
+        bot.addWidget(del_btn)
         bot.addStretch(1)
         # 排序输入:选中后出现,输 N 与当前第 N 位互换(对齐 exp-order-input)
         order_spin = QSpinBox()
@@ -7646,10 +7678,54 @@ class EpisodePage(QWidget):
                 if mid is not None and mid in rows:
                     lab.setText(self._merge_elapsed_sec(rows[mid]))
 
+    def _delete_shot(self, sid: int):
+        """删除一个镜头(分镜行 + 它的视频文件)。
+
+        导出面板里提供删除入口:镜头多时经常要剔掉不想要的(实测用户要)。
+        删的是 storyboards 行,视频文件顺带删,不留孤儿文件占磁盘。
+        """
+        r = db.q1("SELECT id, storyboard_number, video_url, composed_video_url "
+                  "FROM storyboards WHERE id=?", (sid,))
+        if not r:
+            return
+        from .confirm import ask
+        if not ask(self, tr("delete"), tr("确定删除第 {n} 镜?该镜视频会一并删除")
+                   .format(n=int(r["storyboard_number"] or 0))):
+            return
+        for u in (r["video_url"], r["composed_video_url"]):
+            if not u:
+                continue
+            try:
+                from ..core import config as _cfg
+                p = _cfg.media_url_to_path(u)
+                if p and Path(p).exists() and Path(p).suffix.lower() in (".mp4", ".mov", ".mkv", ".webm"):
+                    Path(p).unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        db.ex("DELETE FROM storyboards WHERE id=?", (sid,))
+        self._selected.discard(sid)
+        self._order.pop(sid, None)
+        self._reload_storyboard()
+        self._reload_export()
+        ok(tr("已删除该镜头"))
+
     def _merge(self):
         # 拼接顺序 = 用户调过的序号(对齐参考 orderedExportSelectedIds),未调过按镜号
         ids = [i for i in self._ordered_selected()
                if self.shot_checks.get(i) and self.shot_checks[i].isEnabled()]
+        # **如实告知本次合几个镜**:实测用户合出 89 秒(8 镜)却以为是 21 镜 ×10s,
+        # 差别在于「勾选且已生成视频」的才进片 —— 没生成的镜头被静默跳过。
+        all_shots = self._all_shots()
+        total_shots = len(all_shots)
+        no_video = [r for r in all_shots
+                    if not (r["video_url"] or r["composed_video_url"])]
+        if len(ids) < total_shots:
+            QMessageBox.information(
+                self, tr("export_stage"),
+                tr("本次将合并 {n}/{m} 个镜头。未包含 {k} 个(没生成视频或未勾选)。"
+                   "成片时长按实际视频累计,不是分镜标称时长。")
+                .format(n=len(ids), m=total_shots,
+                        k=total_shots - len(ids)))
         if self._merge_in_flight:
             info(tr("merging"))
             return

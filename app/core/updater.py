@@ -22,6 +22,14 @@ from . import config
 FEED_URL = (os.environ.get("PYDRAMA_UPDATE_FEED")
             or "https://api.github.com/repos/hzerther-hub/PySide6_drama/releases/latest")
 
+# 更新包允许覆盖的后缀 —— **只允许源码/配置/文档**,不碰可执行文件。
+# 这条白名单必须**独立于目标是否已存在**来判:早先写成
+# `if dst.exists() and dst.suffix not in ALLOWED: continue`,
+# 目标不存在时检查被短路,更新包里的 .exe/.bat/.pth 会直接落进程序根目录
+# (可执行代码 = 远程代码执行)。更新包本身也没有完整性校验,feed 指向被改
+# 就等于给所有用户发后门 —— 所以这里按「能跑起来的文件一律不覆盖」处理。
+_ALLOWED_SUFFIX = {".py", ".json", ".txt", ".md", ".qss", ".spec", ".toml", ".cfg"}
+
 STATE_KEY = "update_state"   # app_settings 里记录 last_check / last_version
 
 
@@ -136,9 +144,13 @@ def apply_update(pkg_dir: Path, progress=None) -> list[str]:
         rel = f.relative_to(pkg_dir)
         if rel.parts and rel.parts[0] in skip_dirs:
             continue
+        # 后缀白名单**独立于目标是否已存在**。原来的写法是
+        # `if dst.exists() and dst.suffix not in ALLOWED: continue`
+        # —— 目标不存在时整条检查被短路,更新包里的 .exe/.bat/.pth 随便什么
+        # 都能落进程序根目录(可执行代码 = RCE)。
+        if f.suffix.lower() not in _ALLOWED_SUFFIX:
+            continue
         dst = root / rel
-        if dst.exists() and dst.suffix.lower() not in (".py", ".json", ".txt", ".md", ".qss", ".spec"):
-            continue  # 只覆盖源码/配置类,不动二进制与资源
         dst.parent.mkdir(parents=True, exist_ok=True)
         if dst.exists():
             backup.mkdir(parents=True, exist_ok=True)

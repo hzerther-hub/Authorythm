@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """一次性批量修复历史角色的 appearance / styling(按 character_spec 的规格)。
 
 为什么需要:规格此前只写在 2/15 份提示词里,且落库前没有校验,实测整库角色

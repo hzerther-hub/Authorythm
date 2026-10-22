@@ -186,11 +186,13 @@ class AiEditDialog(QDialog):
             else:
                 pos = min(self.start, len(chapter))
                 before, after = chapter[:pos], chapter[pos:]
-                new_text = (f"{before}"
-                            f"{'\n\n' if pos > 0 and not before.endswith(chr(10)) else ''}"
-                            f"{text}"
-                            f"{'\n\n' if pos < len(chapter) and not after.startswith(chr(10)) else ''}"
-                            f"{after}")
+                # f-string 的**表达式部分**不能含反斜杠(PEP 701,Python 3.12 才有),
+                # 而 pyproject 声明 requires-python = ">=3.10" —— 在 3.10/3.11 上
+                # 本文件是 SyntaxError,import 失败 → 应用直接起不来。
+                # 所以换行常量与判断全部提到 f-string 外面算。
+                gap_before = "\n\n" if (pos > 0 and not before.endswith("\n")) else ""
+                gap_after = "\n\n" if (pos < len(chapter) and not after.startswith("\n")) else ""
+                new_text = f"{before}{gap_before}{text}{gap_after}{after}"
             self._on_result(new_text, self.start, self.end)
             ok(tr("AI 修改已应用"))
             self.accept()

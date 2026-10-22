@@ -26,7 +26,7 @@ from ..core.theme import (SLATE_BAR, SLATE_BAR_INK, SLATE_BAR_DIM, SLATE_BG, SLA
                           SLATE_TRACK, SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_PEND,
                           SLATE_ST_FAIL, SLATE_CARD_QSS, MONO_STACK)
 from . import widgets as W
-from .toast import ok
+from .toast import err, ok
 
 # 模块级求值 tr() 会在 import 时定死语言,切语言后不跟着变 → 改成函数按需查
 WT_KEYS = {"novel": "wt_novel", "drama": "wt_drama", "comic": "wt_comic",

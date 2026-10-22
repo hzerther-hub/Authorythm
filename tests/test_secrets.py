@@ -85,6 +85,23 @@ def test_salt_file_created_with_0600_on_unix(tmp_secrets_dir):
         assert mode == 0o600, f"salt 文件权限 {oct(mode)} 应为 0o600"
 
 
+def test_salt_file_is_binary_even_with_newline_bytes(tmp_secrets_dir, monkeypatch):
+    """salt 必须**按二进制**写:Windows 的 os.open 默认文本模式,随机 salt 里
+    只要出现 0x0A 就会被翻成 0x0D0A → 文件变 17 字节 → 下次启动读到的 salt
+    与当次派生的密钥对不上,密文永久解不开(实测 1/16 概率触发)。
+    """
+    tricky = b"\x0a" + b"\x1a" + b"\x0d" + b"x" * 13     # 含换行符与 Ctrl-Z
+    assert len(tricky) == 16
+    monkeypatch.setattr(secrets.os, "urandom", lambda n: tricky)
+
+    salt = secrets._load_or_create_salt()
+    salt_path = tmp_secrets_dir / ".secret_salt"
+    assert salt_path.exists()
+    assert salt_path.read_bytes() == tricky, "salt 文件被文本模式改写了(换行符被翻译)"
+    assert len(salt_path.read_bytes()) == 16
+    assert salt == tricky
+
+
 # ── 迁移(migrate_unencrypted_keys)──
 
 @pytest.fixture

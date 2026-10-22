@@ -15,7 +15,7 @@ import json
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QVBoxLayout)
+                               QMessageBox, QPushButton, QVBoxLayout, QWidget)
 
 from ..agents import runner
 from ..ai import image_client

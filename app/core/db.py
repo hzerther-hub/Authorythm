@@ -102,15 +102,35 @@ def q1(sql: str, args: tuple = ()) -> Row | None:
 
 def ex(sql: str, args: tuple = ()) -> int:
     db = get_db()
-    cur = db.execute(sql, args)
-    db.commit()
-    return cur.lastrowid
+    try:
+        cur = db.execute(sql, args)
+        db.commit()
+        return cur.lastrowid
+    except Exception:
+        # 写失败**必须回滚**:sqlite3 的 legacy 事务模式不会自动回滚,
+        # 失败后事务一直开着,本线程的连接继续持有 RESERVED 写锁 →
+        # 其它 worker 线程的写全部阻塞 30 秒后报 "database is locked"
+        # (实测:一次 UNIQUE 冲突就能把整台机器的写库堵死)。
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 def exmany(sql: str, rows: list[tuple]) -> None:
     db = get_db()
-    db.executemany(sql, rows)
-    db.commit()
+    try:
+        db.executemany(sql, rows)
+        db.commit()
+    except Exception:
+        # executemany 中途失败时,前 N-1 行已经进了未提交的事务 ——
+        # 不回滚的话,同线程下一次 ex() 的 commit 会把这份半截数据**一起提交**。
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        raise
 
 
 DDL: list[str] = [

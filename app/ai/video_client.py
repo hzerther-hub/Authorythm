@@ -2,6 +2,8 @@
 """视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes / runninghub / xiaoyunque(小云雀),提交+轮询+下载。"""
 from __future__ import annotations
 
+import base64
+
 def _utf8_text(resp, limit: int = 400) -> str:
     """错误文案按 utf-8 显式解码。
 
@@ -13,6 +15,42 @@ def _utf8_text(resp, limit: int = 400) -> str:
     except Exception:  # noqa: BLE001
         t = str(getattr(resp, "text", "") or "")
     return t[:limit]
+
+
+def _extract_task_id(resp, keys=("task_id", "id")) -> str:
+    """从提交响应里取任务 id(不同供应商字段名不一样)。
+
+    各家结构:
+      - minimax: {"task_id": "..."},也有 {"id": ...} 的网关变体
+      - volcengine: {"id": "..."}
+      - aliyun: {"output": {"task_id": "..."}}
+
+    取不到就返回空串 —— 调用方必须**在发请求之后**立刻检查并报错,
+    否则会拿着空 id 去轮询(要么 404 循环,要么更糟:提交已计费却静默轮询别的任务)。
+    """
+    try:
+        data = resp.json()
+    except Exception:  # noqa: BLE001
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    for k in keys:
+        v = data.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+        if isinstance(v, int):
+            return str(v)
+    # 嵌套一层的形态(aliyun:{"output":{"task_id":...}})
+    for nested in ("output", "data", "result"):
+        sub = data.get(nested)
+        if isinstance(sub, dict):
+            for k in keys:
+                v = sub.get(k)
+                if isinstance(v, str) and v.strip():
+                    return v.strip()
+                if isinstance(v, int):
+                    return str(v)
+    return ""
 
 import re
 import time
@@ -343,6 +381,15 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
         if first_frame:
             body["first_frame_image"] = _local_to_data_url(first_frame, max_side, quality)
         resp = requests.post(f"{base}/video_generation", json=body, headers=headers, timeout=120)
+        if resp.status_code not in (200, 201):
+            raise AIError(f"MiniMax 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
+        # ⚠️ 这里原来**从不取 task_id**,而轮询闭包 check2 引用的是外层函数的
+        # task_id 局部变量 —— 该变量只在 volcengine / aliyun 分支被赋值,
+        # minimax 路径上从未绑定 → 第一次轮询就 UnboundLocalError。
+        # 后果不是「报错」而是「**提交已经成功、上游已开始计费,成片拿不到**」。
+        task_id = _extract_task_id(resp, ("task_id", "id", "request_id"))
+        if not task_id:
+            raise AIError(f"MiniMax 响应缺少 task_id: {_utf8_text(resp)[:300]}")
 
         def check2():
             st = requests.get(f"{base}/query/video_generation?task_id={task_id}", headers=headers, timeout=30).json()
@@ -360,7 +407,11 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                              json=body, headers=headers, timeout=120)
         if resp.status_code not in (200, 201):
             raise AIError(f"Wan 提交失败 HTTP {resp.status_code}: {_utf8_text(resp)[:300]}")
-        task_id = resp.json().get("output", {}).get("task_id")
+        # 取不到 task_id 就立刻报错:带着 None 去轮询 /api/v1/tasks/None 会
+        # 一直 404 轮询到超时,用户只看到「超时」,看不到真正的提交问题。
+        task_id = _extract_task_id(resp, ("task_id", "id"))
+        if not task_id:
+            raise AIError(f"Wan 响应缺少 task_id: {_utf8_text(resp)[:300]}")
 
         def check3():
             st = requests.get(f"{base}/api/v1/tasks/{task_id}", headers=headers, timeout=30).json()

@@ -14,9 +14,12 @@ from __future__ import annotations
 
 from ..agents import runner
 from ..core import db
+from ..core.logging_setup import get_logger
 from ..core.taskmgr import TASKMGR
 
 from . import script_quality
+
+log = get_logger(__name__)
 
 AGENT_FOR = {
     "novel": ("novel_writer", "novel_content"),
@@ -146,10 +149,14 @@ def auto_generate_first_episode(drama_id: int, episode_id: int, config_id: int |
         return _persist(episode_id, work_type, text)
 
     def done(tid, result, error):
+        # pipeline 层不能 import UI 的 toast(依赖方向是 ui → pipeline → ai → core,
+        # 反向 import 会成环)。原来这里直接调未导入的 err/ok → NameError,
+        # 失败时回调自己先炸,用户只看到「建了项目但没内容」。
+        # 失败详情本来就落在 sys_task.error_msg(任务面板可见)。
         if error:
-            err(f"首集自动生成失败:{error}")
+            log.warning("auto_generate.failed task=%s err=%s", task_type, str(error)[:200])
         elif result:
-            ok(f"首集内容已生成({result} 条)")
+            log.info("auto_generate.ok task=%s result=%s", task_type, result)
 
     TASKMGR.submit(task_type, job, done, drama_id=drama_id, episode_id=episode_id)
     return {"task_type": task_type, "episode_id": episode_id}

@@ -71,21 +71,47 @@ def _load_or_create_salt() -> bytes:
     """salt 路径:data/.secret_salt。首次运行用 os.urandom(16) 生成。
 
     Unix 0600,Windows 跳过 chmod。
+
+    **必须原子创建**:原来的写法是「exists() 就读,否则 write_bytes()」——
+    两个进程同时启动(应用 + pytest + 诊断脚本,本项目记录过这个场景)会
+    各自生成一份 salt,后写者覆盖前者 → 先启动那进程用 salt A 加密、
+    文件里却是 salt B → 落库的密文**永久解不开**。
+    更糟的是 write_bytes 是「截断 + 写」,此刻另一个进程可能读到**空 salt**
+    并据此派生密钥,写进去的密文同样不可解。
+    现在用 O_CREAT|O_EXCL 原子创建:O_EXCL 失败说明别人先建了 → 读它的。
     """
     p = _salt_path()
-    if p.exists():
-        try:
-            return p.read_bytes()
-        except OSError:
-            pass
     salt = os.urandom(_SALT_BYTES)
     try:
+        # O_EXCL:文件已存在就抛 FileExistsError —— 不会截断、不会覆盖
+        #
+        # ⚠️ Windows 必须加 O_BINARY:os.open 默认是**文本模式**,随机 salt 里
+        # 只要有一个 0x0A 就会被翻成 0x0D0A → 文件变成 17 字节,下次启动读到的
+        # salt 与当次派生的密钥对不上 → 密文永久解不开(实测 1/16 概率触发)。
+        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+        if hasattr(os, "O_BINARY"):
+            flags |= os.O_BINARY
+        fd = os.open(str(p), flags, 0o600)
+        try:
+            written = os.write(fd, salt)
+            if written != _SALT_BYTES:
+                raise OSError(f"salt 写入不完整:{written}/{_SALT_BYTES}")
+        finally:
+            os.close(fd)
+        return salt
+    except FileExistsError:
+        pass                     # 别人先建好了 → 用它那份
+    except OSError:
+        pass
+    try:
+        data = p.read_bytes()
+        if data:
+            return data
+    except OSError:
+        pass
+    # 读不到(权限/空文件)→ 退回到写自己的,并明确记录
+    try:
         p.write_bytes(salt)
-        if os.name != "nt":
-            try:
-                os.chmod(p, 0o600)
-            except OSError:
-                pass
     except OSError:
         pass
     return salt

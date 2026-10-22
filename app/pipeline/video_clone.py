@@ -1157,10 +1157,19 @@ def transcode_if_needed(path, episode_id: int):
     out_dir = config.STATIC_DIR / "temp"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"clone-{episode_id}-{uuid.uuid4().hex[:8]}.mp4"
-    subprocess.run([ff, "-y", "-i", str(path), "-vf", "scale=-2:720", "-t", "120",
-                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
-                    "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)],
-                   capture_output=True, timeout=900)
+    r = subprocess.run([ff, "-y", "-i", str(path), "-vf", "scale=-2:720", "-t", "120",
+                        "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                        "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", str(out)],
+                       capture_output=True, timeout=900)
+    # 转码可能失败(超时 / 缺 libx264 编码器 / 磁盘满),ffmpeg 不抛异常。
+    # 原来无条件 return out, True —— 坏文件被当成"已转码"往下传,后面
+    # 报的是"看不懂这个视频",根因完全指不到转码这步。
+    if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+        try:
+            out.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return Path(path), False
     return out, True
 
 

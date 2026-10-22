@@ -848,6 +848,8 @@ class _RefVideoDialog(QDialog):
         self._player.play()
 
     def _toggle_play(self):
+        # QMediaPlayer 只在 __init__ 里局部 import 过,这里要用必须再导一次
+        from PySide6.QtMultimedia import QMediaPlayer
         if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             self._player.pause()
         else:
@@ -1223,9 +1225,6 @@ class ClonePage(QWidget):
         db.ex("DELETE FROM storyboards WHERE episode_id=?", (ep_id,))
         self.reload()
         ok(tr("已删除 {n} 个旧分镜").format(n=n))
-
-        TASKMGR.submit("clone_understand", job, done,
-                       drama_id=self.drama_id, episode_id=ep_id)
 
     def _presenter(self):
         from ..pipeline import video_clone

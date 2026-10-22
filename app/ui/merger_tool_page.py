@@ -17,6 +17,7 @@ from ..core import config
 from . import widgets as W
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
+from .toast import err
 from ..pipeline import merge as M
 
 PARAM_COLS = ["name", "resolution", "codec", "profile", "fps", "sample_rate"]
@@ -102,7 +103,7 @@ class MergerToolPage(QWidget):
         def job(tid):
             return M.analyze(self.files)
         def done(tid, result, error):
-            if err:
+            if error:
                 err(tr("detect"))
                 return
             self.result = result
@@ -147,7 +148,7 @@ class MergerToolPage(QWidget):
             files = M.align_outliers(r)
             return M.analyze(files)
         def done(tid, result, error):
-            if err:
+            if error:
                 err(tr("align_outliers"))
                 return
             self.result = result
@@ -164,7 +165,7 @@ class MergerToolPage(QWidget):
             path, channel = M.auto_merge(self.files, out)
             return f"{channel} → {path}"
         def done(tid, result, error):
-            if err:
+            if error:
                 err(tr("merge_now"))
             else:
                 import os

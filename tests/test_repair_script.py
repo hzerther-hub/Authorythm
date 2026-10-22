@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """一次性修复脚本的回归护栏:必须真回写、只在变长时回写、仍不达标时不动库。"""
 from __future__ import annotations
 

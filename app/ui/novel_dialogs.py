@@ -626,8 +626,10 @@ class NovelPlanDialog(QDialog):
                 return
             self._reload_tabs()
             self._update_plan_stat()
-            if key == "volume" and hasattr(self, "_render_volume_list"):
-                self._render_volume_list()      # 卷结构列表要跟着刷新
+            # 原来这里判的是 key == "volume" —— 但本方法(_ai_chapters)只生成
+            # **章节计划**,根本没有 key 这个变量(是从别的分支复制过来的残留)→
+            # NameError 把整个保存流程带崩。这里按实际语义:章节计划落库后
+            # 刷新章节列表即可,卷结构列表不受影响。
             ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(result['count'], result['word_count']))
 
         def failed(msg: str) -> None:

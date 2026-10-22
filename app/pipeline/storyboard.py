@@ -219,8 +219,9 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
       setting_tags 为空时从场景继承 —— 缺这些字段时 `refs.build_shot_reference_list`
       拿不到绑定、reference injection 就是空的,生图只能每次现调 Agent。
     - 同步写 `storyboard_characters`(带 variant_id)与 `storyboard_props`;
-    - **先清空本集旧分镜与已生成的视频文件**(purge_episode_storyboards),
-      再从零拆 —— 用户要求「重新拆分」= 彻底重来(2026-10-20);
+    - **清空本集旧分镜与已生成的视频文件**(purge_episode_storyboards)再从零拆
+      —— 用户要求「重新拆分」= 彻底重来(2026-10-20);删除推迟到**第一批
+      LLM 成功之后**,失败时旧内容原样留着(见下面 _purge_old 的注释);
     - 重算 `episodes.duration = ceil(Σ分镜时长 / 60)`。
     """
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
@@ -233,13 +234,22 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     # 以前是「按镜号幂等 upsert」,旧镜号没被覆盖就残留:新描述配旧视频,
     # 还白占着列表和合片(用户反馈「重新拆分,以前生成的怎么办」)。
     # UI 侧已先弹二次确认告知会删什么,这里才真删。
-    purge_stats = purge_episode_storyboards(episode_id)
-    if purge_stats.get("shots"):
-        log.info("storyboard.resplit.purged episode=%s shots=%d files=%d bytes=%d merges=%d",
-                 episode_id, purge_stats["shots"], purge_stats["files"],
-                 purge_stats["bytes"], purge_stats["merges"])
-    if on_purged:
-        on_purged(purge_stats)
+    #
+    # ⚠️ 删除时机:推迟到**第一批 LLM 成功之后**。
+    # 原来在任何 LLM 调用之前就 purge —— 鉴权失败 / 额度耗尽 / 网络全断 /
+    # 模型连续返回不可解析内容时,旧分镜与**已付费生成的视频文件**已经被删光,
+    # 用户最后只拿到一个空集(两头空)。漫画链路(comic.split_panels)早就是
+    # 「LLM 成功之后才 purge」,这里跟上同一约定:失败时旧内容原样留着。
+    def _purge_old() -> None:
+        stats = purge_episode_storyboards(episode_id)
+        if stats.get("shots"):
+            log.info("storyboard.resplit.purged episode=%s shots=%d files=%d bytes=%d merges=%d",
+                     episode_id, stats["shots"], stats["files"],
+                     stats["bytes"], stats["merges"])
+        if on_purged:
+            on_purged(stats)
+        _clear_episode_bindings(episode_id)
+
     chars = db.q("SELECT id, name, appearance, styling FROM characters WHERE drama_id=? AND deleted_at IS NULL",
                  (ep["drama_id"],))
     scenes = db.q("SELECT id, name, location, time, prompt, lighting, setting_tags FROM scenes "
@@ -265,11 +275,11 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     scene_by_name = {r["name"]: dict(r) for r in scenes}
     prop_by_id = {r["id"]: r["name"] for r in props}
     prop_names = [r["name"] for r in props]
-    _clear_episode_bindings(episode_id)
     batches = _script_batches(script)
     total_dur = 0.0
     saved = 0
     failed: list[str] = []
+    purged = False
     for bi, (label, part) in enumerate(batches, start=1):
         try:
             got = _boards_for_part(ep, aspect, assets, part, label,
@@ -287,6 +297,11 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
             if on_progress:
                 on_progress(min(90, int(bi / len(batches) * 90)))
             continue
+        # 第一批拿到内容了 → 这时才清旧分镜(从零重来)。
+        # 全批失败时旧分镜与已生成的视频原样保留,不至于两头空。
+        if not purged:
+            _purge_old()
+            purged = True
         # 批次内先按模型给的号排(它可能从 3 开始),再统一编成连续号
         got.sort(key=lambda b: (int(b.get("number") or 10 ** 6),))
         for b in got:
@@ -478,32 +493,62 @@ def _bind_assets(sb_id: int, b: dict, name_to_id: dict, prop_by_id: dict,
     关联过滤,这些资产根本不显示。
     """
     names = _refs_to_names(b, "characters", name_to_id, prop_by_id)
-    for name, cid, vid in names:
-        db.ex("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id,variant_id) "
-              "VALUES(?,?,?)", (sb_id, cid, vid))
+    if names:
+        # 一次 executemany = 一次 commit。原来每个角色一次 db.ex(每个 ex 都
+        # commit 一次),一集几十镜就是几百次 fsync。
+        db.exmany("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id,variant_id) "
+                  "VALUES(?,?,?)", [(sb_id, cid, vid) for _n, cid, vid in names])
         if episode_id:
-            db.ex("INSERT OR IGNORE INTO episode_characters(episode_id,character_id) VALUES(?,?)",
-                  (episode_id, cid))
-    for _name, pid, _vid in _refs_to_names(b, "props", prop_by_id, prop_by_id):
-        db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
-              (sb_id, pid))
+            db.exmany("INSERT OR IGNORE INTO episode_characters(episode_id,character_id) VALUES(?,?)",
+                      [(episode_id, cid) for _n, cid, _v in names])
+    # prop_by_id 是 **id → 名字** 映射(见 _save_board 的构造),按名字反查 id
+    # 得转一下 —— 之前直接把 id→name 当 name→id 用,于是「模型给道具名字
+    # (props: ["扇子"])」这条路永远查不到 id,道具绑不上分镜。
+    prop_name_to_id = {name: pid for pid, name in prop_by_id.items()}
+    props = _refs_to_names(b, "props", prop_name_to_id, prop_by_id)
+    if props:
+        db.exmany("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
+                  [(sb_id, pid) for _n, pid, _v in props])
         if episode_id:
-            db.ex("INSERT OR IGNORE INTO episode_props(episode_id,prop_id) VALUES(?,?)",
-                  (episode_id, pid))
+            db.exmany("INSERT OR IGNORE INTO episode_props(episode_id,prop_id) VALUES(?,?)",
+                      [(episode_id, pid) for _n, pid, _v in props])
+
+    # 兜底:正文里出现 @名字 也算绑定(模型漏给 characters/props 数组时)。
+    # 这段曾经被误挪进 _refs_to_names 的 `return out` **之后** —— 变成永远
+    # 不执行的死代码,兜底等于从来没生效过(且 mypy 报 4 个未定义名)。
+    text = b.get("content") or ""
+    if text:
+        for name, cid in name_to_id.items():
+            if cid and ("@" + name) in text:
+                db.ex("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id) "
+                      "VALUES(?,?)", (sb_id, cid))
+        for name in prop_names:
+            pid = prop_name_to_id.get(name)
+            if pid and ("@" + name) in text:
+                db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) "
+                      "VALUES(?,?)", (sb_id, pid))
 
 
 def _refs_to_names(b: dict, key: str, id_by_name: dict, prop_by_id: dict) -> list:
-    """把 characters/props 引用统一成 (名字, id, variant_id);兼容名字数组与 id 数组。"""
+    """把 characters/props 引用统一成 (名字, id, variant_id);兼容名字数组与 id 数组。
+
+    id_by_name:**名字 → id** 映射(角色传 name_to_id,道具传 prop_name_to_id)。
+    prop_by_id:**id → 名字** 映射(给 id 数组分支查名字用)。
+    """
     out: list = []
     id_key = "char_ids" if key == "characters" else "prop_ids"
+    table = "characters" if key == "characters" else "props"
+    # id 数组:一次 IN 查完,别一个 id 一次 db.q1(N+1)
+    raw_ids: list[int] = []
     for cid in b.get(id_key) or []:
         try:
-            row = db.q1("SELECT id, name FROM characters WHERE id=?" if key == "characters"
-                        else "SELECT id, name FROM props WHERE id=?", (int(cid),))
+            raw_ids.append(int(cid))
         except (TypeError, ValueError):
-            row = None
-        if row:
-            out.append((row["name"], row["id"], None))
+            continue
+    if raw_ids:
+        marks = ",".join("?" * len(raw_ids))
+        for r in db.q(f"SELECT id, name FROM {table} WHERE id IN ({marks})", tuple(raw_ids)):
+            out.append((r["name"], r["id"], None))
     for ref in b.get(key) or []:
         name = (ref.get("name") if isinstance(ref, dict) else str(ref)) or ""
         name = name.lstrip("@").strip()
@@ -512,16 +557,6 @@ def _refs_to_names(b: dict, key: str, id_by_name: dict, prop_by_id: dict) -> lis
             vid = (ref.get("variant_id") if isinstance(ref, dict) else None)
             out.append((name, cid, vid))
     return out
-    # 兜底:正文里出现的资产名也算绑定(Agent 漏给 characters 数组时)
-    text = b.get("content") or ""
-    for name, cid in name_to_id.items():
-        if cid and name in text and "@" + name in text:
-            db.ex("INSERT OR IGNORE INTO storyboard_characters(storyboard_id,character_id) "
-                  "VALUES(?,?)", (sb_id, cid))
-    for i, name in enumerate(prop_names):
-        if name and "@" + name in text:
-            db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
-                  (sb_id, prop_by_id[name]))
 
 def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str | None = None,
                       on_progress=None) -> int:

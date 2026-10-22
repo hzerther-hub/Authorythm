@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Layer 2.3:梗概扩写为剧本(outline_to_script)的回归护栏。
+r"""Layer 2.3:梗概扩写为剧本(outline_to_script)的回归护栏。
 
 覆盖:
 - 空梗概 / 短梗概(<30字) → RuntimeError,不落库

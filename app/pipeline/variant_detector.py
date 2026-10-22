@@ -265,24 +265,12 @@ def detect_appearance_changes(text: str, shot_number: int | None = None,
     """
     if not text:
         return []
-    found: dict[str, dict] = {}
-    for pat, kind, _label_kind in VARIANT_TRIGGERS:
-        for m in re.finditer(pat, text):
-            if kind in found:
-                break                       # 同 kind 不重复
-            start = max(0, m.start() - 8)
-            end = min(len(text), m.end() + 12)
-            snippet = text[start:end].replace("\n", " ").strip()
-            found[kind] = {
-                "kind": kind,
-                "match": m.group(0),
-                "snippet": ("…" if start > 0 else "") + snippet
-                          + ("…" if end < len(text) else ""),
-                "shot": shot_number,
-                "storyboard_id": storyboard_id,
-            }
-            break                          # 同 kind 只记首次匹配
-    return list(found.values())
+    # 原来这里遍历一个**不存在的** VARIANT_TRIGGERS 变量(模块里只有
+    # CHAR_/SCENE_/PROP_VARIANT_TRIGGERS 三张表)→ 一调用就 NameError。
+    # 通用实现 detect_changes 做的就是同一件事,直接走它。
+    return detect_changes(text, CHAR_VARIANT_TRIGGERS,
+                          shot_number=shot_number,
+                          storyboard_id=storyboard_id)
 
 
 def detect_in_storyboard(storyboard: dict) -> list[dict]:

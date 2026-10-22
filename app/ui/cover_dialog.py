@@ -205,7 +205,9 @@ class EpisodeCoverButton(QPushButton):
             return novel_pipe.generate_episode_cover(ep_id)
         def done(tid, result, error):
             if error:
-                err(e_)
+                # 原来写的是 err(e_) —— e_ 这个名字根本不存在,回调自己先 NameError,
+                # 失败被吞得干干净净,表现为「点了没反应」。
+                err(str(error)[:200])
                 return
             ok(tr("章封面已生成"))
             if self._on_done:
