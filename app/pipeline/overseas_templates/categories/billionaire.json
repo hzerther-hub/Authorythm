@@ -1,0 +1,56 @@
+{
+  "id": "billionaire",
+  "name": "Billionaire / CEO Romance",
+  "name_zh": "霸总 / 亿万富翁",
+  "source": "头条收稿题材清单(2026-10-03:霸总追妻/契约婚姻/亿万富翁(带球跑/私生子)) + 海外品类分析",
+  "pov_hint": "first",
+  "required_elements": [
+    "status_gap",
+    "identity_reversal",
+    "public_humiliation_to_turnaround"
+  ],
+  "tropes": [
+    "hidden_identity",
+    "flashback_to_humiliation",
+    "chase_after_divorce",
+    "child_secret",
+    "one_night_stand_reunion",
+    "black_card_drama"
+  ],
+  "glossary_seed": {
+    "霸总": "the CEO",
+    "白月光": "the one who got away",
+    "替身": "the substitute",
+    "带球跑": "the unexpected child",
+    "私生子": "the illegitimate son",
+    "追妻火葬场": "the regret arc",
+    "闪婚": "the marriage of convenience",
+    "契约婚姻": "contract marriage",
+    "真假千金": "the real heir",
+    "同学会": "the class reunion",
+    "裁员": "the layoff"
+  },
+  "payoff_keywords": [
+    "CEO",
+    "billionaire",
+    "divorce",
+    "contract",
+    "reunion",
+    "black card",
+    "child",
+    "identity"
+  ],
+  "task_reward": {
+    "required": false,
+    "markers": []
+  },
+  "banned": [
+    "中式亲属称谓无解释",
+    "中文单位(斤/两/块钱)",
+    "把「赘婿」直译成西方读者无法理解的身份设定"
+  ],
+  "craft_notes": [
+    "爽点公式:配角看不起主角 → 主角低调/隐藏实力 → 大佬出面打脸 → 配角跪了",
+    "典型场景:同学会打脸 / 购物甩黑卡 / 真假千金反转 / 裁员裁到大动脉 / 追妻火葬场"
+  ]
+}

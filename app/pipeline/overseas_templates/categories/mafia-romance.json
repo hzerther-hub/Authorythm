@@ -1,0 +1,55 @@
+{
+  "id": "mafia-romance",
+  "name": "Mafia Romance",
+  "name_zh": "黑帮言情 / 契约婚姻",
+  "source": "SoloEnt「海外短篇网文本地化」插件(2026-03-24)重点优化品类 + 头条收稿题材清单(2026-10-03)",
+  "pov_hint": "first",
+  "required_elements": [
+    "power_imbalance",
+    "forced_arrangement",
+    "loyalty_test",
+    "protection_or_possession"
+  ],
+  "tropes": [
+    "contract_marriage",
+    "enemies_to_lovers",
+    "fake_date",
+    "possession_claim",
+    "hidden_past",
+    "betrayal_and_repair"
+  ],
+  "glossary_seed": {
+    "契约婚姻": "contract marriage",
+    "假结婚": "marriage of convenience",
+    "包养": "kept man",
+    "黑手党": "the Bratva",
+    "教父": "the Don",
+    "老大": "the boss",
+    "地盘": "territory",
+    "势力": "the outfit",
+    "仇家": "rival clan",
+    "联姻": "alliance marriage"
+  },
+  "payoff_keywords": [
+    "contract",
+    "marriage",
+    "rival",
+    "protection",
+    "possession",
+    "betrayal",
+    "loyalty"
+  ],
+  "task_reward": {
+    "required": false,
+    "markers": []
+  },
+  "banned": [
+    "中式亲属称谓无解释",
+    "中文单位(斤/两/块钱)",
+    "把黑帮写成警察程序剧(讲程序不讲规矩)"
+  ],
+  "craft_notes": [
+    "权力不对等是这类文的发动机;每次权力变化都要让选择变难",
+    "「本地化」不是把中国霸总直译成西语黑帮——要换成当地读者熟悉的权力语言"
+  ]
+}

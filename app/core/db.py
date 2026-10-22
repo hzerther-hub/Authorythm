@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""SQLite 数据层:23 张表 DDL(对齐原版 schema)+ 风格种子 + 示例项目种子。"""
+"""SQLite 数据层:29 张表 DDL(对齐原版 schema)+ 风格种子 + 示例项目种子。"""
 from __future__ import annotations
 
 import json
@@ -306,6 +306,34 @@ DDL: list[str] = [
         engine_label TEXT,
         created_at TEXT NOT NULL
     )""",
+    # 海外题材改写:项目(源项目层:术语表 / 五维诊断,平台无关部分放这层)
+    """CREATE TABLE IF NOT EXISTS overseas_project (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      drama_id INTEGER NOT NULL,
+      episode_id INTEGER,
+      platform TEXT NOT NULL,
+      category TEXT NOT NULL,
+      target_lang TEXT NOT NULL DEFAULT 'en-US',
+      level TEXT NOT NULL DEFAULT 'B',
+      status TEXT NOT NULL DEFAULT 'init',
+      source_text TEXT,
+      glossary_json TEXT DEFAULT '{}',
+      diag_json TEXT DEFAULT '{}',
+      plan_json TEXT DEFAULT '{}',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
+    # 海外题材改写:章节(英文改写稿,按章落库支持断点续跑)
+    """CREATE TABLE IF NOT EXISTS overseas_chapter (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL,
+      episode_id INTEGER,
+      chapter_no INTEGER NOT NULL,
+      title TEXT,
+      content TEXT,
+      notes TEXT,
+      words INTEGER,
+      qc_json TEXT DEFAULT '{}',
+      status TEXT NOT NULL DEFAULT 'pending',
+      created_at TEXT NOT NULL, updated_at TEXT NOT NULL)""",
 ]
 
 INDEXES = [

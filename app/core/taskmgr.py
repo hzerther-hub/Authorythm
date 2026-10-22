@@ -359,6 +359,8 @@ class TaskManager(QObject):
         "promo": "写宣传文案", "face_swap": "换脸", "face_swap_batch": "批量换脸",
         "merge": "拼接成片", "stitch": "拼接长图", "episode_cover": "生成章封面",
         "chat_edit": "PhotoCraft 修图", "concept": "生成项目说明",
+        # 海外题材改写:诊断 / 改写
+        "overseas_diag": "海外诊断", "overseas_rewrite": "海外改写",
     }
 
     # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)
@@ -378,6 +380,8 @@ class TaskManager(QObject):
         "clone_understand": "text",
         # 新建项目的「项目说明」:从一句想法生成 名称/简介/创意描述/题材
         "concept": "text",
+        # 海外题材改写:诊断 / 改写(都走文本模型)
+        "overseas_diag": "text", "overseas_rewrite": "text",
     }
 
     def _run_done_cb(self, task_id, cb, result, error):

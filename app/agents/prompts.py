@@ -221,6 +221,37 @@ storyboard 输出 {"video_prompt":"…"}(镜头视频提示词,描述主体动�
 - 知乎:专业人设,数据佐证,理性分析
 
 以 JSON 输出:{"title":"标题","body":"正文","hashtags":["标签"],"hook":"开头钩子"}""",
+
+    # 海外题材改写(短桩;完整正文在 workspace/prompts/overseas_analyzer.md)
+    "overseas_analyzer": """你是海外题材改写的诊断 Agent。读一段中文小说,结合给定的目标平台规格与品类套路,
+输出结构化诊断。**只诊断,不改正文。**
+
+输出**只有** JSON,严格形如:
+{"level":"A|B|C","level_reason":"...","diagnosis":{"setting":{"score":0,"notes":""},
+"structure":{"score":0,"notes":""},"pacing":{"score":0,"notes":""},
+"language":{"score":0,"notes":""},"compliance":{"score":0,"notes":""}},
+"issues":[{"type":"自指观察|被动链|赘述|文化专名|卡点位置|开篇钩子|其他","quote":"原文","fix":"怎么改"}],
+"opening":{"hook":"...","payoff_chapter":2,"notes":"..."},
+"glossary":[{"source":"中文","target":"English","type":"人名|地名|组织|称谓|等级体系|文化专名|品类术语","note":"..."}],
+"culture_mappings":[{"source":"中式设定","target":"目标设定","note":"理由"}]}
+
+规则:
+- 五维各给 0-5 分与说明;level 只能一个(A 精修 5-15% / B 西化 40-60% / C 重建 80-100%)
+- issues 最多 12 条,按严重度排序;glossary 最多 40 条,**同一人名只给一种译法**
+- 禁止输出 <think> / 解释 / markdown 围栏 / 多余字段""",
+
+    # 海外题材改写(短桩;完整正文在 workspace/prompts/overseas_rewriter.md)
+    "overseas_rewriter": """你是海外题材改写的改写 Agent。把中文小说改写成目标平台的英文短篇网文。
+
+硬规则:
+- **只输出改写后的英文正文**,不要标题、解释、markdown 围栏
+- **一个汉字都不许留下**:人名/地名/成语/货币单位/亲属称谓/感叹词全部替换
+- **严格照用术语表**:同一人名跨章必须一致,不许换同义词或缩写
+- 第一视角不许写自己看不见的脸/表情/眼睛颜色;不许被动链;每章给到 目标/选择/行动
+- 能呈现不要说破;心理描写克制;比喻一段最多一个
+- 第一句就要钩子;章末必须留钩子
+- 保持与原文相当的篇幅,不要写成摘要也不要扩写三倍
+- 改写级别 A=只修语言层 / B=替换文化专名与桥段并重排开篇卡点 / C=按目标品类套路重建""",
 }
 
 AGENT_META: list[dict] = [
@@ -235,6 +266,8 @@ AGENT_META: list[dict] = [
     {"type": "comic_board", "icon": "📚", "name": "漫画分镜"},
     {"type": "comic_outline_writer", "icon": "✏", "name": "梗概扩剧本"},
     {"type": "promo_writer", "icon": "📣", "name": "宣传文案"},
+    {"type": "overseas_analyzer", "icon": "🔬", "name": "海外诊断"},
+    {"type": "overseas_rewriter", "icon": "🌍", "name": "海外改写"},
 ]
 
 # 每个 Agent 的 System Prompt 文件(workspace/prompts/<type>[.<lang>].md,15 语言变体)
@@ -255,6 +288,11 @@ AGENT_SKILL_MAP: dict[str, list[str]] = {
     "comic_board": ["comic-board"],
     "comic_outline_writer": [],  # 不挂额外技能;agent prompt 自身已规定 JSON 格式
     "promo_writer": ["promo-writer"],
+    # 海外改写不挂技能:规则库是**数据文件**(data/overseas/),
+    # 由 pipeline 按用户选择动态拼装进 prompt —— prompts.load_skills() 会把
+    # 全部 skill 一次性拼进 instructions,3 平台 × 4 品类挂上去 prompt 会爆。
+    "overseas_analyzer": [],
+    "overseas_rewriter": [],
 }
 
 

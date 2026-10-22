@@ -1,0 +1,65 @@
+{
+  "id": "systemfic",
+  "name": "System / Progression Fantasy",
+  "name_zh": "系统流 / 升级流",
+  "source": "海外品类分析(男频:系统流完读率比传统奇幻高约 37%;每章结尾需有「任务—奖励」闭环)",
+  "pov_hint": "third",
+  "required_elements": [
+    "system_or_ability",
+    "progression_track",
+    "mission_reward_loop",
+    "cost_or_limit"
+  ],
+  "tropes": [
+    "stat_screen",
+    "level_up_moment",
+    "skill_unlock",
+    "daily_mission",
+    "achievement_ding",
+    "underdog_rising"
+  ],
+  "glossary_seed": {
+    "系统": "the System",
+    "面板": "the stat panel",
+    "经验值": "experience points",
+    "等级": "level",
+    "技能": "skill",
+    "任务": "quest",
+    "奖励": "reward",
+    "签到": "daily check-in",
+    "商城": "the shop",
+    "宿主": "the host"
+  },
+  "payoff_keywords": [
+    "level",
+    "skill",
+    "quest",
+    "reward",
+    "points",
+    "unlocked",
+    "notification",
+    "System"
+  ],
+  "task_reward": {
+    "required": true,
+    "markers": [
+      "reward",
+      "quest complete",
+      "level up",
+      "unlocked",
+      "points",
+      "achievement",
+      "exp ",
+      "+1"
+    ],
+    "note": "男频品类硬规则:每章结尾需有「任务—奖励」闭环"
+  },
+  "banned": [
+    "修仙等级体系直接直译(应换成 System/level 体系)",
+    "只写等级数字不给代价与限制"
+  ],
+  "craft_notes": [
+    "系统流的爽点是「工业化封装」:经验值/等级提升/技能解锁像 RPG",
+    "只写升级过程会退化成升级打卡;每章必须有可结算的收益反馈"
+  ]
+}

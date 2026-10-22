@@ -1,0 +1,64 @@
+{
+  "id": "dreame",
+  "name": "Dreame",
+  "name_zh": "Dreame(新加坡 Stary)",
+  "source": "二手来源:头条《副业赚钱海外网文投稿全攻略》(2026-05-14,原「尽见商业研究局/大鹏」);另见自媒体《AI写小说出海赚美金》(2026-08-19)—— 两组数字互相矛盾,需官方页复核",
+  "source_verified": false,
+  "signing": {
+    "mode": "self_apply_or_email",
+    "min_words_for_signing": 5000,
+    "review_days": "3-14",
+    "note": "自主申请或邮件投稿"
+  },
+  "updates": {
+    "daily_words": null,
+    "monthly_words": 50000,
+    "min_days_per_month": 28,
+    "note": "月更 5 万字(日均约 1667 字),满 28 天"
+  },
+  "rewards": {
+    "signing_bonus_usd": 50,
+    "attendance_usd": 150,
+    "completion_tiers": []
+  },
+  "paywall": {
+    "free_chapters": 10,
+    "paywall_chapter_range": [6, 8],
+    "hook_types": [
+      "unfinished_action",
+      "evidence_changes_hand",
+      "relationship_turns",
+      "risk_becomes_deadline",
+      "costly_dilemma"
+    ],
+    "note": "与 GoodNovel 同口径的二次来源;需官方页复核"
+  },
+  "opening": {
+    "payoff_within_chapters": 3,
+    "required_beats": ["protagonist", "goal", "promise", "first_progress"]
+  },
+  "chapter": {
+    "min_words": 800,
+    "max_words": 1500
+  },
+  "style_notes": {
+    "note": "平台文风与读者口味。来源:头条收稿题材清单(2026-10-03)+ 平台品类分析 —— 属推断,建议按平台实际榜单校准",
+    "readers": "女频凶猛:狼人 / 黑帮言情 / 契约婚姻;男频收系统流与异能;可邮件投稿试水",
+    "prose": [
+      "移动端阅读 → 短段落、高对白密度",
+      "情绪张力靠关系压迫感:权力不对等要在开篇就立起来",
+      "场景少而集中,少用大段背景交代",
+      "每章末留关系转折型钩子(谁掌握主动权变了)"
+    ],
+    "pacing": "与 GoodNovel 同口径(卡点第 6-8 章),但题材更偏暗黑关系向,转折可以更狠",
+    "review_tolerance": "占有/强制类桥段常见;但涉黑与暴力需写成后果而非过程"
+  },
+  "title_style": [
+    "素人姓名 + 身份反差",
+    "强冲突短语"
+  ],
+  "banned": [
+    "直译四字成语",
+    "中式称谓无解释"
+  ]
+}

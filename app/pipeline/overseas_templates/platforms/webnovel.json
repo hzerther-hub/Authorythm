@@ -1,0 +1,64 @@
+{
+  "id": "webnovel",
+  "name": "Webnovel",
+  "name_zh": "Webnovel(腾讯阅文)",
+  "source": "二手来源:头条《副业赚钱海外网文投稿全攻略》(2026-05-14,原「尽见商业研究局/大鹏」)—— 需官方页复核",
+  "source_verified": false,
+  "signing": {
+    "mode": "invite",
+    "min_words_for_signing": null,
+    "review_days": null,
+    "note": "邀约制,门槛高;面向已有成绩的老作者"
+  },
+  "updates": {
+    "daily_words": 1500,
+    "monthly_words": null,
+    "min_days_per_month": null,
+    "note": "日更 1500 字"
+  },
+  "rewards": {
+    "signing_bonus_usd": null,
+    "attendance_usd": 200,
+    "completion_tiers": []
+  },
+  "paywall": {
+    "free_chapters": null,
+    "paywall_chapter_range": null,
+    "hook_types": [
+      "unfinished_action",
+      "evidence_changes_hand",
+      "relationship_turns",
+      "risk_becomes_deadline",
+      "costly_dilemma"
+    ],
+    "note": "二手来源未给卡点章节区间;留空则本项目不做 R7 检查"
+  },
+  "opening": {
+    "payoff_within_chapters": 3,
+    "required_beats": ["protagonist", "goal", "promise", "first_progress"]
+  },
+  "chapter": {
+    "min_words": 800,
+    "max_words": 1500
+  },
+  "style_notes": {
+    "note": "平台文风与读者口味。来源:平台对比表(2026-05-14)+ 品类分析 —— 属推断,建议按平台实际榜单校准",
+    "readers": "男频占比高:系统流 / 魔法 / 异世界 / 星际;也收女频,邀约制面向有成绩的老作者",
+    "prose": [
+      "日更 1500 字 → 章节更短、节奏更密,单章必须有事发生",
+      "系统流读者吃「任务—奖励」闭环:每章末要有可结算的收益反馈",
+      "等级/技能/数值描写是卖点,可以写得具体",
+      "开篇前 3 章要把金手指(系统/能力)的规则讲清楚"
+    ],
+    "pacing": "更新快 → 读者习惯高频追更,断章点必须准,不能水",
+    "review_tolerance": "系统面板/数值/升级描写基本无限制;暴力与情色仍按主流平台尺度收敛"
+  },
+  "title_style": [
+    "素人姓名 + 身份反差",
+    "强冲突短语"
+  ],
+  "banned": [
+    "直译四字成语",
+    "中式称谓无解释"
+  ]
+}

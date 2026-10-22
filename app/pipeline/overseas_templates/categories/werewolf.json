@@ -1,0 +1,61 @@
+{
+  "id": "werewolf",
+  "name": "Werewolf Romance",
+  "name_zh": "狼人文 / ABO",
+  "source": "头条《海外狼人文怎么写?》(2026-10-22) + 头条收稿题材清单(2026-10-03:「狼人(重生/阿尔法拒绝露娜)」)+ 海外品类分析",
+  "pov_hint": "first",
+  "required_elements": [
+    "alpha_luna_pairing",
+    "pack_hierarchy",
+    "mate_bond",
+    "territory_conflict"
+  ],
+  "tropes": [
+    "fated_mate",
+    "rejecting_mate",
+    "mate_mark",
+    "heat_cycle",
+    "forbidden_relationship",
+    "mate_bond_awakening"
+  ],
+  "glossary_seed": {
+    "Alpha": "Alpha",
+    "Beta": "Beta",
+    "Omega": "Omega",
+    "fated mate": "fated mate",
+    "标记": "mate mark",
+    "发情期": "heat cycle",
+    "狼群": "pack",
+    "阿尔法": "Alpha",
+    "欧米伽": "Omega",
+    "命定伴侣": "fated mate",
+    "结契": "mate bond"
+  },
+  "payoff_keywords": [
+    "mate",
+    "Alpha",
+    "Alpha",
+    "pack",
+    "mark",
+    "bond",
+    "fated",
+    "claim",
+    "rejected"
+  ],
+  "task_reward": {
+    "required": false,
+    "markers": [],
+    "note": "女频品类不强制「任务—奖励」闭环(那是男频系统流的要求)"
+  },
+  "banned": [
+    "修仙等级体系直接直译",
+    "中式亲属称谓无解释",
+    "中文单位(斤/两/块钱)",
+    "只写神通不写升级过程",
+    "只写世界观不给设定参与人物命运"
+  ],
+  "craft_notes": [
+    "升级回答的是「他变强了多少」,成长回答的是「他变成了什么样的人」——狼人文的升级必须由情感承载(生存压力/师徒情/人物选择),不能只写成技能展示",
+    "只写成仙过程会退化成升级打卡;把情感承压写进同一场景"
+  ]
+}

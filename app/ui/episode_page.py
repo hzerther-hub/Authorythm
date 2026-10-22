@@ -1330,6 +1330,13 @@ class EpisodePage(QWidget):
         self.comic_outline_btn.setToolTip(tr("ai_full_comic_from_outline_tip"))
         self.comic_outline_btn.clicked.connect(self._comic_from_outline)
         row.addWidget(self.comic_outline_btn)
+        # 海外题材改写 —— 把中文原文改成 GoodNovel/Dreame/Webnovel 的英文短篇网文
+        # (诊断 → 术语表 → 改写 → 质检,全在弹窗里)
+        self.overseas_btn = QPushButton(tr("overseas_btn"))
+        W.set_icon(self.overseas_btn, "globe")
+        self.overseas_btn.setToolTip(tr("overseas_btn_tip"))
+        self.overseas_btn.clicked.connect(self._overseas_rewrite)
+        row.addWidget(self.overseas_btn)
         self.review_badge = QPushButton("")
         self.review_badge.setToolTip(tr("review_open_hint"))
         self.review_badge.clicked.connect(self._show_review_detail)
@@ -1974,6 +1981,32 @@ class EpisodePage(QWidget):
 
         TASKMGR.submit("comic", job, done, episode_id=self.episode_id)
         info("已提交:先扩剧本,再出整话 — 任务面板看进度")
+
+    def _overseas_rewrite(self):
+        """海外题材改写入口:中文原文 → 目标平台(GoodNovel/Dreame/Webnovel)英文短篇网文。
+
+        弹窗里四步:诊断 → 术语表 → 改写 → 质检。
+        **不覆盖中文原稿** —— 改写稿只在弹窗里显示,`episodes.content` 一个字不动。
+        """
+        from .overseas_dialog import OverseasDialog
+        from .toast import warn
+
+        if not self.episode_id:
+            warn(tr("overseas_no_project"))
+            return
+        dlg = OverseasDialog(self, drama_id=self.drama_id,
+                             episode_id=self.episode_id,
+                             text_config_id=self._cfg_for("text"))
+        # 预填本集正文:小说项目走 content,短剧项目走 script_content
+        ep = getattr(self, "_ep", None) or {}
+        src = ""
+        try:
+            src = (ep.get("content") or "").strip() or (ep.get("script_content") or "").strip()
+        except AttributeError:
+            src = ""
+        if src:
+            dlg.set_source(src)
+        dlg.exec()
 
     def _cfg_for(self, service_type: str):
         """该类型服务当前下拉选中的**配置 id**(未选返回 None = 默认最高优先级)。

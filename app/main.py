@@ -60,6 +60,11 @@ def main() -> int:
     # 日志必须在 db.init_db 之后(QApplication 之前),才能读 app_settings.log_level
     setup_logging()
     log = get_logger("app.main")
+    # 海外题材改写的领域规则库(平台规格/品类套路/语言层/叙事层)同样落到用户数据目录,
+    # 首次启动播种一次;只补缺失,不覆盖用户自己改过的规则文件。
+    # 放在 setup_logging 之后,播种日志才进得了日志文件。
+    from .pipeline.overseas_rules import seed_templates as seed_overseas_rules
+    seed_overseas_rules()
     _apply_proxy_preference()
     # 僵尸任务看门狗:启动清理只跑一次,运行期新生的孤儿无人回收,界面会永远
     # 停在「生成中」(对齐参考项目 3e1a3f2)
