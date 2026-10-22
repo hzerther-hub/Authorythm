@@ -51,13 +51,12 @@ class OverseasDialog(QDialog):
         root = QVBoxLayout(self)
 
         # ── 头部 ──
+        # **不要在这里加自定义关闭按钮**:本对话框走原生标题栏(Windows 自带 X),
+        # 头部再加一个 X 就是右上角两个关闭按钮 —— 实测被用户当成「多了一个按钮」。
         head = QHBoxLayout()
         head.addWidget(W.icon_label("globe", 20))
         head.addWidget(W.h2(tr("overseas_dialog_title")))
         head.addStretch(1)
-        close_btn = W.svg_icon_btn("close", tr("close"), 24)
-        close_btn.clicked.connect(self.reject)
-        head.addWidget(close_btn)
         root.addLayout(head)
         root.addWidget(W.muted(tr("overseas_dialog_desc")))
 
