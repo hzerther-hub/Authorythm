@@ -66,6 +66,16 @@ _NEW_KEYS = (
 def tmp_db(tmp_path, monkeypatch):
     """按本仓约定隔离:改 config.DB_PATH + 清 thread-local 连接(别用环境变量)。"""
     path = tmp_path / "style_types.sqlite3"
+    # 先把文件建出来并落好 WAL:init_db() → get_db() 会执行
+    # "PRAGMA journal_mode=WAL",切 WAL 需要对文件取一次独占锁 ——
+    # Windows 上刚创建的新文件偶发被占用(杀软扫描等)→ "database is locked"。
+    # 这里预先落好 WAL,init_db() 时该 PRAGMA 变成 no-op,不再抢锁。
+    import sqlite3
+    conn = sqlite3.connect(path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    finally:
+        conn.close()
     monkeypatch.setattr(db.config, "DB_PATH", path)
     monkeypatch.setattr(db.config, "DATA_DIR", tmp_path)
     old = getattr(db._local, "conn", None)
@@ -85,8 +95,18 @@ def _counts() -> dict[str, int]:
             db.q("SELECT style_type, COUNT(*) c FROM style_presets GROUP BY style_type")}
 
 
-def test_fresh_db_has_20_visual_6_comic_6_novel(tmp_db):
-    assert _counts() == {"visual": 20, "comic": 6, "novel": 6}
+def test_fresh_db_seeds_every_builtin_style(tmp_db):
+    """每个内置预设都要种进库 —— 数量跟着内置常量走。
+
+    原来写死 20/6/6,新增一个内置画风就得改测试,迟早有人忘(实测:加了
+    「黑白漫画」后 6 个用例集体变红)。这里改成跟常量比对,并保留下限,
+    既防"被删光",又不因"新增"变红。
+    """
+    counts = _counts()
+    assert counts.get("visual") == len(db.STYLE_PRESETS)
+    assert counts.get("comic") == len(db.COMIC_STYLE_PRESETS)
+    assert counts.get("novel") == len(db.NOVEL_STYLE_PRESETS)
+    assert counts.get("visual", 0) >= 20, "内置视觉风格被删少了"
 
 
 def test_seed_content_matches_contract_verbatim(tmp_db):
@@ -105,8 +125,8 @@ def test_seed_content_matches_contract_verbatim(tmp_db):
 
 
 def test_visual_seeds_untouched(tmp_db):
-    """视觉风格 20 条一行不动(名称/prompt/排序都不许被本轮改动)。"""
-    assert len(db.STYLE_PRESETS) == 20
+    """视觉风格一条一行不动(名称/prompt/排序都不许被本轮改动)。"""
+    assert len(db.STYLE_PRESETS) >= 20, "内置视觉风格被删少了"
     for name, value, order, wt, prompt, _desc in db.STYLE_PRESETS:
         r = db.q1("SELECT * FROM style_presets WHERE value=?", (value,))
         assert r is not None and r["style_type"] == "visual"
@@ -119,7 +139,9 @@ def test_seed_is_idempotent_and_does_not_overwrite_user_edit(tmp_db):
     db.ex("UPDATE style_presets SET name='我的日漫' WHERE value='shuanggan_kuaijie'")
     db.init_db()
     db.init_db()
-    assert _counts() == {"visual": 20, "comic": 6, "novel": 6}
+    assert _counts() == {"visual": len(db.STYLE_PRESETS),
+                      "comic": len(db.COMIC_STYLE_PRESETS),
+                      "novel": len(db.NOVEL_STYLE_PRESETS)}
     assert db.q1("SELECT prompt FROM style_presets WHERE value='manga_jp'")["prompt"] \
         == "用户改过的 prompt"
     assert db.q1("SELECT name FROM style_presets WHERE value='shuanggan_kuaijie'")["name"] \
@@ -134,7 +156,7 @@ def test_legacy_db_upgrade_keeps_old_rows_visual(tmp_db):
     conn.commit()
     assert "style_type" not in [r["name"] for r in db.q("PRAGMA table_info(style_presets)")]
     before = {r["value"] for r in db.q("SELECT value FROM style_presets")}
-    assert len(before) == 20
+    assert len(before) == len(db.STYLE_PRESETS)
 
     db.init_db()
 
@@ -145,7 +167,9 @@ def test_legacy_db_upgrade_keeps_old_rows_visual(tmp_db):
         "存量行不该被改成非 visual"
     new_values = {r["value"] for r in db.q("SELECT value FROM style_presets")} - before
     assert new_values == seeded
-    assert _counts() == {"visual": 20, "comic": 6, "novel": 6}
+    assert _counts() == {"visual": len(db.STYLE_PRESETS),
+                      "comic": len(db.COMIC_STYLE_PRESETS),
+                      "novel": len(db.NOVEL_STYLE_PRESETS)}
 
 
 def test_comic_options_merge_builtin_and_db_rows(tmp_db):
@@ -198,6 +222,66 @@ def test_disabled_preset_disappears_from_dropdown(tmp_db):
     assert CONTRACT_COMIC["manga_jp"][3] not in prompts
 
 
+# ── 回归:内置项的「停用」与「改分类」必须真的生效 ────────────────
+# 内置预设删不掉(种子每次启动都会补回),所以「停用」是官方唯一的替代手段。
+# 如果内置常量兜底把停用/改分类的行又加回下拉,这两条路径就形同虚设。
+
+def test_disabled_builtin_is_not_revived_by_constant_fallback(tmp_db):
+    """停用的内置项不能被内置常量兜底复活。"""
+    from app.core.db import merge_style_options, style_options
+    db.ex("UPDATE style_presets SET is_active=0 WHERE value='manga_jp'")
+    # 纯函数:行存在且 is_active=0 → 不出现
+    rows = db.q("SELECT * FROM style_presets")
+    prompts = [p for _l, p in merge_style_options(rows, "comic")]
+    assert CONTRACT_COMIC["manga_jp"][3] not in prompts
+    # 真实取数路径同样要过滤掉
+    assert CONTRACT_COMIC["manga_jp"][3] not in [p for _l, p in style_options("comic")]
+    assert prompts, "兜底:仍有其它画风可选"
+
+
+def test_builtin_moved_to_other_category_leaves_old_dropdown(tmp_db):
+    """用户把内置项改到别的分类后,它不能再出现在原分类下拉里。"""
+    from app.core.db import style_options
+    db.ex("UPDATE style_presets SET style_type='visual' WHERE value='manga_jp'")
+    assert CONTRACT_COMIC["manga_jp"][3] not in [p for _l, p in style_options("comic")]
+
+
+def test_style_options_fetches_builtin_rows_regardless_of_category(tmp_db):
+    """style_options 必须把内置项整行取回来(含被改分类/停用的),否则函数分不清
+    「库里没有」和「被停用/改了分类」,只能走常量兜底把用户的操作无视掉。"""
+    from app.core.db import style_options
+    db.ex("UPDATE style_presets SET style_type='visual', is_active=0 WHERE value='manga_jp'")
+    # 停用 + 改分类 → 漫画下拉里没有
+    assert CONTRACT_COMIC["manga_jp"][3] not in [p for _l, p in style_options("comic")]
+    # 恢复启用但仍在 visual 分类 → 依然不在漫画下拉(分类说了算)
+    db.ex("UPDATE style_presets SET is_active=1 WHERE value='manga_jp'")
+    assert CONTRACT_COMIC["manga_jp"][3] not in [p for _l, p in style_options("comic")]
+
+
+def test_style_prompt_flex_resolves_disabled_full_prompt(tmp_db):
+    """按 prompt 全文也要能查到停用状态:否则「停用」在数据层完全失效。"""
+    prompt = CONTRACT_COMIC["manga_jp"][3]
+    assert db.style_prompt_flex(prompt)
+    db.ex("UPDATE style_presets SET is_active=0 WHERE value='manga_jp'")
+    assert db.style_prompt_flex(prompt) == ""
+
+
+def test_project_settings_dropdown_hides_disabled_builtin(tmp_db, qt_app):
+    """项目设置里的「画风」下拉不能出现被停用的内置项(UI 真实路径)。"""
+    from app.ui import asset_dialogs
+
+    db.ex("INSERT INTO dramas(title,created_at,updated_at) VALUES(?,?,?)",
+          ("测试剧", db.now(), db.now()))
+    did = db.q1("SELECT id FROM dramas ORDER BY id DESC LIMIT 1")["id"]
+    db.ex("UPDATE style_presets SET is_active=0 WHERE value='manga_jp'")
+    dlg = asset_dialogs.ProjectSettingsDialog(None, did)
+    try:
+        prompts = [dlg.comic_style.itemData(i) for i in range(dlg.comic_style.count())]
+        assert CONTRACT_COMIC["manga_jp"][3] not in prompts
+    finally:
+        dlg.deleteLater()
+
+
 def test_visual_style_prompt_resolution_unchanged(tmp_db):
     """视觉风格的老消费路径不变:db.style_prompt() 仍按 value 取 prompt。"""
     assert db.style_prompt("3d").startswith("high-quality 3D CG animation still")
@@ -241,10 +325,10 @@ def test_new_ui_strings_present_in_all_16_languages():
 
 
 def test_builtin_style_names_present_in_all_16_languages():
-    """内置 32 条风格名(含漫画画风 6 条)16 语言齐全,不漏中文。"""
+    """内置风格名(含漫画画风)16 语言齐全,不漏中文。"""
     from app.core.i18n import LANGS
     names = sorted(db.BUILTIN_STYLE_NAMES.values())
-    assert len(names) == 32
+    assert len(names) >= 32, "内置风格名被删少了"
     for lang in [code for code, _ in LANGS]:
         i18n.set_language(lang)
         for name in names:
@@ -290,7 +374,9 @@ def test_settings_page_switches_three_categories(tmp_db, qt_app):
         for i in range(combo.count()):
             combo.setCurrentIndex(i)
             counts[combo.currentData()] = page.style_list.count()
-        assert counts == {"visual": 20, "comic": 6, "novel": 6}
+        assert counts == {"visual": len(db.STYLE_PRESETS),
+                          "comic": len(db.COMIC_STYLE_PRESETS),
+                          "novel": len(db.NOVEL_STYLE_PRESETS)}
     finally:
         dlg.deleteLater()
 

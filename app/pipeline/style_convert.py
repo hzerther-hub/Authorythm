@@ -162,6 +162,6 @@ def apply_result(row_id: int, table: str, new_path: str) -> str:
 
 def available_styles() -> list[tuple[str, str]]:
     """(value, 中文名) — 供 UI 下拉(只列视觉风格 style_type='visual')。"""
-    return [(r["value"], r["name"]) for r in
+    return [(r["value"], db.style_display_name(r["value"], r["name"])) for r in
             db.q("SELECT value, name FROM style_presets WHERE is_active=1 "
                  "AND style_type='visual' ORDER BY id")]

@@ -67,14 +67,26 @@ def test_skill_files_cover_all_languages():
     """SKILL 必须覆盖 script_rewriter 提示词覆盖的每一种语言。
 
     不写死"15 个":项目正在补第 16 种语言(zh-Hant),写死数量会把"合法新增语言"
-    误报成故障。改成**跨文件一致性** —— 少了某个语言的文件会报,加了新语言不会误报。
+    误报成故障。改成**跨文件一致性 + 与项目语言集合的关系**两条一起断言:
+    - 跨文件一致性:少了某个语言的文件会报,加了新语言不会误报;
+    - 与语言集合的关系:某个语言的 SKILL + 提示词**成对删掉**时,前一条会沉默,
+      这条兜住(少了语言 = 那个语言下照样会产出拍不出来的剧本)。
     """
+    from app.core.i18n import LANG_NAMES
+
     skill_langs = {_lang_of(f, "SKILL") for f in _skill_files()}
     prompt_langs = {_lang_of(f, "script_rewriter") for f in _prompt_files("script_rewriter")}
     assert skill_langs == prompt_langs, (
         f"SKILL 与 script_rewriter 提示词的语言集合不一致:"
         f"SKILL 缺 {sorted(prompt_langs - skill_langs)} / 多 {sorted(skill_langs - prompt_langs)}")
     assert "zh" in skill_langs, "SKILL 缺少中文基准文件(SKILL.md)"
+    # SKILL 目前不含 zh-Hant(繁体只覆盖提示词),语言集合必须与项目支持的语言对齐
+    assert skill_langs == set(LANG_NAMES) - {"zh-Hant"}, (
+        f"SKILL 的语言集合与项目支持的语言不一致:"
+        f"缺 {sorted(set(LANG_NAMES) - {'zh-Hant'} - skill_langs)} / "
+        f"多 {sorted(skill_langs - set(LANG_NAMES))}")
+    assert prompt_langs <= set(LANG_NAMES), (
+        f"提示词里出现了项目不支持的语言: {sorted(prompt_langs - set(LANG_NAMES))}")
 
 
 def test_skill_files_no_longer_allow_voice_over():

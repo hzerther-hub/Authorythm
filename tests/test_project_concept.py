@@ -43,6 +43,17 @@ class _FakeDB:
         self.executed.append((sql, args))
         return 1
 
+    # ── 预设显示名 / 下拉选项 ────────────────────────────────
+    # 设置页现在用 db.style_display_name(内置项本地化名)与 db.style_options
+    # (内置项的停用态、分类都要生效)。假库必须跟上,否则直接 AttributeError;
+    # 而且必须走 db. 属性(见 asset_dialogs 里的注释),不能绕开打桩读真库。
+    def style_display_name(self, value, name):
+        return name or ""
+
+    def style_options(self, style_type):
+        rows = [r for r in self.presets if r.get("style_type") == style_type]
+        return [(r["name"], r.get("prompt", "") or "") for r in rows]
+
     def touch(self, *a, **k):
         pass
 

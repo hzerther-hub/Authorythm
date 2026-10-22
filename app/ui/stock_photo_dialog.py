@@ -402,7 +402,7 @@ class StockPhotoDialog(QDialog):
     def _style_choices(self) -> list[tuple[str, str]]:
         """画风下拉的选项:全部启用的**视觉风格**预设(与制作台画面风格同源)。"""
         from ..core import db
-        return [(r["value"], tr(r["name"])) for r in
+        return [(r["value"], db.style_display_name(r["value"], r["name"])) for r in
                 db.q("SELECT value, name FROM style_presets "
                      "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]
 

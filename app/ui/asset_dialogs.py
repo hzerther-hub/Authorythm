@@ -153,12 +153,14 @@ class ProjectSettingsDialog(QDialog):
         # (用户 2026-10-21 定)——下拉里摆一个没有地方填的条目只会误导人以为能填
         # (参考 Web 版就踩了这个坑)。存量项目里手写过的文风仍保留:作为额外条目
         # 显示,保存时原样写回。
-        from ..core.db import merge_style_options
+        # 走 db.style_options 而不是自己查库:内置项的「停用 / 改过分类」必须生效,
+        # 自己 SQL 过滤会把停用的行漏掉,再被内置常量兜底复活。
+        # ⚠️ 必须写成 `db.style_options(...)` 而不是 `from ..core.db import style_options`:
+        # 后者把函数绑死在真模块上,测试里 monkeypatch 掉 db 句柄也拦不住它
+        # → 会去读**用户真实库**(AGENTS.md:测试不许碰真实库)。
         self.novel_style = QComboBox()
         self.novel_style.addItem(tr("未选(跟随默认)"), "")
-        _novel_rows = db.q("SELECT * FROM style_presets WHERE style_type='novel' "
-                           "AND is_active=1 ORDER BY sort_order, id")
-        for label, prompt in merge_style_options(_novel_rows, "novel"):
+        for label, prompt in db.style_options("novel"):
             self.novel_style.addItem(label, prompt)
         _cur = (d["novel_style"] or "").strip()
         if _cur and self.novel_style.findData(_cur) < 0:
@@ -177,9 +179,12 @@ class ProjectSettingsDialog(QDialog):
         self.style = QComboBox()
         # 只列视觉风格(style_type='visual'):漫画画风/写作风格是另外两类,
         # 混进来会让「视觉风格」选到漫画 prompt 当生图前缀。
+        # 内置条目用本地化名(按 value 认内置清单),用户自建显示 name 原样。
+        # 走 db.style_display_name(和上面 db.style_options 一样走 db 属性):测试用替身
+        # db 打桩整个模块,直接引函数会绕开打桩。
         for r in db.q("SELECT value,name FROM style_presets WHERE is_active=1 "
                       "AND style_type='visual' ORDER BY sort_order"):
-            self.style.addItem(tr(r["name"]), r["value"])
+            self.style.addItem(db.style_display_name(r["value"], r["name"]), r["value"])
         i = self.style.findData(d["style"])
         self.style.setCurrentIndex(i if i >= 0 else 0)
         _row_pair(tr("aspect_ratio"), self.aspect,
@@ -190,9 +195,8 @@ class ProjectSettingsDialog(QDialog):
         # value 一律是 prompt 全文(dramas.comic_style 存的就是全文)。
         self.comic_style = QComboBox()
         self.comic_style.addItem(tr("未选(跟随默认)"), "")
-        _comic_rows = db.q("SELECT * FROM style_presets WHERE style_type='comic' "
-                           "AND is_active=1 ORDER BY sort_order, id")
-        for label, prompt in merge_style_options(_comic_rows, "comic"):
+        # 同上:走 db.style_options,停用 / 改过分类的内置项不会被常量兜底复活
+        for label, prompt in db.style_options("comic"):
             self.comic_style.addItem(label, prompt)
         # **不提供「自定义」选项**(用户 2026-10-21 定):下拉里摆一个没有地方
         # 填的条目,只会让人以为能填(参考 Web 版就踩了这个坑 —— 选中「自定义」
@@ -1140,7 +1144,7 @@ class AssetDetailDialog(QDialog):
             return
         # 大图与图库预览同款:带「换画风」(可选风格下拉)。转换结果**写回该
         # 资产** image_url —— 资产预览与图库预览语义不同:这是资产自己的参考图。
-        styles = [(r["value"], tr(r["name"])) for r in
+        styles = [(r["value"], db.style_display_name(r["value"], r["name"])) for r in
                   db.q("SELECT value, name FROM style_presets "
                        "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]
         d_row = db.q1("SELECT drama_id FROM {} WHERE id=?".format(self.table),

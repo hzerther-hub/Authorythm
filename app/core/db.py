@@ -324,9 +324,12 @@ STYLE_PRESETS: list[dict] = [
     ("国风 2.5D", "guofeng", 7, "drama,novel,comic",
      "Chinese guofeng 2.5D illustration style, semi-realistic donghua-quality character art, elegant flowing line work, rich traditional Chinese aesthetic elements, layered ink-wash inspired atmospheric backgrounds, refined silk and fabric textures, soft luminous lighting with gentle haze, sophisticated muted jewel-tone palette, xianxia drama poster quality, consistent character design across shots, avoid flat cel shading, avoid western comic ink style, avoid photorealism, avoid plastic 3D look, avoid modern clothing and props unless specified",
      "国风动画/仙侠剧质感,2.5D 半写实"),
-("韩系网漫", "webtoon", 8, "drama,novel,comic",
+    ("韩系网漫", "webtoon", 8, "drama,novel,comic",
      "Korean webtoon manhwa style, clean digital painting with soft gradient shading, slim elegant character proportions, large expressive eyes with detailed highlights, soft glowing skin rendering, romantic dreamy lighting, modern pastel-to-vivid color palette, detailed fashion and fabric rendering, webtoon key visual quality, consistent character design across shots, avoid heavy black ink outlines, avoid halftone dots, avoid 3D render look, avoid watercolor paper texture, avoid chibi proportions",
      "韩国条漫/网漫精致上色风"),
+    ("黑白漫画", "noir", 9, "drama,novel,comic",
+     "black and white manga illustration, high-contrast monochrome ink work, dynamic hatching and cross-hatching shading, bold solid blacks with dramatic negative space, screentone gray gradation, expressive confident ink linework, cinematic noir lighting, professional manga page quality, consistent character design across shots, strictly no color, avoid grayscale blur smudging, avoid painterly soft edges, avoid photorealism, avoid 3D render look",
+     "黑白漫/ Noir 高对比墨水风"),
     ("治愈系", "healing", 100, "all",
      "healing lifestyle illustration style, soft warm diffused natural lighting, gentle low-saturation pastel palette of peach mint and cream, dreamy shallow depth of field with creamy bokeh, cozy intimate atmosphere, low-contrast filmic color grading with subtle warm glow, organic natural texture, consistent design across frames, avoid harsh shadows, avoid high saturation neon, avoid cyberpunk dark, avoid harsh black outlines, avoid photorealism",
      "治愈系生活插画,小红书/视频号生活方式类"),
@@ -727,6 +730,15 @@ def style_prompt_flex(raw: str, ethnicity: str = "", content_lang: str = "") -> 
     if not raw:
         return ""
     row = q1("SELECT prompt,is_active FROM style_presets WHERE value=?", (raw,))
+    if row is None:
+        # 新下拉写进 dramas.comic_style 的是 prompt 全文,不是 value ——
+        # 只按 value 查的话永远查不到行,is_active 那一支就是死代码,
+        # 「停用」在数据层完全失效(下拉里还在、选中还照样生效)。
+        # 按全文反查一次,并把范围限定在 comic/novel 两类:
+        # 视觉风格的 prompt 是生图片段,不参与画风解析。
+        row = q1("SELECT prompt,is_active FROM style_presets "
+                 "WHERE prompt=? AND style_type IN (?,?) LIMIT 1",
+                 (raw, STYLE_TYPE_COMIC, STYLE_TYPE_NOVEL))
     base = (row["prompt"] if row["is_active"] else "") if row else raw
     if not ethnicity:
         from ..pipeline.ethnicity import DEFAULT_ETHNICITY, LANG_TO_ETHNICITY
@@ -777,20 +789,35 @@ def _style_type_work_ok(work_type: str, style_type: str) -> bool:
     return style_type in wt
 
 
+def _builtin_presets(style_type: str) -> list[tuple]:
+    """该分类的内置常量清单(漫画画风 / 写作风格);视觉风格没有内置常量。"""
+    return {STYLE_TYPE_COMIC: COMIC_STYLE_PRESETS,
+            STYLE_TYPE_NOVEL: NOVEL_STYLE_PRESETS}.get(style_type, [])
+
+
+def _builtin_values(style_type: str) -> list[str]:
+    """该分类内置项的 value 列表。"""
+    return [row[1] for row in _builtin_presets(style_type)]
+
+
 def merge_style_options(rows, style_type: str) -> list[tuple[str, str]]:
     """(显示名, prompt 全文) —— 内置常量 + 库内该分类的行,按 prompt 全文去重。
 
     **纯函数,不碰数据库**:rows 由调用方查好传进来(UI 层用 db.q 查,便于测试替换
     db 句柄;pipeline 层用 style_options 一步到位)。
 
-    - 内置条目:库里有同名行就以库里的 prompt/启用态为准(用户在设置页改过
-      prompt 或停用它都算数);库里没有(被删了/还没初始化)才用内置常量兜底。
+    - 内置条目:库里有同名行就以库里的 prompt/启用态/分类为准(用户在设置页改过
+      prompt、停用过、或挪到别的分类都算数);库里真没有(老库还没初始化)才用内置常量兜底。
     - 库内自建条目:显示 name 原样,prompt 全文作为下拉的 value。
     - 去重按 prompt 全文:内置的 comic_watercolor 与库内那行 prompt 相同,只出现一次。
+
+    ⚠️ 「行存在但被停用」和「行存在但被改了分类」都不能落到内置常量兜底里:
+    兜底只用于「库里根本没有这一行」。否则:
+      - 停用的内置项被复活 → 「停用」这个唯一能替代删除的手段形同虚设;
+      - 改了分类的内置项同时出现在两个分类下拉里 → 分类字段对内置项不起作用。
     """
     from .i18n import tr
-    presets = {STYLE_TYPE_COMIC: COMIC_STYLE_PRESETS,
-               STYLE_TYPE_NOVEL: NOVEL_STYLE_PRESETS}.get(style_type, [])
+    presets = _builtin_presets(style_type)
     builtin_values = {row[1] for row in presets}
     by_value = {}
     for r in rows or []:
@@ -808,14 +835,17 @@ def merge_style_options(rows, style_type: str) -> list[tuple[str, str]]:
 
     for name, value, _order, _wt, prompt, _desc in presets:
         r = by_value.get(value)
-        if r is not None:
-            if not r.get("is_active", 1):
-                continue
-            if not _style_type_work_ok(r.get("work_type") or "", style_type):
-                continue
-            _push(style_display_name(value, r.get("name") or ""), r.get("prompt") or "")
-        else:
+        if r is None:
+            # 库里真的没有这一行 → 用内置常量兜底
             _push(tr(name), prompt)
+            continue
+        if not r.get("is_active", 1):
+            continue                                   # 停用 → 不出现在下拉
+        if (r.get("style_type") or STYLE_TYPE_VISUAL) != style_type:
+            continue                                   # 用户改了分类 → 不属于本类
+        if not _style_type_work_ok(r.get("work_type") or "", style_type):
+            continue
+        _push(style_display_name(value, r.get("name") or ""), r.get("prompt") or "")
     for value, r in by_value.items():
         if value in builtin_values:
             continue
@@ -834,6 +864,16 @@ def style_options(style_type: str) -> list[tuple[str, str]]:
                  (style_type,))
     except Exception:  # noqa: BLE001 —— 库还没建好(没跑 init_db)时只用内置常量
         rows = []
+    # 内置项的真实状态(启用态 / 分类)必须把整行取回来:
+    # 只按 style_type 过滤的话,用户停用过或改过分类的内置行查不到,
+    # merge_style_options 只能当成「库里没有」→ 走常量兜底 → 停用/改分类被无视。
+    builtin = _builtin_values(style_type)
+    if builtin:
+        ph = ",".join("?" * len(builtin))   # 占位符个数由内置常量决定,不是用户输入
+        try:
+            rows = list(rows) + q(f"SELECT * FROM style_presets WHERE value IN ({ph})", builtin)
+        except Exception:  # noqa: BLE001 —— 取不到就只用已查到的行
+            pass
     return merge_style_options(rows, style_type)
 
 

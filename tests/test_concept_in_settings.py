@@ -58,6 +58,17 @@ class _FakeDB:
         self.executed.append((sql, args))
         return 1
 
+    # ── 预设显示名 / 下拉选项(db.style_display_name / db.style_options)──
+    # 设置页的漫画画风、写作风格下拉现在走 db.style_options(内置项的停用态、
+    # 改分类都要生效),视觉风格走 db.style_display_name(内置项用本地化名)。
+    # 假库必须跟上,否则这里直接 AttributeError。
+    def style_display_name(self, value, name):
+        return name or ""
+
+    def style_options(self, style_type):
+        rows = [r for r in self.presets if r.get("style_type") == style_type]
+        return [(r["name"], r.get("prompt", "") or "") for r in rows]
+
     def touch(self, *a, **k):
         pass
 
