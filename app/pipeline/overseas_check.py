@@ -28,6 +28,13 @@ import re
 from dataclasses import dataclass
 
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+
+# CJK 三系的「一个字」要分别数:
+#   汉字 U+4E00-9FFF · 假名 U+3040-30FF(平/片假名)· 谚文 U+AC00-D7AF
+# 旧正则只认汉字,日文稿的字数就只算得到汉字那部分 ——「彼は彼女を見た」七个字里
+# 只有三个是汉字,字数直接砍掉一半以上,再按 1.8 折算就完全失真(实测 408 字的
+# 日文稿被算成 86 词,平台下限 800 一律误报「字数不足」)。
+_CJK_ALL = re.compile(r"[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]")
 # 全角标点里**只有这些**是中文独有的 —— “ ” ‘ ’ — … 在英文排版里是正规用法
 # (英文稿用弯引号是标准,不是翻译腔)。实测真实改写稿全是 “ ”，早期版本把它们
 # 当成中文标点报错,纯属误伤。
@@ -115,7 +122,36 @@ def _body(text: str) -> str:
     return _MD_HEADING.sub("", t)
 
 
-def _is_chinese(text: str) -> bool:
+# 书写系统 → 字数折算。平台给的章节字数区间(800-1500 词)是**按英文词数**标的,
+# 拿它去卡日文/泰文/阿拉伯文,必须先把字符数折算成可比的「词数」,否则:
+#   · 拉丁系:直接数词,1:1
+#   · CJK 系(中日韩):1 汉字 ≈ 1.8 个英文词(实测日文小说 1 字 ≈ 1.5-2 词)
+#   · 其它(泰/阿/印地):按空格分词,再对无空格书写的部分按字符折算
+CJK_LANGS = ("zh", "ja", "ko")
+_LATIN_WORD = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿĀ-ſ][A-Za-zÀ-ÖØ-öø-ÿĀ-ſ'’-]*")
+_UNSPLIT = re.compile(r"[^\s]{2,}")
+
+
+def script_of(lang: str | None) -> str:
+    """内容语言的书写系统:latin / cjk / other。判不出来按 latin 处理(最保守)。"""
+    code = (lang or "").lower()
+    if code.startswith("zh") or code.startswith("ja") or code.startswith("ko"):
+        return "cjk"
+    return "latin"
+
+
+def _is_chinese(text: str, lang: str | None = None) -> bool:
+    """是不是**中文**(不是「是不是 CJK」)。
+
+    旧实现用「CJK 占比 > 0.3」判断,把日文/韩文一并算成中文。后果是双向的:
+      · 日文稿被 `check_translationese` / `check_chinese_residue` 当成中文原稿直接短路
+        → R10 翻译腔检查静默跳过 → **假绿**;
+      · 泰文/阿拉伯文既不是中文又几乎不含拉丁字母 → 字数恒为 0 →
+        R6 每章误报「章节字数 0 低于平台下限 800」→ **假红**。
+    传了 lang 就按语种判;没传时退回旧的 CJK 占比启发式。
+    """
+    if lang:
+        return (lang or "").lower().startswith("zh")
     letters = sum(1 for ch in text if ch.isalpha())
     if not letters:
         return False
@@ -123,11 +159,18 @@ def _is_chinese(text: str) -> bool:
     return cjk / letters > 0.3
 
 
-def _count_words(text: str) -> int:
-    """英文按词数,中文按汉字数。"""
-    if _is_chinese(text):
-        return sum(1 for ch in text if _CJK.match(ch))
-    return len(re.findall(r"[A-Za-z][A-Za-z'’-]*", text))
+def _count_words(text: str, lang: str | None = None) -> int:
+    """按目标语言的书写系统折算「词数」,与平台规格(按英文词数标)可比。"""
+    kind = script_of(lang) if lang else ("cjk" if _is_chinese(text) else "latin")
+    if kind == "cjk":
+        return int(sum(1 for ch in text if _CJK_ALL.match(ch)) / 1.8)
+    words = len(_LATIN_WORD.findall(text))
+    if lang:
+        # 泰/阿/印地等:空格分词数不到总量的一半,说明主体是非拉丁脚本,
+        # 补一段「无空格串按 3 字符≈1 词」折算,否则字数会被严重低估。
+        chars = sum(1 for ch in text if not ch.isspace() and not _LATIN_WORD.match(ch))
+        words += int(chars / 3)
+    return words
 
 
 def _sentences(text: str) -> list[str]:
@@ -175,13 +218,32 @@ def _glossary_entries(glossary) -> list[tuple[str, str]]:
 # ---------------------------------------------------------------- 单条规则
 
 def check_self_observation(content: str, *, patterns_zh=None,
-                           patterns_en=None) -> list[Issue]:
-    """R1:第一视角不能写自己看不见的脸/表情/眼睛颜色。"""
+                           patterns_en=None, patterns=None,
+                           lang=None) -> list[Issue]:
+    """R1:第一视角不能写自己看不见的脸/表情/眼睛颜色。
+
+    `patterns` 是**语言无关**的入口:语言规则包可以直接给一个正则列表,
+    不必再按 `.en` / `.zh` 这类硬编码 key 分类 —— 那是给英语和源文两种语言
+    开的特例,扩到 14 个语言包时必然漏(漏了不报错,只是静默套用英语正则
+    去匹配日文,永远匹配不上 → 假绿)。
+    """
     body = _body(content)
-    pats = list(_SELF_OBS_ZH if patterns_zh is None else patterns_zh)
-    pats += list(_SELF_OBS_EN if patterns_en is None else patterns_en)
-    weak = list(_SELF_OBS_ZH_WEAK)
-    # 弱模式(「我的表情」这类可能合理的)也要被检出,只是降级为提示
+    if patterns is not None:
+        pats = list(patterns)
+    else:
+        pats = list(_SELF_OBS_ZH if patterns_zh is None else patterns_zh)
+        pats += list(_SELF_OBS_EN if patterns_en is None else patterns_en)
+    if not pats:
+        # 语言包没给模式:宁可不报,也不拿英语正则去套非英语正文(AGENTS.md:
+        # 宁可漏报不误报)。
+        return []
+    # 弱模式(「我的表情」这类可能合理的)也要被检出,只是降级为提示。
+    # 只有在**明确是非中文目标语种**时才剔除 —— 目标语种是日/法/泰时,
+    # 中文弱模式匹配不到任何东西,留着无害;反过来漏了会让中文稿少检一条。
+    if lang and not (lang or "").lower().startswith("zh"):
+        weak: list = []
+    else:
+        weak = list(_SELF_OBS_ZH_WEAK)
     pats += [w for w in weak if w not in pats]
     issues: list[Issue] = []
     seen: set[str] = set()
@@ -202,7 +264,7 @@ def check_self_observation(content: str, *, patterns_zh=None,
     return issues
 
 
-def check_passivity(content: str, *, run_length: int = 3) -> list[Issue]:
+def check_passivity(content: str, *, run_length: int = 3, lang=None) -> list[Issue]:
     """R2:连续被动链(看到→感觉→反应→等待)。"""
     body = _body(content)
     sents = _sentences(body)
@@ -210,7 +272,7 @@ def check_passivity(content: str, *, run_length: int = 3) -> list[Issue]:
         return []
     flags: list[bool] = []
     for s in sents:
-        if _is_chinese(s):
+        if _is_chinese(s, lang):
             is_p = bool(re.search(_PERCEPTION_ZH, s) or re.search(_REACTION_ZH, s))
             has_a = bool(re.search(_ACTION_ZH, s))
         else:
@@ -234,7 +296,8 @@ def check_passivity(content: str, *, run_length: int = 3) -> list[Issue]:
     return issues[:3]
 
 
-def check_redundancy(content: str, *, ngram: int = 5, min_hits: int = 3) -> list[Issue]:
+def check_redundancy(content: str, *, ngram: int = 5, min_hits: int = 3,
+                   lang=None) -> list[Issue]:
     """R3:相邻重复句 + 高频重复片段。"""
     body = _body(content)
     issues: list[Issue] = []
@@ -243,7 +306,7 @@ def check_redundancy(content: str, *, ngram: int = 5, min_hits: int = 3) -> list
         a, b = sents[i], sents[i + 1]
         if len(a) >= 20 and a == b:
             issues.append(Issue("R3", "warn", "相邻两句内容完全重复", a[:80]))
-    if _is_chinese(body):
+    if _is_chinese(body, lang):
         chars = [c for c in body if not c.isspace()]
         n = 6
         if len(chars) >= n * min_hits:
@@ -269,13 +332,14 @@ def check_redundancy(content: str, *, ngram: int = 5, min_hits: int = 3) -> list
     return issues[:3]
 
 
-def check_chinese_residue(content: str, forbid: list[str] | None = None) -> list[Issue]:
+def check_chinese_residue(content: str, forbid: list[str] | None = None,
+                          lang=None) -> list[Issue]:
     """R4:英文稿里的汉字/全角标点(漏译检测)。中文原稿不做此项。
 
     `forbid` 传语言规则文件里的「全角禁用集」,为空则用内置默认。
     """
     body = _body(content)
-    if not body.strip() or _is_chinese(body):
+    if not body.strip() or _is_chinese(body, lang):
         return []
     chars = set(forbid) if forbid else set(_CJK_PUNCT)
     issues: list[Issue] = []
@@ -337,12 +401,13 @@ def check_glossary_consistency(content: str, glossary) -> list[Issue]:
     return issues[:8]
 
 
-def check_chapter_words(content: str, bounds: tuple[int, int] | None) -> list[Issue]:
+def check_chapter_words(content: str, bounds: tuple[int, int] | None,
+                         lang=None) -> list[Issue]:
     """R6:章节字数越界。"""
     if not bounds:
         return []
     lo, hi = bounds
-    n = _count_words(_body(content))
+    n = _count_words(_body(content), lang)
     if n < lo:
         return [Issue("R6", "warn", f"章节字数 {n} 低于平台下限 {lo}", f"还差 {lo - n}")]
     if n > hi:
@@ -392,17 +457,24 @@ def check_cliffhanger(content: str, markers) -> list[Issue]:
                   "章末未检出钩子标记(开放式问题/倒计时/反转/未完成动作)", last[:100])]
 
 
-def check_translationese(content: str, cfg: dict | None = None) -> list[Issue]:
+def check_translationese(content: str, cfg: dict | None = None,
+                          lang=None) -> list[Issue]:
     """R10:翻译腔(超长句 / 被动句占比 / 填充词过多)。"""
     cfg = cfg or {}
     max_words = int(cfg.get("max_sentence_words", 35))
     max_ratio = float(cfg.get("max_passive_ratio", 0.3))
     max_filler = int(cfg.get("max_filler_total", 5))
     filler_words = [str(w).lower() for w in cfg.get("filler_words") or []]
-    passive_re = (cfg.get("passive_pattern")
-                  or r"\b(?:was|were|is|are|been|being|be)\s+\w+(?:ed|en)\b")
+    passive_raw = cfg.get("passive_pattern")
+    # 语言包把 passive_pattern 显式写成空串 = 「该语言的翻译腔阈值尚未校准」。
+    # 这时**不能**回落到英语默认正则 —— 那条正则在泰文/阿拉伯文里永远匹配不到,
+    # R10 会静默全过,用户看到「质检通过」其实什么都没检(假绿)。
+    # 正确做法是跳过 R10:宁可漏报不误报。
+    if passive_raw == "":
+        return []
+    passive_re = passive_raw or r"\b(?:was|were|is|are|been|being|be)\s+\w+(?:ed|en)\b"
     body = _body(content)
-    if not body.strip() or _is_chinese(body):
+    if not body.strip() or _is_chinese(body, lang):
         return []
     issues: list[Issue] = []
     sents = _sentences(body)
@@ -458,35 +530,47 @@ def run_checks(content: str, *,
                platform: dict | None = None,
                category: dict | None = None,
                language: dict | None = None,
+               lang_id: str | None = None,
                paywall_chapters=None) -> list[Issue]:
     """跑全部 applicable 的规则,返回问题清单(空=通过)。
 
     platform / category / language 直接传规则 dict,便于测试与复用;
     要按 id 取的话用 `check_with_ids()`。
+
+    lang_id(如 "fr-FR")决定书写系统:字数折算、「是不是中文」的判定都依赖它。
+    漏传会让日/韩稿被当成中文稿跳过 R10(假绿),泰/阿/印地稿字数算成 0(假红)。
     """
     platform = platform or {}
     category = category or {}
     language = language or {}
+    lang_id = lang_id or (language.get("id") or None)
 
     issues: list[Issue] = []
-    # 语言规则文件里的模式优先(用户可编辑);文件没给才用内置默认
+    # 语言规则文件里的模式优先(用户可编辑)。**只认语言无关的 `patterns` 列表**,
+    # 外加向后兼容的 `.en` / `.zh`;两者都没有就**不跑 R1** —— 拿英语正则去套
+    # 日文正文永远匹配不上,报「全过」比报错更危险(用户会以为质检真的过了)。
     sob = language.get("self_observation_forbidden") or {}
+    pats: list | None = None
     if isinstance(sob, dict):
-        issues += check_self_observation(content,
-                                        patterns_zh=sob.get("zh") or None,
-                                        patterns_en=sob.get("en") or None)
+        pats = sob.get("patterns")
+        if pats is None and (sob.get("en") or sob.get("zh")):
+            pats = list(sob.get("en") or []) + list(sob.get("zh") or [])
+        issues += check_self_observation(content, patterns=pats, lang=lang_id)
+    elif isinstance(sob, list):
+        issues += check_self_observation(content, patterns=sob, lang=lang_id)
     else:
-        issues += check_self_observation(content)
-    issues += check_passivity(content)
-    issues += check_redundancy(content)
+        issues += check_self_observation(content, lang=lang_id)
+    issues += check_passivity(content, lang=lang_id)
+    issues += check_redundancy(content, lang=lang_id)
     issues += check_chinese_residue(
-        content, forbid=(language.get("punctuation") or {}).get("forbid_fullwidth"))
+        content, forbid=(language.get("punctuation") or {}).get("forbid_fullwidth"),
+        lang=lang_id)
     issues += check_glossary_consistency(content, glossary)
 
     ch = platform.get("chapter") or {}
     lo, hi = ch.get("min_words"), ch.get("max_words")
     bounds = (lo, hi) if isinstance(lo, int) and isinstance(hi, int) else None
-    issues += check_chapter_words(content, bounds)
+    issues += check_chapter_words(content, bounds, lang=lang_id)
 
     pay = platform.get("paywall") or {}
     rng = pay.get("paywall_chapter_range")
@@ -499,17 +583,24 @@ def run_checks(content: str, *,
     issues += check_opening_payoff(content, category.get("payoff_keywords"),
                                    opening.get("payoff_within_chapters"), chapter_no)
 
+    # 章末钩子标记:认 `patterns` 列表 / 任意语言 key 的 dict / 裸列表。
+    # 仍认 `.en` + `.zh` 是为了兼容已发布的 en-US.json。
     markers: list[str] = []
     lang_markers = (language.get("hook_markers") or {})
     if isinstance(lang_markers, dict):
-        markers = list(lang_markers.get("en") or []) + list(lang_markers.get("zh") or [])
+        pats_h = lang_markers.get("patterns")
+        if isinstance(pats_h, list):
+            markers = list(pats_h)
+        else:
+            for k, v in lang_markers.items():
+                if k == "note" or not isinstance(v, list):
+                    continue
+                markers += list(v)
     elif isinstance(lang_markers, list):
         markers = list(lang_markers)
-    if not markers:
-        markers = list(_HOOK_MARKERS_DEFAULT)
     issues += check_cliffhanger(content, markers)
 
-    issues += check_translationese(content, language.get("translationese"))
+    issues += check_translationese(content, language.get("translationese"), lang=lang_id)
     issues += check_task_reward(content, category.get("task_reward"))
     return issues
 
@@ -523,6 +614,7 @@ def check_with_ids(content: str, *, platform_id: str, category_id: str,
         platform=overseas_rules.get_platform(platform_id),
         category=overseas_rules.get_category(category_id),
         language=overseas_rules.get_language(target_lang),
+        lang_id=target_lang,
         **kwargs)
 
 

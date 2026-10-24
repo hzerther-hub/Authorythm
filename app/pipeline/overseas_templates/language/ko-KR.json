@@ -1,0 +1,66 @@
+{
+  "id": "ko-KR",
+  "name": "Korean",
+  "name_zh": "韩语",
+  "full_rules": false,
+  "depth_note": "**通用规则包**:只含本地化目标与标点提示。缺少该语言的称呼表 / 常见误译表 / 委婉层级 / 钩子正则,质检只跑语言无关项(R3 重复、R5 术语一致、R6 章节字数、R7 付费卡点)。",
+  "source": "本仓骨架包(仅本地化目标与标点);该语言的本地化规则尚未录入,需人工补充后填 full_rules=true",
+  "localization_goal": "让韩语母语读者自然阅读 —— 敬语(존댓말/반말)层级必须跟人物关系一致,这是韩语读者最先察觉的翻译痕迹",
+  "address": {
+    "note": "",
+    "map": {}
+  },
+  "filler": {
+    "note": "",
+    "avoid": []
+  },
+  "euphemism": {
+    "note": "",
+    "levels": [],
+    "advice": ""
+  },
+  "common_mistranslations": [],
+  "punctuation": {
+    "note": "韩语用全角标点与谚文,属目标语言正常写法",
+    "forbid_fullwidth": [
+      "，",
+      "。",
+      "、",
+      "；",
+      "：",
+      "！",
+      "？",
+      "（",
+      "）",
+      "【",
+      "】",
+      "《",
+      "》",
+      "〈",
+      "〉",
+      "「",
+      "」",
+      "～"
+    ]
+  },
+  "money_time": {
+    "note": "",
+    "examples": []
+  },
+  "self_observation_forbidden": {
+    "note": "该语言的第一视角自指观察正则尚未录入",
+    "patterns": []
+  },
+  "hook_markers": {
+    "note": "该语言的章末钩子标记尚未录入",
+    "patterns": []
+  },
+  "translationese": {
+    "note": "该语言的翻译腔阈值尚未校准;沿用英语默认值,仅供参考",
+    "max_sentence_words": 35,
+    "max_passive_ratio": 0.3,
+    "max_filler_total": 5,
+    "filler_words": [],
+    "passive_pattern": ""
+  }
+}

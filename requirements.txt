@@ -8,3 +8,8 @@ cryptography>=41.0
 # app/pipeline/img_adjust.py 顶层 import numpy;cv2(OpenCV)同样是可选增强,
 # 缺 numpy 时图片调整/批量调参/去水印等功能会 ImportError
 numpy>=1.26
+# 内容语言选「繁体中文」时的简→繁转换(app/core/zh_convert.py,收口在 runner.run_agent
+# 出口)。用 OpenCC 而不是自带字表:逐字替换分不清 發/髮、後/后、軟/軟,
+# 词组级消歧才能把「头发」译成「頭髮」、「软件」转成台湾用词「軟體」。
+# 纯 Python 无需编译;缺装时 zh_convert 退化成原样返回,不会让 App 起不来。
+opencc-python-reimplemented>=0.1.7

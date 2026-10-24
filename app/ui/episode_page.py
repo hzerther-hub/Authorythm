@@ -34,6 +34,7 @@ from ..core.theme import (SLATE_PIPE_QSS, SLATE_ASSET_QSS, SLATE_PAPER, SLATE_BA
 from ..pipeline import comic as comic_pipe
 from ..pipeline import extractor as extract_pipe
 from ..pipeline import merge as merge_pipe
+from ..pipeline.novel import strip_episode_prefix
 from ..pipeline import prompts_gen
 from ..pipeline import rewriter
 from ..pipeline import storyboard as sb_pipe
@@ -644,14 +645,11 @@ def _page_title(drama, ep) -> str:
     # ep 可能是 sqlite3.Row(无 .get),统一转 dict 取值
     ep = dict(ep) if not isinstance(ep, dict) else ep
     name = (ep.get("title") or "").strip()
-    # 去掉标题里的「第 N 集」前缀,避免与前面已渲染的集号重复。
-    # 新建剧集时 title 就是 tr('episode_n').format(n),**数字两侧带空格**(「第 1 集」),
-    # 而章节名又常写成不带空格的「第1章 标题」——两种都认,否则标题会变成
-    # 「项目 · 第 1 集 · 第 1 集」(用户截图反馈)。用正则而非 startshead 是因为
-    # 固定串比对容不下空格差异,以前正是这里失配导致重复。
-    m = re.match(r"^第\s*%d\s*集[\s　]*" % int(ep["episode_number"]), name)
-    if m:
-        name = name[m.end():].strip()
+    # 去掉标题里的集号前缀,避免与前面已渲染的集号重复。
+    # 剥除规则集中在 novel.strip_episode_prefix:它认全部历史写法(带/不带空格的
+    # 「第N集」、以及各界面语言的 episode_n 形态),而这里是**严格**模式 ——
+    # 集号对不上时不剥(第 5 集不该吃掉「第 2 集 倒叙」的前缀)。
+    name = strip_episode_prefix(name, ep["episode_number"])
     if name:
         parts.append(name)
     return " · ".join(parts)
@@ -1556,7 +1554,7 @@ class EpisodePage(QWidget):
 
         def job(tid):
             from ..pipeline import novel as novel_pipe
-            return novel_pipe.gen_chapter_title(self.episode_id)
+            return novel_pipe.gen_chapter_title(self.episode_id, lang=self._drama_lang)
 
         def done(tid, result, error):
             if error:
@@ -1566,7 +1564,10 @@ class EpisodePage(QWidget):
             ok((tr("已提取章节名:") if src == "content" else tr("章节名已写入:")) + str(name))
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
             self.title.setText(_page_title(self._drama, self._ep))
-            self.chapter_name_btn.setVisible(False)
+            # 按实际标题状态决定按钮显隐:抽取出空标题时直接隐藏会把用户
+            # 锁死在「无法补标题」的状态(之前是无条件 setVisible(False))。
+            self.chapter_name_btn.setVisible(
+                _chapter_name_missing(dict(self._ep) if self._ep else {}))
 
         TASKMGR.submit("novel_title", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
 
@@ -1763,7 +1764,7 @@ class EpisodePage(QWidget):
         self._novel_in_flight = True
         self.novel_btn.busy(tr("生成中"))
         self._set_raw_row_enabled(False)
-        lang = get_setting("content_language", "zh")
+        lang = self._drama_lang
         worker = StreamWorker(novel_pipe.chapter_prompt(self.episode_id),
                               system=load_prompt("novel_writer", lang),
                               config_id=snap_text_cfg,
@@ -2478,7 +2479,7 @@ class EpisodePage(QWidget):
         prompt = (rewriter.rewrite_prompt(self.episode_id, style)
                   if hasattr(rewriter, "rewrite_prompt")
                   else novel_pipe.chapter_prompt(self.episode_id))
-        lang = get_setting("content_language", "zh")
+        lang = self._drama_lang
         worker = StreamWorker(prompt, system=load_prompt("script_rewriter", lang),
                               config_id=self.text_model.currentData(),
                               temperature=0.6, max_tokens=None, parent=self)

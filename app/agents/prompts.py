@@ -14,6 +14,22 @@ from ..core.i18n import LANG_OUTPUT_NAME
 
 LANGUAGE_SUFFIX = "\n\n## Output language requirement\nYou MUST write ALL your output (narrative text, JSON string values) in {lang}. Never answer in another language."
 
+
+def language_suffix(lang: str | None) -> str:
+    """输出语言硬约束片段;简体中文或未知语种返回空串。
+
+    提成公开函数是因为**传了显式 `system=` 的调用点拿不到它**:
+    `load_prompt` 只在走默认分支时拼这段,而这些调用点为了绕开 Mastra Agent
+    的工具调用文本必须整体覆盖 system —— 拼上去的提示词语言指令就此消失,
+    用户消息里若有中文硬编码(比如「不超过 12 个汉字」)就会把模型拽回中文。
+    踩过的坑:`storyboard.video_prompt`、`character_spec` 外观描述、
+    `project_concept` 项目概念都出现过 system 说日语、正文却是中文的情况。
+    所以凡是 `run_agent(..., system=...)` 的地方都要显式补这一段。
+    """
+    if not lang or lang == "zh" or lang not in LANG_OUTPUT_NAME:
+        return ""
+    return LANGUAGE_SUFFIX.format(lang=LANG_OUTPUT_NAME[lang])
+
 DEFAULT_PROMPTS: dict[str, str] = {
     "script_rewriter": """你是专业编剧,擅长将小说改编为短剧剧本。
 
@@ -371,6 +387,14 @@ def load_prompt(agent: str, lang: str = "zh", with_skills: bool = True) -> str:
     if lang != "zh" and lang in LANG_OUTPUT_NAME:
         base += LANGUAGE_SUFFIX.format(lang=LANG_OUTPUT_NAME[lang])
     return base
+
+
+def with_language_suffix(system: str, lang: str | None) -> str:
+    """给整体覆盖过的 system 补上输出语言约束(见 `language_suffix` 的坑)。"""
+    sfx = language_suffix(lang)
+    if not sfx or (system or "").endswith(sfx):
+        return system
+    return (system or "") + sfx
 
 
 def save_prompt(agent: str, lang: str, content: str) -> None:

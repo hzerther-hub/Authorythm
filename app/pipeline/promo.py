@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 
 PLATFORMS = [
     ("douyin", "抖音"), ("xiaohongshu", "小红书"), ("wechat_channels", "视频号"),
@@ -34,7 +34,8 @@ def generate_promo(drama_id: int, platform: str, fmt: str,
 
 素材(作品内容/大纲):
 {source}"""
-    data = runner.run_agent_json("promo_writer", prompt, config_id=config_id)
+    data = runner.run_agent_json("promo_writer", prompt, config_id=config_id,
+                                 lang=config.resolve_content_language(drama_id))
     if not isinstance(data, dict):
         data = {"title": "", "body": str(data)}
     db.ex("UPDATE dramas SET metadata=?, updated_at=? WHERE id=?",

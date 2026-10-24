@@ -156,7 +156,10 @@ class AiEditDialog(QDialog):
 
         def job(tid):
             from ..agents import runner
-            return runner.run_agent("novel_editor", prompt)
+            from ..core import config
+            return runner.run_agent(
+                "novel_editor", prompt,
+                lang=config.resolve_content_language(self.drama_id))
 
         def done(tid, result, e):
             self.run_btn.setEnabled(True)
@@ -360,12 +363,15 @@ class QaDialog(QDialog):
         self.answer.setPlainText(self._last_answer)
 
         def job(tid):
+            from ..core import config
             ctx = novel_pipe._novel_settings_ctx(self.drama_id)
             body = self.editor.toPlainText()[:6000]
             prompt = (f"{ctx}\n\n【本章正文节选】\n{body}\n\n"
                       f"【问题】{q}\n\n"
                       "只回答问题本身,不要改写正文、不要输出改写建议。")
-            return runner.run_agent("novel_planner", prompt, temperature=0.4)
+            return runner.run_agent(
+                "novel_planner", prompt, temperature=0.4,
+                lang=config.resolve_content_language(self.drama_id))
 
         def done(tid, result, error):
             self.send_btn.setEnabled(True)

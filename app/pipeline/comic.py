@@ -559,7 +559,8 @@ def panel_image_prompt(panel_id: int, drama_id: int, text_config_id: int | None 
 画面: {p['description']}
 构图: {p['composition']}
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
-    data = runner.run_agent_json("prompt_generator", prompt, config_id=text_config_id)
+    data = runner.run_agent_json("prompt_generator", prompt, config_id=text_config_id,
+                                 lang=config.resolve_content_language(drama_id))
     fp = _pick_prompt_text(data)
     if not fp:
         # 模型没给出可用字段(键名随模型自由发挥,见过 final_prompt / panel_prompt / prompt)

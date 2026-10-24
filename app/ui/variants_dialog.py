@@ -193,7 +193,9 @@ class VariantsDialog(QDialog):
             f"要求:{keep_term}。"
         )
         def job(tid):
-            data = runner.run_agent_json("prompt_generator", prompt, config_id=None)
+            data = runner.run_agent_json(
+                "prompt_generator", prompt, config_id=None,
+                lang=config.resolve_content_language(a["drama_id"]))
             fp = (data or {}).get("final_prompt", "")
             if fp:
                 db.ex(f"UPDATE {cfg['var_tbl']} SET final_prompt=? WHERE id=?", (fp, vid))

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 
 from ..agents import prompts, runner
-from ..core import db
+from ..core import config, db
 
 from . import character_spec
 
@@ -90,7 +90,7 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
 角色: {', '.join(existing['characters']) or '无'}
 场景: {', '.join(existing['scenes']) or '无'}
 道具: {', '.join(existing['props']) or '无'}"""
-    lang = lang or db.get_setting("content_language", "zh")
+    lang = lang or config.resolve_content_language(drama_id)
     # 规格由**软件层**统一注入,不依赖 15 份 extractor.<lang>.md 各自维护 
     # 实测其中 13 份根本没有「150 字/五官逐项」这条,靠人维护必然漂移。
     system = (prompts.load_prompt("extractor", lang) + _EXTRACT_JSON_SUFFIX

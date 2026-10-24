@@ -1,0 +1,110 @@
+{
+  "id": "fr-FR",
+  "name": "French",
+  "name_zh": "法语(法国)",
+  "full_rules": true,
+  "source": "海外网文法语区投稿指南(GoodNovel / Dreame 法国区)+ 魁北克法语vs 法国法语用词差异",
+  "localization_goal": "让法语母语读者「读起来不像翻译」—— 直译腔是西语区/法语区读者弃书的首要原因,优先于语法正确",
+  "address": {
+    "note": "法语没有敬称层级,亲属称谓按关系直译即可;中文的「哥哥/姐姐/哥哥姐姐」的撒娇感在法语里应降级为名字或恋人称呼",
+    "map": {
+      "husband": "mari / époux",
+      "wife": "femme / épouse",
+      "boyfriend": "petit ami / copain",
+      "girlfriend": "petite amie / copine",
+      "mother_in_law": "belle-mère",
+      "father_in_law": "beau-père",
+      "shifu": "maître",
+      "sect_master": "maître de secte",
+      "senior": "aîné(e) / senior",
+      "junior": "cadet / junior",
+      "sister_in_law": "belle-sœur",
+      "brother_in_law": "beau-frère",
+      "big_brother": "grand frère",
+      "little_sister": "petite sœur",
+      "aunt": "tante",
+      "uncle": "oncle",
+      "boss": "patron / patronne"
+    }
+  },
+  "filler": {
+    "note": "中文爱用的语气词直译成法语会变成冗余从句,是「翻译腔」的主要来源之一",
+    "avoid": ["啊", "呀", "吧", "呢", "嘛", "哦", "嗯", "唉", "呵"],
+    "prefer": ["bon", "eh bien", "écoute", "sérieusement", "mon Dieu"]
+  },
+  "euphemism": {
+    "note": "法语区对暴力与情色的描写尺度比英语区略宽,但仍以「动作与后果」为主",
+    "levels": [
+      {"cn": "死了", "target": "n'a pas survécu"},
+      {"cn": "打死了", "target": "l'a laissé à terre, à peine vivant"},
+      {"cn": "杀人", "target": "l'a éliminé"}
+    ],
+    "advice": "用法语写「结果与后果」而非直白标签;同时不要用委婉语把冲突写软"
+  },
+  "common_mistranslations": [
+    {"cn": "块钱", "target": "du pognon", "note": "口语 money;不用 «yuans» 直译"},
+    {"cn": "万元", "target": "cent mille euros", "note": "按法语区货币体系重设数量级,不要保留中文计数单位"},
+    {"cn": "总裁", "target": "le PDG", "note": "不是« le président »"},
+    {"cn": "董事长", "target": "le président du conseil d'administration", "note": "口语 « le patron »"},
+    {"cn": "老虎", "target": "le patron de la pègre", "note": "地下世界称谓,不是 « le tigre »"},
+    {"cn": "修仙", "target": "cultivation", "note": "série romance 是通用招牌词,保留拼音反而更好认"},
+    {"cn": "武侠", "target": "wuxia", "note": "série romance 是通用招牌词"}
+  ],
+  "punctuation": {
+    "note": "法语用半角引号,数字与单位之间有**不换行空格**(« 1 000 € »);法语正式文本的句号前不加空格",
+    "forbid_fullwidth": ["，", "。", "、", "；", "：", "！", "？", "（", "）", "【", "】", "《", "》", "〈", "〉", "「", "」", "～"]
+  },
+  "money_time": {
+    "note": "法语区货币为欧元;时间用 24 小时制",
+    "examples": [
+      {"cn": "三更半夜", "target": "au cœur de la nuit"},
+      {"cn": "一大早", "target": "dès l'aube"},
+      {"cn": "下班后", "target": "après le travail"}
+    ]
+  },
+  "self_observation_forbidden": {
+    "note": "第一视角看不见自己的脸 —— 法语同样禁「我的脸红了/变白了」;可写手、脚、心跳、呼吸、别人说的话",
+    "patterns": [
+      "mon visage (?:devint|est devenu)(?: rouge|pâle|blanc)",
+      "mes joues (?:devinrent|deviennent) (?:rouges|pâles)",
+      "mes yeux (?:s'?élargirent|se dilatèrent)",
+      "mon expression (?:devint|était|était devenue) (?:pâle|figée|blanche|stupéfaite)",
+      "un sourire (?:se dessina|traitait|cornait) (?:sur )?mes lèvres"
+    ]
+  },
+  "hook_markers": {
+    "note": "章末钩子标记(小写匹配);法语常用 « avant que » « soudain » « tout à coup » 这类未完成动作钩子",
+    "patterns": [
+      "avant qu",
+      "avant de",
+      "soudain",
+      "tout à coup",
+      "tout d'un coup",
+      "mais alors",
+      "trop tard",
+      "jamais",
+      "ne put",
+      "ne passa pas",
+      "ne dit rien",
+      "personne ne parla",
+      "alla",
+      "commença à",
+      "se mit à",
+      "allait",
+      "une voix",
+      "un bruit",
+      "son téléphone",
+      "le sien",
+      "juste au moment",
+      "et c'est à ce moment"
+    ]
+  },
+  "translationese": {
+    "note": "翻译腔量化阈值(只报可查证事实,不做审美打分)",
+    "max_sentence_words": 32,
+    "max_passive_ratio": 0.35,
+    "max_filler_total": 5,
+    "filler_words": ["très", "vraiment", "plutôt", "assez", "extrêmement", "incroyable", "un peu", "beaucoup"],
+    "passive_pattern": "\\b(?:était|étaient|est|sont|fut|furent)\\s+\\w+(?:é|ée|és|ées|é|i|ue)\\b"
+  }
+}

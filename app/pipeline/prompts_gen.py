@@ -12,7 +12,7 @@ dramas.comic_style(项目级"温画画风",那是给 comic_image_url/漫画格�
 from __future__ import annotations
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 
 from . import character_spec
 
@@ -52,15 +52,17 @@ def _robust_json(agent: str, prompt: str, lang=None, config_id=None) -> dict:
     再加固:剥 DSML/<tool_call>/<think> 残留,失败重试一次。
     """
     import re as _re
-    from ..agents.prompts import DEFAULT_PROMPTS, LANG_OUTPUT_NAME, LANGUAGE_SUFFIX
+    from ..agents import prompts as _prompts
+    from ..agents.prompts import DEFAULT_PROMPTS
     from ..core.db import get_setting
     if lang is None:
+        # 调用方(character_prompt / scene_prompt / prop_prompt)都会先按 drama_id
+        # 兜底好再传进来,这里只兜 UI 之外的程序化调用点。
         lang = get_setting("content_language", "zh")
     system = DEFAULT_PROMPTS.get("prompt_generator", "") + (
         "\n\n你没有工具,绝不输出任何工具调用、invoke、DSML 或思考过程;"
         "\n只输出一个 JSON 对象:{\"final_prompt\": \"...\"},不要解释。")
-    if lang != "zh" and lang in LANG_OUTPUT_NAME:
-        system += LANGUAGE_SUFFIX.format(lang=LANG_OUTPUT_NAME[lang])
+    system = _prompts.with_language_suffix(system, lang)
     last_raw = ""
     for attempt in (1, 2):
         raw = runner.run_agent(agent, prompt, lang=lang, config_id=config_id,
@@ -88,6 +90,7 @@ def character_prompt(character_id: int, config_id: int | None = None, lang: str 
     c = db.q1("SELECT * FROM characters WHERE id=?", (character_id,))
     if not c:
         raise RuntimeError("角色不存在")
+    lang = lang or config.resolve_content_language(c["drama_id"])
     # 出图前最后一道兜底:库里已有的历史角色若仍是 45~70 字的关键词串,
     # 这里自动补写并回写,不必人工逐个重写。失败则用原值,不阻断出图。
     ap, st = character_spec.ensure_for_prompt(c, config_id=config_id, lang=lang)
@@ -155,6 +158,7 @@ def scene_prompt(scene_id: int, config_id: int | None = None, lang: str | None =
     s = db.q1("SELECT * FROM scenes WHERE id=?", (scene_id,))
     if not s:
         raise RuntimeError("场景不存在")
+    lang = lang or config.resolve_content_language(s["drama_id"])
     prompt = f"""目标类型:scene(场景空镜建立图)
 视觉风格前缀: {_style_prefix(s['drama_id'])}
 
@@ -176,6 +180,7 @@ def prop_prompt(prop_id: int, config_id: int | None = None, lang: str | None = N
     p = db.q1("SELECT * FROM props WHERE id=?", (prop_id,))
     if not p:
         raise RuntimeError("道具不存在")
+    lang = lang or config.resolve_content_language(p["drama_id"])
     prompt = f"""目标类型:prop(道具单品产品图)
 视觉风格前缀: {_style_prefix(p['drama_id'])}
 

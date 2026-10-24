@@ -95,7 +95,15 @@ def test_unknown_category_and_language_raise(rule_dir):
     with pytest.raises(overseas_rules.RuleError):
         overseas_rules.get_category("nope")
     with pytest.raises(overseas_rules.RuleError):
-        overseas_rules.get_language("fr-FR")
+        overseas_rules.get_language("zz-ZZ")
+
+
+def test_language_id_rejects_path_traversal(rule_dir):
+    """get_language 把 id 直接拼进文件路径,接上 UI 下拉后用户输入即可达。"""
+    for bad in ("../narrative", "../../secrets", "/etc/passwd", "",
+                "en-US/../../../x", "en US"):
+        with pytest.raises(overseas_rules.RuleError):
+            overseas_rules.get_language(bad)
 
 
 def test_glossary_seed_and_bounds(rule_dir):
@@ -219,3 +227,65 @@ def test_different_categories_produce_different_rules(rule_dir):
 def test_assemble_unknown_platform_raises(rule_dir):
     with pytest.raises(overseas_rules.RuleError):
         overseas_rules.assemble("nope", "werewolf")
+
+
+# ---------------------------------------------------------------- 多语言包
+
+def test_all_language_packs_load_and_validate(rule_dir):
+    """每个语言包都要能被加载并通过 schema —— 否则用户选到它才在 UI 层炸。"""
+    assert overseas_rules.validate() == []
+    langs = overseas_rules.list_languages()
+    assert len(langs) >= 14, f"语言包太少: {[l['id'] for l in langs]}"
+    ids = {l["id"] for l in langs}
+    assert "en-US" in ids and "fr-FR" in ids and "zh-Hant" not in ids, \
+        "zh-Hant 走简繁转换,不该作为海外目标语言包出现"
+    for l in langs:
+        data = overseas_rules.get_language(l["id"])
+        assert data.get("name"), f"{l['id']} 缺 name"
+        assert data.get("punctuation", {}).get("forbid_fullwidth"), \
+            f"{l['id']} 缺 forbid_fullwidth"
+
+
+def test_skeleton_packs_are_labelled_not_silent(rule_dir):
+    """骨架包必须标 depth=skeleton —— 静默降级比明确告知危险得多。
+
+    否则用户看到「质检全过」,其实只跑了语言无关的几条规则。
+    """
+    langs = {l["id"]: l for l in overseas_rules.list_languages()}
+    full = [k for k, v in langs.items() if v["depth"] == "full"]
+    skel = [k for k, v in langs.items() if v["depth"] == "skeleton"]
+    assert set(full) == {"en-US", "fr-FR", "es-ES", "pt-BR", "id-ID"}, full
+    assert len(skel) == 9, skel
+    for k in skel:
+        assert langs[k]["name_zh"], f"{k} 缺中文名"
+        data = overseas_rules.get_language(k)
+        assert data.get("depth_note"), f"{k} 缺 depth_note,UI 无法解释降级"
+
+
+def test_full_packs_have_usable_localisation_rules(rule_dir):
+    """完整包必须有真规则 —— 这三块以前是数据文件里的死字段。"""
+    for lid in ("en-US", "fr-FR", "es-ES", "pt-BR", "id-ID"):
+        d = overseas_rules.get_language(lid)
+        assert d["address"]["map"], f"{lid} 称呼表为空"
+        assert d["common_mistranslations"], f"{lid} 误译表为空"
+        assert d["hook_markers"]["patterns"], f"{lid} 钩子标记为空"
+        assert d["self_observation_forbidden"]["patterns"], f"{lid} 自指观察正则为空"
+        assert d["euphemism"]["levels"], f"{lid} 委婉层级为空"
+        assert d["money_time"]["examples"], f"{lid} 金钱/时间示例为空"
+
+
+def test_dead_fields_now_reach_the_prompt(rule_dir):
+    """以前 filler / euphemism / money_time / address.map 没人读,写的人以为生效了。"""
+    text = overseas_rules.assemble("goodnovel", "billionaire", target_lang="fr-FR")
+    assert "称呼固定译名" in text and "beau-père" in text
+    assert "委婉层级" in text and "n\'a pas survécu".replace("\'", "'") in text
+    assert "时间与金钱表达" in text and "au cœur de la nuit" in text
+    assert "语气词" in text
+
+
+def test_prompt_names_the_actual_target_language(rule_dir):
+    """规则段的标题必须写实际语种名,不能永远叫「English」。"""
+    fr = overseas_rules.assemble("goodnovel", "billionaire", target_lang="fr-FR")
+    assert "目标语言要点(French)" in fr
+    es = overseas_rules.assemble("goodnovel", "billionaire", target_lang="es-ES")
+    assert "目标语言要点(Spanish)" in es

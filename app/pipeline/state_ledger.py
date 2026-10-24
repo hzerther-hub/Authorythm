@@ -28,7 +28,7 @@ import time
 
 from ..agents import runner
 from ..ai.jev_gate import JevBreaker, get_jev_gate
-from ..core import db
+from ..core import config, db
 
 DIFFS_CAP = 100
 # 熔断:连续失败到该次数后冷却,期间门控直接跳过(配置了但连不通 → 不用)
@@ -212,7 +212,8 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     if config_id is None and model:
         config_id = resolve_text_config_id_for_model(model)
     try:
-        raw = runner.run_agent("novel_reviewer", prompt, temperature=0.2, config_id=config_id)
+        raw = runner.run_agent("novel_reviewer", prompt, temperature=0.2, config_id=config_id,
+                            lang=config.resolve_content_language(drama_id))
         parsed = runner.extract_json(raw) or {}
     except Exception:  # noqa: BLE001 —— 提取失败不阻断批量写作
         return None

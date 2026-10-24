@@ -1,0 +1,104 @@
+{
+  "id": "id-ID",
+  "name": "Indonesian",
+  "name_zh": "印度尼西亚语",
+  "full_rules": true,
+  "source": "ShortMax / Dreame 印尼区投稿说明 + 印尼网络小说本地化要点",
+  "localization_goal": "印尼是短剧出海转化率最高的市场之一,但读者英语渗透率高 —— **避免夹英文词**,印尼语里该用印尼语(国家、货币、地名全部本地化)",
+  "address": {
+    "note": "印尼语用「-ku / -mu / nya」体系表达亲密与所有关系,中文的「哥哥姐姐」应落到 nama + 关系称呼;宗教与族群称谓务必核对,写错会直接触犯当地读者",
+    "map": {
+      "husband": "suami",
+      "wife": "istri",
+      "boyfriend": "pacar",
+      "girlfriend": "pacar",
+      "mother_in_law": "ibu mertua",
+      "father_in_law": "bapak mertua",
+      "shifu": "master / gong",
+      "sect_master": "ketua af",
+      "senior": "kakak",
+      "junior": "adik",
+      "sister_in_law": "mertua perempuan",
+      "brother_in_law": "mertua laki-laki",
+      "big_brother": "kakak",
+      "little_sister": "adik perempuan",
+      "aunt": "tante / bibi",
+      "uncle": "paman",
+      "boss": "bos / atasan"
+    }
+  },
+  "filler": {
+    "note": "印尼语本身语气词少(« lho »/« nih »在书面叙事里不该出现),中文语气词一律删掉",
+    "avoid": ["啊", "呀", "吧", "呢", "嘛", "哦", "嗯", "唉", "呵"],
+    "prefer": ["ya", "nih", "hei", "serius", "ya ampun"]
+  },
+  "euphemism": {
+    "note": "印尼市场对占有/强势关系桥段接受度高,但涉及宗教与少数族群的描写务必避开 —— 这是印尼区特有的下架红线",
+    "levels": [
+      {"cn": "死了", "target": "tidak selamat"},
+      {"cn": "打死了", "target": "meninggalkannya di lantai, nyaris tak bernapas"},
+      {"cn": "杀人", "target": "menghentikannya"}
+    ],
+    "advice": "写动作与后果,不写直白标签;宗教与族群相关描写一律避开"
+  },
+  "common_mistranslations": [
+    {"cn": "块钱", "target": "uang", "note": "口语 money"},
+    {"cn": "万元", "target": "sepuluh juta rupiah", "note": "按印尼货币体系重设数量级"},
+    {"cn": "总裁", "target": "direktur utama", "note": "不是 « president »"},
+    {"cn": "董事长", "target": "ketua-board", "note": "口语 « bos besar »"},
+    {"cn": "老虎", "target": "bos underworld", "note": "地下世界称谓"},
+    {"cn": "修仙", "target": "cultivation", "note": "印尼读者接受拼音"},
+    {"cn": "武侠", "target": "wuxia", "note": "泛亚题材通用"}
+  ],
+  "punctuation": {
+    "note": "印尼语用拉丁字母 + 句号分句,千分位用点;不要混入全角标点或英文标点习惯",
+    "forbid_fullwidth": ["，", "。", "、", "；", "：", "！", "？", "（", "）", "【", "】", "《", "》", "〈", "〉", "「", "」", "～"]
+  },
+  "money_time": {
+    "note": "印尼货币为 rupiah(Rp);时间用 24 小时制",
+    "examples": [
+      {"cn": "三更半夜", "target": "tengah malam"},
+      {"cn": "一大早", "target": "pagi banget"},
+      {"cn": "下班后", "target": "setelah kerja"}
+    ]
+  },
+  "self_observation_forbidden": {
+    "note": "第一视角看不见自己的脸 —— 印尼语同样禁 « wajah saya memerah » 这类描写",
+    "patterns": [
+      "wajah saya\\s+(?:merah|becerah|pucat)",
+      "pipis saya\\s+(?:merah|membesar)",
+      "mata saya\\s+(?:melebar|membesar)"
+    ]
+  },
+  "hook_markers": {
+    "note": "章末钩子标记(小写匹配);印尼语常用「belum」「tiba-tiba」这类未完成动作钩子",
+    "patterns": [
+      "belum ",
+      "sebelum dia",
+      "tiba-tiba",
+      "tiba-tiba,",
+      "tapi tiba-tiba",
+      "terlalu lambat",
+      "tidak pernah",
+      "tidak bisa",
+      "tidak mengatakan apa-apa",
+      "tidak ada yang bicara",
+      "akan ",
+      "mulai ",
+      "mengambil",
+      "sebuah suara",
+      "suara",
+      "teleponnya",
+      "tepat ketika",
+      "tepat di saat"
+    ]
+  },
+  "translationese": {
+    "note": "翻译腔量化阈值(只报可查证事实,不做审美打分)",
+    "max_sentence_words": 28,
+    "max_passive_ratio": 0.35,
+    "max_filler_total": 5,
+    "filler_words": ["sangat", "benar-benar", "agak", "banget", "ekstrem", "luar biasa"],
+    "passive_pattern": "\\b(?:adalah|adalahlah|di\\s+\\w+(?:kan|nya))\\b"
+  }
+}

@@ -12,7 +12,7 @@ import json
 import re
 
 from ..agents import runner
-from ..core import db
+from ..core import config, db
 
 from . import character_spec
 
@@ -185,6 +185,7 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None) -> dict:
     chapters = [(r["episode_number"], r["content"] or "") for r in eps if (r["content"] or "").strip()]
     if not chapters:
         raise RuntimeError("没有可分析的章节正文")
+    lang = config.resolve_content_language(drama_id)
     digests, failed, total = [], 0, 0
     for i in range(0, len(chapters), GROUP):
         if stop_check and stop_check():
@@ -193,7 +194,8 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None) -> dict:
         total += 1
         try:
             raw = runner.run_agent("novel_reviewer",
-                               f"{_segment_digest(seg)}\n\n{MAP_PROMPT}", temperature=0.2)
+                               f"{_segment_digest(seg)}\n\n{MAP_PROMPT}", temperature=0.2,
+                               lang=lang)
             data = runner.extract_json(raw) or {}
             digests.append({"chapters": [seg[0][0], seg[-1][0]],
                             "summary": data.get("summary", ""),
@@ -217,7 +219,8 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None) -> dict:
     # Reduce
     timeline = json.dumps(digests, ensure_ascii=False)[:24000]
     raw = runner.run_agent("novel_reviewer",
-                           f"全书节拍时间线:\n{timeline}\n\n{REDUCE_PROMPT}", temperature=0.2)
+                           f"全书节拍时间线:\n{timeline}\n\n{REDUCE_PROMPT}", temperature=0.2,
+                           lang=lang)
     profile = runner.extract_json(raw) or {}
     d = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
     meta = db.jload(d["novel_meta"], {}) if d else {}
@@ -266,6 +269,9 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
         raise RuntimeError("请先完成章节分析")
     profile = json.dumps(analysis["profile"], ensure_ascii=False)[:12000]
     timeline = json.dumps(analysis.get("plot_timeline", []), ensure_ascii=False)[:8000]
+    # 仿写产出的是**新书**,但新书在建库时没有 language 字段可继承(见下方 INSERT),
+    # 所以这里按被仿的源项目语言产出 —— 用户「拿一本 X 语的书仿一本」时期待的就是同语种。
+    lang = config.resolve_content_language(drama_id)
 
     def stage(msg):
         if on_progress:
@@ -275,7 +281,7 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
     stage("生成设定")
     raw = runner.run_agent("novel_planner",
                            SETTINGS_PROMPT.format(rules=IMITATE_RULES, profile=profile),
-                           temperature=0.4)
+                           temperature=0.4, lang=lang)
     st = runner.extract_json(raw) or {}
     settings = {
         "title": title or st.get("title") or "未命名新书",
@@ -293,7 +299,7 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
     stage("生成总纲")
     raw = runner.run_agent("novel_planner",
                            OUTLINE_PROMPT.format(rules=IMITATE_RULES, settings=settings_ctx),
-                           temperature=0.4)
+                           temperature=0.4, lang=lang)
     outline = ((runner.extract_json(raw) or {}).get("outline") or "")[:8000]
 
     # 3) volumes
@@ -301,7 +307,7 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
     raw = runner.run_agent("novel_planner",
                            VOLUMES_PROMPT.format(rules=IMITATE_RULES,
                                                 settings=settings_ctx + "\n节拍时间线:" + timeline),
-                           temperature=0.4)
+                           temperature=0.4, lang=lang)
     volumes = ((runner.extract_json(raw) or {}).get("volumes") or "")[:12000]
 
     # 4) creating
@@ -313,8 +319,8 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
                               "analyzed_at": analysis.get("analyzed_at")}}
     new_id = db.ex("""INSERT INTO dramas(title,style,aspect_ratio,work_type,novel_outline,
                    novel_world,novel_contract,novel_volume,novel_chapters,total_episodes,
-                   novel_meta,metadata,created_at,updated_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                   novel_meta,metadata,language,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                   (settings["title"], d["style"], d["aspect_ratio"], "novel", outline,
                    json.dumps(settings["world"], ensure_ascii=False),
                    json.dumps(settings["contract"], ensure_ascii=False),
@@ -322,7 +328,7 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
                    json.dumps(meta, ensure_ascii=False),
                    json.dumps({"intro": settings["description"], "genre": settings["genre"]},
                               ensure_ascii=False),
-                   ts, ts))
+                   lang, ts, ts))
     # 旧实现把 personality 当 appearance、identity 当 styling  语义就不对
     # (性格不是长相),长度也远低于出图规格。这里把 identity/personality/arc
     # 合并成"素材",交给软件层统一补写成可出图的 appearance + styling;
@@ -337,8 +343,7 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
         seed.append({"name": name,
                      "role": "lead" if idx == 0 else "supporting",
                      "appearance": material, "styling": ""})
-    seed = character_spec.expand_many(
-        seed, lang=db.get_setting("content_language", "zh"))
+    seed = character_spec.expand_many(seed, lang=lang)
     for idx, c in enumerate(seed):
         db.ex("""INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at)
                VALUES(?,?,?,?,?,?,?)""",
@@ -376,5 +381,7 @@ def generate_book_meta(drama_id: int, title: str = "", creative: str = "") -> di
         parts.append(f"【项目名称】{title}")
     if not parts:
         raise RuntimeError("没有可参考的素材:请先填写项目名称或创意描述,或先导入正文")
-    raw = runner.run_agent("novel_planner", "\n".join(parts) + "\n\n" + META_PROMPT, temperature=0.3)
+    raw = runner.run_agent("novel_planner", "\n".join(parts) + "\n\n" + META_PROMPT,
+                           temperature=0.3,
+                           lang=config.resolve_content_language(drama_id))
     return runner.extract_json(raw) or {}

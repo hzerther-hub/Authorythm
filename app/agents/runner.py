@@ -12,7 +12,7 @@ from ..ai import text_client
 from ..ai import registry
 from ..ai.text_client import AI_LLM_TIMEOUT_S
 from ..ai.text_client import AIError
-from ..core import db
+from ..core import db, zh_convert
 from ..core.logging_setup import get_logger
 from . import prompts
 
@@ -85,10 +85,18 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
     kwargs: dict = {}
     if timeout is not None:
         kwargs["timeout"] = timeout
-    return text_client.chat(
+    out = text_client.chat(
         user_prompt, system=system, temperature=temperature,
         json_mode=json_output, config_id=config_id, image_urls=image_urls,
         max_tokens=max_tokens, with_meta=with_meta, **kwargs)
+    # 内容语言 = 繁体中文时,在出口统一做简→繁转换。
+    # 选这里而不是各调用点:34 个调用点逐个改,漏一个就是「有的稿繁、有的稿简」。
+    # 提示词里没有可靠的繁体指令(workspace/prompts 只有 comic_outline_writer
+    # 有 zh-Hant 文件),让模型自己写繁体既慢又不稳 —— 转换是确定性的、零成本的。
+    # with_meta 时 out 是 (content, meta),只转 content。
+    if isinstance(out, tuple):
+        return zh_convert.apply_output_language(out[0], lang), out[1]
+    return zh_convert.apply_output_language(out, lang)
 
 
 JSON_HINT = "请只输出 JSON,不要任何解释文字、不要 Markdown 代码块标记。"

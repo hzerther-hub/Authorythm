@@ -3,71 +3,128 @@
   "name": "English (US)",
   "source": "头条《海外「本土化」不是翻译?》(2026-09-23)语言层对照 + 昆仲科技本地化要点(2023-12-22)",
   "localization_goal": "让英文母语读者「没有出戏感和不适感」——不是字面准确,是像自己人写的",
-  "address": {
-    "note": "称呼直译是国内稿最常见的出戏点;中文的亲属称谓没有一对一英文对应,按关系选称呼或直接用名",
-    "husband": "husband",
-    "wife": "wife",
-    "boyfriend": "boyfriend",
-    "girlfriend": "girlfriend",
-    "mother_in_law": "mother-in-law",
-    "father_in_law": "father-in-law",
-    "shifu": "master",
-    "sect_master": "sect master",
-    "senior": "senior",
-    "junior": "junior",
-    "sister_in_law": "sister-in-law",
-    "brother_in_law": "brother-in-law",
-    "big_brother": "big brother",
-    "little_sister": "little sister",
-    "aunt": "aunt",
-    "uncle": "uncle",
-    "boss": "boss"
-  },
   "filler": {
     "note": "中文爱用的语气词/副词在英文里会显得啰嗦或翻译腔",
-    "avoid": ["啊", "呀", "吧", "呢", "嘛", "哦", "嗯", "唉", "呵"],
-    "english_prefer": ["well", "so", "hey", "come on", "seriously", "god"]
+    "avoid": [
+      "啊",
+      "呀",
+      "吧",
+      "呢",
+      "嘛",
+      "哦",
+      "嗯",
+      "唉",
+      "呵"
+    ],
+    "english_prefer": [
+      "well",
+      "so",
+      "hey",
+      "come on",
+      "seriously",
+      "god"
+    ]
   },
   "euphemism": {
     "note": "暴力/情色段落的委婉层级;海外平台审核对直白描写更敏感",
     "levels": [
-      { "cn": "死了", "en": "blew out the last breath" },
-      { "cn": "打死了", "en": "beat him within an inch of his life" },
-      { "cn": "杀人", "en": "ended it" }
+      {
+        "cn": "死了",
+        "target": "blew out the last breath"
+      },
+      {
+        "cn": "打死了",
+        "target": "beat him within an inch of his life"
+      },
+      {
+        "cn": "杀人",
+        "target": "ended it"
+      }
     ],
     "advice": "写动作与后果,不写直白标签;同时避免用委婉语把冲突写软"
   },
   "common_mistranslations": [
-    { "cn": "块钱", "en": "buck", "note": "口语 money;不用 yuan/dollar 直译" },
-    { "cn": "万元", "en": "a hundred thousand", "note": "按目标市场货币体系重设数量级,不要保留中文计数单位" },
-    { "cn": "总裁", "en": "the CEO", "note": "不是 president" },
-    { "cn": "董事长", "en": "the chairman of the board", "note": "不是 boss(口语可,但正式场合要全称)" },
-    { "cn": "老虎", "en": "the underworld boss", "note": "不是 tiger" },
-    { "cn": "修仙", "en": "cultivation", "note": "保留拼音 xianxia 已被读者接受时可不译" },
-    { "cn": "武侠", "en": "wuxia", "note": "拼音已入牛津词典,可直接保留" }
+    {
+      "cn": "块钱",
+      "note": "口语 money;不用 yuan/dollar 直译",
+      "target": "buck"
+    },
+    {
+      "cn": "万元",
+      "note": "按目标市场货币体系重设数量级,不要保留中文计数单位",
+      "target": "a hundred thousand"
+    },
+    {
+      "cn": "总裁",
+      "note": "不是 president",
+      "target": "the CEO"
+    },
+    {
+      "cn": "董事长",
+      "note": "不是 boss(口语可,但正式场合要全称)",
+      "target": "the chairman of the board"
+    },
+    {
+      "cn": "老虎",
+      "note": "不是 tiger",
+      "target": "the underworld boss"
+    },
+    {
+      "cn": "修仙",
+      "note": "保留拼音 xianxia 已被读者接受时可不译",
+      "target": "cultivation"
+    },
+    {
+      "cn": "武侠",
+      "note": "拼音已入牛津词典,可直接保留",
+      "target": "wuxia"
+    }
   ],
   "punctuation": {
     "note": "英文用半角引号/撇号;中文全角标点直译会被读者一眼看出。弯引号“ ”与破折号—在英文排版里是正规用法,不算问题",
-    "forbid_fullwidth": ["，", "。", "、", "；", "：", "！", "？", "（", "）", "【", "】", "《", "》", "〈", "〉", "「", "」", "～"]
+    "forbid_fullwidth": [
+      "，",
+      "。",
+      "、",
+      "；",
+      "：",
+      "！",
+      "？",
+      "（",
+      "）",
+      "【",
+      "】",
+      "《",
+      "》",
+      "〈",
+      "〉",
+      "「",
+      "」",
+      "～"
+    ]
   },
   "money_time": {
     "note": "时间与金钱的表达规则需按目标市场适配(这也是本地化的常见漏点)",
     "examples": [
-      { "cn": "三更半夜", "en": "well past midnight" },
-      { "cn": "一大早", "en": "first thing in the morning" }
+      {
+        "cn": "三更半夜",
+        "target": "well past midnight"
+      },
+      {
+        "cn": "一大早",
+        "target": "first thing in the morning"
+      }
     ]
   },
   "self_observation_forbidden": {
     "note": "第一视角是「她的眼睛」不是「上帝的眼睛」——写不了自己的脸色/表情/眼睛颜色;可写:手、脚、衣服、感觉、心跳呼吸、声音、别人说的话、镜子里的自己",
-    "en": [
+    "patterns": [
       "my (?:face|cheeks?)\\s+(?:flush(?:ed|ing)?|turn(?:ed|ing)?\\s+red|went\\s+red|burn(?:ed|ing)?|went\\s+pale|paled|whiten(?:ed)?)",
       "my skin\\s+(?:went\\s+pale|paled|whiten(?:ed)?)",
       "my (?:eyes?|gaze|look)\\s+(?:widened|narrowed|softened|darkened|dilated|gleamed|brightened)",
       "my (?:expression|countenance|features?|face)\\s+(?:was|is|went|fell|became|turned)\\b[^.!?\\n]{0,24}\\b(?:pale|red|white|blank|stiff|shocked|frozen)",
       "a (?:smile|blush|flush)\\s+(?:tugged|spread|crept)\\b[^.!?\\n]{0,20}\\bmy\\b",
-      "my (?:face|expression)\\s+(?:fell|dropped)\\s+(?:blank|still)"
-    ],
-    "zh": [
+      "my (?:face|expression)\\s+(?:fell|dropped)\\s+(?:blank|still)",
       "我的(?:脸|脸颊|皮肤)(?:都)?(?:泛红|通红|红得|红了|变红|白了|发白|苍白|发烫|滚烫|热得)",
       "我的(?:眼睛|眼神)(?:都)?(?:泛红|通红|红了|红得|发红)",
       "我的(?:嘴角|笑容|眉毛)(?:微微)?(?:上扬|一扬|一沉|僵住|僵了)"
@@ -75,7 +132,7 @@
   },
   "hook_markers": {
     "note": "章末钩子标记(小写匹配);命中任一即认为该章结尾存在钩子",
-    "en": [
+    "patterns": [
       "before she could",
       "before he could",
       "before i could",
@@ -108,9 +165,7 @@
       "before his",
       "before her",
       "before its",
-      "before their"
-    ],
-    "zh": [
+      "before their",
       "还没等",
       "就在这时",
       "然而",
@@ -128,7 +183,41 @@
     "max_sentence_words": 35,
     "max_passive_ratio": 0.3,
     "max_filler_total": 5,
-    "filler_words": ["very", "really", "quite", "somewhat", "rather", "fairly", "pretty", "extremely", "incredibly"],
+    "filler_words": [
+      "very",
+      "really",
+      "quite",
+      "somewhat",
+      "rather",
+      "fairly",
+      "pretty",
+      "extremely",
+      "incredibly"
+    ],
     "passive_pattern": "\\b(?:was|were|is|are|been|being|be)\\s+\\w+(?:ed|en)\\b"
+  },
+  "name_zh": "英语(美国)",
+  "full_rules": true,
+  "address": {
+    "note": "称呼直译是国内稿最常见的出戏点;中文的亲属称谓没有一对一英文对应,按关系选称呼或直接用名",
+    "map": {
+      "husband": "husband",
+      "wife": "wife",
+      "boyfriend": "boyfriend",
+      "girlfriend": "girlfriend",
+      "mother_in_law": "mother-in-law",
+      "father_in_law": "father-in-law",
+      "shifu": "master",
+      "sect_master": "sect master",
+      "senior": "senior",
+      "junior": "junior",
+      "sister_in_law": "sister-in-law",
+      "brother_in_law": "brother-in-law",
+      "big_brother": "big brother",
+      "little_sister": "little sister",
+      "aunt": "aunt",
+      "uncle": "uncle",
+      "boss": "boss"
+    }
   }
 }

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 
-from ..agents import runner
+from ..agents import prompts, runner
 from ..core import db
 
 # 硬下限。appearance 取 extractor.md 的 150 字口径;styling 原文没给数字,
@@ -147,7 +147,8 @@ def _repair(characters: list[dict], *, config_id: int | None,
     )
     data = runner.run_agent_json(
         "extractor", user, lang=lang, config_id=config_id,
-        system=_REPAIR_SYSTEM.format(rules=rules_for(lang)),
+        system=prompts.with_language_suffix(
+            _REPAIR_SYSTEM.format(rules=rules_for(lang)), lang),
     )
     got = data.get("characters") if isinstance(data, dict) else None
     return [c for c in (got or []) if isinstance(c, dict)]

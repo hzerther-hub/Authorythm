@@ -365,7 +365,10 @@ class ProjectSettingsDialog(QDialog):
             self,
             work_type=((d["work_type"] or "drama") if d else "drama"),
             title=self.title.text().strip(), idea=idea,
-            config_id=None, lang=(d["language"] if d else None))
+            config_id=None,
+            # 必须过 resolve_content_language:dramas.language 的默认值是 'auto'
+            # (跟随全局),直接传原始列值会让下游拿到字符串 "auto"。
+            lang=config.resolve_content_language(self.drama_id))
         if dlg.exec() != ProjectConceptDialog.Accepted:
             return
         r = dlg.result_data()

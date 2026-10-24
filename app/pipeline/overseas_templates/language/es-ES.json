@@ -1,0 +1,107 @@
+{
+  "id": "es-ES",
+  "name": "Spanish",
+  "name_zh": "西班牙语",
+  "full_rules": true,
+  "source": "GoodNovel / Dreame 西班牙语区投稿说明+ 拉美/西班牙用词差异对照",
+  "localization_goal": "西语区是海外短剧最大的增量市场,读者对「翻译腔」的容忍度低于英语区 —— 语序、称呼、时间表达都要按西语重写,不是逐句翻",
+  "address": {
+    "note": "西语有敬称层级(usted/ustedes),中文的「您」应落在这里;亲属称谓按关系直译,「哥哥姐姐」的撒娇感在西语里降级为 nombre 或恋人称呼",
+    "map": {
+      "husband": "esposo / marido",
+      "wife": "esposa / mujer",
+      "boyfriend": "novio",
+      "girlfriend": "novia",
+      "mother_in_law": "suegra",
+      "father_in_law": "suegro",
+      "shifu": "maestro",
+      "sect_master": "maestro de la secta",
+      "senior": "hermano mayor",
+      "junior": "hermano menor",
+      "sister_in_law": "cuñada",
+      "brother_in_law": "cuñado",
+      "big_brother": "hermano mayor",
+      "little_sister": "hermana menor",
+      "aunt": "tía",
+      "uncle": "tío",
+      "boss": "jefe / patrón"
+    }
+  },
+  "filler": {
+    "note": "中文语气词在西语里没有对应物,直译会变成多余的连接词,是西语翻译腔的主要来源",
+    "avoid": ["啊", "呀", "吧", "呢", "嘛", "哦", "嗯", "唉", "呵"],
+    "prefer": ["oye", "bueno", "venga", "en serio", "dios mío"]
+  },
+  "euphemism": {
+    "note": "西语区对占有/强制类桥段接受度高,但露骨性描写尺度收紧",
+    "levels": [
+      {"cn": "死了", "target": "no sobrevivió"},
+      {"cn": "打死了", "target": "lo dejó en el suelo, apenas vivo"},
+      {"cn": "杀人", "target": "lo eliminó"}
+    ],
+    "advice": "写动作与后果,不写直白标签;西语读者对 «asesinato» 这类名词的容忍度低于英语读者"
+  },
+  "common_mistranslations": [
+    {"cn": "块钱", "target": "plata", "note": "口语 money;不用 « yuan »"},
+    {"cn": "万元", "target": "diez mil euros", "note": "按西语区货币体系重设数量级"},
+    {"cn": "总裁", "target": "el CEO", "note": "西班牙不说 « el presidente »"},
+    {"cn": "董事长", "target": "el presidente del consejo"},
+    {"cn": "老虎", "target": "el capo del hampa", "note": "地下世界称谓,不是 « el tigre »"},
+    {"cn": "修仙", "target": "cultivo espiritual", "note": "西语读者熟悉 « cultivación »"},
+    {"cn": "武侠", "target": "wuxia", "note": "泛亚题材通用"}
+  ],
+  "punctuation": {
+    "note": "西语用弯引号 « » 或 “ ”(拉美多用 “ ”),倒问号/倒感叹号 ¿ ¡ 是西语特有的,不要省;数字千分位用点",
+    "forbid_fullwidth": ["，", "。", "、", "；", "：", "！", "？", "（", "）", "【", "】", "《", "》", "〈", "〉", "「", "」", "～"]
+  },
+  "money_time": {
+    "note": "西语区用 24 小时制;货币因国家而异(墨西哥比索/西班牙欧元/阿根廷比索)",
+    "examples": [
+      {"cn": "三更半夜", "target": "en plena madrugada"},
+      {"cn": "一大早", "target": "a primera hora de la mañana"},
+      {"cn": "下班后", "target": "después del trabajo"}
+    ]
+  },
+  "self_observation_forbidden": {
+    "note": "第一视角看不见自己的脸 —— 西语同样禁 « mi rostro se puso rojo » 这类描写",
+    "patterns": [
+      "mi (?:rostro|cara|rostro)\\s+(?:se\\s+puso|se\\s+volvió|estaba)\\s+(?:rojo|roja|pálido|pálida|blanco)",
+      "mis (?:mejillas|cara)\\s+(?:se\\s+enrojecieron|se\\s+volvieron)",
+      "mis ojos\\s+(?:se\\s+abrieron|se\\s+dilataron)",
+      "mi (?:expresión|gesto)\\s+(?:se\\s+(?:congeló|petrificó)|estaba)\\s+(?:pálid|congelad|petrificad|vacía)"
+    ]
+  },
+  "hook_markers": {
+    "note": "章末钩子标记(小写匹配);西语常用 « antes de que » « de repente » 这类未完成动作钩子",
+    "patterns": [
+      "antes de que",
+      "antes de",
+      "de repente",
+      "de pronto",
+      "súbitamente",
+      "pero entonces",
+      "demasiado tarde",
+      "nunca",
+      "no pudo",
+      "no dijo nada",
+      "nadie habló",
+      "iba a",
+      "empezó a",
+      "se puso a",
+      "una voz",
+      "un sonido",
+      "su teléfono",
+      "el suyo",
+      "en ese momento",
+      "justo cuando"
+    ]
+  },
+  "translationese": {
+    "note": "翻译腔量化阈值(只报可查证事实,不做审美打分)",
+    "max_sentence_words": 32,
+    "max_passive_ratio": 0.35,
+    "max_filler_total": 5,
+    "filler_words": ["muy", "realmente", "bastante", "extremadamente", "increíble", "un poco"],
+    "passive_pattern": "\\b(?:fue|fueron|era|eran|es|son)\\s+\\w+(?:ado|ida|ido|os|as)\\b"
+  }
+}

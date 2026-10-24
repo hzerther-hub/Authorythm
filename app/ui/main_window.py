@@ -85,14 +85,14 @@ class MainWindow(QMainWindow):
         # 两边都是「对一张图下指令改它」,拆两页只会让用户在 A 页选图再点 💬 送到 B 页。
         self._nav_defs = [("dashboard", "◉", "nav_dashboard"),
                           ("projects", "▦", "nav_projects"),
+                          ("previz", "◫", "nav_previz"),
                           ("chatedit", "💬", "chat_edit_nav")]
-        # Director's Slate:Dashboard 用硬编码"仪表盘",不依赖 i18n key;
-        # 其他 3 个有 key。后续如要本地化,在 app/core/i18n.py + ui_strings.py
-        # 15 语言表里加 nav_dashboard 条目,这里再切回 tr(label_key)。
-        LABEL_OVERRIDE = {"dashboard": "仪表盘"}
+        # 导航标签一律走 tr(label_key):以前 dashboard 用 LABEL_OVERRIDE 硬编码
+        # 「仪表盘」,构造期看着正常,但 retranslate() 不走 override、直接
+        # tr(label_key) → 切语言后露出 `nav_dashboard` 键名(实测)。
+        # 硬编码的"仪表盘"是 bug 不是特性 —— 删掉 override,让三个 key 同一条路径。
         for key, icon, label_key in self._nav_defs:
-            label_text = LABEL_OVERRIDE.get(key) or tr(label_key)
-            b = QPushButton(f"{icon}  {label_text}")
+            b = QPushButton(f"{icon}  {tr(label_key)}")
             b.setObjectName("navSeg")
             b.setCheckable(True)
             b.setCursor(Qt.PointingHandCursor)
@@ -170,12 +170,14 @@ class MainWindow(QMainWindow):
         from .merger_tool_page import MergerToolPage
         self.face_swap_page = FaceSwapPage()
         self.merger_page = MergerToolPage()
+        from .previz_page import PrevizPage
+        self.previz_page = PrevizPage()
         from .chat_edit_drawer import ChatEditDrawer
         # 独立 tab。原来的 ImageProcessPage(图片处理)已下线,批量改图现在是
         # 这个抽屉里的折叠区,见 chat_edit_drawer.ChatEditPanel.batch_panel。
         self.chat_edit_page = ChatEditDrawer(self)
         for p in (self.dashboard, self.projects_page, self.project_page, self.episode_page, self.clone_page,
-                  self.face_swap_page, self.merger_page,
+                  self.face_swap_page, self.merger_page, self.previz_page,
                   self.chat_edit_page):
             self.stack.addWidget(p)
 
@@ -207,6 +209,26 @@ class MainWindow(QMainWindow):
         # 语言切换即时重建界面(机制同 comPySide),不再要求重启
         self._stale_pages: set[str] = set()
         on_change(self._on_lang_changed)
+        # 启动提示:PhotoCraft / 导演台内核是**本地组件**,AI 横幅查不到它们,
+        # 不提示的话用户直到用到聊天改图/导演台才会撞见「未安装」。
+        # 只在缺失时弹一次,指向「?」帮助(那里有安装指引与下载链接)。
+        QTimer.singleShot(1500, self._toast_missing_local_tools)
+
+    def _toast_missing_local_tools(self):
+        """启动后一次性检查本地组件(PhotoCraft / 导演台内核),缺啥提示啥。"""
+        try:
+            from ..ai import photocraft_bridge as _pcb
+            from .previz_page import vendor_ready as _previz_ready
+            missing = []
+            if not (_pcb.resolve_app_path() or _pcb.resolve_cli_path()):
+                missing.append(tr("svc_photocraft"))
+            if not _previz_ready():
+                missing.append(tr("svc_previz"))
+            if missing:
+                from .toast import info
+                info(tr("startup_tools_hint").format("、".join(missing)))
+        except Exception:  # noqa: BLE001 —— 提示失败不影响启动
+            pass
 
     def sync_task_drawer_geometry(self):
         """把任务抽屉铺满页面区(它是浮层,不是页面栈里的一页)。
@@ -255,7 +277,7 @@ class MainWindow(QMainWindow):
     # 切语言时把首页当成 projects 重建,直接把用户从 dashboard 弹到项目页。
     # _make_page("dashboard") 返回 None,_rebuild_ui 走「原地刷顶栏」分支,符合预期。
     _PAGE_KINDS = ["dashboard", "projects", "project", "episode", "clone",
-                   "face_swap", "merger", "chatedit"]
+                   "face_swap", "merger", "previz", "chatedit"]
 
     def _make_page(self, kind: str):
         """按页面种类新建一个页面实例(文案都是构造时 tr() 求值的)。
@@ -302,6 +324,9 @@ class MainWindow(QMainWindow):
         if kind == "merger":
             from .merger_tool_page import MergerToolPage
             return MergerToolPage()
+        if kind == "previz":
+            from .previz_page import PrevizPage
+            return PrevizPage()
         if kind == "chatedit":
             from .chat_edit_drawer import ChatEditDrawer
             p = ChatEditDrawer(self)
@@ -337,6 +362,7 @@ class MainWindow(QMainWindow):
         "projects": "projects_page", "project": "project_page", "episode": "episode_page",
         "clone": "clone_page",
         "face_swap": "face_swap_page", "merger": "merger_page",
+        "previz": "previz_page",
         "chatedit": "chat_edit_page",
     }
 
@@ -423,6 +449,7 @@ class MainWindow(QMainWindow):
             page = {"dashboard": self.dashboard,
                     "projects": self.projects_page, "face_swap": getattr(self, "face_swap_page", None),
                     "merger": getattr(self, "merger_page", None),
+                    "previz": getattr(self, "previz_page", None),
                     "chatedit": getattr(self, "chat_edit_page", None)}.get(k)
             if page is not None:
                 b.setChecked(cur is page)
@@ -457,7 +484,8 @@ class MainWindow(QMainWindow):
                 # 直接 return,点按钮没反应。它同时是原「图片处理」页的新归宿。
                 "chatedit": getattr(self, "chat_edit_page", None),
                 "face_swap": getattr(self, "face_swap_page", None),
-                "merger": getattr(self, "merger_page", None)}.get(key)
+                "merger": getattr(self, "merger_page", None),
+                "previz": getattr(self, "previz_page", None)}.get(key)
         if page is None:
             return
         for k, b in self.nav_btns.items():
@@ -695,6 +723,7 @@ class MainWindow(QMainWindow):
 
         # PhotoCraft 桌面端单独一行 —— 检测逻辑跟 readiness() 不同(它不查表),
         # 直接读 db 的 photocraft_install_dir + photocraft_cli_path
+        from ..ai.photocraft_bridge import PHOTOCRAFT_URL
         from ..core import db as _db
         from ..ai import photocraft_bridge as _pcb
         pc_ok = bool(_pcb.resolve_app_path() or _pcb.resolve_cli_path())
@@ -717,11 +746,56 @@ class MainWindow(QMainWindow):
             hint.setStyleSheet("color:#888; font-size:11px;")
             hint.setWordWrap(True)
             lay.addLayout(row)
-            lay.addWidget(hint)
+            # 官方下载链接可点击(与聊天改图页同一 URL 常量,别再造一个来源)
+            dl = QLabel(f'<a href="{PHOTOCRAFT_URL}">{tr("svc_download")}</a>')
+            dl.setOpenExternalLinks(True)
+            dl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            dl.setStyleSheet("font-size:11px;")
+            lay.addWidget(dl)
             btn = QPushButton(tr("open_settings"))
             btn.setCursor(Qt.PointingHandCursor)
             btn.clicked.connect(lambda _=False: (dlg.accept(), self._open_settings()))
             lay.addWidget(btn)
+        else:
+            lay.addLayout(row)
+
+        # 导演台渲染内核 —— 同类的本地依赖(不查 ai_service_configs),没获取时
+        # 导演台页是空的,用户自己发现不了;这里给状态 + 一键获取入口 + 官方下载链接
+        from .previz_page import vendor_ready as _previz_ready
+        pv_ok = _previz_ready()
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        name = QLabel(f"● {tr('svc_previz')}")
+        name.setStyleSheet("font-size:13px;")
+        row.addWidget(name, 1)
+        if pv_ok:
+            status = QLabel("✓")
+            status.setStyleSheet("color:#16a34a; font-weight:700;")
+        else:
+            status = QLabel("✗ 未获取")
+            status.setStyleSheet("color:#dc2626;")
+        status.setFixedWidth(60)
+        status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        row.addWidget(status)
+        if not pv_ok:
+            lay.addLayout(row)
+            hint = QLabel(tr("svc_previz_hint"))
+            hint.setStyleSheet("color:#888; font-size:11px;")
+            hint.setWordWrap(True)
+            lay.addWidget(hint)
+            acts = QHBoxLayout()
+            acts.setSpacing(8)
+            dl = QLabel(f'<a href="https://github.com/mangfufu/director-desk/releases/latest">{tr("svc_download")}</a>')
+            dl.setOpenExternalLinks(True)
+            dl.setTextInteractionFlags(Qt.TextBrowserInteraction)
+            dl.setStyleSheet("font-size:11px;")
+            acts.addWidget(dl)
+            acts.addStretch(1)
+            btn = QPushButton(tr("goto_previz"))
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False: (dlg.accept(), self._goto("previz")))
+            acts.addWidget(btn)
+            lay.addLayout(acts)
         else:
             lay.addLayout(row)
 

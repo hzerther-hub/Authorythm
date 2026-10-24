@@ -51,6 +51,22 @@ def _strip_think(text: str) -> str:
     return text.strip()
 
 
+def _lang_label(target_lang: str) -> str:
+    """目标语言的人类可读名,写进 prompt 当硬约束。
+
+    不能只靠规则段里的「目标语言要点」那一节 —— 那是参考资料,不是命令。
+    旧实现把「直接输出改写后的**英文**正文。」写死在最后一句,而系统提示词
+    (overseas_rewriter.md)同样只说英文:两处都与规则段要求的语种矛盾,
+    而且英文那句在最后、模型通常听最后的。切到法语就会「要求法语、得到英语」。
+    """
+    try:
+        from ..core.i18n import LANG_OUTPUT_NAME
+    except Exception:  # noqa: BLE001
+        return target_lang
+    base = target_lang.split("-")[0]
+    return LANG_OUTPUT_NAME.get(target_lang) or LANG_OUTPUT_NAME.get(base) or target_lang
+
+
 def _rules(platform: str, category: str, *, level: str | None = None,
            target_lang: str = "en-US") -> str:
     from . import overseas_rules
@@ -89,12 +105,21 @@ def diagnose(*, source: str, platform: str, category: str, level: str = "B",
     source = (source or "").strip()
     if not source:
         raise ValueError("中文原文为空")
+    label = _lang_label(target_lang)
     rules = _rules(platform, category, target_lang=target_lang)
     prompt = (
         f"# 原文\n\n{source}\n\n"
         f"# 目标平台规格与品类套路\n\n{rules}\n\n"
-        f"# 任务\n\n对上面这段中文做诊断,按你规定的 JSON 格式返回。"
+        f"# 目标语言\n\n{label}\n\n"
+        f"# 任务\n\n"
+        f"对上面这段中文做诊断,按你规定的 JSON 格式返回。"
+        f"术语表的 target 一律写成**{label}**里的译名 —— 不要一律写成英文,"
+        f"那是最常见的失手点。"
     )
+    # lang="zh" 是有意为之,不是漏传:原文恒为中文,分析结果(问题清单/文化映射/
+    # 五维诊断)也用中文给用户看;`overseas_analyzer` 的 JSON schema 键是中文字面量
+    # ("中文"/"English"),改 lang 会让术语表的方向键串语言。输出语言由上面
+    # 「# 目标语言」一节约束,不是 system 语言。见 tests/test_content_lang_propagation.py
     raw = runner.run_agent("overseas_analyzer", prompt, lang="zh",
                            json_output=True, config_id=text_config_id)
     data = runner.extract_json(raw) or {}
@@ -134,6 +159,7 @@ def rewrite(*, source: str, platform: str, category: str, level: str = "B",
     source = (source or "").strip()
     if not source:
         raise ValueError("中文原文为空")
+    label = _lang_label(target_lang)
     rules = _rules(platform, category, level=level, target_lang=target_lang)
     glossary = _glossary_pairs(glossary)
     notes: list[str] = []
@@ -147,7 +173,10 @@ def rewrite(*, source: str, platform: str, category: str, level: str = "B",
         f"{json.dumps(glossary, ensure_ascii=False, indent=2)}\n\n"
         f"# 改写级别\n\n{level}\n\n"
         "# 诊断发现(改写时必须修掉)\n\n" + ("\n".join(notes) or "- 无") + "\n\n"
-        f"直接输出改写后的英文正文。"
+        f"# 输出语言\n\n"
+        f"改写后的正文必须用 **{label}** 书写。不要用英文,不要用任何其它语言,"
+        f"也不要保留中文。\n\n"
+        f"直接输出改写后的{label}正文。"
     )
     raw = runner.run_agent("overseas_rewriter", prompt, lang="zh",
                            config_id=text_config_id)
@@ -182,7 +211,10 @@ def save_project(*, drama_id: int, episode_id: int | None, platform: str,
                  target_lang: str = "en-US", glossary: dict | None = None,
                  diag: dict | None = None) -> int:
     ts = db.now()
-    db.ex(
+    # db.ex 本身就返回 cursor.lastrowid。原实现丢掉返回值再
+    # `SELECT id ... ORDER BY id DESC LIMIT 1` 查一次 —— 并发下两个诊断同时完成
+    # 时会互相串号,把 A 的结果挂到 B 的 project 上。
+    return db.ex(
         "INSERT INTO overseas_project(drama_id, episode_id, platform, category,"
         " target_lang, level, status, source_text, glossary_json, diag_json,"
         " created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -190,8 +222,6 @@ def save_project(*, drama_id: int, episode_id: int | None, platform: str,
          "diagnosed" if diag else "init", source_text,
          json.dumps(glossary or {}, ensure_ascii=False),
          json.dumps(diag or {}, ensure_ascii=False), ts, ts))
-    row = db.q1("SELECT id FROM overseas_project ORDER BY id DESC LIMIT 1")
-    return int(row["id"]) if row else 0
 
 
 def update_project(project_id: int, **fields) -> None:
@@ -220,16 +250,15 @@ def save_chapter(*, project_id: int, episode_id: int | None, chapter_no: int,
                  qc: list | None = None) -> int:
     ts = db.now()
     words = len(content.split())
-    db.ex(
+    # 同一个 lastrowid 问题(见 save_project):这里原来按 `ORDER BY id DESC` 取 id,
+    # 同一 project 并发写两章就会串。
+    return db.ex(
         "INSERT INTO overseas_chapter(project_id, episode_id, chapter_no, title,"
         " content, notes, words, qc_json, status, created_at, updated_at)"
         " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
         (project_id, episode_id, chapter_no, title, content, notes, words,
          json.dumps([str(i) for i in (qc or [])], ensure_ascii=False),
          "done", ts, ts))
-    row = db.q1("SELECT id FROM overseas_chapter WHERE project_id=? "
-                "ORDER BY id DESC LIMIT 1", (project_id,))
-    return int(row["id"]) if row else 0
 
 
 def list_chapters(project_id: int) -> list:

@@ -92,7 +92,8 @@ def generate_full_comic(
     # 1) 拆格:有 force 时或当前集没有 panel 时才重拆
     existing = panel_ids_in_order(episode_id)
     if force or not existing:
-        _comic.split_panels(episode_id, text_config_id=text_config_id)
+        _comic.split_panels(episode_id, text_config_id=text_config_id,
+                            lang=config.resolve_content_language(drama_id))
     panel_ids = panel_ids_in_order(episode_id)
     if not panel_ids:
         raise RuntimeError("拆格后漫画分镜为空,可能剧本太短或模型未返回")

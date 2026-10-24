@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 import re
 
-from ..agents import runner
+from ..agents import prompts, runner
 from ..ai import text_client   # 分卷分批直接调 chat(非流式路径)
-from ..core.i18n import tr       # 分批阶段提示文案(漏导入会让整批 NameError)
+from ..core.i18n import LANG_OUTPUT_NAME, tr  # 分批阶段提示文案(漏导入会让整批 NameError)
 from ..ai import registry
 from ..core import config, db
 
@@ -107,8 +107,9 @@ def set_novel_style(drama_id: int, style: str) -> None:
 def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
     """开书策划:总纲/世界观/合约/卷战略/章节清单/主要角色,写入 dramas。"""
     config_id = config_id or plan_config_id()
+    lang = config.resolve_content_language(drama_id)
     prompt = f"新书创意:\n{idea[:6000]}\n\n请给出完整开书规划。"
-    data = runner.run_agent_json("novel_planner", prompt, config_id=config_id)
+    data = runner.run_agent_json("novel_planner", prompt, lang=lang, config_id=config_id)
     chapters = data.get("chapters", [])
     db.ex("""UPDATE dramas SET novel_outline=?, novel_world=?, novel_contract=?, novel_volume=?,
              novel_chapters=?, novel_meta=?, updated_at=? WHERE id=?""",
@@ -426,7 +427,8 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
     parts.append(CHARACTER_PROMPT)
     parts.append("只列**本卷出场**的角色;前几卷已建立的可只保留姓名,不重复描述。")
     raw = runner.run_agent("novel_planner", "\n\n".join(parts),
-                           temperature=0.5, config_id=config_id)
+                           temperature=0.5, lang=config.resolve_content_language(drama_id),
+                           config_id=config_id)
     chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
     if not chars:
         return []
@@ -525,7 +527,8 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
                     "novel_planner",
                     chapters_batch_prompt(drama_id, start, cnt, total, word_count or 2500,
                                           prev_hint=prev_hint),
-                    temperature=0.4, config_id=config_id, max_tokens=budget)
+                    temperature=0.4, lang=config.resolve_content_language(drama_id),
+                    config_id=config_id, max_tokens=budget)
             except Exception as exc:  # noqa: BLE001
                 if attempt == len(budgets) - 1:
                     raise
@@ -595,7 +598,9 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
                 raw = runner.run_agent("novel_planner",
                                        chapters_batch_prompt(drama_id, start, cnt, n, words,
                                                              prev_hint=prev_hint),
-                                       temperature=0.4, config_id=config_id,
+                                       temperature=0.4,
+                                       lang=config.resolve_content_language(drama_id),
+                                       config_id=config_id,
                                        max_tokens=budget)
             except Exception as exc:  # noqa: BLE001
                 if attempt == len(budgets) - 1:
@@ -711,9 +716,11 @@ def plan_chapters(drama_id: int, chapter_count: int | None = None,
                   word_count: int | None = None, config_id: int | None = None) -> dict:
     """一次性生成并落库逐章计划(非流式路径;UI 走 chapters_prompt + persist_chapters)。"""
     config_id = config_id or plan_config_id()
+    lang = config.resolve_content_language(drama_id)
     raw = runner.run_agent("novel_planner", chapters_prompt(drama_id, chapter_count, word_count),
-                           temperature=0.4, config_id=config_id,
-                           system=_draft_system("章节计划"))
+                           temperature=0.4, lang=lang, config_id=config_id,
+                           system=prompts.with_language_suffix(
+                               _draft_system("章节计划"), lang))
     out = persist_chapters(drama_id, raw, chapter_count, word_count)
     return {"chapters": out["chapters"], "count": out["count"], "word_count": out["word_count"]}
 
@@ -772,7 +779,7 @@ def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     raw = runner.run_agent("novel_planner",
                            f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}"
                            f"\n\n{character_spec.rules_for(lang)}",
-                           temperature=0.5, config_id=config_id)
+                           temperature=0.5, lang=lang, config_id=config_id)
     chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
     if not chars:
         raise RuntimeError("AI 未返回角色,请重试或检查文本模型配置")
@@ -1008,6 +1015,9 @@ def write_chapter(episode_id: int, config_id: int | None = None,
         config_id = prose_config_id()
     # 写作红线:小说项目设定未齐时,任何入口(按钮/批量/程序化)都写不了
     _enforce_novel_gate(ep["drama_id"])
+    # 内容语言在函数体内兜底:调用点有 UI/批量/程序化十几处,任一处漏传就会
+    # 静默退回全局默认,界面上选了也没用(同 plan/prose 模型分设的坑)。
+    lang = lang or config.resolve_content_language(ep["drama_id"])
     # 思考型模型(M3)行为有波动:偶发只输出标题一行,或思考吃满预算导致正文为空。
     # 给三次机会,但**第一次用配置里填的 max_tokens**,不是硬编码值 ——
     # 用户把 32768 调大就是想让第一次就够用,固定 8192 会白跑一次短预算。
@@ -1216,10 +1226,12 @@ def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
+    lang = config.resolve_content_language(ep["drama_id"])
     pov = get_novel_pov(ep["drama_id"])
     prompt = (f"第 {ep['episode_number']} 章正文:\n{(ep['content'] or '')[:15000]}\n\n"
               f"【本项目叙事人称】{pov_rule(pov)}(硬约束,审校时必须核对是否被违反)")
-    data = runner.run_agent_json("novel_reviewer", prompt, config_id=config_id)
+    data = runner.run_agent_json("novel_reviewer", prompt, lang=lang,
+                                 config_id=config_id)
     # 规则化人称抽检:模型漏检时兜底,不额外调用模型
     violations = check_pov_violation(ep["content"] or "", pov)
     if violations:
@@ -1240,10 +1252,12 @@ def edit_chapter(episode_id: int, instruction: str, config_id: int | None = None
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep or not (ep["content"] or "").strip():
         raise RuntimeError("本章还没有正文")
+    lang = config.resolve_content_language(ep["drama_id"])
     prompt = (f"修改指令: {instruction}\n"
               f"本项目叙事人称(必须保持不变): {pov_rule(get_novel_pov(ep['drama_id']))}"
               f"\n\n正文:\n{ep['content'][:15000]}")
-    content = _gate_content(runner.run_agent("novel_editor", prompt, config_id=config_id), "改稿正文")
+    content = _gate_content(
+        runner.run_agent("novel_editor", prompt, lang=lang, config_id=config_id), "改稿正文")
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (content, db.now(), episode_id))
     return content
 
@@ -1276,39 +1290,112 @@ def export_book(drama_id: int, out_dir: str) -> str:
     return str(root)
 
 
+def _episode_prefix_candidates(n: int) -> list[str]:
+    """集号前缀的全部已知写法(长串在前,先匹配长的)。
+
+    为什么要遍历 i18n 的全部语言表:同一个「集号」在库里可能留下十几种写法 ——
+    `tr("episode_n")` 生成的是「第 1 集」(带空格,跟界面语言走),而手写/历史
+    数据是不带空格的「第1集」,法语项目还会有「Épisode 1」。只比对当前界面语言的
+    写法,切语言后旧项目的集号前缀就剥不掉了(标题会渲染成重复的集号)。
+    """
+    n = int(n)
+    out = {f"第{n}集", f"第 {n} 集", f"第{n}集 ", f"第 {n} 集 ",
+           f"第{n}集.", f"第 {n} 集."}
+    try:
+        from ..core.i18n import T
+        for table in T.values():
+            pat = (table or {}).get("episode_n")
+            if isinstance(pat, str) and pat.strip():
+                out.add(pat.replace("{}", str(n)).strip())
+    except Exception:  # noqa: BLE001 —— 拿不到语言表就只认中文写法
+        pass
+    return sorted(out, key=len, reverse=True)
+
+
+def strip_episode_prefix(title: str, episode_number: int | None = None) -> str:
+    """剥掉标题里的**集号**前缀(「第1集 夜谈」→「夜谈」)。
+
+    严格:只在集号与 `episode_number` 相等时剥。两个反直觉但必要的边界:
+    1. **不剥「第N章 …」** —— 旧项目里「第1章 裁员后我打开了青岚界」是章节名
+       的一部分,剥了就只剩后面的正文(tests/test_page_title.py 守着)。
+    2. **不剥对不上的集号** —— 第 5 集不该吃掉标题里的「第 2 集 倒叙」前缀。
+    """
+    t = (title or "").strip()
+    if not t or episode_number is None:
+        return t
+    for p in _episode_prefix_candidates(episode_number):
+        if t.startswith(p):
+            return t[len(p):].lstrip(" \t　:：、.·-—")
+    # 精确串比不过的兜底:容忍「第  1  集」这类数字两侧**不定长**空格
+    # (tr('episode_n') 是「第 {} 集」,历史数据里也有手打成多空格的)。
+    # 仍然只认「集」字、集号仍须与本集相等 —— 见上面两条边界说明。
+    import re as _re
+    m = _re.match(r"^第\s*%d\s*集[\s　:：、.·\-—]*" % int(episode_number), t)
+    return t[m.end():].strip() if m else t
+
+
+def is_placeholder_episode_title(title: str, episode_number: int | None = None) -> bool:
+    """标题为空、或剥掉集号后什么都不剩 → 缺章节名(决定「生成章节名」按钮是否出现)。
+
+    这里**故意比 `strip_episode_prefix` 宽松**:集号对不上也算占位 ——
+    库里存着「第3集」而本集是第 5 集,那显然还是占位,不放按钮用户就永远补不上。
+    """
+    import re as _re
+    t = (title or "").strip()
+    if not t:
+        return True
+    if not strip_episode_prefix(t, episode_number):
+        return True
+    return bool(_re.fullmatch(r"第\s*\d{1,4}\s*[集][\s　:：、.·\-—]*", t))
+
+
 def _clean_chapter_name(raw: str) -> str:
-    """章节名清洗(三级,对齐原版):取首行 → 去「第N集」前缀 → 去引号/井号 → 截断 20 字。"""
+    """章节名清洗(三级,对齐原版):取首行 → 去集号前缀 → 去引号/井号 → 截断。"""
     import re as _re
     lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
     if not lines:
         return ""
-    name = _re.sub(r"^第\d+集[:：、\s]*", "", lines[0])
+    name = _re.sub(r"^第\s*\d{1,4}\s*[集][:：、\s]*", "", lines[0])
     name = _re.sub(r"^[#《「『\"'\s]+|[#》」』\"'\s]+$", "", name)
-    return name[:20].strip()
+    # 截断按书写系统分档:CJK 一个字≈一个词,拉丁语种 20 个字母装不下一个词。
+    return name[:_name_length_budget(lines[0])].strip()
+
+
+def _name_length_budget(sample: str) -> int:
+    """标题字符预算:CJK 20 字,拉丁系 20 词对应的字符量。"""
+    han = sum(1 for ch in (sample or "") if "一" <= ch <= "鿿")
+    return 20 if han >= max(3, len(sample or "") * 0.2) else 60
 
 
 def _apply_chapter_title(ep, name: str, text: str | None = None) -> str:
-    """写回 episodes.title = 「第N集 <name>」,并同步正文首行 `# <name>`。
+    """写回 episodes.title = **纯标题**(不带集号),并同步正文首行 `# <name>`。
+
+    为什么不再存「第N集 <name>」:集号是 `episode_number` 字段的职责,混进标题
+    字符串后,非中文项目就会出现「第3集 Épisode 1 · Le retour」这种中法混排。
+    旧数据里已有的「第N集 标题」不用迁移 —— 读取侧 `strip_episode_prefix`
+    认得全部历史写法,渲染时才按界面语言拼前缀。
 
     text 必须传本次生成的新正文;不传(或传 None)才会回退 ep["content"] 旧快照 ——
     曾经只用旧快照,把刚生成的正文整段丢掉,落库只剩标题一行(实测 11 字符)。
     """
     import re as _re
-    title = f"第{ep['episode_number']}集 {name}"
+    title = (name or "").strip()
     text = (ep["content"] or "") if text is None else text
     if _re.match(r"^#\s+", text):
-        new_text = _re.sub(r"^#\s+.*$", f"# {name}", text, count=1)
+        new_text = _re.sub(r"^#\s+.*$", f"# {title}", text, count=1)
     else:
-        new_text = f"# {name}\n\n{text}"
+        new_text = f"# {title}\n\n{text}"
     db.ex("UPDATE episodes SET title=?, content=?, updated_at=? WHERE id=?",
           (title, new_text, db.now(), ep["id"]))
-    return name
+    return title
 
 
 def extract_title_from_content(content: str) -> str:
     """从正文首行反向提取已存在的章节名(不调 AI,对齐原版 73b3339)。
 
-    支持两种写法:`# 归乡的井`(markdown 标题)与 `第1集 县医院的消毒水味`;
+    支持三种写法:`# 归乡的井`(markdown 标题,任何语言)、`第1集 县医院的消毒水味`
+    (中文集号)、以及 `Épisode 3 · Le retour` 这类本地化集号 —— 非中文项目的
+    正文首行不会写成「第N集」,认不出来就会白跑一次 AI 调用。
     清洗书名号/引号/尾部标点;超过 30 字视为正文不当作标题。提取不到返回空串。
     """
     import re as _re
@@ -1317,36 +1404,68 @@ def extract_title_from_content(content: str) -> str:
         return ""
     if _re.match(r"^#{1,3}\s+", first):
         name = _re.sub(r"^#{1,3}\s+", "", first)
-    elif _re.match(r"^第\d+集", first):
-        name = _re.sub(r"^第\d+集\s*[:：、.\-—]?\s*", "", first)
     else:
-        return ""
+        # 集号前缀:中文形态 + 各界面语言的 episode_n 写法(见 _episode_prefix_candidates)。
+        # 没有 episode_number 可比对时用宽松形态匹配,只认「词+数字」结构。
+        name = first
+        stripped = False
+        for p in _episode_prefix_candidates(1):
+            if name.startswith(p):
+                name, stripped = name[len(p):], True
+                break
+        if not stripped:
+            m = _re.match(r"^(?:第\s*\d{1,4}\s*[集]|[\w'’ -]{2,18}?\s*\d{1,4}\s*[.:、·\-–—])\s*",
+                          name)
+            if not m:
+                return ""
+            name = name[m.end():]
+        name = name.lstrip(" \t　:：、.·-—")
     name = _re.sub(r"^[#《「『\"'\s]+|[》」』\"'\s]+$", "", name)
     name = _re.sub(r"[。！？!?，,、；;]+$", "", name).strip()
     return name if name and len(name) <= 30 else ""
 
 
-def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[str, str]:
+def _chapter_title_length_rule(lang: str, sample: str) -> str:
+    """章节名的长度约束措辞 —— 按书写系统分档,不写死「12 个汉字」。
+
+    「不超过 12 个汉字」是给中文的硬上限:法语一个词就 7-8 个字母,英文 12 个字母
+    连一个像样的标题都装不下(Hollow Crown 15 字母)。照搬到非中文项目上,模型要么
+    给出一个缩写到看不懂的词,要么无视约束 —— 都比中文项目差。
+    """
+    han = sum(1 for ch in (sample or "") if "一" <= ch <= "鿿")
+    total = len(sample or "") or 1
+    if han / total >= 0.2:
+        return "不超过 12 个汉字"
+    if " " in (sample or ""):
+        return "不超过 6 个词(词数计,不是字母数)"
+    return "不超过 24 个字符"
+
+
+def gen_chapter_title(episode_id: int, config_id: int | None = None,
+                      lang: str | None = None) -> tuple[str, str]:
     """一键章节名(对齐原版 POST /novel/chapter-title)。
 
     优先反向提取:正文首行已有 `# 名字` / 「第N集 名字」时直接取用,不调模型;
     提取不到才走 AI(上下文=总纲 400 字 + 前三章摘要各 200 字 + 本章节选 2000 字)。
     返回 (章节名, 来源 'content' | 'ai')。
+
+    lang 决定产出语言。**必须在函数体内兜底** —— 调用点有 UI/项目页/批量/程序化
+    十几处,任一处漏传就会退回全局默认,界面上选了语种也没用(同 plan/prose
+    模型分设的坑,见 AGENTS.md)。
     """
-    import re as _re
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         raise RuntimeError("剧集不存在")
+    lang = lang or config.resolve_content_language(ep["drama_id"])
     text = ep["content"] or ""
     if len(text.strip()) < 50:
         raise RuntimeError("本集正文太短,先粘贴或生成原文再起章节名")
     # 仅在标题为占位时提取,避免覆盖用户已改好的名字
-    existing = (ep["title"] or "").strip()
-    if (not existing) or _re.match(r"^第\d+集\s*$", existing):
+    if is_placeholder_episode_title(ep["title"], ep["episode_number"]):
         extracted = extract_title_from_content(text)
         if extracted:
             db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?",
-                  (f"第{ep['episode_number']}集 {extracted}", db.now(), episode_id))
+                  (extracted, db.now(), episode_id))
             return extracted, "content"
     d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     parts: list[str] = []
@@ -1362,10 +1481,16 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None) -> tuple[st
         parts.append("【前文摘要】(本章为第一章)")
     parts.append("【本章正文节选】\n" + " ".join(text.split())[:2000])
     parts.append(f"本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}")
-    parts.append("请为本章起一个简短、有钩子感的章节名:不超过 12 个汉字,不带「第N集」前缀,"
-                 "标题里的称谓必须符合上述叙事人称。")
+    # 语言名必须显式注入:system prompt 里的 LANGUAGE_SUFFIX 管的是「所有输出」,
+    # 但这里用户消息全中文,不给一句硬指令,非中文项目的章节名会飘回中文
+    # (与 episode_page._sb_prompt_request 记的同一类坑)。
+    lang_name = LANG_OUTPUT_NAME.get(lang, lang)
+    parts.append(f"**章节名必须用 {lang_name} 写**,不要用其它语言。")
+    parts.append("请为本章起一个简短、有钩子感的章节名:"
+                 f"{_chapter_title_length_rule(lang, text)},"
+                 "不要带集号前缀,标题里的称谓必须符合上述叙事人称。")
     parts.append("只输出章节名本身(一行纯文本,不要引号、书名号、前缀和任何解释)。")
-    raw = runner.run_agent("novel_writer", "\n".join(parts),
+    raw = runner.run_agent("novel_writer", "\n".join(parts), lang=lang,
                            config_id=config_id or prose_config_id())
     name = _clean_chapter_name(raw)
     if not name:
@@ -1751,9 +1876,11 @@ def draft_section(drama_id: int, key: str, config_id: int | None = None) -> dict
     # 规划侧走「规划模型」(实测 deepseek-v4-pro 的结构化输出更规整:
     # 分卷 7 卷的目标/关键事件/钩子字段完整;minimax 偶有只吐散文)
     config_id = config_id or plan_config_id()
+    lang = config.resolve_content_language(drama_id)
     raw = runner.run_agent("novel_planner", draft_prompt(drama_id, key),
-                           temperature=0.6, config_id=config_id,
-                           system=_draft_system(SECTION_SPEC[key]["name"]))
+                           temperature=0.6, lang=lang, config_id=config_id,
+                           system=prompts.with_language_suffix(
+                               _draft_system(SECTION_SPEC[key]["name"]), lang))
     return persist_draft(drama_id, key, raw)
 
 

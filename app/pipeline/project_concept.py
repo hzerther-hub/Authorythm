@@ -19,7 +19,7 @@ import mimetypes
 import re
 from pathlib import Path
 
-from ..agents import runner
+from ..agents import prompts, runner
 from ..core import db
 from ..core.i18n import LANG_OUTPUT_NAME
 from ..core.logging_setup import get_logger
@@ -141,7 +141,8 @@ def _ask_concept_json(prompt: str, *, config_id: int | None, lang: str | None) -
         p = prompt if attempt == 0 else prompt + strict
         try:
             data = runner.run_agent_json("project_concept", p, lang=lang,
-                                         config_id=config_id, system=SYSTEM_PROMPT)
+                                         config_id=config_id,
+                                         system=prompts.with_language_suffix(SYSTEM_PROMPT, lang))
         except Exception as e:  # noqa: BLE001 —— 解析失败也是一种「不齐」
             last_err = e
             continue
@@ -157,7 +158,8 @@ def _ask_concept_json(prompt: str, *, config_id: int | None, lang: str | None) -
     try:
         raw = runner.run_agent("project_concept", prompt + strict, lang=lang,
                                json_output=True, temperature=0.4,
-                               config_id=config_id, system=SYSTEM_PROMPT)
+                               config_id=config_id,
+                               system=prompts.with_language_suffix(SYSTEM_PROMPT, lang))
         # run_agent 带 with_meta 时会返回 (content, meta) 元组,这里不用 meta
         loose = _extract_fields_loose(raw, CONCEPT_FIELDS) if isinstance(raw, str) else {}
         if all(str(loose.get(f) or "").strip() for f in CONCEPT_FIELDS):
@@ -227,7 +229,16 @@ def generate_project_concept(*, work_type: str, idea: str,
     playbook = CONCEPT_PLAYBOOK[wt]
 
     # 内容语言:项目里所有 AI 产出都按这个语言走,别让模型漂回英文
-    out_lang = (lang or db.get_setting("content_language", "zh") or "zh")
+    #
+    # "auto" 必须在这里就解析掉:dramas.language 的默认值就是 'auto'(跟随全局),
+    # 调用方(asset_dialogs 项目设置)直接传原始列值的话,lang_hint 会变成字符串
+    # "auto",提示词变成「所有字段的值用auto输出。」—— 实测过的活 bug。
+    # 拿不到 drama_id(新建项目尚未落库)时退回全局设置。
+    out_lang = lang or ""
+    if out_lang == "auto" or out_lang not in LANG_OUTPUT_NAME:
+        out_lang = db.get_setting("content_language", "zh") or "zh"
+        if out_lang not in LANG_OUTPUT_NAME:
+            out_lang = "zh"
     lang_hint = LANG_OUTPUT_NAME.get(out_lang, out_lang)
 
     images = [str(p) for p in (ref_images or []) if str(p).strip()][:12]

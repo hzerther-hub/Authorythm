@@ -1,0 +1,106 @@
+{
+  "id": "pt-BR",
+  "name": "Portuguese (Brazil)",
+  "name_zh": "葡萄牙语(巴西)",
+  "full_rules": true,
+  "source": "GoodNovel / Dreame 葡语区投稿说明 + 巴西葡语与欧葡用词差异对照",
+  "localization_goal": "巴西葡语与欧葡差别极大(「电话」在巴西是 celular、欧葡 é telefone),用错用词读者立刻出戏;语序要按葡语习惯重排,不是逐句翻",
+  "address": {
+    "note": "巴西葡语昵称密集(« pai »/« mãe » 既是父母也是称呼),中文的「哥哥姐姐」应落到 nome + 恋人称呼;「您」在巴西口语里几乎不用",
+    "map": {
+      "husband": "marido / esposo",
+      "wife": "esposa / mulher",
+      "boyfriend": "namorado",
+      "girlfriend": "namorada",
+      "mother_in_law": "sogra",
+      "father_in_law": "sogro",
+      "shifu": "mestre",
+      "sect_master": "mestre da seita",
+      "senior": "irmão mais velho",
+      "junior": "irmão mais novo",
+      "sister_in_law": "cunhada",
+      "brother_in_law": "cunhado",
+      "big_brother": "irmão mais velho",
+      "little_sister": "irmã mais nova",
+      "aunt": "tia",
+      "uncle": "tio",
+      "boss": "chefe / patrão"
+    }
+  },
+  "filler": {
+    "note": "中文语气词在葡语里应直接删掉,硬译会变成多余的连接词",
+    "avoid": ["啊", "呀", "吧", "呢", "嘛", "哦", "嗯", "唉", "呵"],
+    "prefer": ["olha", "então", "ei", "sério", "meu deus"]
+  },
+  "euphemism": {
+    "note": "巴葡对占有/强制类桥段接受度较高,露骨描写尺度与英语区相近",
+    "levels": [
+      {"cn": "死了", "target": "não sobreviveu"},
+      {"cn": "打住了", "target": "deixou-o no chão, mal vivo"},
+      {"cn": "杀人", "target": "acabou com ele"}
+    ],
+    "advice": "写动作与后果,不写直白标签"
+  },
+  "common_mistranslations": [
+    {"cn": "块钱", "target": "grana / dinheiro", "note": "口语 money"},
+    {"cn": "万元", "target": "dez mil reais", "note": "按巴西货币体系重设数量级"},
+    {"cn": "总裁", "target": "o CEO", "note": "不是 « o presidente »"},
+    {"cn": "董事长", "target": "o presidente do conselho"},
+    {"cn": "老虎", "target": "o chefão do submundo", "note": "地下世界称谓"},
+    {"cn": "修仙", "target": "cultivação", "note": "泛亚题材,巴葡读者接受拼音"},
+    {"cn": "武侠", "target": "wuxia", "note": "泛亚题材通用"}
+  ],
+  "punctuation": {
+    "note": "巴葡用弯引号;数字千分位用点、货币前缀用 R$;巴西不使用倒问号",
+    "forbid_fullwidth": ["，", "。", "、", "；", "：", "！", "？", "（", "）", "【", "】", "《", "》", "〈", "〉", "「", "」", "～"]
+  },
+  "money_time": {
+    "note": "巴西货币为 real(R$);时间用 24 小时制",
+    "examples": [
+      {"cn": "三更半夜", "target": "no meio da madrugada"},
+      {"cn": "一大早", "target": "bem cedo"},
+      {"cn": "下班后", "target": "depois do trabalho"}
+    ]
+  },
+  "self_observation_forbidden": {
+    "note": "第一视角看不见自己的脸 —— 葡语同样禁 « meu rosto ficou vermelho » 这类描写",
+    "patterns": [
+      "meu rosto\\s+(?:ficou|se tornou|estava)\\s+(?:vermelho|pálido|branco|livido)",
+      "meus olhos\\s+(?:se\\s+arregalaram|se\\s+abriram)",
+      "minhas bochechas\\s+(?:ficaram|encheram)"
+    ]
+  },
+  "hook_markers": {
+    "note": "章末钩子标记(小写匹配);葡语常用 « antes que » « de repente » 这类未完成动作钩子",
+    "patterns": [
+      "antes que",
+      "antes de",
+      "de repente",
+      "de repente,",
+      "então",
+      "mas de repente",
+      "tarde demais",
+      "nunca",
+      "não conseguiu",
+      "não disse nada",
+      "ninguém falou",
+      "ia ",
+      "começou a",
+      "pôs-se a",
+      "uma voz",
+      "um som",
+      "o telefone",
+      "dele",
+      "exatamente quando",
+      "naquele momento"
+    ]
+  },
+  "translationese": {
+    "note": "翻译腔量化阈值(只报可查证事实,不做审美打分)",
+    "max_sentence_words": 30,
+    "max_passive_ratio": 0.35,
+    "max_filler_total": 5,
+    "filler_words": ["muito", "realmente", "bastante", "extremamente", "incrível", "um pouco"],
+    "passive_pattern": "\\b(?:foi|foram|era|eram|é|são)\\s+\\w+(?:ado|ida|ido)\\b"
+  }
+}

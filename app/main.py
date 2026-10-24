@@ -52,6 +52,12 @@ def _apply_proxy_preference() -> None:
 
 
 def main() -> int:
+    # QtWebEngine 必须在 QApplication 创建之前 import 初始化(导演台预演页
+    # previz_page 内嵌原版 web 渲染内核);放在之后会直接 abort。
+    # 缺 WebEngine 组件(精简 PySide6)也不拦启动,只是预演页不可用。
+    import contextlib
+    with contextlib.suppress(ImportError):
+        import PySide6.QtWebEngineWidgets  # noqa: F401  (副作用 import:初始化 WebEngine)
     app = QApplication(sys.argv)
     app.setApplicationName("PySide6Drama")
 

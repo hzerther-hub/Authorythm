@@ -13,6 +13,8 @@ dependencies = [
     "edge-tts",
     "cryptography>=41.0",
     "numpy>=1.26",
+    # 繁体中文内容语言的简→繁转换(app/core/zh_convert.py)
+    "opencc-python-reimplemented>=0.1.7",
 ]
 
 [project.optional-dependencies]
@@ -78,6 +80,9 @@ ignore = [
 "app/ui/*" = ["N802", "N803", "N806", "E741"]
 # 测试桩与 monkeypatch 常用易触发误报
 "tests/*" = ["B011", "N802", "N803"]
+# 导演台工程数据模型:dataclass 字段名必须与上游 DirectorDesk 的 JSON schema
+# 逐字一致(targetId / promptText …),否则序列化出的工程原版不认
+"app/pipeline/previz.py" = ["N815"]
 
 # ── Mypy ────────────────────────────────────────────────────────────────
 # 渐进式启用:core / ai / agents / pipeline 先全量检查;

@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -141,7 +142,47 @@ def get_category(category_id: str) -> dict:
     return _require(_load_all(CATEGORY_DIR), category_id, "品类")
 
 
+def list_languages() -> list[dict]:
+    """可选目标语言列表(给 UI 下拉用)。与 list_platforms/list_categories 对称。
+
+    `depth` 如实告诉 UI 这个语言包写到什么程度:
+      full     —— 有称呼表 / 误译表 / 标点 / 翻译腔阈值 / 钩子正则,质检覆盖完整
+      skeleton —— 只有本地化目标与标点规则。质检只跑语言无关项(R3/R5/R6/R7)
+    骨架包必须**如实标注**,不能让用户以为质检真的跑过了 —— 静默降级比明确
+    告知危险得多(AGENTS.md:宁可漏报不误报)。
+    """
+    out: list[dict] = []
+    for p in _list_json(LANGUAGE_DIR):
+        try:
+            data = _read_json(p)
+        except RuleError:
+            continue                      # 坏文件留给 validate() 报,这里不炸 UI
+        depth = "full" if data.get("full_rules", True) else "skeleton"
+        out.append({
+            "id": p.stem,
+            "name": data.get("name", p.stem),
+            "name_zh": data.get("name_zh") or data.get("name", p.stem),
+            "depth": depth,
+            "source": data.get("source", ""),
+        })
+    return out
+
+
+def _safe_lang_id(lang: str) -> str:
+    """校验语言 id 形态。
+
+    `get_language` 直接把参数拼进文件路径。接上 UI 下拉之前,所有调用点的
+    target_lang 都是硬编码默认值,这条路径不可达;一旦开放给用户就可达。
+    只放行 `[A-Za-z0-9-]`(en-US / pt-BR 这类 BCP-47 形态),挡掉 `../` 与绝对路径。
+    """
+    lang = (lang or "").strip()
+    if not lang or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,31}", lang):
+        raise RuleError(f"非法的语言 id:{lang!r}(只接受字母/数字/连字符,如 en-US)")
+    return lang
+
+
 def get_language(lang: str = DEFAULT_LANG) -> dict:
+    lang = _safe_lang_id(lang)
     path = OVERSEAS_DIR / LANGUAGE_DIR / f"{lang}.json"
     if not path.exists():
         avail = "、".join(p.stem for p in _list_json(LANGUAGE_DIR)) or "(空)"
@@ -221,6 +262,30 @@ def validate() -> list[str]:
         get_language(DEFAULT_LANG)
     except RuleError as exc:
         problems.append(str(exc))
+    # 语言包逐个体检。之前只验 DEFAULT_LANG,意味着一个 schema 坏掉的
+    # fr-FR.json 永远不会被发现 —— 直到用户选了那个语言才在 UI 层炸。
+    for p in _list_json(LANGUAGE_DIR):
+        try:
+            data = _read_json(p)
+        except RuleError as exc:
+            problems.append(str(exc))
+            continue
+        if not data.get("name"):
+            problems.append(f"语言 {p.stem} 缺字段 name")
+        for field in ("localization_goal",):
+            if not (data.get(field) or "").strip():
+                problems.append(f"语言 {p.stem} 缺 {field}")
+        if not (data.get("punctuation") or {}).get("forbid_fullwidth"):
+            problems.append(f"语言 {p.stem} 的 punctuation.forbid_fullwidth 为空"
+                            "(中文全角残留检查会失去依据)")
+        depth = "full" if data.get("full_rules", True) else "skeleton"
+        if depth == "full":
+            for field in ("address", "common_mistranslations", "hook_markers",
+                          "self_observation_forbidden", "translationese"):
+                if not data.get(field):
+                    problems.append(f"语言 {p.stem} 标为完整包但缺 {field}")
+    if not _list_json(LANGUAGE_DIR):
+        problems.append("缺少语言规则(language/ 为空)")
     try:
         get_narrative()
     except RuleError as exc:
@@ -374,11 +439,42 @@ def assemble(platform_id: str, category_id: str, *,
     mis = lang.get("common_mistranslations") or []
     if mis:
         lines.append("- 常见误译(必须替换):")
-        lines += [f"  - {m.get('cn')} → {m.get('en')}" + (f"({m['note']})" if m.get("note") else "")
+        lines += [f"  - {m.get('cn')} → {m.get('target', m.get('en'))}"
+                  + (f"({m['note']})" if m.get("note") else "")
                   for m in mis]
     punct = lang.get("punctuation") or {}
     if punct.get("note"):
         lines.append(f"- 标点:{punct['note']}")
+    # 以下三块以前只是数据文件里的死字段(没人读,写的人以为生效了)。
+    # 内容质量的大头恰恰在这里 —— 语气词啰嗦、委婉层级、货币与时间表达,
+    # 都是中文稿直译过来最出戏的地方。
+    addr_pairs = lang.get("address") or {}
+    if isinstance(addr_pairs, dict):
+        addr_map = addr_pairs.get("map") or {}
+        if addr_map:
+            lines.append("- 称呼固定译名:")
+            lines += [f"  - {k} → {v}" for k, v in addr_map.items()]
+    fil = lang.get("filler") or {}
+    if isinstance(fil, dict) and fil.get("avoid"):
+        avoid = "、".join(str(x) for x in fil["avoid"])
+        lines.append(f"- 中文语气词/副词({avoid})在目标语言里显得啰嗦,直接删掉"
+                     if fil.get("note") is None else
+                     f"- 语气词:{fil.get('note','')} 禁用:{avoid}")
+    eup = lang.get("euphemism") or {}
+    levels = eup.get("levels") if isinstance(eup, dict) else None
+    if levels:
+        lines.append("- 委婉层级(按目标平台审核尺度选档):")
+        lines += [f"  - {lv.get('cn')} → {lv.get('target', lv.get('en'))}"
+                  for lv in levels if isinstance(lv, dict)]
+        if eup.get("advice"):
+            lines.append(f"  > {eup['advice']}")
+    mt = lang.get("money_time") or {}
+    if mt.get("examples"):
+        lines.append("- 时间与金钱表达:")
+        lines += [f"  - {e.get('cn')} → {e.get('target', e.get('en'))}"
+                  for e in mt["examples"] if isinstance(e, dict)]
+    if lang.get("depth_note"):
+        lines.append(f"> {lang['depth_note']}")
 
     # ---- 改写级别
     levels = nar.get("rewrite_levels") or []

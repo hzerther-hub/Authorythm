@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 
-from ..agents import runner
+from ..agents import prompts, runner
 from ..core import db
 from ..core.logging_setup import get_logger
 from . import media_files
@@ -638,7 +638,8 @@ def gen_atmospheres(episode_id: int, config_id: int | None = None, lang: str | N
 请输出这个镜头的氛围描述。"""
         try:
             text = runner.run_agent("prompt_generator", prompt, lang=lang,
-                                    config_id=config_id, system=system).strip()
+                                    config_id=config_id,
+                                    system=prompts.with_language_suffix(system, lang)).strip()
             text = text.strip('"“”').strip()
             if text and 10 < len(text) < 500:
                 db.ex("UPDATE storyboards SET atmosphere=?, updated_at=? WHERE id=?",

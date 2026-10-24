@@ -323,3 +323,75 @@ def test_format_issues_renders_text():
     issues = run_checks("My face flushed.", chapter_no=1)
     lines = format_issues(issues)
     assert lines and lines[0].startswith("[R1]")
+
+
+# ---------------------------------------------------------------- 多语言语种
+
+def test_japanese_chapter_length_is_not_zero():
+    """日文稿既不是中文、也几乎不含拉丁字母。
+
+    旧实现里 `_count_words` 只认拉丁字母,日文稿字数恒为 0 → R6 每章误报
+    「章节字数 0 低于平台下限 800」,用户改对了却满屏报错。
+    """
+    from app.pipeline.overseas_check import _count_words
+    ja = "彼は彼女を見た。その瞬間、心臓が止まった。窓の外では雨が降っていた。" * 12
+    n = _count_words(ja, "ja-JP")
+    # 30 个汉字/假名 × 12 轮 = 360 字,按「1 字 ≈ 1.8 英文词」折算 ≈ 200 词
+    assert 180 <= n <= 220, f"日文字数折算异常: {n}"
+
+
+def test_thai_and_arabic_are_not_zero_words():
+    """泰语/阿拉伯语无空格分词,也不能算成 0 词。"""
+    from app.pipeline.overseas_check import _count_words
+    th = "เขาเดินเข้ามาในห้องและมองไปที่เธออย่างเงียบงัน" * 20
+    ar = "دخل الغرفة ونظر إليها بصمت لا توصفه الكلمات" * 20
+    assert _count_words(th, "th-TH") > 100
+    assert _count_words(ar, "ar-SA") > 100
+
+
+def test_latin_word_count_unchanged():
+    """拉丁系仍按词数 1:1 —— 平台规格是按英文词数标的。"""
+    from app.pipeline.overseas_check import _count_words
+    en = "He walked into the room and looked at her without a word."
+    assert _count_words(en, "en-US") == 12
+
+
+def test_japanese_not_treated_as_chinese_source():
+    """日文稿不能被当成「中文原稿」而跳过中文残留/翻译腔检查。"""
+    from app.pipeline.overseas_check import _is_chinese
+    ja = "彼は彼女を見た。その瞬間、心臓が止まった。"
+    assert _is_chinese(ja) is True, "无 lang 时沿用旧启发式"
+    assert _is_chinese(ja, "ja-JP") is False, "传了 lang 就必须按语种判"
+
+
+def test_skeleton_pack_does_not_silently_pass_qc():
+    """骨架包的 passive_pattern 显式为空 → R10 必须**跳过**,不能回落英语正则。
+
+    回落的后果:英语正则跑在泰文上永远匹配不到 → R10 全过 → 用户以为质检通过,
+    实际什么都没检(假绿)。
+    """
+    issues = check_translationese("some text here", {"passive_pattern": ""})
+    assert issues == [], "未校准的语言不该跑英语翻译腔正则"
+
+
+def test_run_checks_uses_patterns_list_for_any_language():
+    """R1/R9 认语言无关的 `patterns` 列表,不再依赖 .en/.zh 硬编码 key。"""
+    from app.pipeline.overseas_check import run_checks
+    fr = "Son visage devint rouge, et il le regarda fixement."
+    issues = run_checks(fr, platform={}, category={},
+                        language={"id": "fr-FR",
+                                  "self_observation_forbidden": {
+                                      "patterns": [r"visage devint rouge"]},
+                                  "hook_markers": {"patterns": ["le regarda"]}},
+                        lang_id="fr-FR")
+    assert any(i.rule == "R1" for i in issues), "法语 R1 正则没生效"
+
+
+def test_run_checks_skips_r1_when_no_patterns_for_language():
+    """语言包没给正则时宁可不报,也不拿英语正则去套非英语正文。"""
+    from app.pipeline.overseas_check import run_checks
+    issues = run_checks("Son visage devint rouge.", platform={}, category={},
+                        language={"id": "fr-FR",
+                                  "self_observation_forbidden": {"patterns": []}},
+                        lang_id="fr-FR")
+    assert not [i for i in issues if i.rule == "R1"], "无语言正则时不该报 R1"

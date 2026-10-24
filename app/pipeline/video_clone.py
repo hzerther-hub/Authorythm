@@ -700,7 +700,8 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
             f"\n\n总时长 {dur:.1f} 秒。"
             f"{('补充说明: ' + extra_hint) if extra_hint else ''}")
         raw = runner.run_agent("storyboard_breaker", prompt, temperature=0.3,
-                               config_id=config_id, image_urls=[_inline_video(work)])
+                               config_id=config_id, image_urls=[_inline_video(work)],
+                               lang=config.resolve_content_language(drama_id))
         data = runner.extract_json(raw) or {}
         # 直传用 shots/duration/dialogue,统一映射到抽帧版的字段名,
         # 这样下游(rewrite / generate_shot_image / _shot_video_prompt)
@@ -1186,9 +1187,12 @@ def understand_video(episode_id: int, video_url: str, config_id=None) -> int:
         raise RuntimeError("参考视频文件不存在")
     work, _t = transcode_if_needed(src, episode_id)
     from ..agents import runner
+    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
     prompt = UNDERSTAND_PROMPT + "\n\n参考视频(base64 内联,直接读取):"
     raw = runner.run_agent("storyboard_breaker", prompt, temperature=0.3,
-                           config_id=config_id, image_urls=[_inline_video(work)])
+                           config_id=config_id, image_urls=[_inline_video(work)],
+                           lang=config.resolve_content_language(
+                               ep["drama_id"] if ep else None))
     data = runner.extract_json(raw) or {}
     shots = data.get("shots") if isinstance(data, dict) else None
     if not shots:

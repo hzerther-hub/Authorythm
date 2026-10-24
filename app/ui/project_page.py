@@ -58,10 +58,15 @@ def status_label(status: str) -> str:
 
 
 def _chapter_name_missing(ep: dict) -> bool:
-    """标题为空或只有「第N集」占位 = 缺章节名(对齐原版 chapterNameMissing)。"""
-    import re
-    t = (ep.get("title") or "").strip()
-    return (not t) or bool(re.match(r"^第\d+集\s*$", t))
+    """标题为空或剥掉集号后什么都不剩 = 缺章节名(对齐原版 chapterNameMissing)。
+
+    判定收敛到 `novel.is_placeholder_episode_title`:旧实现只认 `^第\\d+集\\s*$`,
+    于是**非中文项目永远补不出章节名** —— 新建剧集的初始 title 是
+    `tr("episode_n").format(n)`(法语界面对应「Épisode 3」),正则匹配不上,
+    `not t` 又是 False,按钮就永久不出现,用户无从补救。
+    """
+    from ..pipeline.novel import is_placeholder_episode_title
+    return is_placeholder_episode_title(ep.get("title"), ep.get("episode_number"))
 
 
 TITLE_IDLE_QSS = ("QLineEdit{border:none;background:transparent;padding:0;"

@@ -47,6 +47,7 @@ class OverseasDialog(QDialog):
         self._issues: list = []
         self._level = "B"
         self._zh_source = ""
+        self._project_id = 0
 
         root = QVBoxLayout(self)
 
@@ -91,8 +92,23 @@ class OverseasDialog(QDialog):
             self.level_combo.addItem(f"{lv} · {tr('overseas_level_' + lv)}", lv)
         self.level_combo.setCurrentIndex(1)
         row.addWidget(self.level_combo)
+
+        # 目标语言。**默认取项目设置里的「内容语言」** —— 正文语言和目标语言
+        # 本来就不该是两个独立选择,绝大多数情况是同一个值;下拉只是允许本次覆盖。
+        #
+        # lang_note 必须先建好:setCurrentIndex 会立刻触发 currentIndexChanged,
+        # 顺序颠倒就是「setVisible 之前 widget 还不存在」的 AttributeError。
+        self.lang_note = W.muted("")
+        self.lang_note.setVisible(False)
+        row.addWidget(QLabel(tr("overseas_target_lang")))
+        self.lang_combo = QComboBox()
+        self._fill_combo(self.lang_combo, self._language_items())
+        self.lang_combo.currentIndexChanged.connect(lambda _i: self._sync_lang_note())
+        self.lang_combo.setToolTip(tr("overseas_lang_hint"))
+        row.addWidget(self.lang_combo)
         row.addStretch(1)
         root.addLayout(row)
+        root.addWidget(self.lang_note)
 
         # ── 操作行 ──
         act = QHBoxLayout()
@@ -142,6 +158,11 @@ class OverseasDialog(QDialog):
 
         root.addWidget(W.muted(tr("overseas_rules_note")))
 
+        # 所有控件建完之后再定目标语言默认值:`_sync_lang_note` 会连带刷新
+        # 术语表表头,而 glossary_table / lang_note 都排在参数行之后 ——
+        # 提前调用就是「widget 还不存在」的 AttributeError。
+        self._select_project_language()
+
     # ------------------------------------------------------------ 组合框
 
     @staticmethod
@@ -164,6 +185,69 @@ class OverseasDialog(QDialog):
                     for c in overseas_rules.list_categories()]
         except Exception:  # noqa: BLE001
             return []
+
+    def _language_items(self) -> list[tuple[str, str]]:
+        """目标语言下拉。骨架包**带角标如实标注**,不让用户以为质检跑全了。"""
+        try:
+            from ..pipeline import overseas_rules
+            items = []
+            for l in overseas_rules.list_languages():
+                name = f"{l.get('name_zh') or l.get('name', l['id'])} ({l['id']})"
+                if l.get("depth") == "skeleton":
+                    name += " · " + tr("overseas_lang_skeleton")
+                items.append((name, l["id"]))
+            return items
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _select_project_language(self) -> None:
+        """默认选项目内容语言。
+
+        项目语言不在语言包列表里时(中文/日文项目 —— 它们的语言本身就不是
+        「出海目标语言」)必须回退到 **en-US 而不是下拉的第一项**:列表是按 id
+        字母序排的,第一项是 ar-SA,让一个中文项目默认选中阿拉伯语毫无道理。
+        """
+        lang = ""
+        try:
+            from ..core import config
+            lang = config.resolve_content_language(self._drama_id) or ""
+        except Exception:  # noqa: BLE001
+            pass
+        idx = self.lang_combo.findData(lang)
+        if idx < 0:
+            try:
+                from ..pipeline import overseas_rules
+                idx = self.lang_combo.findData(overseas_rules.DEFAULT_LANG)
+            except Exception:  # noqa: BLE001
+                idx = -1
+        self.lang_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self._sync_lang_note()
+
+    def _sync_lang_note(self) -> None:
+        """把规则包深度写在界面上 —— 骨架包只跑语言无关的质检项。"""
+        lid = self.lang_combo.currentData() or ""
+        try:
+            from ..pipeline import overseas_rules
+            depth = next((l.get("depth") for l in overseas_rules.list_languages()
+                          if l.get("id") == lid), None)
+        except Exception:  # noqa: BLE001
+            depth = None
+        if depth == "skeleton":
+            self.lang_note.setText(tr("overseas_lang_skeleton_note"))
+            self.lang_note.setVisible(True)
+        else:
+            self.lang_note.setVisible(False)
+        self._sync_glossary_header()
+
+    def _sync_glossary_header(self) -> None:
+        """术语表表头跟着目标语言走 —— 写死「中文 / English」时法语项目会误导用户。"""
+        lid = self.lang_combo.currentData() or "en-US"
+        try:
+            from ..pipeline import overseas_rules
+            name = overseas_rules.get_language(lid).get("name", lid)
+        except Exception:  # noqa: BLE001
+            name = lid
+        self.glossary_table.setHorizontalHeaderLabels([tr("overseas_source"), str(name)])
 
     # ------------------------------------------------------------ 输入
 
@@ -201,6 +285,7 @@ class OverseasDialog(QDialog):
             "platform": self.platform_combo.currentData() or "",
             "category": self.category_combo.currentData() or "",
             "level": self.level_combo.currentData() or "B",
+            "target_lang": self.lang_combo.currentData() or "en-US",
             "config_id": self._config_id,
         }
 
@@ -219,10 +304,20 @@ class OverseasDialog(QDialog):
         self.status_lab.setText(tr("overseas_diag_running"))
 
         def job(tid):
-            return overseas.diagnose(
+            res = overseas.diagnose(
                 source=snap["source"], platform=snap["platform"],
                 category=snap["category"], level=snap["level"],
+                target_lang=snap["target_lang"],
                 text_config_id=snap["config_id"])
+            # 诊断完就落库:以前诊断结果只存在内存里,关窗即丢,
+            # overseas_project 表的 target_lang 列也从来没被写过。
+            res["project_id"] = overseas.save_project(
+                drama_id=self._drama_id, episode_id=self._episode_id,
+                platform=snap["platform"], category=snap["category"],
+                level=res.get("level") or snap["level"],
+                source_text=snap["source"], target_lang=snap["target_lang"],
+                glossary=res.get("glossary"), diag=res)
+            return res
 
         def done(tid, result, error):
             self.diag_btn.idle()
@@ -234,6 +329,7 @@ class OverseasDialog(QDialog):
             self._level = res.get("level") or snap["level"]
             self._issues = res.get("issues") or []
             self._glossary = res.get("glossary") or {}
+            self._project_id = res.get("project_id") or 0
             self._fill_diag(res)
             self._fill_glossary(self._glossary)
             self.tabs.setCurrentIndex(0)
@@ -322,11 +418,23 @@ class OverseasDialog(QDialog):
                 source=snap["source"], platform=snap["platform"],
                 category=snap["category"], level=snap["level"],
                 glossary=glossary, issues=self._issues,
+                target_lang=snap["target_lang"],
                 text_config_id=snap["config_id"])
             issues = overseas.check(
                 res["content"], platform=snap["platform"],
-                category=snap["category"], glossary=glossary)
+                category=snap["category"], glossary=glossary,
+                target_lang=snap["target_lang"])
             res["qc"] = issues
+            # 没诊断过就直接点改写的话先补一个 project,否则改写稿无处可挂
+            pid = self._project_id or overseas.save_project(
+                drama_id=self._drama_id, episode_id=self._episode_id,
+                platform=snap["platform"], category=snap["category"],
+                level=snap["level"], source_text=snap["source"],
+                target_lang=snap["target_lang"], glossary=glossary)
+            res["project_id"] = pid
+            res["chapter_id"] = overseas.save_chapter(
+                project_id=pid, episode_id=self._episode_id, chapter_no=1,
+                content=res["content"], qc=[str(i) for i in issues])
             return res
 
         def done(tid, result, error):
