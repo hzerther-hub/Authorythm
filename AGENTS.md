@@ -251,6 +251,21 @@ def some_new_entry(..., config_id: int | None = None):
 改完用 `git stash` 存快照,不要用 `git checkout stash@{N} -- <file>` 试探性恢复
 (会把快照覆盖回工作区,等于没退)。
 
+## Git 历史(2026-10-24 重写过)
+
+- 本仓库历史被**重写过一次**:剥掉 Claude 共同作者署名,让 GitHub 侧边栏的 Contributors
+  列表不再出现 claude 条目(39 个提交的 `Co-Authored-By: Claude ...` trailer +
+  22 个提交的 `🤖 Generated with [Claude Code]` 页脚已删)。
+- **文件内容一字未改** —— root tree SHA 始终是 `6cf127a3`,只有 commit message 和 SHA 变了。
+- 旧历史在本地 tag `pre-trailer-strip-20261024`(指向 `96f37ab`),**未推远端** ——
+  远端任何可达 ref 都会让旧提交继续被看见。要回旧历史:`git checkout pre-trailer-strip-20261024`。
+- **持旧克隆的人**需 `git fetch origin && git reset --hard origin/master`(树不变,文件不受影响);
+  自己的本地分支若基于旧 SHA,得重新 rebase。
+- 同类需求再出现:`.mailmap` 对共同作者**无效**(实测,推送后 claude 仍是 38 次贡献),
+  只能用 `git filter-repo` 重写历史;强推大包要加
+  `http.postBuffer` + `http.lowSpeedLimit=0` + `http.version=HTTP/1.1` 防 408 超时;
+  强推后 stats 接口长时间返回 202 是「后台重算」不是出错。
+
 ## 开发习惯
 
 - 长流程分批后台跑时**参数要先在主线程快照**再进 worker(见「线程模型」)。
