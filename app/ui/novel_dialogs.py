@@ -627,7 +627,22 @@ class NovelPlanDialog(QDialog):
                 editor.setPlainText(novel_pipe.chapters_to_text(result['chapters']))
                 ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(
                     result['count'], result['word_count']))
-                self._chain_characters()      # 顺带把主要角色也生出来
+                # 按卷生成时 `generate_chapters_for_volume` **已经抽好本卷角色**
+                # 并落库了(result['characters']),这里只要刷新显示 ——
+                # 别再白跑一次 plan_characters。
+                got_chars = result.get('characters') or []
+                if got_chars:
+                    self.chars_edit.setPlainText(
+                        json.dumps(novel_pipe.load_main_characters(self.drama_id),
+                                   ensure_ascii=False, indent=1))
+                    ok(tr('已生成 {} 个主要角色(已同步到资产库)').format(len(got_chars)))
+                else:
+                    # 本卷角色抽取失败的原因要**说给用户听**:角色是写作红线的第 5 步,
+                    # 缺它一章都写不了,而以前这个失败只打控制台,界面毫无线索。
+                    why = result.get('char_error') or ''
+                    if why:
+                        err(tr('本卷角色抽取失败:{}').format(str(why)[:160]))
+                    self._chain_characters()      # 没抽到 → 兜底再生成一次
 
             TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
             return

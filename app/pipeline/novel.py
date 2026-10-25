@@ -456,10 +456,18 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
     parts.append("本卷章节计划:\n" + plan_txt)
     parts.append(CHARACTER_PROMPT)
     parts.append("只列**本卷出场**的角色;前几卷已建立的可只保留姓名,不重复描述。")
-    raw = runner.run_agent("novel_planner", "\n\n".join(parts),
-                           temperature=0.5, lang=config.resolve_content_language(drama_id),
-                           config_id=config_id)
-    chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
+    # 键名两个都认 —— 见 _extract_characters_payload 的说明。
+    # 之前这里只认 `characters`,而 novel_planner 的系统提示词要的是
+    # `main_characters` → 模型听系统提示词时这里恒为空,角色抽取**静默失败**
+    # (异常只打到控制台,用户看不到),「主要角色」框就一直空白。
+    try:
+        data = runner.run_agent_json(
+            "novel_planner", "\n\n".join(parts),
+            lang=config.resolve_content_language(drama_id), config_id=config_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[novel] 第 {vol.get('title') or ''} 卷角色抽取调用失败({exc})", flush=True)
+        return []
+    chars = _extract_characters_payload(data)
     if not chars:
         return []
     meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
@@ -589,15 +597,22 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
     if on_stage:
         on_stage(tr("正在抽取本卷主要角色…"))
     chars: list[dict] = []
+    char_error = ""
     if with_characters:
         try:
             chars = _extract_characters_for_volume(
                 drama_id, all_ch, vol, config_id)
         except Exception as exc:  # noqa: BLE001
             # 角色抽取失败不该让已生成的章节计划前功尽弃
+            char_error = str(exc)
             print(f"[novel] 第 {volume_no} 卷角色抽取失败({exc}),章节计划已保留", flush=True)
+        if not chars and not char_error:
+            # 抽到 0 个也算失败:角色设定是写作红线的第 5 步,缺它一章都写不了。
+            # 以前这里静默返回空列表,用户看到「主要角色」一片空白却不知道原因。
+            char_error = "模型未返回角色"
     return {"count": len(all_ch), "word_count": word_count or 2500,
-            "chapters": all_ch, "start": a, "end": b, "characters": chars}
+            "chapters": all_ch, "start": a, "end": b, "characters": chars,
+            "char_error": char_error}
 
 
 def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
@@ -793,6 +808,72 @@ CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与章节计�
 # 具体注入发生在 plan_characters() 里(按项目内容语言选中/英文规格块)。
 
 
+# 模型可能用中文键名回角色 —— 这是实测踩到的:提示词全是中文(总纲/世界观/合约/
+# 角色规格块),模型就跟着用中文键,{"角色":[{"姓名":…,"角色":…,"外形":…}]}。
+# 代码只认 name/role/appearance 这些英文键 → 拿不到名字 → 每个角色都被跳过 →
+# 「AI 未返回角色」。**同一段提示词里加不加 616 字的中文外观规格块,模型的键名
+# 就会在英文与中文之间摆**(实测:不加给 characters,加上给「角色」)。
+# 所以这里两种都认,别指望模型一定听话。
+_CHAR_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "name": ("name", "姓名", "名字", "角色名", "人物", "姓名 "),
+    "role": ("role", "角色", "定位", "身份定位", "角色定位", "type"),
+    "identity": ("identity", "身份", "背景", "身份背景"),
+    "motivation": ("motivation", "动机", "目标", "欲望", "驱动"),
+    "appearance": ("appearance", "外形", "外貌", "外观", "长相", "形象"),
+    "styling": ("styling", "服装风格", "服装", "造型", "穿着", "服饰"),
+}
+# 角色数组所在的容器键
+_CHAR_LIST_ALIASES = ("characters", "main_characters", "角色", "人物",
+                       "主要角色", "角色列表", "人物列表", "result", "items")
+
+
+def _normalize_character_fields(c: dict) -> dict:
+    """把一个角色 dict 的键名归一化到 name/role/identity/motivation/appearance/styling。"""
+    if not isinstance(c, dict):
+        return {}
+    if "name" in c and "appearance" in c:
+        return c                       # 已经是标准形态
+    out: dict = {}
+    lowered = {str(k).strip().lower(): v for k, v in c.items()}
+    for canon, aliases in _CHAR_FIELD_ALIASES.items():
+        for a in aliases:
+            v = c.get(a, lowered.get(a.lower()))
+            if v not in (None, ""):
+                out[canon] = v
+                break
+    return out
+
+
+def _extract_characters_payload(raw) -> list:
+    """从模型输出里取角色数组 —— **容器键名和字段键名都认**。
+
+    两个坑叠在一起:
+      1. 容器键:`novel_planner` 的系统提示词要 `main_characters`,`CHARACTER_PROMPT`
+         要 `characters`,模型听哪个都有可能;还会给中文「角色」。
+      2. 字段键:提示词整体是中文,模型很可能给「姓名/角色/外形/服装风格」,
+         而代码只认 name/role/appearance → 名字取不到 → 每个角色被跳过 →
+         「AI 未返回角色」(实测 drama 4 上就是这么失败的,见 sys_task 1548)。
+    另外兜住「模型直接返回一个数组」和「角色被包在别的层」两种形态。
+    """
+    data = raw
+    if isinstance(data, str):
+        data = runner.extract_json(data) or {}
+    if isinstance(data, list):
+        return _clean_characters(data)
+    if not isinstance(data, dict):
+        return []
+    for key in _CHAR_LIST_ALIASES:
+        v = data.get(key)
+        if isinstance(v, list) and v:
+            return _clean_characters(v)
+    # 模型有时把角色放在别的键下(旧规划字段名 / 自定义名)——只要长得像角色数组就认
+    for v in data.values():
+        if (isinstance(v, list) and v and isinstance(v[0], dict)
+                and _normalize_character_fields(v[0])):
+            return _clean_characters(v)
+    return []
+
+
 def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     """AI 生成主要角色。章节计划缺失时先在后台补章节计划(依赖先行)。"""
     config_id = config_id or plan_config_id()
@@ -806,11 +887,18 @@ def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     plan_txt = chapters_to_text(chapters)[:6000]
     # 规格块按内容语言注入(软件层单一来源,不再依赖提示词文件手工维护)
     lang = config.resolve_content_language(drama_id)
-    raw = runner.run_agent("novel_planner",
-                           f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}"
-                           f"\n\n{character_spec.rules_for(lang)}",
-                           temperature=0.5, lang=lang, config_id=config_id)
-    chars = _clean_characters((runner.extract_json(raw) or {}).get("characters"))
+    # 走 JSON 模式(与 plan_novel 同口径):novel_planner 的提示词是 Mastra 工具
+    # 调用版(「调用 save_main_characters」),而本仓 runner 没有工具 —— 用普通
+    # run_agent 时模型拿到的指令自相矛盾,输出形状不可控。JSON 模式由网关兜住形状。
+    try:
+        data = runner.run_agent_json(
+            "novel_planner",
+            f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}"
+            f"\n\n{character_spec.rules_for(lang)}",
+            lang=lang, config_id=config_id)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"角色生成失败:{str(exc)[:160]}") from exc
+    chars = _extract_characters_payload(data)
     if not chars:
         raise RuntimeError("AI 未返回角色,请重试或检查文本模型配置")
     # 与 extractor 同一条软件层规格:不达标先定向补写,再进 novel_meta / characters。
@@ -829,6 +917,7 @@ def _clean_characters(raw) -> list:
     for c in raw or []:
         if not isinstance(c, dict):
             continue
+        c = _normalize_character_fields(c)
         name = str(c.get("name") or "").strip()
         if not name:
             continue
@@ -1238,6 +1327,10 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
         "content": final or content or "",
         "review": None,                      # StateGraph 内部跑过 caller 拿不到详情,如需可见再扩
         "fixed": out.get("decision") == "ok",
+        # ↓ 结局必须如实带给 UI:三轮用尽仍没出内容时(decision=giveup),
+        #   旧实现照样弹「本章已生成」—— 用户刷新一下发现是空的,像被耍了。
+        "decision": out.get("decision") or "",
+        "cycles": out.get("cycles") or 0,
     }
 
 

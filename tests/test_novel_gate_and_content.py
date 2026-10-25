@@ -283,3 +283,97 @@ def test_wizard_has_ai_generate_characters_button():
     assert "self.chars_btn.clicked.connect(self._ai_characters)" in src,         "「AI 生成主要角色」按钮没接点击信号"
     # 章节计划的两个完成回调(分批路径 / 流式路径)都要串联
     assert src.count("self._chain_characters()") >= 2,         "章节计划的完成回调没有全部接上角色串联"
+
+
+# ---------------------------------------------------------------- 角色解析
+
+def test_character_payload_accepts_chinese_keys():
+    """模型用中文键回角色时也必须解析出来(实测 drama 4 上就是这么失败的)。
+
+    提示词整体是中文(总纲/世界观/合约/角色外观规格块),模型就跟着给中文键:
+    {"角色":[{"姓名":…,"角色":…,"外形":…,"服装风格":…}]}。
+    旧实现只认 name/role/appearance → 名字取不到 → 每个角色被跳过 →
+    「AI 未返回角色」(sys_task 1548 就是这条)。
+    """
+    payload = {"角色": [{
+        "姓名": "叶尘", "角色": "主角", "身份": "被逐弟子", "动机": "查清灭门真相",
+        "外形": "约二十二岁的青年男子,中等身高一米七八,体型偏瘦但骨架结实。",
+        "服装风格": "贴身的粗麻深灰短打,领口开成斜襟,领缘被磨得发白起毛。",
+    }]}
+    got = nv._extract_characters_payload(payload)
+    assert len(got) == 1, "中文键没解析出来"
+    assert got[0]["name"] == "叶尘"
+    assert got[0]["role"] == "主角"
+    assert got[0]["identity"] == "被逐弟子"
+    assert "青年男子" in got[0]["appearance"]
+    assert "粗麻" in got[0]["styling"]
+
+
+@pytest.mark.parametrize("payload", [
+    {"characters": [{"name": "A", "role": "主角"}]},
+    {"main_characters": [{"name": "A", "role": "主角"}]},
+    {"角色": [{"姓名": "A", "角色": "主角"}]},
+    [{"name": "A", "role": "主角"}],
+])
+def test_character_payload_shapes(payload):
+    """容器形态:characters / main_characters / 角色 / 裸数组 —— 全都认。"""
+    assert len(nv._extract_characters_payload(payload)) == 1
+
+
+def test_character_payload_empty_is_empty():
+    assert nv._extract_characters_payload({}) == []
+    assert nv._extract_characters_payload(None) == []
+
+
+def test_normalize_character_fields_keeps_standard_shape():
+    """已经是标准形态的 dict 不该被改写。"""
+    c = {"name": "A", "role": "主角", "appearance": "x", "styling": "y"}
+    out = nv._normalize_character_fields(c)
+    assert out == c
+
+
+# ---------------------------------------------------------------- UI 静态守卫
+
+def test_ui_classes_do_not_read_undefined_self_attributes():
+    """UI 类不得读取自己没赋值过的 self 属性。
+
+    实测踩过:给 `AiEditDialog.job()` 加 `lang=resolve_content_language(self.drama_id)`,
+    而 `AiEditDialog` 只有 `episode_id`(`drama_id` 是 `QaDialog` 才有的)——
+    一按「应用」就 AttributeError 崩在按钮上,用户看到的是「AI 修改一点反应没有」。
+    静态扫一遍比等用户踩到便宜。
+
+    判据:类里**读到**的 self.X 必须满足其一
+      · 在本类里被赋值过(self.X = ...)
+      · 本类里定义过同名方法(self.X 是方法,不是属性)
+    只查我们自己的命名前缀(drama/_drama/lang/_lang)—— Qt 的属性太多,查不过来。
+    """
+    import ast
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parents[1] / "app" / "ui"
+    PREFIX = ("drama", "_drama", "lang", "_lang")
+    problems: list[str] = []
+    for path in sorted(ui.glob("*.py")):
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        except SyntaxError:  # pragma: no cover
+            continue
+        for cls in [n for n in ast.walk(tree) if isinstance(n, ast.ClassDef)]:
+            assigned: set[str] = set()
+            methods: set[str] = set()
+            read: set[str] = set()
+            for n in ast.walk(cls):
+                if isinstance(n, ast.FunctionDef):
+                    methods.add(n.name)
+                if (isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name)
+                        and n.value.id == "self"):
+                    if isinstance(n.ctx, ast.Store):
+                        assigned.add(n.attr)
+                    else:
+                        read.add(n.attr)
+            missing = {a for a in read - assigned - methods if a.startswith(PREFIX)}
+            if missing:
+                problems.append(f"{path.name}:{cls.name} → {sorted(missing)}")
+    assert not problems, (
+        "以下类读到了自己没定义过的属性(一用就 AttributeError):\n  "
+        + "\n  ".join(problems))

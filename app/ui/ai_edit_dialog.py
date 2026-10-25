@@ -156,10 +156,21 @@ class AiEditDialog(QDialog):
 
         def job(tid):
             from ..agents import runner
-            from ..core import config
+            from ..core import config, db
+            # 内容语言按**项目**解析,不是全局。这个对话框只拿到 episode_id,
+            # 没有 drama_id —— 从剧集反查(拿不到就退回全局,不能因此报错:
+            # 之前直接取 self.drama_id,一按「应用」就 AttributeError 崩掉)。
+            drama_id = 0
+            if self.episode_id:
+                try:
+                    row = db.q1("SELECT drama_id FROM episodes WHERE id=?",
+                                (self.episode_id,))
+                    drama_id = int(row["drama_id"]) if row else 0
+                except Exception:  # noqa: BLE001
+                    drama_id = 0
             return runner.run_agent(
                 "novel_editor", prompt,
-                lang=config.resolve_content_language(self.drama_id))
+                lang=config.resolve_content_language(drama_id))
 
         def done(tid, result, e):
             self.run_btn.setEnabled(True)

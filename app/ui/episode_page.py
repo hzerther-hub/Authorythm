@@ -1931,6 +1931,16 @@ class EpisodePage(QWidget):
         else:
             self._reload_raw()
             r = (result or {})
+            decision = r.get("decision") or ""
+            text = r.get("content") or ""
+            # 结局要**如实说**。重写 3 轮仍没出内容时(decision=giveup),
+            # 旧实现照样弹「本章已生成」—— 用户刷新发现是空的,像被耍了。
+            # 三轮是尽力而为,不是保证:模型思考吃满预算、网关抽风、
+            # 提示词里元信息太多,都可能三轮都出不来。
+            if decision == "giveup" or not text.strip():
+                err(tr("重写 {n} 轮仍未产出正文,请重试或换个模型").format(
+                    n=r.get("cycles") or 3))
+                return
             msg = tr("本章已生成") + (tr(";审校发现问题并已自动修复一轮 ✅") if r.get("fixed") else "")
             QMessageBox.information(self, tr("ai_novel"), msg)
 
