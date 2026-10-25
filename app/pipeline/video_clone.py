@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import base64
 import json
-import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -62,6 +61,12 @@ def upload_material(drama_id: int, kind: str, image_path: str | Path) -> str:
     meta = _meta(drama_id)
     clone = meta.get("clone", {})
     clone[kind] = str(dst)
+    if kind == "presenter":
+        # 标记「用户上传过出镜照」:prepare_presenter 的防覆盖守卫读这个键,
+        # 但此前**全仓库没有任何地方写入它**(只有建项目时的 presenter_src 兜底)
+        # —— 建项目没传照、事后才补传的用户,再点「AI 生成出镜模特」会把照片
+        # 顶掉(实测漏洞,守卫形同虚设)。
+        clone["presenter_uploaded"] = True
     meta["clone"] = clone
     _save_meta(drama_id, meta)
     return str(dst)
@@ -102,6 +107,13 @@ def replace_material(drama_id: int, kind: str, image_path: str | Path,
             # 好过拿旧产品的文案去描述新图
             clone.pop("product_desc", None)
     else:
+        # 换出镜照 = 换了人:旧三视图还是**上一张脸**,必须作废重生成,否则分镜
+        # 参考锁的仍是旧人(实测:换照后首帧出的是前一张脸);描述同样作废,
+        # 让 sync_assets 用新照片重读外观/服装。
+        clone.pop("turnaround_image", None)
+        clone.pop("turnaround_swapped", None)
+        clone.pop("presenter_desc", None)
+        clone.pop("presenter_styling", None)
         cid, pid, _sid = sync_assets(drama_id, config_id=config_id)
         if cid:
             clone["presenter_asset_id"] = cid
@@ -392,7 +404,8 @@ def _turnaround_block() -> str:
 
 
 def build_presenter_turnaround(presenter_path,
-                               config_id: int | None = None) -> Path:
+                               config_id: int | None = None,
+                               style_value: str = "") -> Path:
     """用**你上传的人物照**生成全身三视图主图,返回本地路径。
 
     为什么要有这一步(一致性问题的根):
@@ -402,11 +415,14 @@ def build_presenter_turnaround(presenter_path,
 
     参考图只传**你那张人物照**本身(单图,不给模型第二张图去对称融合)。
 
-    **写实阳光,不跟项目画风**:三视图是「角色资产图」,用途是锁长相/体型/服装,
-    必须中性、清晰、可辨认。带项目画风(本项目默认"治愈系插画")会出一张插画风的
-    设定图 —— 实测正是如此,插画笔触让五官与服装的细节全部失真,锁不住人。
-    成品镜头仍按项目画风出图(见 generate_shot_image 的 style)。
+    视觉风格**跟随项目**(用户定版:「复刻时要将视觉风格带入生成」):建项目时
+    选的「视觉风格」(dramas.style)必须贯穿复刻全链路,三视图不例外 —— 否则
+    首帧是 3D、角色资产是写实,同一部片两种画风。此前「写死写实底」的理由
+    (插画笔触让五官失真)只对插画类风格成立,不该替用户做决定;写实预设的
+    负面词(NOT illustration 等)只在写实底时带上,不然与插画类风格自相矛盾。
+    未选风格时退回写实电商底(角色资产图用中性背景最稳)。
     """
+    style = (db.style_prompt(style_value).strip() if style_value else "")
     realistic = ("photorealistic e-commerce lookbook photograph of a real person, "
                  "clean fresh natural makeup, clear healthy skin with fine natural "
                  "texture, bright airy high-key daylight lighting, soft even studio "
@@ -417,7 +433,13 @@ def build_presenter_turnaround(presenter_path,
                  "NOT 3d render, no dirty or grimy or dull appearance, "
                  "no heavy shadows, no grime, no dark circles, no messy hair, "
                  "no wrinkled clothes, everything neat and tidy")
-    prompt = (f"{realistic}\n"
+    # 设定图的底色与「全身入镜」要求与风格解耦,必须单独强调:风格预设里没有
+    # 这两条,漏了就会出七分身/带场景的设定图,切格与换脸都会被干扰。
+    backdrop = ("clean seamless pure-white studio backdrop, the full body is "
+                "visible head to toe in every view, crisp sharp focus, "
+                "true-to-life body proportions, high detail")
+    look = f"{style}, {backdrop}" if style else f"{realistic}"
+    prompt = (f"{look}\n"
               "以参考图中的人物为原型,生成该角色的**标准参考图**。"
               f"{_turnaround_block()}")
     out, _ = image_client.generate_image(prompt, out_name="clone_turnaround.png",
@@ -425,6 +447,48 @@ def build_presenter_turnaround(presenter_path,
                                          reference_images=[str(presenter_path)],
                                          skip_guard=True)  # 三视图自含构图,人数守卫会砍特写格
     return out
+
+
+def swap_clone_face(source_path, template_path,
+                    swap_cfg_id: int | None = None) -> Path:
+    """把 source 里的脸换到 template 图上,返回换好脸的新图路径。
+
+    复刻线的两个用途:
+    · 三视图:template=整张三视图,swap_all_faces=True(默认)把**所有视图**的脸
+      都换掉(特写格 + 正/侧/背面全身格)—— 只换一张 = 半张是本人半张是路人。
+    · 单镜首帧:自动链路(三视图换脸 + 首帧参考立绘)已把脸锚住,但生图模型
+      偶尔仍画偏,这是成本最低的兜底(只动人脸像素,不重新生图)。
+
+    为什么走 swap_one_by_provider 而不是写死 swap_remote:本地 InsightFace 引擎的
+    用户此前在管线里走不了换脸(写死远程),失败还被静默吞掉,拿着「路人脸」
+    当参考图而不自知。
+    失败**向上抛**,由调用方降级并标记 turnaround_swapped=False 让界面如实提示;
+    不在本函数里吞异常。
+    """
+    from ..ai import face_swap   # face_swap 在 app.ai,不是 app.pipeline
+    return face_swap.swap_one_by_provider(str(source_path), str(template_path),
+                                          config_id=swap_cfg_id)
+
+
+def standing_ref_of(turnaround_path) -> Path | None:
+    """三视图 → **单人立绘**(切出其中一格),这才是分镜用的参考主图。
+
+    为什么必须切格(实测教训):三视图里同一角色出现 4 次(1 特写 + 正/侧/背面),
+    整张喂给分镜当参考,模型照着「参考图里有多个人」画,画面必然复制人
+    (实测中近景镜出三个并排人物)。漫画线在 ep79 用切格根治了同一问题
+    (comic._single_pose_ref:按列空白检测立绘簇、裁出单姿势一格,不依赖
+    「恰好四格」),这里直接复用,不另造一套。
+    切格失败(打不开图等)退回整图 —— 有多实例风险也好过没有参考图。
+    """
+    ta = _resolve_local(turnaround_path)
+    if not ta:
+        return None
+    try:
+        from .comic import _single_pose_ref
+        return Path(_single_pose_ref(str(ta)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 三视图切格失败({exc}),整图兜底", flush=True)
+        return ta
 
 
 def _selected_image_cfg() -> int | None:
@@ -444,81 +508,6 @@ def _selected_text_cfg() -> int | None:
 def _selected_swap_cfg() -> int | None:
     """读用户选中的换脸服务;未选则用默认。"""
     return db.resolve_selected_config_id("faceswap")
-
-
-def build_presenter_fullshot(presenter_path, config_id: int | None = None,
-                             text_cfg_id: int | None = None,
-                             swap_cfg_id: int | None = None) -> Path:
-    """生成「纯文字底图 + 换脸」的单人全身像 —— 分镜真正使用的参考主图。
-
-    ── 为什么要拆成两步(实测踩坑的完整链路)──
-    1. 直接拿用户原照当参考图生全身像 → 生成出**两个半透明人影**(实测)。
-       根因:原照背景是大面积红橙舞台光晕,模型把「背景的暖色光斑」读成
-       「旁边还有发光的人」。这是**从参考图继承的构图惯性**,不是凭空生成,
-       所以负面词压不住(补齐短剧侧张嘴/极端表情负面词后重影反增)。
-    2. 只传 1 张图(排除了多图融合) → 重影一模一样,再次证明是继承而非融合。
-    3. 连通域裁剪 → 半透明边缘与主体粘连,裁不掉。
-
-    所以换一条路:**底图完全不传参考图**(纯文字,重影从根上不存在),
-    再用 face.mei.biz 把用户的脸换上去 —— 换脸只动人脸像素,不动背景与服装。
-    实测两步产物:单人、干净、服装清晰、纯白背景,无重影。
-
-    face/styling 描述由 read_presenter_desc 多模态读原照自动提取(用户选的 B 方案):
-    手写容易漏,读图更省事;原照里真实存在的特征它都能读到。
-    """
-    desc = read_presenter_desc(presenter_path, config_id=text_cfg_id) or {}
-    appearance = desc.get("appearance") or "年轻女性，五官清晰，棕色中分长发"
-    styling = desc.get("styling") or "简洁得体的日常服装"
-    # 原照常常是半身照、看不到鞋(read_presenter_desc 会如实留空),此时**显式补一个
-    # 电商通用鞋款**,而不是留空让模型自由发挥 —— 空白等于失控,分镜真要拍到脚时
-    # 穿什么鞋完全不可控。换成全身照后这里会自动用照片里真实的鞋。
-    if not desc.get("footwear"):
-        styling += ", 穿黑色细高跟一字带凉鞋,露出完整双脚与脚踝"
-    prompt = (
-        "photorealistic e-commerce lookbook photograph of a real person, "
-        "clean fresh natural makeup, bright airy high-key daylight lighting, "
-        "soft even studio light on a seamless pure white backdrop, "
-        "crisp sharp focus, true-to-life body proportions, professional catalog "
-        "photography look. "
-        f"Subject: {appearance}. Wearing {styling}. "
-        # 必须**硬性**要求全身入镜:电商模特图的默认输出就是七分身,
-        # 写 "full body" / "head to toe" 都不够(实测两轮都只到大腿)。
-        # 有效写法是把脚与画幅底边直接绑在一起,并给出人物占比。
-        "Full-length fashion catalog shot: the figure is photographed from head "
-        "to toe and the soles of her feet are fully visible, resting on the "
-        "bottom edge of the frame. The whole figure occupies about 80% of the "
-        "image height, centered, with white margin on all four sides. "
-        "Nothing is cropped: not the top of the head, not the feet, not the "
-        "skirt hem. Full-length shot, front view standing, arms relaxed at "
-        "sides, neutral A-pose, calm natural expression. "
-        "NOT a half-body shot, NOT a three-quarter length shot, NOT cropped, "
-        "NOT cropped at the knees, NOT cropped at the thighs. "
-        "NOT illustration, NOT anime, NOT cartoon, NOT painting, NOT 3d render, "
-        "no dirty or grimy appearance, no heavy shadows, no text, no watermark, "
-        "no logo")
-    extra_neg = ("multiple people, second person, extra person, bystander, onlooker, "
-                 "background figures, faded silhouettes, ghost figure, "
-                 "translucent figure, reflections of people, double exposure, "
-                 "open mouth, screaming, exaggerated emotion, "
-                 "solid white background, seamless white backdrop, "
-                 "no colored background, no furniture, no props, no text, no watermark")
-    # 画幅必须给**竖版**:16:9 横画幅装不下头顶到脚底,模型只能给七分身
-    # (实测加了 "head to toe" 强调仍无效 —— 是画幅不够高,不是提示词没说清)。
-    # 竖版 1080x1920 是标准电商模特图比例。
-    out, _ = image_client.generate_image(prompt, out_name="clone_fullshot.png",
-                                         config_id=config_id, people=1,
-                                         size="1080x1920",
-                                         extra_negative=extra_neg)
-    # 换脸:只动人脸像素,服装与白底保持不变(实测 face.mei.biz / inswapper_128 可用)
-    try:
-        from ..ai import face_swap   # face_swap 在 app.ai,不是 app.pipeline
-        out = face_swap.swap_remote(str(presenter_path), str(out), "jpg",
-                                    config_id=swap_cfg_id)
-        print(f"[clone] 换脸完成:{Path(str(out)).name}", flush=True)
-    except Exception as exc:  # noqa: BLE001
-        # 换脸失败不阻塞:退回纯文字底图,长相不像但至少干净无重影
-        print(f"[clone] 换脸失败({exc}),退回文字底图", flush=True)
-    return out
 
 
 def sync_assets(drama_id: int,
@@ -570,40 +559,56 @@ def sync_assets(drama_id: int,
                    "appearance": clone.get("presenter_desc") or "",
                    "styling": clone.get("presenter_styling") or "",
                    "created_at": ts}) if presenter else None
-    # 分镜参考主图 = **单人全身像**:正脸照锁不住服装(逐镜会自己换衣服),
-    # 三视图锁得住却含 4 个人物实例(会被一起画进画面)。全身像两头都要。
-    # 三视图仍然生成,存 clone.turnaround_image 供人工核对/换脸,但**不进分镜**。
+    # 人物外观/服装描述只读一次并落库:generate_shot_image / rewrite /
+    # characters.appearance 都读 clone.presenter_desc,但此前**没有任何地方给它
+    # 赋值**(read_presenter_desc 的结果只在全身像函数内部用完即弃),首帧提示词
+    # 里的人物描述一直是兜底文案「亲和力强的出镜人物(见模特形象)」。
+    if presenter and not (clone.get("presenter_desc") or "").strip():
+        desc = read_presenter_desc(presenter, config_id=_selected_text_cfg())
+        if desc:
+            clone["presenter_desc"] = desc.get("appearance") or ""
+            clone["presenter_styling"] = desc.get("styling") or ""
+    # 角色资产 = **三视图**(正脸特写 + 正面/侧面/背面)+ 生成后立刻换脸 —— 用户定版:
+    # 复刻不要全身像。此前「单人全身像当分镜参考」的路线(纯文字底图 + 换脸)实测
+    # 两个致命伤,正是用户抱怨的「首帧的人跟三视图不是同一人 / 衣服变了」:
+    #   · 服装是模型按文字描述自由发挥的,与上传照/三视图对不上;
+    #   · 脸经「换到全身像 → 全身像再当参考图」两次转手,与三视图不是同一人。
+    # 三视图从上传照生成(服装/体型同源),换脸把五官钉死;多实例问题不在生成端
+    # 解决而在**使用端**解决 —— 分镜参考用切出的单人立绘(standing_ref_of)。
     _cfg = config_id or _selected_image_cfg()
-    if presenter and not clone.get("presenter_fullshot"):
-        try:
-            fs = build_presenter_fullshot(
-                presenter, config_id=_cfg,
-                text_cfg_id=_selected_text_cfg(),
-                swap_cfg_id=_selected_swap_cfg())
-            clone["presenter_fullshot"] = str(fs)
-            print(f"[clone] 人物全身像已生成:{Path(str(fs)).name}", flush=True)
-        except Exception as exc:  # noqa: BLE001
-            print(f"[clone] 全身像生成失败({exc}),退回上传原照", flush=True)
+    _drow = db.q1("SELECT style FROM dramas WHERE id=?", (drama_id,))
+    _style_value = (_drow["style"] if _drow else "") or ""
     if presenter and not clone.get("turnaround_image"):
         try:
-            ta = build_presenter_turnaround(presenter, config_id=_cfg)
+            ta = build_presenter_turnaround(presenter, config_id=_cfg,
+                                            style_value=_style_value)
+            swapped = True
+            try:
+                ta = swap_clone_face(presenter, ta,
+                                     swap_cfg_id=_selected_swap_cfg())
+            except Exception as exc:  # noqa: BLE001
+                swapped = False
+                print(f"[clone] 三视图换脸失败({exc}),保留生成底图,"
+                      f"可在界面点「手动换脸」重试", flush=True)
             clone["turnaround_image"] = str(ta)
+            clone["turnaround_swapped"] = swapped
             clone["clone_turnaround_at"] = ts
-            print(f"[clone] 人物三视图已生成(仅供核对):{Path(str(ta)).name}", flush=True)
+            print(f"[clone] 人物三视图已生成(换脸{'成功' if swapped else '失败'}):"
+                  f"{Path(str(ta)).name}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[clone] 三视图生成失败({exc})", flush=True)
     # 资产图分列存(与短剧侧同构,见 comic.comic_asset_image):
-    #   image_url       = 分镜用的单人全身像(锁脸 + 锁服装)
-    #   comic_image_url = 三视图(正脸特写 + 正面/侧面/背面),仅供人工核对与换脸
-    # 两张图各有分工,不互相覆盖 —— 三视图含 4 个人物实例,当分镜参考会出多人画面。
-    if presenter and clone.get("presenter_fullshot"):
-        db.ex("UPDATE characters SET image_url=? WHERE drama_id=? AND name=?",
-              (config.path_to_media_url(clone["presenter_fullshot"]),
-               drama_id, CLONE_PRESENTER_NAME))
+    #   image_url       = 三视图切出的**单人立绘**(分镜参考,画面里只有 1 个人)
+    #   comic_image_url = 三视图整图(角色资产,核对长相/手动换脸用)
     if clone.get("turnaround_image"):
         db.ex("UPDATE characters SET comic_image_url=? WHERE drama_id=? AND name=?",
               (config.path_to_media_url(clone["turnaround_image"]),
                drama_id, CLONE_PRESENTER_NAME))
+        standing = standing_ref_of(clone["turnaround_image"])
+        if standing:
+            db.ex("UPDATE characters SET image_url=? WHERE drama_id=? AND name=?",
+                  (config.path_to_media_url(standing),
+                   drama_id, CLONE_PRESENTER_NAME))
     pid = _upsert("props", CLONE_PRODUCT_NAME,
                   config.path_to_media_url(product) if product else "",
                   {"type": "product", "description": clone.get("product_desc") or "",
@@ -709,6 +714,9 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         boards = [_normalize_shot(s, i + 1) for i, s in enumerate(data.get("shots") or [])]
     else:
         frames = extract_frames(ref, count=8)
+        # 帧目录落库:场景锚提取(extract_scene_anchor)要靠这些帧挑代表帧。
+        # 此前目录用完即弃也不落库,首帧阶段想参照原片背景都拿不到图。
+        clone["frames_dir"] = str(frames[0].parent)
         image_urls = [_image_data_url(f) for f in frames]
         frame_desc = "\n".join(
             f"第{i}帧(约 {dur * i / (len(frames) + 1):.1f} 秒处)"
@@ -782,6 +790,11 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         print(f"[clone] 资产同步失败({exc}),退回 metadata 原图", flush=True)
     meta["clone"] = clone
     _save_meta(drama_id, meta)
+    # 场景锚:分析阶段就从原视频提取(挑帧→环境描述→空景图),第一镜生成时
+    # 就能带上场景参考。旧实现等首镜出图后写死一句与原片无关的场景描述,
+    # 用户实测「背景跟原片对不上」的根因之一。失败不阻塞,退回纯文字锚。
+    extract_scene_anchor(drama_id, config_id=_selected_image_cfg(),
+                         text_cfg_id=config_id)
     return boards
 
 
@@ -816,8 +829,92 @@ def _clone_storyboards(drama_id: int) -> list[dict]:
     return _meta(drama_id).get("clone", {}).get("storyboards", [])
 
 
+SCENE_PICK_PROMPT = """下面是同一条视频按时间均匀抽出的 {n} 帧画面(顺序对应,总时长 {dur:.1f} 秒)。
+这是要被「换人复刻」的原片:人物会换成别人,但**拍摄环境必须原样保留**。
+请挑出最能代表该视频发生环境的一帧,并给出整个视频**统一**的环境描述:
+- 优先选**人物占比小、环境信息最多**的帧(墙面/家具/窗景/光源越全越好);
+- 描述只写环境,一个字都不要提画面里的人。
+只输出 JSON:
+{{"frame": 帧序号(从 1 开始), "location": "地点一句话", "lighting": "光源与色温一句话", "prompt": "给文生图用的场景描述(60字内,不含任何人物)"}}"""
+
+
+def extract_scene_anchor(drama_id: int, config_id: int | None = None,
+                         text_cfg_id: int | None = None) -> bool:
+    """从**原视频**提取场景锚:挑代表帧 → 多模态描述环境 → 生成同机位空景图。
+
+    为什么必须在分析阶段就锁场景(用户实测痛点:「要拍出原视频的背景,
+    保持场景一致性」):旧实现 scene_prompt 是首镜出图后**硬编码**的一句
+    「室内夜间:书桌+台灯+城市夜景」—— 与用户原视频毫无关系,后续镜全被
+    这句假描述带偏;而旧 scene_image = 首镜生成图,图里**带着人**,当第二
+    参考图时模型照抄出「半透明第二人」(见 generate_shot_image 的注释)。
+
+    空景图(去人)才是安全的场景锚:图里没有人可抄,才能与人物立绘组成
+    「人 + 景」双参考。视觉风格(dramas.style)同样注入空景图 —— 场景锚与
+    首帧同画风,模型不用自己跨风格翻译(用户定版:视觉风格带入全部生成)。
+    任一步失败返回 False 不阻塞分镜分析,退回纯文字锚(旧项目行为)。
+    """
+    clone = _meta(drama_id).get("clone", {})
+    ref = _resolve_local(clone.get("reference"))
+    if not ref:
+        return False
+    try:
+        frames = sorted(Path(str(clone["frames_dir"])).glob("f*.jpg")) \
+            if clone.get("frames_dir") else []
+        if len(frames) < 2:
+            frames = extract_frames(ref, count=8)
+            clone["frames_dir"] = str(frames[0].parent)
+        dur = _duration(ref)
+        raw = text_client.chat(
+            SCENE_PICK_PROMPT.format(n=len(frames), dur=dur),
+            system="你是影视美术指导,负责在原片里锁定拍摄环境。只输出 JSON。",
+            temperature=0.2, json_mode=True, config_id=text_cfg_id,
+            image_urls=[_image_data_url(f) for f in frames])
+        d = runner.extract_json(raw) or {}
+        idx = int(d.get("frame") or 1)
+        pick = frames[max(0, min(len(frames) - 1, idx - 1))]
+        location = str(d.get("location") or "").strip()
+        lighting = str(d.get("lighting") or "").strip()
+        prompt = str(d.get("prompt") or "").strip()
+        if not prompt:
+            print("[clone] 场景描述为空,跳过场景锚提取", flush=True)
+            return False
+        _drow = db.q1("SELECT style FROM dramas WHERE id=?", (drama_id,))
+        style = db.style_prompt((_drow["style"] if _drow else "") or "")
+        body = ("Remove every person from this photo. Keep the exact same camera "
+                "angle, room structure, furniture, props, walls, windows and "
+                "lighting positions. An empty establishing shot of the same "
+                "location: no people, no silhouettes, no mannequins, "
+                "no text, no watermark. 场景:" + prompt)
+        if style:
+            # 空景图与首帧同画风:首帧生成时拿它当参考,不用自己跨风格翻译
+            body += f"。渲染风格严格参照:{style}"
+        out, _ = image_client.generate_image(
+            body, out_name=f"clone_scene_{drama_id}.png", config_id=config_id,
+            reference_images=[str(pick)], skip_guard=True)
+        clone["scene_image"] = str(out)
+        clone["scene_location"] = location
+        clone["scene_lighting"] = lighting
+        clone["scene_prompt"] = "。".join(x for x in (location, lighting, prompt) if x)
+        sid = clone.get("scene_asset_id")
+        if sid:
+            db.ex("UPDATE scenes SET image_url=?, prompt=?, location=?, lighting=?,"
+                  " updated_at=? WHERE id=?",
+                  (config.path_to_media_url(str(out)), clone["scene_prompt"],
+                   location, lighting, db.now(), sid))
+        meta = _meta(drama_id)
+        meta["clone"] = clone
+        _save_meta(drama_id, meta)
+        print(f"[clone] 场景锚已从原视频提取:第{idx}帧 → 空景图 {out.name}", flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 场景锚提取失败({exc}),退回纯文字锚", flush=True)
+        return False
+
+
 def _resolve_local(p) -> Path | None:
     """素材字段可能是本地绝对路径或 /static/ 媒体地址,统一转本地路径;不存在返回 None。"""
+    if not p:
+        return None      # 只传了出镜照没传产品图时 clone.product 是 None,直接 Path(None) 会炸
     s = str(p).replace("\\", "/")
     path = config.media_url_to_path(s) if s.startswith(("/static/", "static/")) else Path(p)
     return path if path.exists() else None
@@ -919,15 +1016,19 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     def _asset_img(kind: str):
         """分镜参考图。
 
-        人物这一项**不用三视图**:三视图里有 4 个人物实例(1 特写 + 正面/侧面/背面),
-        喂给分镜时模型会把多个实例一起画进画面(实测中近景镜出三个并排人物)。
-        而「不是三视图、多视角设定图或拼版」那条守卫又与它自相矛盾,模型两头为难。
-
-        用**单人全身像**:既有清晰正脸(锁五官),又看得到完整服装(锁款式与颜色),
-        一个人物实例不会引发多视角歧义 —— 短剧侧锁服装也是靠单人全身形象图。
-        三视图仍然生成并存进 characters 表,供人工核对与换脸用,只是不进分镜。
+        人物这一项用**三视图切出的单人立绘**(standing_ref_of):整张三视图里
+        同一角色出现 4 次(1 特写 + 正面/侧面/背面),直接喂会把多实例一起画进
+        画面(实测中近景镜出三个并排人物);切格后参考里只有 1 个人,复制人
+        从源头消失,且脸/服装/体型与角色资产**完全同源** —— 用户实测痛点
+        「首帧的人跟三视图不是同一人、衣服变了」由此对锚。
+        旧项目的 presenter_fullshot(纯文字底图+换脸)保留作兼容兜底,不再生成。
         """
         if kind == "presenter":
+            ta = clone.get("turnaround_image")
+            if ta:
+                s = standing_ref_of(ta)
+                if s:
+                    return s
             full = _resolve_local(clone.get("presenter_fullshot"))
             if full:
                 return full
@@ -949,13 +1050,22 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     main_kind = _pick_ref_kind(_shot_text, _shot_kind)
     main_img = _asset_img(main_kind)
 
-    # ── 参考图:每镜**只传一张** ──
+    # ── 参考图:人物镜双锚「人物立绘 + 空景图」,特写镜单锚「产品图」──
     #
-    # 我先前做成了「主体 + 另一类 + 场景」共 2 张,结果实测第 1 镜右侧冒出一个
-    # 半透明第二人 —— 参考图里明确画了第二个人,提示词里的 no onlookers /
-    # no background silhouettes 拗不过图像参照。场景改用**文字锚**锁定
-    # (见下方 scene_lock),不占参考图位。
-    refs = [main_img] if main_img else []
+    # 历史实测,别退回去:
+    # · 两张**同类型**图(人物+产品正面照)→ 对称融合出双头图 → 主体参考每镜
+    #   只有 1 张,这条不变;
+    # · 「主体 + 场景图」也出过半透明第二人 —— 但根因是当年场景图 = 首镜生成图,
+    #   图里**本身画着人**,模型照抄了第二个人;不是「两张参考图」这件事的错。
+    # · 现在场景锚是**从原视频抽帧去人**的空景图(extract_scene_anchor),图里
+    #   没有人可抄,人物镜才能安全带第二锚:人锁三视图立绘(用户痛点「脸/衣服
+    #   不是同一人」),景锁原视频空镜(痛点「背景跟原片对不上」)。
+    scene_img = _resolve_local(clone.get("scene_image"))
+    refs: list = []
+    if main_img:
+        refs.append(main_img)
+        if main_kind == "presenter" and scene_img and scene_img != main_img:
+            refs.append(scene_img)
     if not refs:                       # 主图缺失 → 退回另一类资产,再退回空
         refs = [p for p in (_asset_img("presenter"), _asset_img("product"))
                 if p][:1]
@@ -985,28 +1095,26 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     # (references/seedance-knowledge.md:「产品外形 1:1 还原参考图,颜色与实物一致」)。
     consist = ""
     if refs:
-        # **每镜只有一张参考图**,所以措辞只能是「参考图」而不是「参考图1/参考图2」——
-        # 此前写成"参考图1…参考图2…",而本镜实际只传了一张,模型会去找不存在的第 2 张。
-        if has_presenter_ref:
-            consist += (", 同一人物跨镜完全一致:五官、脸型、发型、肤色、**服装款式与颜色**"
-                        "与参考图完全相同,是同一个人,不是长相相近的另一个人;"
-                        "服装不得逐镜变化")
-        if has_product_ref:
+        # 单参考图时措辞只说「参考图」(说了"参考图2"模型会去找不存在的第 2 张);
+        # **双锚时必须逐一点名**两张图各锁什么 —— 不点名,模型会把两张图平均融合。
+        multi = len(refs) > 1
+        person_lbl = "参考图1(人物设定图)" if multi else "参考图"
+        if main_kind == "presenter" and has_presenter_ref:
+            consist += (f", 同一人物跨镜完全一致:五官、脸型、发型、肤色、"
+                        f"**服装款式与颜色**与{person_lbl}完全相同,是同一个人,"
+                        "不是长相相近的另一个人;服装不得逐镜变化")
+            if multi:
+                consist += (";背景环境、陈设、窗景与光源方向严格参照"
+                            "**参考图2(场景图)**,就是同一间房、同一时间")
+        if main_kind == "product" and has_product_ref:
             consist += (", 产品外形 1:1 还原参考图的形状与轮廓,颜色、材质、光泽一致,"
                         "全片是同一件产品,不做成别的形状(既不变方也不变圆),"
                         "不改变大小比例,不凭空增加包装盒或外壳")
-    # ── 场景一致性:同一条片子应当在同一间房里拍 ──
-    # 短剧侧锁场景靠 scenes.image_url 作参考图,但那是「每镜都传全量参考图」;
-    # 复刻这边每镜只传一张,再塞一张场景图就回到双图对称融合的坑。
-    # 折中:**文字锁场景** —— 把首镜的场景描述固化进后续所有镜的提示词。
-    # 这解决的是「同一间房」这个最显眼的漂移(实测 6 镜各画各的房间)。
+    # ── 场景一致性:文字锚 + 空景图双保险 ──
+    # scene_prompt 在**分析阶段**从原视频提取(extract_scene_anchor),是真实
+    # 环境描述;配合空景图参考(上面 refs)把「同一间房」钉死。旧项目的
+    # scene_prompt 是首镜后写死的兜底描述,照样可读,不必特判。
     scene_lock = str(clone.get("scene_prompt") or "").strip()
-    if not scene_lock:
-        first_done = next((x for x in boards
-                           if int(x.get("number", 0)) == 1 and x.get("first_frame")), None)
-        if first_done is not None and int(b.get("number", 0)) != 1:
-            scene_lock = ("与本片第一镜完全相同的同一间室内场景、同一时间(夜晚)、"
-                          "同一光源方向与色温、同一组陈设与背景布置")
     # 静帧取动作时序串(姿态更具体),无时序退回动作概述
     steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
     action_txt = "，".join(steps) if steps else str(b.get("action") or "展示产品")
@@ -1052,18 +1160,9 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):
             x["first_frame"] = str(out)
-    # 首镜(#1)出图后,把它的场景锚固化:图存进 scenes 资产,描述写回 clone。
-    # 后续镜据此锁「同一间房、同一时间、同一光源」—— 复刻每镜只传一张参考图,
-    # 塞不进场景图,只能靠这个文字锚(实测 6 镜原本各画各的房间)。
-    if int(board_number) == 1:
-        clone["scene_image"] = config.path_to_media_url(out)
-        clone["scene_prompt"] = ("室内夜间场景:同一张书桌、同一盏暖光台灯、"
-                                 "窗外同一片城市夜景散景,墙面与陈设全程不变")
-        sid = clone.get("scene_asset_id")
-        if sid:
-            db.ex("UPDATE scenes SET image_url=?, prompt=?, updated_at=? WHERE id=?",
-                  (clone["scene_image"], clone["scene_prompt"], db.now(), sid))
-        print("[clone] 场景锚已由首镜固化,后续镜将锁定同一场景", flush=True)
+    # 场景锚不再在这里固化:旧实现拿首镜生成图当 scene_image(图里带人,当参考
+    # 会抄出第二人)、scene_prompt 硬编码一句与原片无关的描述。现在锚在**分析
+    # 阶段**就从原视频提取(见 extract_scene_anchor),首镜同样享受场景参考。
     clone["storyboards"] = boards
     meta["clone"] = clone
     _save_meta(drama_id, meta)

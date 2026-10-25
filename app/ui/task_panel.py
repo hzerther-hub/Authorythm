@@ -37,6 +37,8 @@ TASK_TYPE_LABEL = {
     "clone_video": "克隆 · 生成视频",
     "clone_presenter": "克隆 · 生成出镜模特",
     "clone_replace_material": "克隆 · 替换素材",
+    "clone_turnaround": "克隆 · 重建三视图",
+    "clone_faceswap": "克隆 · 换脸",
     "clone_redraw_all": "克隆 · 一键重绘",
     "clone_merge": "克隆 · 合并成片",
 }

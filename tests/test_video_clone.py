@@ -460,33 +460,20 @@ def qapp_stub():
     yield app
 
 
-# ── 人物参照图:纯文字生成 + 换脸(绕开参考图继承的重影)───────────────
+# ── 人物参照图:三视图 + 自动换脸(用户定版,全身像路线已移除)─────────────
 
-def test_fullshot_prompt_has_no_reference_image():
-    """底图**不能**带参考图。
+def test_turnaround_prompt_follows_project_style():
+    """三视图必须**跟随项目视觉风格**(用户定版「复刻时要将视觉风格带入生成」)。
 
-    实测:拿用户原照(红橙舞台背景)当参考图生全身像 → 必定带两个半透明人影,
-    且会被原样带进每张分镜成品。这是从参考图**继承**的构图惯性,负面词压不住
-    (补齐短剧侧张嘴/极端表情负面词后重影反增);只传 1 张图也一样,证明不是
-    多图融合。所以底图必须纯文字,长相靠换脸补。
+    此前写死写实电商底,理由(插画笔触让五官失真)只对插画类风格成立,不该
+    替用户做决定;写实负面词(NOT illustration)只在写实兜底里,与插画类
+    风格不再自相矛盾。
     """
     import inspect
-    src = inspect.getsource(vc.build_presenter_fullshot)
-    assert "reference_images" not in src, "全身像底图不得传参考图(会继承重影)"
-
-
-def test_fullshot_prompt_asks_for_shoes_and_full_frame():
-    """要完整全身 + 有鞋。
-
-    - 画幅必须竖版:16:9 横画幅装不下头顶到脚底(实测三轮都只到腿/大腿)。
-    - 提示词必须**正面**描述鞋与全身:否定式("NOT cropped at knees/thighs")
-      连写三轮完全无效,改成「穿…凉鞋,露出完整双脚与脚踝」后一次成功。
-    """
-    import inspect
-    src = inspect.getsource(vc.build_presenter_fullshot)
-    assert 'size="1080x1920"' in src, "全身像必须用竖版画幅"
-    assert "soles" in src.lower() or "feet" in src.lower(), "未要求脚部入镜"
-    assert "凉鞋" in src or "鞋" in src, "未指定鞋款"
+    src = inspect.getsource(vc.build_presenter_turnaround)
+    assert "style_value" in src, "三视图生成不接收项目风格"
+    assert "db.style_prompt" in src, "三视图生成没有解析项目风格预设"
+    assert "标准参考图" in src
 
 
 def test_read_presenter_desc_declares_footwear_field():
@@ -500,28 +487,248 @@ def test_read_presenter_desc_declares_footwear_field():
     assert "留空" in src, "未说明看不到时可留空"
 
 
-def test_sync_assets_writes_fullshot_and_turnaround_to_separate_columns():
-    """资产图分列存:全身像 → image_url(分镜用),三视图 → comic_image_url(仅核对)。
+def _tmp_db(tmp_path, monkeypatch, work_type: str = "video_clone", style: str = ""):
+    """测试专用的临时库 fixture(与 test_delete_drama_cascades 同一套路):
+    落库路径指到 tmp_path + 重置 thread-local 连接。"""
+    from app.core import db as _db
+    monkeypatch.setattr(_db.config, "DB_PATH", tmp_path / "clone.sqlite3")
+    old = getattr(_db._local, "conn", None)
+    if old is not None:
+        old.close()
+    _db._local.conn = None
+    _db.init_db()
+    ts = _db.now()
+    _db.ex("INSERT INTO dramas(id,title,work_type,style,status,created_at,updated_at)"
+           " VALUES(?,?,?,?,?,?,?)", (801, "T", work_type, style, "pending", ts, ts))
+    return _db
 
-    与短剧侧 comic.comic_asset_image 同构。三视图含 4 个人物实例,当分镜参考
-    会把多个实例一起画进画面。
+
+def test_sync_assets_builds_turnaround_and_swaps_face(tmp_path, monkeypatch):
+    """角色资产 = 三视图 + 生成后**立刻换脸**(用户定版,替代全身像路线)。
+
+    全身像路线的两个实测致命伤:服装按文字自由发挥与上传照对不上;脸经
+    「换到全身像→再当参考」两次转手与三视图不是同一人。三视图从上传照生成
+    (服装/体型同源)+ 换脸钉死五官,分镜参考用切格立绘(standing_ref_of)。
     """
-    import inspect
-    src = inspect.getsource(vc.sync_assets)
-    assert "comic_image_url" in src, "三视图应写 comic_image_url"
-    assert "presenter_fullshot" in src
+    import json
+    from PIL import Image
+    _db = _tmp_db(tmp_path, monkeypatch, style="realistic")
+    static = tmp_path / "static"
+    static.mkdir()
+    monkeypatch.setattr(_db.config, "STATIC_DIR", static)
+    presenter = tmp_path / "presenter.png"
+    Image.new("RGB", (64, 64), "white").save(presenter)
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"presenter": str(presenter)}}), 801))
+    calls = {}
+
+    def _fake_gen(prompt, out_name=None, config_id=None, reference_images=None,
+                  skip_guard=False, **kw):
+        calls["prompt"] = prompt
+        calls["refs"] = reference_images
+        out = tmp_path / "turnaround.png"
+        Image.new("RGB", (256, 256), "white").save(out)   # 单姿势图 → 切格返回原图
+        return out, "agnes"
+
+    async_swap = {}
+
+    def _fake_swap(source, template, swap_cfg_id=None):
+        async_swap["args"] = (str(source), str(template))
+        return template
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    monkeypatch.setattr(vc, "swap_clone_face", _fake_swap)
+    monkeypatch.setattr(vc, "read_presenter_desc",
+                        lambda p, config_id=None: {"appearance": "测试外观",
+                                                   "styling": "测试服装",
+                                                   "footwear": ""})
+
+    cid, pid, sid = vc.sync_assets(801)
+
+    assert cid, "出镜人物资产未创建"
+    clone = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"], {})["clone"]
+    assert clone.get("turnaround_image"), "三视图未生成"
+    assert clone.get("turnaround_swapped") is True, "三视图生成后未自动换脸"
+    assert clone.get("presenter_desc") == "测试外观", "人物描述未落库(此前恒为空)"
+    assert async_swap["args"][0] == str(presenter), "换脸的 source 应是上传出镜照"
+    row = _db.q1("SELECT image_url, comic_image_url FROM characters WHERE id=?", (cid,))
+    assert row["comic_image_url"], "三视图应写 comic_image_url"
+    assert row["image_url"], "分镜参考立绘应写 image_url"
+
+
+def test_sync_assets_marks_swap_failure_visibly(tmp_path, monkeypatch):
+    """换脸失败**不得静默**:保留生成底图但必须标记 turnaround_swapped=False,
+    让界面提示「未换脸」—— 此前静默降级,用户拿路人脸当参考图而不自知。"""
+    import json
+    from PIL import Image
+    _db = _tmp_db(tmp_path, monkeypatch)
+    monkeypatch.setattr(_db.config, "STATIC_DIR", tmp_path / "static")
+    presenter = tmp_path / "presenter.png"
+    Image.new("RGB", (64, 64), "white").save(presenter)
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"presenter": str(presenter)}}), 801))
+
+    def _fake_gen(prompt, out_name=None, config_id=None, reference_images=None,
+                  skip_guard=False, **kw):
+        out = tmp_path / "turnaround.png"
+        Image.new("RGB", (256, 256), "white").save(out)
+        return out, "agnes"
+
+    def _fail_swap(source, template, swap_cfg_id=None):
+        raise RuntimeError("换脸服务不可达")
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    monkeypatch.setattr(vc, "swap_clone_face", _fail_swap)
+    monkeypatch.setattr(vc, "read_presenter_desc", lambda p, config_id=None: None)
+
+    vc.sync_assets(801)
+    clone = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"], {})["clone"]
+    assert clone.get("turnaround_image"), "换脸失败也应保留生成底图"
+    assert clone.get("turnaround_swapped") is False, "换脸失败必须可见地标记"
 
 
 def test_pick_ref_kind_uses_single_reference_image():
-    """每镜只传一张参考图。
+    """主体参考每镜仍只有**一张**(两张同类型图 → 对称融合双头,实测)。
 
-    实测同时传 2 张(主体+场景)时,右侧必出半透明第二人;而提示词里的
-    no onlookers 拗不过图像参照 —— 参考图里明确画了第二个人就会被照抄。
-    场景改用文字锚锁定。
+    人物镜允许的第二张是**场景锚空景图**(图里没有人可抄,见
+    extract_scene_anchor),且严格限定 main_kind == "presenter" 时才附加;
+    特写/产品镜保持单锚。多图参考池(ref_pool)仍然禁止。
     """
     import inspect
     src = inspect.getsource(vc.generate_shot_image)
     assert "ref_pool" not in src, "不应再有多图参考池(会引入重影)"
+    assert "scene_img" in src, "人物镜没有附加场景锚"
+    assert 'main_kind == "presenter" and scene_img' in src, \
+        "场景锚必须在人物镜才附加(产品/特写镜保持单锚)"
+    assert "参考图2(场景图)" in src, "双锚时必须逐一点名两张图各锁什么"
+
+
+def test_shot_uses_cropped_standing_ref_not_full_turnaround():
+    """分镜人物参考 = 三视图**切格后的单人立绘**,不是整张三视图。
+
+    整张三视图有 4 个人物实例,当参考会把多实例一起画进画面(实测中近景镜
+    出三个并排人物)。旧项目的 presenter_fullshot 保留作兼容兜底。
+    """
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "standing_ref_of" in src, "人物参考没有走三视图切格"
+    assert "presenter_fullshot" in src, "旧项目的全身像兜底丢失"
+
+
+def test_toolbar_orders_steps_by_execution_order():
+    """工具条按钮顺序 = 执行顺序(用户实测反馈「step 按顺序排列」):
+    1️⃣ 拆解 → 2️⃣ 备料(模特/产品图/出镜照)→ 3️⃣ 一键重绘 → 4️⃣ 合并。
+    直传开关是**模式切换**不是步骤,固定最左,不参与编号。
+    """
+    import inspect
+    from app.ui import main_window
+    src = inspect.getsource(main_window.ClonePage)
+    order = ["bar.addWidget(direct_btn)", "bar.addWidget(analyze_btn)",
+             "bar.addWidget(presenter_btn)", "bar.addWidget(product_btn)",
+             "bar.addWidget(presenter_img_btn)", "bar.addWidget(redraw_all_btn)",
+             "bar.addWidget(merge_btn)"]
+    pos = [src.index(s) for s in order]
+    assert pos == sorted(pos), f"工具条按钮顺序乱了:{list(zip(order, pos))}"
+    # 全身像路线已移除(用户定版);换脸入口(三视图手动换脸 + 首帧换脸)必须在
+    assert "clone_fs_btn" not in src, "「重建人物全身像」按钮应已移除"
+    assert "clone_swap_btn" in src and "_swap_turnaround_face" in src, "缺三视图手动换脸入口"
+    assert "_shot_face_swap" in src, "缺首帧换脸入口"
+
+
+def test_fullshot_generation_removed():
+    """「不需要全身,只要三视图」—— 纯文字底图+换脸的全身像生成已删除。
+
+    它的两个实测致命伤:服装按文字自由发挥与上传照对不上;脸经两次转手与
+    三视图不是同一人。防哪天被加回分镜参考。旧项目已生成的 presenter_fullshot
+    图仍作兜底可读(见 generate_shot_image._asset_img)。
+    """
+    assert not hasattr(vc, "build_presenter_fullshot"), "全身像生成应已删除"
+
+
+def test_scene_anchor_picks_frame_and_builds_empty_scene(tmp_path, monkeypatch):
+    """场景锚从**原视频**提取:挑代表帧 → 去人空景图 + 真实环境描述落库。
+
+    旧实现 scene_prompt 硬编码「室内夜间:书桌+台灯+城市夜景」,与用户原片
+    无关;scene_image=首镜生成图(带人),当参考会抄出第二人。
+    """
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    picks = {}
+    for i in (1, 2):
+        f = frames_dir / f"f{i:02d}.jpg"
+        f.write_bytes(b"fake-jpeg")
+        picks[i] = f
+    ref = tmp_path / "ref.mp4"
+    ref.write_bytes(b"fake-video")     # 必须真实存在,_resolve_local 检查存在性
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"reference": str(ref),
+                                  "frames_dir": str(frames_dir)}}), 801))
+    gen_calls = {}
+
+    def _fake_chat(prompt, system=None, temperature=None, json_mode=None,
+                   config_id=None, image_urls=None):
+        assert len(image_urls) == 2, "应把抽出的帧都给多模态模型挑"
+        return '{"frame": 2, "location": "夜晚书房", "lighting": "暖光台灯", "prompt": "木质书桌与窗外夜景"}'
+
+    def _fake_gen(prompt, out_name=None, config_id=None, reference_images=None,
+                  skip_guard=False, **kw):
+        gen_calls["prompt"] = prompt
+        gen_calls["refs"] = reference_images
+        out = tmp_path / "scene.png"
+        out.write_bytes(b"png")
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.text_client, "chat", _fake_chat)
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    monkeypatch.setattr(vc, "_duration", lambda p: 16.0)
+
+    assert vc.extract_scene_anchor(801) is True
+    clone = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"], {})["clone"]
+    assert clone.get("scene_image"), "空景图未落库"
+    assert "夜晚书房" in clone.get("scene_prompt", ""), "环境描述未落库"
+    assert clone.get("scene_location") == "夜晚书房"
+    assert gen_calls["refs"] == [str(picks[2])], "应以模型挑中的第 2 帧为参考"
+    assert "场景:" in gen_calls["prompt"]
+    assert "no people" in gen_calls["prompt"], "空景图提示词必须明确去人"
+
+
+def test_scene_anchor_failure_returns_false_without_blocking(tmp_path, monkeypatch):
+    """场景锚任一步失败 → 返回 False 退回纯文字锚,不阻塞分镜分析。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"reference": str(tmp_path / "nope.mp4")}}), 801))
+    assert vc.extract_scene_anchor(801) is False
+
+
+def test_upload_material_marks_presenter_uploaded(tmp_path, monkeypatch):
+    """补传过出镜照必须标记 presenter_uploaded:prepare_presenter 的防覆盖守卫
+    读这个键,此前全仓库没人写入 —— 建项目没传照、事后补传的用户再点
+    「AI 生成出镜模特」会把照片顶掉(守卫形同虚设)。"""
+    from PIL import Image
+    _db = _tmp_db(tmp_path, monkeypatch)
+    static = tmp_path / "static"
+    monkeypatch.setattr(_db.config, "STATIC_DIR", static)
+    img = tmp_path / "me.png"
+    Image.new("RGB", (32, 32), "white").save(img)
+
+    vc.upload_material(801, "presenter", img)
+
+    clone = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"], {})["clone"]
+    assert clone.get("presenter_uploaded") is True
+
+
+def test_replace_material_invalidates_old_turnaround(tmp_path, monkeypatch):
+    """换出镜照 = 换人:旧三视图还是上一张脸,必须作废让 sync_assets 重生成。
+
+    否则分镜参考锁的仍是旧人(实测:换照后首帧出的是前一张脸)。
+    """
+    import inspect
+    src = inspect.getsource(vc.replace_material)
+    assert 'clone.pop("turnaround_image", None)' in src, "换照未作废旧三视图"
+    assert 'clone.pop("presenter_desc", None)' in src, "换照未作废旧人物描述"
 
 
 # ── 用户素材不得被 AI 生成覆盖 ──────────────────────────────────────────

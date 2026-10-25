@@ -1025,14 +1025,12 @@ class ClonePage(QWidget):
             analyze_btn.setText(("1️⃣ " + tr("整段直传拆解")) if on
                                 else ("1️⃣ " + tr("detect") + " · AI " + tr("storyboard")))
         direct_btn.toggled.connect(_toggle_direct)
-        bar.addWidget(direct_btn)
         # 一键重绘:换完素材后逐镜点「重绘」太碎,尤其分镜多的时候
         redraw_all_btn = W.primary_btn("3️⃣ " + tr("一键重绘首帧"))
         redraw_all_btn.setToolTip(tr("把所有缺首帧的分镜逐张生成(串行,逐镜消耗生图额度)"))
         redraw_all_btn.clicked.connect(self._redraw_all_shots)
         self.redraw_all_btn = redraw_all_btn
         self._shot_busy: set = set()      # 正在生成的镜号,渲染时占位
-        bar.addWidget(redraw_all_btn)
         presenter_btn = QPushButton("2️⃣ AI " + tr("生成出镜模特"))
         presenter_btn.clicked.connect(self._presenter)
         # 换素材:后端 upload_material 一直在,但此前建完项目就没有入口了 ——
@@ -1045,10 +1043,15 @@ class ClonePage(QWidget):
         presenter_img_btn.clicked.connect(lambda: self._replace_material("presenter"))
         merge_btn = W.primary_btn("4️⃣ " + tr("merge_now"))
         merge_btn.clicked.connect(self._merge)
+        # 步骤顺序 = 执行顺序(用户实测反馈「step 按顺序排列」):
+        # 1️⃣ 拆解 → 2️⃣ 备料(模特/产品/出镜照)→ 3️⃣ 重绘首帧 → 4️⃣ 合并。
+        # 直传开关是**模式切换**不是步骤,固定放最左,不参与编号。
+        bar.addWidget(direct_btn)
         bar.addWidget(analyze_btn)
         bar.addWidget(presenter_btn)
         bar.addWidget(product_btn)
         bar.addWidget(presenter_img_btn)
+        bar.addWidget(redraw_all_btn)
         bar.addWidget(merge_btn)
         bar.addStretch(1)
         root.addLayout(bar)
@@ -1087,22 +1090,25 @@ class ClonePage(QWidget):
         self.clone_style_combo.setMinimumWidth(140)
         self.clone_style_combo.setMaximumWidth(260)
         srow.addWidget(self.clone_style_combo)
-        # 全身像 = 分镜参考主图(锁脸 + 锁服装);三视图仅供人工核对
-        self.clone_fs_btn = QPushButton(tr("重建人物全身像"))
-        self.clone_fs_btn.setObjectName("ffAction")
-        self.clone_fs_btn.setCursor(Qt.PointingHandCursor)
-        self.clone_fs_btn.setToolTip(
-            tr("用「替换出镜照」里的人物照重新生成单人全身像,"
-               "作为跨镜锁人物长相与服装的参考图"))
-        self.clone_fs_btn.clicked.connect(self._rebuild_fullshot)
-        srow.addWidget(self.clone_fs_btn)
+        # 角色资产 = 三视图(生成后自动换上出镜照的脸);分镜参考用三视图切出的
+        # 单人立绘。「重建人物全身像」已移除(用户定版):全身像的服装是模型按
+        # 文字自由发挥的、与上传照对不上,脸经两次转手与三视图不是同一人。
         self.clone_ta_btn = QPushButton(tr("重建人物三视图"))
         self.clone_ta_btn.setObjectName("ffAction")
         self.clone_ta_btn.setCursor(Qt.PointingHandCursor)
         self.clone_ta_btn.setToolTip(
-            tr("重新生成三视图(正脸特写 + 正面/侧面/背面),仅供人工核对,不用于分镜"))
+            tr("用当前出镜照重新生成三视图,并自动换上本人长相(分镜参考主图)"))
         self.clone_ta_btn.clicked.connect(self._rebuild_turnaround)
         srow.addWidget(self.clone_ta_btn)
+        # 自动换脸失败(turnaround_swapped=False)或想换张照片时的补救入口:
+        # 只重跑换脸,不重新生图,不消耗生图额度
+        self.clone_swap_btn = QPushButton(tr("手动换脸"))
+        self.clone_swap_btn.setObjectName("ffAction")
+        self.clone_swap_btn.setCursor(Qt.PointingHandCursor)
+        self.clone_swap_btn.setToolTip(
+            tr("对当前三视图重新换上出镜照的脸(只跑换脸,不重新生成)"))
+        self.clone_swap_btn.clicked.connect(self._swap_turnaround_face)
+        srow.addWidget(self.clone_swap_btn)
         srow.addStretch(1)
         root.addLayout(srow)
         # 控件建好之后再填数据/接信号 —— 顺序反了会 AttributeError
@@ -1130,10 +1136,10 @@ class ClonePage(QWidget):
         self.mat_presenter_lab.setFixedSize(110, 110)
         self.mat_presenter_lab.setAlignment(Qt.AlignCenter)
         self.mat_presenter_lab.setToolTip(tr("当前出镜人"))
-        # 派生资产缩略图:全身像 / 三视图 / 场景图 —— 此前只存在磁盘上,界面看不到
-        self.mat_fullshot_lab = QLabel()
-        self.mat_fullshot_lab.setFixedSize(110, 110)
-        self.mat_fullshot_lab.setAlignment(Qt.AlignCenter)
+        # 派生资产缩略图:分镜参考立绘 / 三视图 / 场景图 —— 此前只存在磁盘上,界面看不到
+        self.mat_standing_lab = QLabel()
+        self.mat_standing_lab.setFixedSize(110, 110)
+        self.mat_standing_lab.setAlignment(Qt.AlignCenter)
         self.mat_turn_lab = QLabel()
         self.mat_turn_lab.setFixedSize(110, 110)
         self.mat_turn_lab.setAlignment(Qt.AlignCenter)
@@ -1142,7 +1148,7 @@ class ClonePage(QWidget):
         self.mat_scene_lab.setAlignment(Qt.AlignCenter)
         self.material_row.addWidget(self.mat_product_lab)
         self.material_row.addWidget(self.mat_presenter_lab)
-        self.material_row.addWidget(self.mat_fullshot_lab)
+        self.material_row.addWidget(self.mat_standing_lab)
         self.material_row.addWidget(self.mat_turn_lab)
         self.material_row.addWidget(self.mat_scene_lab)
         self.material_row.addStretch(1)
@@ -1239,6 +1245,14 @@ class ClonePage(QWidget):
             btns = QVBoxLayout()
             img_btn = QPushButton("3️⃣ " + tr("redraw") + tr(" · 首帧图"))
             img_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_image(n))
+            # 首帧换脸兜底:自动链路(三视图换脸 + 立绘参考)已把脸锚住,但生图
+            # 模型偶尔仍画偏;只动人脸像素比整镜重生成便宜得多,换完重出视频即可
+            if ff:
+                fs_btn = QPushButton(tr("首帧换脸"))
+                fs_btn.setToolTip(tr("用出镜照替换这一镜首帧里的人脸(不重新生成)"))
+                fs_btn.clicked.connect(
+                    lambda _=False, n=int(b.get("number", 0)): self._shot_face_swap(n))
+                btns.addWidget(fs_btn)
             vid_btn = W.primary_btn("▷ " + tr("batch_video"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
             btns.addWidget(img_btn)
@@ -1317,8 +1331,11 @@ class ClonePage(QWidget):
             return video_clone.prepare_presenter(self.drama_id, d["style"],
                                                   config_id=self._clone_image_cfg())
         def done(tid, result, error):
+            # 此前失败分支写的是 err("AI") —— 用户只看到两个字母,无从知道
+            # 生成为什么没出图;成功也从不刷新,界面看不出变化
             if error:
-                err("AI")
+                err(str(error)[:280])
+            self.reload()
         TASKMGR.submit("clone_presenter", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
@@ -1392,49 +1409,25 @@ class ClonePage(QWidget):
                   (v, db.now(), self.drama_id))
             ok(tr("画面风格已更新"))
 
-    def _rebuild_fullshot(self):
-        """重建单人全身像 —— 分镜真正使用的参考主图(锁脸 + 锁服装)。"""
+    def _write_turnaround_assets(self, turnaround: str):
+        """三视图落库 + 刷新 characters 两列(image_url=切格立绘,comic_image_url=整图)。
+
+        UI 重建与管线 sync_assets 共用这一份写法,免得两边列语义漂移。
+        """
         from ..pipeline import video_clone
-        from .confirm import ask
-        clone = (video_clone._meta(self.drama_id).get("clone") or {})
-        src = video_clone._resolve_local(clone.get("presenter"))
-        if not src:
-            err(tr("请先上传出镜人照片"))
-            return
-        if not ask(self, tr("重建人物全身像"),
-                   tr("将用当前上传的人物照生成单人全身像(消耗一次生图额度)。\n\n继续?")):
-            return
-        btn = getattr(self, "clone_fs_btn", None)
-        if btn is not None:
-            btn.setEnabled(False)
-
-        def job(tid):
-            return str(video_clone.build_presenter_fullshot(
-                src, config_id=self._clone_image_cfg(),
-                text_cfg_id=video_clone._selected_text_cfg(),
-                swap_cfg_id=video_clone._selected_swap_cfg()))
-
-        def done(tid, result, error):
-            if btn is not None:
-                btn.setEnabled(True)
-            if error:
-                err(str(error)[:280])
-                return
-            c = video_clone._meta(self.drama_id)
-            c.setdefault("clone", {})["presenter_fullshot"] = result
-            video_clone._save_meta(self.drama_id, c)
+        db.ex("UPDATE characters SET comic_image_url=?, updated_at=? "
+              "WHERE drama_id=? AND name=?",
+              (config.path_to_media_url(turnaround), db.now(),
+               self.drama_id, video_clone.CLONE_PRESENTER_NAME))
+        standing = video_clone.standing_ref_of(turnaround)
+        if standing:
             db.ex("UPDATE characters SET image_url=?, updated_at=? "
                   "WHERE drama_id=? AND name=?",
-                  (config.path_to_media_url(result), db.now(),
+                  (config.path_to_media_url(standing), db.now(),
                    self.drama_id, video_clone.CLONE_PRESENTER_NAME))
-            self.reload()
-            ok(tr("人物全身像已重建,重新生成首帧即可生效"))
-
-        TASKMGR.submit("clone_fullshot", job, done, drama_id=self.drama_id,
-                       episode_id=self._clone_episode_id())
 
     def _rebuild_turnaround(self):
-        """用当前上传的人物照重建三视图(换模型/换风格/换素材后都要重来)。"""
+        """重建三视图并自动换脸(换模型/换风格/换出镜照后都要重来)。"""
         from ..pipeline import video_clone
         from .confirm import ask
         clone = (video_clone._meta(self.drama_id).get("clone") or {})
@@ -1443,15 +1436,26 @@ class ClonePage(QWidget):
             err(tr("请先上传出镜人照片"))
             return
         if not ask(self, tr("重建人物三视图"),
-                   tr("将用当前上传的人物照重新生成三视图(消耗一次生图额度)。\n\n继续?")):
+                   tr("将用当前出镜照重新生成三视图并自动换脸"
+                      "(消耗一次生图额度)。\n\n继续?")):
             return
         btn = getattr(self, "clone_ta_btn", None)
         if btn is not None:
             btn.setEnabled(False)
+        d = db.q1("SELECT style FROM dramas WHERE id=?", (self.drama_id,))
 
         def job(tid):
-            return str(video_clone.build_presenter_turnaround(
-                src, config_id=self._clone_image_cfg()))
+            ta = video_clone.build_presenter_turnaround(
+                src, config_id=self._clone_image_cfg(),
+                style_value=(d["style"] if d else "") or "")
+            swapped = True
+            try:
+                ta = video_clone.swap_clone_face(
+                    src, ta, swap_cfg_id=video_clone._selected_swap_cfg())
+            except Exception as exc:  # noqa: BLE001
+                swapped = False
+                print(f"[clone] 三视图换脸失败({exc}),保留生成底图", flush=True)
+            return {"path": str(ta), "swapped": swapped}
 
         def done(tid, result, error):
             if btn is not None:
@@ -1459,17 +1463,65 @@ class ClonePage(QWidget):
             if error:
                 err(str(error)[:280])
                 return
-            from ..core import db as _db
             c = video_clone._meta(self.drama_id)
             cc = c.setdefault("clone", {})
-            cc["turnaround_image"] = result          # 三视图:仅供人工核对
+            cc["turnaround_image"] = result["path"]
+            cc["turnaround_swapped"] = bool(result["swapped"])
             video_clone._save_meta(self.drama_id, c)
-            # 分镜用的是**全身像**,重建三视图不该改动分镜参考图
-            ok(tr("人物三视图已重建(仅供核对),重新生成首帧即可生效"))
+            self._write_turnaround_assets(result["path"])
+            if result["swapped"]:
+                ok(tr("人物三视图已重建(已换脸),重新生成首帧即可生效"))
+            else:
+                err(tr("三视图已生成但换脸失败,可点「手动换脸」重试"))
             self.reload()
-            ok(tr("人物三视图已重建,重新生成首帧即可生效"))
 
         TASKMGR.submit("clone_turnaround", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
+    def _swap_turnaround_face(self):
+        """手动换脸:只对当前三视图重跑换脸,不重新生图(不消耗生图额度)。
+
+        自动链路失败(turnaround_swapped=False)时的补救入口 —— 此前换脸失败被
+        静默吞掉,用户拿着「路人脸三视图」当分镜参考而不自知,首帧自然不像本人。
+        """
+        from ..pipeline import video_clone
+        from .confirm import ask
+        clone = (video_clone._meta(self.drama_id).get("clone") or {})
+        src = video_clone._resolve_local(clone.get("presenter"))
+        if not src:
+            err(tr("请先上传出镜人照片"))
+            return
+        ta = video_clone._resolve_local(clone.get("turnaround_image"))
+        if not ta:
+            err(tr("还没有三视图,先点「重建人物三视图」"))
+            return
+        if not ask(self, tr("手动换脸"),
+                   tr("将把出镜照的脸换到当前三视图上(消耗一次换脸额度)。\n\n继续?")):
+            return
+        btn = getattr(self, "clone_swap_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+
+        def job(tid):
+            return str(video_clone.swap_clone_face(
+                src, ta, swap_cfg_id=video_clone._selected_swap_cfg()))
+
+        def done(tid, result, error):
+            if btn is not None:
+                btn.setEnabled(True)
+            if error:
+                err(str(error)[:280])
+                return
+            c = video_clone._meta(self.drama_id)
+            cc = c.setdefault("clone", {})
+            cc["turnaround_image"] = result
+            cc["turnaround_swapped"] = True
+            video_clone._save_meta(self.drama_id, c)
+            self._write_turnaround_assets(result)
+            self.reload()
+            ok(tr("三视图已换脸,重新生成首帧即可生效"))
+
+        TASKMGR.submit("clone_faceswap", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
     def _clone_text_cfg(self):
@@ -1507,6 +1559,8 @@ class ClonePage(QWidget):
         if style:
             parts.append(tr("画面风格") + ": " + style)
         clone = (video_clone._meta(self.drama_id).get("clone") or {})
+        if clone.get("turnaround_image") and clone.get("turnaround_swapped") is False:
+            parts.append("⚠ " + tr("三视图未换脸,点「手动换脸」重试"))
         bs = len(clone.get("storyboards") or [])
         if bs:
             parts.append(tr("分镜") + f": {bs} " + tr("镜"))
@@ -1537,21 +1591,28 @@ class ClonePage(QWidget):
                 lab.setPixmap(QPixmap())
                 lab.setText(tr("none"))
                 lab.setToolTip(tip)
-        # 派生资产:全身像 / 三视图 / 场景
-        derived = (("presenter_fullshot", self.mat_fullshot_lab, tr("人物全身像(分镜参考)")),
-                   ("turnaround_image", self.mat_turn_lab, tr("人物三视图(仅核对)")),
-                   ("scene_image", self.mat_scene_lab, tr("场景图(首镜固化)")))
-        for key, lab, tip in derived:
+        # 派生资产:分镜参考立绘(三视图切格)/ 三视图整图(角色资产)/ 场景空景图。
+        # 三视图换脸失败时缩略图提示就地可见 —— 此前静默降级,用户拿着路人脸
+        # 当参考图而不自知(实测)。
+        def _set_thumb(lab, path, tip):
             lab.setToolTip(tip)
-            path = video_clone._resolve_local(clone.get(key))
             if path:
                 lab.setPixmap(W.pixmap_from_media(str(path), 110, 110))
                 lab.setCursor(Qt.PointingHandCursor)
-                full = str(path)
-                lab.mousePressEvent = lambda _e, u=full: self._view_image_big(u)
+                lab.mousePressEvent = lambda _e, u=str(path): self._view_image_big(u)
             else:
                 lab.setPixmap(QPixmap())
                 lab.setText(tr("none"))
+        turn = video_clone._resolve_local(clone.get("turnaround_image"))
+        _set_thumb(self.mat_standing_lab,
+                   video_clone.standing_ref_of(clone.get("turnaround_image")),
+                   tr("分镜参考立绘(三视图自动切格,锁人锁服装)"))
+        _set_thumb(self.mat_turn_lab, turn,
+                   tr("人物三视图(角色资产)") if clone.get("turnaround_swapped") is not False
+                   else tr("人物三视图(未换脸,点「手动换脸」重试)"))
+        _set_thumb(self.mat_scene_lab,
+                   video_clone._resolve_local(clone.get("scene_image")),
+                   tr("场景图(原视频空景,锁背景)"))
 
     def _replace_material(self, kind: str):
         """换产品图 / 出镜人照片。换产品图会多跑一次多模态读图刷新描述。"""
@@ -1603,6 +1664,51 @@ class ClonePage(QWidget):
                 err(str(error)[:280])
             self.reload()
         TASKMGR.submit("clone_image", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
+    def _shot_face_swap(self, n: int):
+        """手动换脸兜底:把出镜照的脸换到这一镜**已生成的首帧**上。
+
+        自动链路(三视图换脸 + 分镜参考立绘 + 场景锚)已把人锚住,但生图模型
+        偶尔仍把脸画偏;换脸只动人脸像素,比整镜重生成便宜得多 —— 换完重出
+        视频即可生效。
+        """
+        from ..pipeline import video_clone
+        from .confirm import ask
+        clone = (video_clone._meta(self.drama_id).get("clone") or {})
+        src = video_clone._resolve_local(clone.get("presenter"))
+        if not src:
+            err(tr("请先上传出镜人照片"))
+            return
+        board = next((x for x in video_clone._clone_storyboards(self.drama_id)
+                      if int(x.get("number", 0)) == n), None)
+        ff = video_clone._resolve_local((board or {}).get("first_frame"))
+        if ff is None:
+            err(tr("这一镜还没有首帧,先重绘首帧"))
+            return
+        if not ask(self, tr("首帧换脸"),
+                   tr("将用出镜照替换第 {n} 镜首帧里的人脸(消耗一次换脸额度)。\n\n继续?")
+                   .format(n=n)):
+            return
+        tpl = str(ff)
+
+        def job(tid):
+            return str(video_clone.swap_clone_face(
+                src, tpl, swap_cfg_id=video_clone._selected_swap_cfg()))
+
+        def done(tid, result, error):
+            if error:
+                err(str(error)[:280])
+                return
+            c = video_clone._meta(self.drama_id)
+            for x in c.setdefault("clone", {}).get("storyboards", []):
+                if int(x.get("number", 0)) == n:
+                    x["first_frame"] = result
+            video_clone._save_meta(self.drama_id, c)
+            self.reload()
+            ok(tr("首帧已换脸,重新生成视频后生效"))
+
+        TASKMGR.submit("clone_faceswap", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
     def _redraw_all_shots(self):
