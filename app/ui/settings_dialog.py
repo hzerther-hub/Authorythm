@@ -1835,7 +1835,10 @@ class ServiceDialog(QDialog):
 
     def _save(self):
         data = self._collect()
-        if not data["model"] or not data["base_url"]:
+        # 微软系 TTS(edge 云端免费 / local 本机离线)没有 Base URL —— 内置端点/本机引擎,
+        # 与 registry.check_ready 的 NO_BASE_URL_PROVIDERS 豁免同口径
+        no_url = data["provider"] in registry.NO_BASE_URL_PROVIDERS
+        if not data["model"] or (not data["base_url"] and not no_url):
             self.test_lab.setText(tr("❌ Base URL 与至少一个模型必填"))
             return
         self.accept()

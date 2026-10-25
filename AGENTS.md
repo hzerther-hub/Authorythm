@@ -10,7 +10,7 @@ ffmpeg 走外部二进制(`config.find_ffmpeg()` 探测)。
 pip install -r requirements.txt           # 最小依赖(PySide6 / requests / Pillow / edge-tts / cryptography)
 pip install -r requirements-dev.txt       # 开发期(rust + mypy + pytest + pyinstaller)
 python -m app.main          # 启动(GUI,需显示环境)
-python -m pytest tests/ -q  # 283 个回归测试,约 1 分钟
+python -m pytest tests/ -q  # 730+ 个回归测试,约 30 秒
 ruff check . && mypy        # lint + 类型检查(pyproject.toml 已配)
 ```
 

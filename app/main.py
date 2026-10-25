@@ -61,6 +61,19 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("PySide6Drama")
 
+    # 单实例闸门:拿不到库锁 = 已有活实例在跑,提示后退出 —— 不拦的话双实例
+    # 同时写同一个 SQLite,任务互相踩、两边状态各说各话(2026-10-24 实测)。
+    # PYDRAMA_ALLOW_MULTI=1 可豁免(调试用)。
+    import os
+    if os.environ.get("PYDRAMA_ALLOW_MULTI") != "1" and not db.claim_single_instance():
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            None, "易好短剧",
+            "易好短剧已在运行,请使用已打开的窗口。\n\n"
+            "若确认没有其它窗口在跑,稍等几秒后再试(实例退出的瞬间锁即释放)。\n"
+            "Yihao Shorts is already running — please use the existing window.")
+        return 1
+
     db.init_db()
     seed_prompt_files()
     # 日志必须在 db.init_db 之后(QApplication 之前),才能读 app_settings.log_level

@@ -646,12 +646,35 @@ class ProjectPage(QWidget):
         self.style_tag.setStyleSheet("background:#fdf0e6; color:#f97316; border-radius:4px;"
                                      "padding:2px 8px; font-size:12px;")
         top_line.addWidget(self.style_tag)
-        self.imit_tag = W.tag(tr("imitated"))
+        # 仿写书标志:点击跳回原著(imited_from.drama_id)。做成 flat 按钮保持
+        # 标签视觉,但可点击 + 指针手型 —— 「仿的书能跳到原著」的入口。
+        self.imit_tag = QPushButton(tr("imitated"))
+        self.imit_tag.setCursor(Qt.PointingHandCursor)
         self.imit_tag.setStyleSheet(
-            "background:rgba(168,85,247,0.08); color:#a855f7;"
+            "QPushButton{background:rgba(168,85,247,0.08); color:#a855f7;"
             "border:1px solid rgba(168,85,247,0.45); border-radius:4px;"
-            "padding:2px 8px; font-size:12px;")
+            "padding:2px 8px; font-size:12px;}"
+            "QPushButton:hover{background:rgba(168,85,247,0.18);}")
+        self.imit_tag.clicked.connect(self._jump_to_source)
         top_line.addWidget(self.imit_tag)
+        # 导入书标志:TXT 整本导入过的源书(novel_meta.imported),与仿写书区分
+        self.import_tag = QPushButton(tr("imported_book"))
+        self.import_tag.setStyleSheet(
+            "QPushButton{background:rgba(110,140,94,0.10); color:#6E8C5E;"
+            "border:1px solid rgba(110,140,94,0.45); border-radius:4px;"
+            "padding:2px 8px; font-size:12px;}"
+            "QPushButton:hover{background:rgba(110,140,94,0.20);}")
+        top_line.addWidget(self.import_tag)
+        # 仿写本菜单:一本原著可以反复仿出 N 本,这里列出全部、点击直达
+        self.imit_children_btn = QPushButton("")
+        self.imit_children_btn.setCursor(Qt.PointingHandCursor)
+        self.imit_children_btn.setStyleSheet(
+            "QPushButton{background:rgba(194,143,76,0.10); color:#C28F4C;"
+            "border:1px solid rgba(194,143,76,0.45); border-radius:4px;"
+            "padding:2px 8px; font-size:12px;}"
+            "QPushButton:hover{background:rgba(194,143,76,0.20);}")
+        self.imit_children_btn.clicked.connect(self._show_imitations)
+        top_line.addWidget(self.imit_children_btn)
         top_line.addStretch(1)
         head_info.addLayout(top_line)
         self.sub = QLabel("")
@@ -773,15 +796,48 @@ class ProjectPage(QWidget):
         self._back_cb = None
         self._enter_cb = None
         self._promo_cb = None
+        self._open_cb = None
+        self._imit_children = []
+        self._drama = {}
 
-    def set_callbacks(self, back_cb, enter_cb, promo_cb=None):
+    def set_callbacks(self, back_cb, enter_cb, promo_cb=None, open_cb=None):
         self._back_cb = back_cb
         self._enter_cb = enter_cb
         self._promo_cb = promo_cb
+        # open_cb(drama_id):按 id 打开任意项目 —— 仿写书跳原著 / 原著跳仿写本共用
+        self._open_cb = open_cb
 
     def _go_back(self):
         if self._back_cb:
             self._back_cb()
+
+    def _jump_to_source(self):
+        """仿写书 → 原著:原著已删除时报 toast,不静默无反应。"""
+        nm = db.jload(self._drama.get("novel_meta"), {}) or {}
+        src = nm.get("imitated_from") or {}
+        sid = src.get("drama_id")
+        if not sid:
+            return
+        if not db.q1("SELECT id FROM dramas WHERE id=?", (sid,)):
+            err(tr("source_deleted", src.get("source_title") or ""))
+            return
+        if self._open_cb:
+            self._open_cb(sid)
+
+    def _show_imitations(self):
+        """原著 → 仿写本列表(可仿 N 本):下拉菜单逐本直达。"""
+        from ..pipeline.book_import import imitations_of
+        children = self._imit_children or []
+        if not children:
+            return
+        menu = QMenu(self)
+        for i, c in enumerate(children, 1):
+            act = menu.addAction(
+                "{}. 《{}》 · {}".format(i, c["title"], (c["at"] or "")[:10]))
+            act.setData(c["drama_id"])
+        act = menu.exec(QCursor.pos())
+        if act is not None and self._open_cb:
+            self._open_cb(act.data())
 
     def _promo(self):
         PromoDialog(self, self.drama_id).exec()
@@ -893,6 +949,22 @@ class ProjectPage(QWidget):
         self.imit_tag.setVisible(bool(src.get("drama_id")))
         if src.get("source_title"):
             self.imit_tag.setText(tr("source_book", src["source_title"]))
+            self.imit_tag.setToolTip(tr("jump_to_source"))
+        # 导入书标志:tooltip 带导入档案(章/字/日期),一眼分辨「源书」
+        imp = nm.get("imported") or {}
+        self.import_tag.setVisible(bool(imp))
+        if imp:
+            self.import_tag.setToolTip(tr("imported_book_tip").format(
+                imp.get("chapters", "?"), imp.get("chars", "?"),
+                str(imp.get("at") or "")[:10]))
+        # 仿写本列表(「一篇原著可仿成 N 本」):有才显示按钮
+        from ..pipeline.book_import import imitations_of
+        self._imit_children = imitations_of(drama_id)
+        self.imit_children_btn.setVisible(bool(self._imit_children))
+        if self._imit_children:
+            self.imit_children_btn.setText(tr("imit_children", len(self._imit_children)))
+            self.imit_children_btn.setToolTip(tr("imit_children_tip",
+                                                 len(self._imit_children)))
         self.sub.setText(f"{tr('characters_n', nc)}  ·  {tr('scenes_n', ns)}  ·  {tr('episodes_n', ne)}")
         # 项目封面区(3:4 竖版 + 提示词 + 生成 + 放大预览)放在左上
         ch = self.cover_holder.layout()

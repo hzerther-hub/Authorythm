@@ -371,6 +371,15 @@ class ProjectCard(QFrame):
             c2.setObjectName("slateChip")
             c2.setToolTip(tr("imitated_tip"))
             chips.addWidget(c2)
+        # 导入书 chip:TXT 整本导入的源书(novel_meta.imported),tooltip 带导入档案
+        imp = nm.get("imported") or {}
+        if imp:
+            c2b = QLabel(tr("imported_book").upper())
+            c2b.setObjectName("slateChip")
+            c2b.setToolTip(tr("imported_book_tip").format(
+                imp.get("chapters", "?"), imp.get("chars", "?"),
+                str(imp.get("at") or "")[:10]))
+            chips.addWidget(c2b)
         style = db.q1("SELECT name FROM style_presets WHERE value=?", (drama["style"],))
         if style and drama["work_type"] != "novel":
             c3 = QLabel(tr(style["name"]).upper())
@@ -491,6 +500,60 @@ class ProjectCard(QFrame):
         else:
             self.open_requested.emit(self.drama_id)
         super().mousePressEvent(ev)
+
+
+class OverseasCard(QFrame):
+    """「海外改写书」卡片:英文/其它语言的成品书(overseas_project 表)。
+
+    这些书**不在 dramas 表** —— 启动台此前只列 dramas,改写书在启动台上
+    完全不可见(2026-10-25 用户:「这里显示增加英文或其它语言写的小说」)。
+    点击 → 海外改写对话框并定位「已保存章节」页(查看/导出)。
+    """
+    CARD_W = 276
+    open_requested = Signal(int, int)          # (project_id, drama_id)
+
+    def __init__(self, row: dict):
+        super().__init__()
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedWidth(self.CARD_W)
+        self.setMinimumHeight(150)
+        self.setObjectName("slateCard")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 12, 14, 12)
+        lay.setSpacing(6)
+        title = QLabel(row.get("title_target") or tr("overseas_untitled_book"))
+        title.setObjectName("slateTitle")
+        title.setWordWrap(True)
+        title.setMaximumHeight(54)
+        lay.addWidget(title)
+        chips = QHBoxLayout()
+        chips.setSpacing(5)
+        for text in (tr("overseas_card_tag"), str(row.get("platform") or ""),
+                     str(row.get("target_lang") or ""), str(row.get("level") or "")):
+            if not text:
+                continue
+            c = QLabel(text.upper())
+            c.setObjectName("slateChip")
+            chips.addWidget(c)
+        chips.addStretch(1)
+        lay.addLayout(chips)
+        meta = QLabel("{} · {}".format(
+            tr("overseas_card_n").format(row.get("n_chapters") or 0),
+            str(row.get("latest") or "")[:10]))
+        meta.setObjectName("slateMeta")
+        lay.addWidget(meta)
+        lay.addStretch(1)
+        hint = QLabel(tr("overseas_card_open_tip"))
+        hint.setObjectName("slateMeta")
+        lay.addWidget(hint)
+
+    def mousePressEvent(self, ev):
+        if ev.button() == Qt.LeftButton:
+            self.open_requested.emit(self._pid, self._did)
+        super().mousePressEvent(ev)
+
+    def bind(self, pid: int, did: int):
+        self._pid, self._did = pid, did
 
 
 class ProjectsPage(QWidget):
@@ -636,6 +699,13 @@ class ProjectsPage(QWidget):
         if self._new_cb:
             self._new_cb()
 
+    def _open_overseas(self, project_id: int, drama_id: int):
+        """点「海外改写书」卡片:打开改写对话框并定位「已保存章节」页。"""
+        from .overseas_dialog import OverseasDialog
+        dlg = OverseasDialog(self, drama_id=drama_id, episode_id=None,
+                             project_id=project_id)
+        dlg.exec()
+
     def _set_filter(self, key: str):
         self._filter = key
         self._filter_btns[key].setChecked(True)
@@ -672,6 +742,22 @@ class ProjectsPage(QWidget):
             card.settings_requested.connect(self._project_settings)
             card.status_changed.connect(self._set_status)
             self.grid.addWidget(card, i // cols, i % cols)
+        # 海外改写书(英文/其它语言成品书,不在 dramas 表):接在项目卡后面,
+        # 只列**已有章节**的(空 project 不占位);点击直达「已保存章节」页
+        try:
+            ov_rows = [dict(r) for r in db.q(
+                "SELECT op.id, op.title_target, op.platform, op.target_lang, op.level,"
+                " op.drama_id, COUNT(oc.id) n_chapters, MAX(oc.created_at) latest"
+                " FROM overseas_project op"
+                " LEFT JOIN overseas_chapter oc ON oc.project_id = op.id"
+                " GROUP BY op.id HAVING n_chapters > 0 ORDER BY op.id DESC")]
+        except Exception:                       # noqa: BLE001 —— 老库没表时不挡启动台
+            ov_rows = []
+        for k, r in enumerate(ov_rows):
+            card = OverseasCard(r)
+            card.bind(r["id"], r["drama_id"] or 0)
+            card.open_requested.connect(self._open_overseas)
+            self.grid.addWidget(card, (len(shown) + k) // cols, (len(shown) + k) % cols)
         if not shown:
             self.grid.addWidget(self._empty_state(bool(rows)), 0, 0)
         running = sum(1 for d in rows if d.get("status") == "active")

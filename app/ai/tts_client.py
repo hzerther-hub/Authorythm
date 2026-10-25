@@ -1,15 +1,19 @@
 # -*- coding: utf-8 -*-
 """TTS 多引擎合成 + 语速自适应。
 
-三档引擎:
+四档引擎(对齐原版 E:\\xiaoshuo adapters/tts.ts 的四通道):
   Path A `seed-tts-2.0`(火山豆包,默认 3 元/万字符)—— 异步 submit/query,
          Resource-Id 区分单角色(seed-tts-2.0)与复刻音色(seed-icl-2.0,voice 以 S_ 开头)
   Path B `seed-audio-1.0`(火山豆包,1 元/分钟)—— 同步 create,返回 base64
   Path C `edge-tts`(Microsoft Edge 云端神经 TTS,免费、无需 API key)——
-         中/英/日/韩四语男女各一,按文本主脚本自动选 voice
+         16 语种男女各一,按文本主脚本自动选 voice
+  Path D `local`(Windows 本机微软语音,离线、免 Key 免网络)—— PowerShell 驱动
+         WinRT/SAPI 双引擎,音色按机器枚举,断网也能出声
 
   Path A → B 的降级:错误含 `resource not granted` → 缓存降级,后续直接走 B
-  Path A/B → C 的降级:用户未配火山豆包 API key,或 volcengine 调用抛错 → Edge TTS 自动接管
+  Path A/B → C → D 的降级:未配火山 key 或 volcengine 抛错 → Edge 接管 → 仍失败
+              再落本机语音;**显式选了 edge/local 的不降级**(用户明确要免费/离线,
+              必须让他看到真实错误而不是悄悄换通道)
 
 语速自适应(核心):按 target_duration 合成后 ffprobe 实测时长,超了就提速重合成
                  (最多 2 轮,上限 2.0x)。
@@ -284,6 +288,254 @@ def last_voice() -> str:
     return _LAST_VOICE
 
 
+# ══ Path D:本机微软语音(Windows 离线,免 Key 免网络)══════════════════
+# 对齐原版 E:\xiaoshuo services/adapters/local-tts.ts(d98e59d)。
+# 两套引擎都是微软官方、随 Windows 安装:
+#   - WinRT Windows.Media.SpeechSynthesis(Huihui/Yaoyao/Kangkang,16kHz)
+#   - SAPI  System.Speech(Huihui Desktop / Zira Desktop,22.05kHz)
+# 已知两个坑照搬原版的规避:
+#   1) .ps1 必须带 UTF-8 BOM(PS 5.1 无 BOM 按 ANSI 解,中文脚本直接乱码);
+#   2) 合成文本不能走命令行参数(同样被 ANSI 化),改走 UTF-8 临时文件。
+
+LOCAL_TTS_MISSING_HINT = (
+    "本机没有可用的微软语音引擎音色。请在「设置 → 时间和语言 → 语言和区域」"
+    "安装中文(简体)的语音包(系统设置 → 隐私和安全性 → 语音 → 添加语音包),"
+    "安装后重启本应用即可。")
+
+
+def _is_edge_provider(p) -> bool:
+    return str(p or "").strip().lower() in ("edge", "edge-tts", "microsoft-edge")
+
+
+def _is_local_provider(p) -> bool:
+    return str(p or "").strip().lower() in ("local", "local-tts", "win-local",
+                                            "microsoft-local")
+
+
+def _powershell_exe() -> str:
+    # PS 5.1(PS7 移除了 WinRT 投影,不能驱动 WinRT 引擎)
+    import os
+    root = os.environ.get("SystemRoot", r"C:\Windows")
+    return str(Path(root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe")
+
+
+def _run_powershell(script: Path, args: list, timeout_s: int = 60) -> str:
+    r = subprocess.run([_powershell_exe(), "-NoProfile", "-ExecutionPolicy",
+                        "Bypass", "-File", str(script), *args],
+                       capture_output=True, timeout=timeout_s)
+    if r.returncode != 0:
+        raise RuntimeError("本地语音引擎调用失败:"
+                           + r.stderr.decode("utf-8", "replace")[:400])
+    return r.stdout.decode("utf-8", "replace")
+
+
+_LIST_VOICES_PS = """
+$ErrorActionPreference = 'SilentlyContinue'
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+$result = @()
+try {
+  Add-Type -AssemblyName System.Speech
+  $s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+  foreach ($v in $s.GetInstalledVoices()) {
+    if ($v.Enabled) {
+      $result += @{ name = $v.VoiceInfo.Name; lang = $v.VoiceInfo.Culture.Name; gender = [string]$v.VoiceInfo.Gender; engine = 'sapi' }
+    }
+  }
+  $s.Dispose()
+} catch {}
+try {
+  Add-Type -AssemblyName System.Runtime.WindowsRuntime
+  [void][Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType=WindowsRuntime]
+  foreach ($v in [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices) {
+    $g = ''
+    try { $g = [string]$v.Gender } catch { $g = '' }
+    $result += @{ name = $v.DisplayName; lang = $v.Language; gender = $g; engine = 'winrt' }
+  }
+} catch {}
+$result | ConvertTo-Json -Compress -Depth 4
+"""
+
+
+def _write_ps1(path: Path, body: str) -> None:
+    """带 UTF-8 BOM 写 .ps1 —— PS 5.1 正确解析中文的唯一可靠办法。"""
+    path.write_bytes(b"\xef\xbb\xbf" + body.encode("utf-8"))
+
+
+def list_local_voices() -> list:
+    """枚举本机微软音色(SAPI + WinRT 双引擎)。失败/非 Windows 返回空表。
+
+    每项 {id, name, lang, gender, engine};id 形如 `winrt:Microsoft Huihui`。
+    """
+    import sys
+    if sys.platform != "win32":
+        return []
+    import tempfile
+    import shutil
+    work = Path(tempfile.mkdtemp(prefix="tts-voices-"))
+    try:
+        script = work / "list.ps1"
+        _write_ps1(script, _LIST_VOICES_PS)
+        raw = _run_powershell(script, [], timeout_s=30).strip()
+        if not raw:
+            return []
+        data = _json.loads(raw)
+        arr = data if isinstance(data, list) else [data]
+        out = []
+        for v in arr:
+            name = str(v.get("name") or "").strip()
+            if not name:
+                continue
+            out.append({
+                "id": "{}:{}".format(v.get("engine"), name),
+                "name": name,
+                "lang": str(v.get("lang") or ""),
+                # SAPI 给 Male/Female,WinRT 同;认不出按女声(原版同口径)
+                "gender": "male" if str(v.get("gender") or "").strip().lower() == "male" else "female",
+                "engine": "winrt" if v.get("engine") == "winrt" else "sapi",
+            })
+        return out
+    except Exception:  # noqa: BLE001 —— 枚举失败 = 本机没有,不抛
+        return []
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _find_local_voice(voices: list, requested) -> dict | None:
+    """精确查找(显示名 / 内部 ID / 语言 tag);找不到返回 None,不做兜底。"""
+    want = str(requested or "").strip().lower()
+    if not want or want == "auto":
+        return None
+    for v in voices:
+        if v["name"].lower() == want or v["id"].lower() == want:
+            return v
+    for v in voices:
+        if v["lang"].lower() == want:
+            return v
+    return None
+
+
+def _resolve_local_voice(voices: list, requested, model_voice, gender) -> dict | None:
+    """本机通道最终选音(原版 resolveLocalVoice 同口径)。
+
+    显式指定 > 配置置顶音色(**性别不冲突时**才用 —— 置顶女声又切男声,
+    置顶会被跳过,这是「切换性别」能生效的关键)> 按性别挑中文 > 任意中文 > 第一个。
+    """
+    if not voices:
+        return None
+    exact = _find_local_voice(voices, requested)
+    if exact:
+        return exact
+    g = "male" if gender == "male" else "female"
+    pinned = _find_local_voice(voices, model_voice)
+    if pinned and pinned["gender"] == g:
+        return pinned
+    for v in voices:
+        if v["lang"].lower().startswith("zh") and v["gender"] == g:
+            return v
+    for v in voices:
+        if v["lang"].lower().startswith("zh"):
+            return v
+    return voices[0]
+
+
+def _atempo_chain(rate: float) -> str:
+    """ffmpeg atempo 链:单个只支持 0.5~2.0,慢于 0.5 时串联兜底。"""
+    r = max(0.5, min(2.0, float(rate or 1)))
+    if r >= 1:
+        return f"atempo={r:.4f}"
+    factors, rest = [], r
+    while rest < 0.5:
+        factors.append(0.5)
+        rest /= 0.5
+    factors.append(rest)
+    return ",".join(f"atempo={f:.4f}" for f in factors)
+
+
+def _synth_ps(engine: str) -> str:
+    """合成脚本(参数:输入文本文件 / 输出 wav / 音色名)。文本走临时文件防 ANSI 化。"""
+    if engine == "sapi":
+        return """
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Speech
+$inFile = $args[0]; $outFile = $args[1]; $voiceName = $args[2]
+$txt = [System.IO.File]::ReadAllText($inFile, [System.Text.Encoding]::UTF8)
+$s = New-Object System.Speech.Synthesis.SpeechSynthesizer
+if ($voiceName) { $s.SelectVoice($voiceName) }
+$s.SetOutputToWaveFile($outFile)
+$s.Speak($txt)
+$s.SetOutputToNull()
+$s.Dispose()
+"""
+    return """
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+[void][Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType=WindowsRuntime]
+$inFile = $args[0]; $outFile = $args[1]; $voiceName = $args[2]
+$txt = [System.IO.File]::ReadAllText($inFile, [System.Text.Encoding]::UTF8)
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+  $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and $_.IsGenericMethod -and
+  $_.GetParameters()[0].ParameterType.Name -like 'IAsyncOperation*' } | Select-Object -First 1
+$synth = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer
+$pick = $null
+if ($voiceName) { $pick = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | Where-Object { $_.DisplayName -eq $voiceName } | Select-Object -First 1 }
+if ($pick) { $synth.Voice = $pick }
+$op = $synth.SynthesizeTextToStreamAsync($txt)
+$task = $asTask.MakeGenericMethod([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]).Invoke($null, @($op))
+$task.Wait(60000) | Out-Null
+$stream = $task.Result
+$net = [System.IO.WindowsRuntimeStreamExtensions]::AsStreamForRead($stream)
+$fs = [System.IO.File]::Create($outFile)
+$net.CopyTo($fs)
+$fs.Close()
+"""
+
+
+def _synthesize_local(text: str, voice: str | None = None, model_voice: str = "",
+                      gender: str = "female", speed: float = 1.0,
+                      subdir: str = "narration") -> Path:
+    """本机微软语音合成(离线)。无音色时抛带「怎么装语音包」的错误。"""
+    import sys
+    if sys.platform != "win32":
+        raise RuntimeError(f"本地微软语音只支持 Windows(当前 {sys.platform})。"
+                           + LOCAL_TTS_MISSING_HINT)
+    voices = list_local_voices()
+    if not voices:
+        raise RuntimeError("没有检测到本机微软语音音色。" + LOCAL_TTS_MISSING_HINT)
+    picked = _resolve_local_voice(voices, voice, model_voice, gender)
+    if not picked:
+        raise RuntimeError("没有检测到本机微软语音音色。" + LOCAL_TTS_MISSING_HINT)
+    global _LAST_VOICE
+    _LAST_VOICE = picked["name"]
+
+    import tempfile
+    import shutil
+    work = Path(tempfile.mkdtemp(prefix="tts-local-"))
+    try:
+        script = work / "synth.ps1"
+        txt_file = work / "input.txt"
+        wav = work / "out.wav"
+        _write_ps1(script, _synth_ps(picked["engine"]))
+        txt_file.write_text(text or "", encoding="utf-8")
+        _run_powershell(script, [str(txt_file), str(wav), picked["name"]])
+        if not wav.exists() or wav.stat().st_size == 0:
+            raise RuntimeError("本地语音引擎没有产出音频")
+        # WAV → MP3(顺带 atempo 变速)
+        ff = config.find_ffmpeg()
+        if not ff:
+            raise RuntimeError("未找到 ffmpeg(本机语音需要它转 MP3)")
+        out = _out_path(subdir=subdir)
+        r = subprocess.run([ff, "-y", "-i", str(wav), "-filter:a",
+                            _atempo_chain(speed or 1.0), "-codec:a", "libmp3lame",
+                            "-b:a", "64k", "-ac", "1", str(out)],
+                           capture_output=True, timeout=120)
+        if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
+            raise RuntimeError("本机语音转 MP3 失败:"
+                               + r.stderr.decode("utf-8", "replace")[:300])
+        return out
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 # ── Path C:Edge TTS 同步封装 ──
 def _synthesize_edge(text: str, voice: str = EDGE_DEFAULT_FEMALE,
                      speech_rate: int = 0, fmt: str = "mp3") -> Path:
@@ -318,14 +570,16 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
     """合成旁白 MP3。
 
     引擎链 (按优先级尝试):
-      1) 用户在「AI 服务」里配了豆包语音 + api_key → 走 volcengine 双引擎(Path A/B)
-      2) 否则,或 volcengine 抛错 → 走 Edge TTS(Path C,免费微软神经)
+      1) 配置的 provider 显式是 edge / local → 直接走对应通道,**不降级**
+         (用户明确选了免费/离线,必须看到真实错误而不是悄悄换通道)
+      2) 配了豆包语音 + api_key → 走 volcengine 双引擎(Path A/B,收费)
+      3) volcengine 抛错或未配 key → Edge TTS(Path C,免费微软云)
+      4) Edge 也失败 → 本机微软语音(Path D,离线);仍失败把各通道原因合并抛出
 
     voice 优先:调用方传参 >> 配置项默认 voice >> Edge 按「文本主语言 + 性别」自动选
                 (覆盖系统全部 16 种界面语言 · 男女各一,共 32 个预设)。
 
-    target_duration 在 Edge 路径会被忽略(Edge 的提速语义与 volcengine 不同,
-    强制 speed 走 rate percent 参数;ffprobe 校验留给下一版本)。
+    target_duration 在 Edge/local 路径会被忽略(提速语义不同;ffprobe 校验留给下一版本)。
     """
     global _LAST_VOICE
     cfg = None
@@ -334,14 +588,27 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
     except Exception:                          # noqa: BLE001 —— 无任何 TTS 配置时
         cfg = None
     key = (cfg.get("api_key") or "").strip() if cfg else ""
+    provider = (cfg.get("provider") or "").strip().lower() if cfg else ""
+    model_voice = (cfg.get("model") or "").strip() if cfg else ""
+    rate_pct = int(round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100))
+    reasons: list[str] = []
+
+    # ── 显式选了 Edge(免费):直接走,不降级 ──
+    if _is_edge_provider(provider):
+        chosen = voice if (voice and "Neural" in voice) else pick_edge_voice(text, gender)
+        return _synthesize_edge(text, voice=chosen, speech_rate=rate_pct)
+
+    # ── 显式选了本机语音(离线):直接走,不降级(没语音包时用户要看到「怎么装」)──
+    if _is_local_provider(provider):
+        return _synthesize_local(text, voice=voice, model_voice=model_voice,
+                                 gender=gender, speed=speed, subdir=subdir)
 
     # ── Path C 提前:voice 已是 Edge voice 名称时,直接走 Edge,绕开 volcengine ──
     if voice and ("Neural" in voice):
         try:
-            return _synthesize_edge(text, voice=voice,
-                                    speech_rate=int(round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100)))
-        except Exception:
-            pass                       # Edge 不通时再回头走 volcengine
+            return _synthesize_edge(text, voice=voice, speech_rate=rate_pct)
+        except Exception as e:          # noqa: BLE001
+            reasons.append(f"Edge TTS 失败 —— {str(e)[:200]}")   # Edge 不通再回头走火山
 
     # ── Path A/B:豆包 ──
     if key:
@@ -359,18 +626,28 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
                 volc_voice = next((m for m in models_list
                                    if target in (m or "").lower()), models_list[0])
             else:
-                volc_voice = (cfg.get("model") if cfg else None) or DEFAULT_VOICE
+                volc_voice = model_voice or DEFAULT_VOICE
         _LAST_VOICE = volc_voice
         try:
             return _synthesize_volc(text, volc_voice, cfg, target_duration, speed)
         except Exception as e:          # noqa: BLE001 —— 豆包挂了就降级
-            pass
+            reasons.append(f"主通道({provider or 'volcengine'})失败 —— {str(e)[:300]}")
 
     # ── Path C:Edge TTS 兜底 ──
     chosen = voice if (voice and "Neural" in voice) else pick_edge_voice(text, gender)
-    _LAST_VOICE = chosen
-    return _synthesize_edge(text, voice=chosen,
-                            speech_rate=int(round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100)))
+    try:
+        return _synthesize_edge(text, voice=chosen, speech_rate=rate_pct)
+    except Exception as e:              # noqa: BLE001 —— Edge 也挂,最后落本机
+        reasons.append(f"降级到微软 Edge 语音也失败 —— {str(e)[:300]}")
+
+    # ── Path D:本机微软语音(离线)最后兜底 ──
+    try:
+        return _synthesize_local(text, voice=voice, model_voice=model_voice,
+                                 gender=gender, speed=speed, subdir=subdir)
+    except Exception as e:              # noqa: BLE001
+        reasons.append(f"降级到本机微软语音也失败 —— {str(e)[:300]}")
+    # 通道全灭:把每条通道的原因合并抛出,不留裸技术错误(原版同口径)
+    raise RuntimeError("；".join(reasons) or "所有 TTS 通道都不可用")
 
 
 def _synthesize_volc(text: str, voice: str, cfg: dict,
@@ -420,13 +697,32 @@ def test_config(cfg: dict) -> tuple[bool, str]:
     传的是 `ServiceDialog._collect()` 的结果,那个 dict **不带 id**(新增配置时更是
     根本没有),下标取值直接 KeyError → 弹窗里点测试永远失败(列表页传整行才有 id)。
     None 是安全的:synthesize 内部会按优先级挑默认 TTS 配置。
+
+    微软系通道探针报通道名与实际音色:edge=免费云端神经、local=本机离线
+    (顺带报本机音色数,没装语音包时用户能立刻看出该装什么)。
     """
+    provider = (cfg.get("provider") or "").strip().lower()
+    if _is_local_provider(provider):
+        try:
+            voices = list_local_voices()
+            if not voices:
+                return False, LOCAL_TTS_MISSING_HINT
+        except Exception as e:  # noqa: BLE001
+            return False, str(e)[:300]
     voice = cfg.get("model") or ""
-    if not voice or voice.upper().startswith("BV"):
+    if (_is_edge_provider(provider) or _is_local_provider(provider)):
+        voice = voice or "auto"          # 微软系:按性别自动选,不硬塞火山 BV 号
+    elif not voice or voice.upper().startswith("BV"):
         voice = DEFAULT_VOICE
     try:
-        p = synthesize("你好", voice=voice, config_id=cfg.get("id"))
+        p = synthesize("你好", voice=None if voice == "auto" else voice,
+                       config_id=cfg.get("id"))
         p.unlink(missing_ok=True)
+        used = _LAST_VOICE or voice
+        if _is_local_provider(provider):
+            return True, f"OK(本机微软语音 · 音色 {used})"
+        if _is_edge_provider(provider):
+            return True, f"OK(Edge 神经语音 · 音色 {used})"
         return True, "OK(真实合成验证通过)"
     except Exception as e:  # noqa: BLE001
         return False, str(e)[:300]

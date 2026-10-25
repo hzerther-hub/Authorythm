@@ -122,6 +122,8 @@ class BookImportDialog(QDialog):
         form.addRow(tr("计划章数"), self.imit_count)
         l3.addLayout(form)
         l3.addWidget(W.muted(tr("三条铁律:专名全换 · 情节仿而不抄 · 结构与节奏保留")))
+        # 一份档案可以反复仿:N 本书 —— 明示「不占用、不覆盖」,用户才敢多次点
+        l3.addWidget(W.muted(tr("imitate_again_hint")))
         row3 = QHBoxLayout()
         self.imitate_btn = WaitingButton(tr("▶ 开始仿写"))
         self.imitate_btn.clicked.connect(self._do_imitate)
@@ -161,8 +163,11 @@ class BookImportDialog(QDialog):
             self.profile_view.setPlainText(json.dumps(prof, ensure_ascii=False, indent=1))
         elif analysis.get("status") == "paused":
             self.profile_view.setPlainText(
-                tr('(已暂停:失败 {}/{} 组,成功 {} 组。请检查文本模型配置后重跑)').format(analysis.get('failed'), analysis.get('total'), analysis.get('done')))
-        # 依赖:导入 → 分析 → 仿写
+                tr('(已暂停:失败 {}/{} 组,成功 {} 组。点「▶ 恢复分析」从已成功处续跑,已成功的组不再重跑)').format(
+                    analysis.get('failed'), analysis.get('total'), analysis.get('done')))
+        # 依赖:导入 → 分析 → 仿写;暂停态按钮切成「恢复分析」(断点续跑)
+        paused = analysis.get("status") == "paused" and n
+        self.analyze_btn.setText(tr("▶ 恢复分析") if paused else tr("▶ 开始分析"))
         self.analyze_btn.setEnabled(bool(n))
         self.analyze_btn.setToolTip("" if n else tr("先导入整本书"))
         self.imitate_btn.setEnabled(bool(prof))
@@ -203,7 +208,8 @@ class BookImportDialog(QDialog):
             if error:
                 err(error)
                 return
-            ok(tr('已导入 {} 章,共 {} 字').format(result['chapters'], result['total_chars']))
+            ok(tr('已导入 {} 章,共 {} 字(编码 {})').format(
+                result['chapters'], result['total_chars'], result.get('encoding') or 'utf-8'))
             self._refresh_state()
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
@@ -213,6 +219,7 @@ class BookImportDialog(QDialog):
         from ..core.preflight import ensure_ready
         if not ensure_ready("text", None):
             return
+        resume = self._analysis().get("status") == "paused"
         btn = self.analyze_btn
         btn.busy(tr("分析中"))
         self.analyze_bar.start()
@@ -224,7 +231,8 @@ class BookImportDialog(QDialog):
             return book_import.run_analysis(
                 self.drama_id,
                 on_progress=lambda done_n, total, label: taskmgr.set_stage(
-                    tid, tr('{} · {}/{} 组').format(label, done_n, total)))
+                    tid, tr('{} · {}/{} 组').format(label, done_n, total)),
+                resume=resume)
 
         def done(tid, result, error):
             btn.idle()
@@ -235,7 +243,7 @@ class BookImportDialog(QDialog):
                 self._refresh_state()
                 return
             if result.get("status") == "paused":
-                err(tr('分析已暂停:成功 {}/{} 组,失败 {} 组(失败率过高)').format(result['done'], result['total'], result['failed']))
+                err(tr('分析已暂停:成功 {}/{} 组,失败 {} 组(失败率过高)。稍等 30 秒后可「恢复分析」续跑').format(result['done'], result['total'], result['failed']))
             else:
                 ok(tr('分析完成:{} 章已归为仿写档案').format(result['chapters']))
             self._refresh_state()
@@ -275,5 +283,8 @@ class BookImportDialog(QDialog):
                 err(error)
                 return
             ok(tr('新书已创建:《{}》· {} 个角色 · 计划 {} 章').format(result['title'], result['characters'], result['planned_chapters']))
+            # 清空书名输入:不清的话第二次仿写沿用旧书名,建出两本同名书分不清;
+            # 清空后下一本默认回到「AI 依档案重新起名」
+            self.imit_title.clear()
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)

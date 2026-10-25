@@ -94,6 +94,12 @@ PROVIDER_PRESETS: dict[str, list[dict]] = {
          "base_url": "https://openspeech.bytedance.com",
          "models": ["zh_female_shuangkuaisisi_uranus_bigtts",
                     "zh_male_roucheng_uranus_bigtts", "zh_female_cancan_uranus_bigtts"]},
+        # 微软系两条(对齐原版 fffd6bf/d98e59d):edge=云端免费免 Key;local=本机离线免 Key 免网络。
+        # model 填 "auto" = 按项目「朗读音色」性别自动挑音,也可手动指定具体音色名。
+        {"name": "微软 Edge 语音(免费·免Key)", "provider": "edge",
+         "base_url": "", "models": ["auto"]},
+        {"name": "微软本机语音(离线·免Key免网络)", "provider": "local",
+         "base_url": "", "models": ["auto"]},
     ],
     "faceswap": [
         {"name": "本地换脸服务 · InsightFace", "provider": "local-faceswap",
@@ -137,6 +143,11 @@ MODEL_CHOICES: dict[str, list[str]] = {
     # 小云雀沉浸式短片 API 的 model 枚举(文档 v1.0.6;非 VIP 账号仅 mini_lite 可用)
     "xiaoyunque": ["Seedance_2.5", "seedance2.0_fast_vision", "seedance2.0_vision", "Seedance_2.0_mini",
                    "MiniMax-H3", "MiniMax-H3-Max", "wan3.0", "happyhorse-1.1", "Seedance_2.0_mini_lite"],
+    # 微软 Edge 神经语音:auto = 按文本语言 + 项目「朗读音色」性别自动选(16 语种 32 音色全覆盖);
+    # 下面只列常用代表音色,手选时用。local 同理,auto 外的具体音色按本机安装而定。
+    "edge": ["auto", "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-TW-HsiaoChenNeural",
+             "en-US-JennyNeural", "en-US-GuyNeural", "ja-JP-NanamiNeural", "ko-KR-SunHiNeural"],
+    "local": ["auto"],
 }
 
 
@@ -435,8 +446,10 @@ def seed_jev_default() -> None:
 # ── 就绪检查(缺失配置/Key 时直接拦下,不让请求白跑) ──
 SVC_CN_LABEL = {"text": "文本", "image": "图片", "video": "视频", "tts": "配音",
                 "faceswap": "换脸", "jev": "Jev", "stockphoto": "图库"}
-# 不需要 API Key 的 provider(本地服务)
-NO_KEY_PROVIDERS = {"local-faceswap", 'comfyui', 'sdwebui', 'fooocus'}
+# 不需要 API Key 的 provider(本地服务 + 微软系 TTS:edge 云端免费 / local 本机离线)
+NO_KEY_PROVIDERS = {"local-faceswap", 'comfyui', 'sdwebui', 'fooocus', 'edge', 'local'}
+# 也不需要 Base URL 的 provider(edge-tts 库内置端点;本机语音走 PowerShell,无 URL 可言)
+NO_BASE_URL_PROVIDERS = {"edge", "local"}
 
 
 class NotConfigured(RuntimeError):
@@ -476,7 +489,8 @@ def check_ready(service_type: str, config_id: int | None = None) -> dict:
         cfg = dict(active[0])
     if not (cfg.get("model") or "").strip():
         raise NotConfigured(service_type, "配置缺少模型名", cfg.get("id"))
-    if not (cfg.get("base_url") or "").strip():
+    if (not (cfg.get("base_url") or "").strip()
+            and cfg["provider"] not in NO_BASE_URL_PROVIDERS):
         raise NotConfigured(service_type, "配置缺少 Base URL", cfg.get("id"))
     if cfg["provider"] not in NO_KEY_PROVIDERS and not (cfg.get("api_key") or "").strip():
         raise NotConfigured(service_type, f"配置「{cfg.get('remark') or cfg['provider']}」缺少 API Key", cfg.get("id"))

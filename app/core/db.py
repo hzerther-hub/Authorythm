@@ -33,6 +33,20 @@ _local = threading.local()
 _lock_fd: tuple[str, int] | None = None
 
 
+def claim_single_instance() -> bool:
+    """单实例闸门(应用入口用):拿到库级独占锁返回 True,拿不到说明**另一个
+    活着的实例**正持有本数据目录 —— 调用方应提示用户并退出。
+
+    为什么不能只靠 init_db 里的锁:init_db 拿不到锁只是**跳过孤儿回收**,
+    第二个进程照样起界面 —— 双实例同时写同一个 SQLite,任务互相踩、
+    状态栏各说各话(2026-10-24 实测双实例并存的由来)。
+
+    锁由内核在进程退出时自动释放(见 _acquire_db_lock),所以「拿不到」
+    可靠地等于「有活实例」,不存在陈旧锁误判。
+    """
+    return _acquire_db_lock()
+
+
 def _acquire_db_lock() -> bool:
     """非阻塞地独占本库,返回**当前进程**是否拿到锁。
 
@@ -565,6 +579,8 @@ def init_db() -> None:
     for col in ("ALTER TABLE ai_service_configs ADD COLUMN models TEXT",
                 "ALTER TABLE ai_service_configs ADD COLUMN temperature REAL",
     "ALTER TABLE episodes ADD COLUMN duration REAL",
+                # 海外改写:西化书名(诊断按平台 title_style 生成,用户可改)
+                "ALTER TABLE overseas_project ADD COLUMN title_target TEXT DEFAULT ''",
                 # 每条文本服务配置的最大输出 token(思考型模型需要给足,否则正文被截断)
                 "ALTER TABLE ai_service_configs ADD COLUMN max_tokens INTEGER",
                 # 上下文窗口长度:仅作提示/校验用(设置界面已有一个输入框,

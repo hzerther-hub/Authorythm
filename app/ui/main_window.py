@@ -189,6 +189,14 @@ class MainWindow(QMainWindow):
         # 全局 toast(D 类)
         from .toast import ToastManager
         ToastManager.attach(central)
+        # WARNING+ 日志挂 toast:此前 attach_qt_toast_handler 造好了没人调,
+        # 文本模型 ReadTimeout 重试(单次 5 分钟)期间界面完全静默,用户只能干等
+        # 「一直没有结果」。现在重试/降级类警告会浮 toast(ToastManager 自带
+        # 跨线程回主线程,worker 里触发也安全)。
+        from ..core.logging_setup import attach_qt_toast_handler
+        from . import toast as _toast_mod
+        attach_qt_toast_handler(
+            lambda level, msg: _toast_mod.ToastManager.toast(msg, level))
         # 登记为全局等待态宿主(任务开始/结束时自动切换盲文指示)
         from ..core.taskmgr import TASKMGR
         TASKMGR.attach_host(self)
@@ -197,7 +205,8 @@ class MainWindow(QMainWindow):
         # _wire_* 帮手,__init__ 与 _make_page 共用同一份,避免改一处漏一处
         # (settings_drama 就这么漏过:重建后的项目卡「⋯ → 项目设置」点了没反应)。
         self._wire_projects_page(self.projects_page)
-        self.project_page.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
+        self.project_page.set_callbacks(self._back_to_projects, self._enter_episode,
+                                        self._promo_dialog, self._open_drama)
         self.episode_page.back_requested.connect(self._back_to_project)
         self._wire_clone_page(self.clone_page)
         # 聊天抽屉保存成品 → 落到同页批量区的结果行(原「图片处理」页没了)
@@ -300,7 +309,8 @@ class MainWindow(QMainWindow):
         if kind == "project" and drama_id:
             p = ProjectPage()
             p.enter_episode.connect(self._enter_episode)
-            p.set_callbacks(self._back_to_projects, self._enter_episode, self._promo_dialog)
+            p.set_callbacks(self._back_to_projects, self._enter_episode,
+                            self._promo_dialog, self._open_drama)
             p.load(drama_id)
             return p
         if kind == "episode" and drama_id:
