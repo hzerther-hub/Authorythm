@@ -693,13 +693,14 @@ class NovelPlanDialog(QDialog):
         角色设定又是写作红线的第 5 步,缺它就一章也写不了。
 
         已有角色时**不覆盖**(用户可能手改过);要重来请点「✨ AI 生成主要角色」。
+        「已有」按**资产库 + meta 两个来源**一起判 —— 以前只看 meta.main_characters,
+        而角色也可能从资产提取 / 整书导入进库(实测 drama 4:库里 10 个角色、
+        meta 是空的)→ 判成「没有」→ 白白再生成一批同义角色塞进库里。
         """
         from ..core.taskmgr import TASKMGR
         from ..pipeline import novel as novel_pipe
         try:
-            nm = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
-                                (self.drama_id,))["novel_meta"], {}) or {}
-            if (nm.get("main_characters") or []):
+            if novel_pipe.load_main_characters(self.drama_id):
                 return
         except Exception:  # noqa: BLE001
             return
@@ -726,9 +727,11 @@ class NovelPlanDialog(QDialog):
     def _ai_characters(self):
         """✨ AI 生成主要角色。
 
-        走 `novel.plan_characters`:它从**已有的章节计划**出发设计角色
-        (章节计划缺失时会先自动补一份),套 150 字外观规格,写 novel_meta 并
-        同步到 characters 表 —— 正好补上写作红线第 5 步缺的那一项。
+        走 `novel.plan_characters`:它按**已有的章节计划**(没有就按总纲/世界观/
+        合约)设计角色,套 150 字外观规格,写 novel_meta 并同步到 characters 表
+        —— 正好补上写作红线第 5 步缺的那一项。
+        **它只管角色**:章节计划缺失时也不会顺手生成一份(以前会,于是点一下
+        角色按钮 = 生成全书 500 章计划,十几分钟才轮得到角色)。
 
         用后台任务而不是流式:plan_characters 是单次非流式调用(输出是 JSON 数组,
         不适合流式往编辑器里灌),但一次要几十秒,放主线程会把界面卡死。
@@ -762,6 +765,10 @@ class NovelPlanDialog(QDialog):
                 json.dumps(chars, ensure_ascii=False, indent=1))
             self._update_plan_stat()
             ok(tr('已生成 {} 个主要角色(已同步到资产库)').format(len(chars)))
+            if (result or {}).get("plan_missing"):
+                # 章节计划还没生成 —— 角色是按设定设计的,不是按章节里的实际行为。
+                # 不说这一句,用户会以为角色已经和剧情对上了。
+                warn(tr('章节计划尚未生成,角色仅按总纲与设定设计'))
 
         TASKMGR.submit("novel_chars", job, done, drama_id=self.drama_id)
 

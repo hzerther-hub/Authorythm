@@ -1397,6 +1397,8 @@ class EpisodePage(QWidget):
                                       self._open_replace, self._open_qa,
                                       self._open_find)
         self.raw_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        # Ctrl+T = 生成章节名(章节计划 → 正文反向提取 → AI),见 _install_title_shortcut
+        self._install_title_shortcut(self.raw_edit)
         # 上一次 commit 里被加进 bar.bl 的 ai_edit_hint 文字提示行 —— 用户要求
         # 「去掉红框里文字」整段删除;不保留这一行。raw_status 也同步从 bar.bl
         # 移到 lay 主垂直布局,默认隐藏,生成中才显。
@@ -1557,8 +1559,26 @@ class EpisodePage(QWidget):
         ok(tr("style_saved"))
 
 
+    def _install_title_shortcut(self, editor):
+        """给正文编辑区绑 Ctrl+T = 生成章节名(章节计划 → 正文反向提取 → AI)。
+
+        仿 ai_edit_dialog.install_ai_edit_shortcut 的写法:QShortcut 的 Python
+        引用必须留在控件属性上,否则对象被 GC 后快捷键静默失效(那批 Ctrl+L/R/F/Q
+        实测过的坑)。Meta+ 变体给 macOS —— Qt 不会把 Ctrl 序列自动映射成 Cmd。
+        没并进 install_ai_edit_shortcut 是因为那 4 个键在原始内容/AI 改写两个
+        工具条共用,而章节名只属于本页;且 ai_edit_dialog.py 不归本工作流改。
+        """
+        from PySide6.QtGui import QKeySequence, QShortcut
+
+        shorts = []
+        for seq in ("Ctrl+T", "Meta+T"):
+            sc = QShortcut(QKeySequence(seq), editor)
+            sc.activated.connect(self._gen_chapter_title)
+            shorts.append(sc)
+        editor._title_shortcuts = tuple(shorts)
+
     def _gen_chapter_title(self):
-        """AI 生成章节名:优先从正文首行提取,提取不到才调模型。"""
+        """生成章节名:章节计划 → 正文首行反向提取,都取不到才调模型。"""
         from ..core.taskmgr import TASKMGR
 
         def job(tid):
@@ -1570,7 +1590,9 @@ class EpisodePage(QWidget):
                 err(error)
                 return
             name, src = result
-            ok((tr("已提取章节名:") if src == "content" else tr("章节名已写入:")) + str(name))
+            ok((tr("已提取章节名:") if src == "content"
+                else tr("已按章节计划写入:") if src == "plan"
+                else tr("章节名已写入:")) + str(name))
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
             self.title.setText(_page_title(self._drama, self._ep))
             # 按实际标题状态决定按钮显隐:抽取出空标题时直接隐藏会把用户
@@ -1930,6 +1952,15 @@ class EpisodePage(QWidget):
             err(error)
         else:
             self._reload_raw()
+            # 标题随正文一起落库了(_save_with_title 提取正文首行 `# 章节名` 写
+            # episodes.title),页首标题与「AI 生成章节名」按钮的显隐必须同步刷新 ——
+            # 此前只刷编辑器,页首还是「第 N 集」占位,观感就是
+            # 「以前会自动生成标题,现在不能了」(用户实测反馈)。
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            if self._ep:
+                self.title.setText(_page_title(self._drama, self._ep))
+            self.chapter_name_btn.setVisible(
+                _chapter_name_missing(dict(self._ep) if self._ep else {}))
             r = (result or {})
             decision = r.get("decision") or ""
             text = r.get("content") or ""
@@ -2416,6 +2447,8 @@ class EpisodePage(QWidget):
                                       self._open_replace, self._open_qa,
                                       self._open_find)
         self.script_edit.textChanged.connect(self._update_script_dirty)
+        # 转剧本页同绑 Ctrl+T:两个正文编辑区共一套快捷键,哪个有焦点哪个生效
+        self._install_title_shortcut(self.script_edit)
         lay.addWidget(self.script_edit, 1)
 
         # 底部工具栏:与 raw 的 bar2 同款(taskHead 卡 + 56px 上限),不再是一条

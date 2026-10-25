@@ -332,6 +332,113 @@ def test_normalize_character_fields_keeps_standard_shape():
     assert out == c
 
 
+# ------------------------------------------------- 「生成角色」只管角色
+
+def _stub_llm(monkeypatch, payload):
+    """把角色生成链路上的两次 LLM 调用打桩。"""
+    monkeypatch.setattr(nv.runner, "run_agent_json",
+                        lambda *a, **k: payload)
+    monkeypatch.setattr(nv.character_spec, "expand_many",
+                        lambda chars, **k: chars)
+
+
+def test_plan_characters_never_generates_chapter_plan(tmp_db, monkeypatch):
+    """点「AI 生成主要角色」**不许顺带生成章节计划**。
+
+    旧实现在章节计划缺失时先跑 `plan_chapters()`,而章节计划是按全书章数
+    生成的(drama 4 是 500 章)—— 于是「生成角色」= 「生成 500 章计划」:
+    几十次 LLM 调用、十几分钟,最后才轮到角色;中途失败则角色一个都没有。
+    按钮该干什么就干什么。
+    """
+    did = _make_drama(title="没有章节计划", novel_chapters="[]")
+
+    def _boom(*a, **k):  # pragma: no cover —— 被调用就是 bug
+        raise AssertionError("生成角色时不该去生成章节计划")
+
+    monkeypatch.setattr(nv, "plan_chapters", _boom)
+    _stub_llm(monkeypatch, {"characters": [
+        {"name": "林岚", "role": "主角", "appearance": "青衣少年",
+         "styling": "粗布长衫"}]})
+
+    out = nv.plan_characters(did)
+    assert out["count"] == 1
+    assert out["plan_missing"] is True, "章节计划缺失要如实标出来"
+    # 角色照常落库(资产库 + novel_meta)
+    rows = db.q("SELECT name FROM characters WHERE drama_id=?", (did,))
+    assert [r["name"] for r in rows] == ["林岚"]
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (did,))["novel_meta"], {})
+    assert meta["main_characters"][0]["name"] == "林岚"
+
+
+def test_plan_characters_uses_existing_plan_and_flags_present(tmp_db, monkeypatch):
+    """章节计划在库里时直接用它,并把 plan_missing 标成 False。"""
+    did = _make_drama(title="有章节计划", novel_chapters=json.dumps([
+        {"number": 1, "title": "逐出青云", "goal": "起势", "events": "叶尘被逐",
+         "cliffhanger": "钩子"}]))
+    seen = {}
+
+    def _capture(agent, prompt, **k):
+        seen["prompt"] = prompt
+        return {"characters": [{"name": "林岚", "role": "主角"}]}
+
+    monkeypatch.setattr(nv.runner, "run_agent_json", _capture)
+    monkeypatch.setattr(nv.character_spec, "expand_many", lambda chars, **k: chars)
+
+    out = nv.plan_characters(did)
+    assert out["plan_missing"] is False
+    assert "叶尘被逐" in seen["prompt"], "章节计划没进提示词"
+    assert "章节计划" in seen["prompt"]
+
+
+def test_character_plan_context_keeps_volume_key_events():
+    """分卷形态的 key_events **不能丢**。
+
+    `novel_chapters` 存分卷结构时(开书策划原样落库,实测 drama 4 是 3 卷/500 章),
+    `chapters_to_text` 只认 events → key_events 整段丢失 → 渲染出
+    「第?章 第一卷:… | 事件:(空)」,人物的关键行为一个都没进上下文。
+    而角色提示词要求「动机与章节计划里的实际行为对得上」。
+    """
+    txt = nv._character_plan_context([
+        {"title": "第一卷：黑水边城", "range": "1-3", "goal": "起势",
+         "key_events": ["叶尘被逐出师门", "青灯残页现世"], "cliffhanger": "钩子"}])
+    assert "第一卷：黑水边城" in txt
+    assert "1-3" in txt
+    assert "叶尘被逐出师门" in txt, "key_events 被丢了"
+    assert "钩子" in txt
+
+
+def test_character_plan_context_supports_chapter_shape():
+    """逐章形态照旧(第 N 章 / 目标 / 事件 / 钩子)。"""
+    txt = nv._character_plan_context([
+        {"number": 7, "title": "断水式", "goal": "g", "events": "e", "cliffhanger": "h"}])
+    assert "第7章 断水式" in txt
+    assert "事件:e" in txt
+
+
+def test_character_prompt_basis_switches_without_plan():
+    """没有章节计划时,提示词不能还在要求「与章节计划对得上」。"""
+    with_plan = nv._character_prompt("章节计划")
+    without_plan = nv._character_prompt("总纲与故事合约")
+    assert "章节计划" in with_plan
+    assert "总纲与故事合约" in without_plan
+    assert "{plan_basis}" not in without_plan
+    # JSON 形状不能被 replace 吃掉花括号
+    assert '{"characters":[' in without_plan
+
+
+def test_chain_characters_skips_when_library_already_has_characters():
+    """章节计划后的角色串联:资产库里已有角色就不该再生成一批。
+
+    以前只看 novel_meta.main_characters,而角色也可能从资产提取/整书导入进库
+    (实测 drama 4:库里 10 个角色、meta 是空的)→ 判成「没有」→ 白白再生成一批。
+    """
+    import inspect
+    from app.ui import novel_dialogs
+    src = inspect.getsource(novel_dialogs)
+    assert "load_main_characters" in src, "串联角色没按资产库+meta 一起判"
+    assert 'nm.get("main_characters")' not in src, "还在只看 novel_meta"
+
+
 # ---------------------------------------------------------------- UI 静态守卫
 
 def test_ui_classes_do_not_read_undefined_self_attributes():

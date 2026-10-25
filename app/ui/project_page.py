@@ -82,14 +82,13 @@ class EpisodeCard(QFrame):
     """集卡(对齐原版 .ep-card):EP 序号 + 可改名标题 + 五段进度 + 元信息 + 状态 + 底部动作。"""
 
     def __init__(self, ep: dict, is_novel: bool = False, on_changed=None,
-                 enter=None, rel_needed=None):
+                 enter=None):
         super().__init__()
         self.ep = ep
         self.episode_id = ep["id"]
         self._is_novel = is_novel
         self._on_changed = on_changed
         self._enter = enter
-        self._reload_needed = rel_needed
         self.episode_number = ep["episode_number"]
         self.setObjectName("card")
         self.setMinimumWidth(360)
@@ -295,9 +294,17 @@ class EpisodeCard(QFrame):
                 err(error)
                 return
             name, src = result
-            ok((tr("已提取章节名:") if src == "content" else tr("章节名已写入:")) + str(name))
-            if self._reload_needed:
-                self._reload_needed.emit()
+            # src 三分支:'content'=正文反向提取,'plan'=章节计划标题,'ai'=模型现起
+            tip = (tr("已提取章节名:") if src == "content"
+                   else tr("已按章节计划写入:") if src == "plan"
+                   else tr("章节名已写入:"))
+            ok(tip + str(name))
+            # 刷新必须走 on_changed(=ProjectPage.reload)。此前写的是
+            # _reload_needed.emit() —— rel_needed 是 ProjectPage **实例**,
+            # QWidget 上没有 .emit()(那是 Signal 的方法),必抛 AttributeError:
+            # 标题其实已写进库,卡片却不重载,表现就是「AI 生成章节名没生效」(实测)。
+            if self._on_changed:
+                self._on_changed()
 
         TASKMGR.submit("novel_title", job, done, episode_id=episode_id)
 

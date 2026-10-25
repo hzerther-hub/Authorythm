@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""快捷键帮助对话框:列出 4 个文本编辑快捷键 + 详细说明。
+"""快捷键帮助对话框:列出 5 个文本编辑快捷键 + 详细说明。
 
 被原始内容 / AI改写工具条尾部的「?」按钮调用。两个面板共用同一个 dialog。
 """
@@ -14,7 +14,7 @@ from ..core.theme import SLATE_FORM_QSS, MONO_STACK
 
 
 class ShortcutHelpDialog(QDialog):
-    """4 个快捷键说明(Ctrl+L/R/F/Q)。每行 = 单色块键帽 + 标题 + 描述。"""
+    """5 个快捷键说明(Ctrl+L/R/F/Q/T)。每行 = 单色块键帽 + 标题 + 描述。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -35,6 +35,8 @@ class ShortcutHelpDialog(QDialog):
             ("Ctrl+R", "kbd_r_title", "kbd_r_desc"),
             ("Ctrl+F", "kbd_f_title", "kbd_f_desc"),
             ("Ctrl+Q", "kbd_q_title", "kbd_q_desc"),
+            # Ctrl+T 只在剧集页的正文编辑区生效(原始内容/转剧本两处),排最后
+            ("Ctrl+T", "kbd_t_title", "kbd_t_desc"),
         ]
         for kbd, t_key, d_key in items:
             lay.addWidget(self._row(kbd, tr(t_key), tr(d_key)))

@@ -11,6 +11,8 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.core import db
@@ -96,6 +98,125 @@ def test_title_written_without_episode_prefix(tmp_db, monkeypatch):
 
     stored = db.q1("SELECT title FROM episodes WHERE id=?", (ep_id,))["title"]
     assert stored == "龙啸九天", f"落库标题不该带集号前缀: {stored!r}"
+
+
+# ---------------------------------------------------------------- 章节计划来源
+
+def _set_plan(ep_id: int, chapters: list) -> None:
+    """把章节计划写进本项目 dramas.novel_chapters(JSON 数组,两种形态都从这里进)。"""
+    did = db.q1("SELECT drama_id FROM episodes WHERE id=?", (ep_id,))["drama_id"]
+    db.ex("UPDATE dramas SET novel_chapters=? WHERE id=?",
+          (json.dumps(chapters, ensure_ascii=False), did))
+
+
+def test_plan_chapter_number_tolerates_junk():
+    """计划是模型原样落库的 JSON,number 什么形态都可能出现 —— 认不出就算非逐章。"""
+    assert nv._plan_chapter_number({"number": 1}) == 1
+    assert nv._plan_chapter_number({"number": "2"}) == 2
+    assert nv._plan_chapter_number({"number": 3.0}) == 3
+    assert nv._plan_chapter_number({}) == 0
+    assert nv._plan_chapter_number({"number": None}) == -1
+    assert nv._plan_chapter_number({"number": "三"}) == -1
+
+
+def test_plan_title_wins_before_content_and_ai(tmp_db, monkeypatch):
+    """章节计划是最高优先来源:计划/正文首行/AI 三者同时可用时,只取计划。
+
+    正文首行故意放了可反向提取的 `# 标题`,AI 也打了桩 —— 谁被调到谁就是
+    优先级排错了。计划标题顺手带空白与「第N集」前缀,验证过 _clean_chapter_name。
+    """
+    ep_id = _make_episode(1, title="第 1 集", content="# 正文里的标题\n\n" + "正文" * 60)
+    _set_plan(ep_id, [{"number": 1, "title": " 第1集 归乡的井 ",
+                       "goal": "g", "events": "e", "cliffhanger": "c"}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("AI 标题", calls))
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert (name, src) == ("归乡的井", "plan")
+    assert calls == [], "计划里有标题就不该调模型"
+    assert db.q1("SELECT title FROM episodes WHERE id=?", (ep_id,))["title"] == "归乡的井"
+
+
+def test_plan_title_needs_no_content(tmp_db, monkeypatch):
+    """正文还没写也能从计划拿标题 —— Ctrl+T「先定名再写正文」的主场景。
+
+    原先「正文太短」闸门在最前面,新鲜章连计划标题都取不到,只能先写满 50 字。
+    """
+    ep_id = _make_episode(1, title="第 1 集")
+    db.ex("UPDATE episodes SET content='' WHERE id=?", (ep_id,))
+    _set_plan(ep_id, [{"number": 1, "title": "归乡的井"}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("AI 标题", calls))
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert (name, src) == ("归乡的井", "plan")
+    assert calls == []
+
+
+def test_volume_plan_is_skipped_and_falls_back_to_content(tmp_db, monkeypatch):
+    """分卷形态没有 number,title 是卷名 —— 拿「第一卷:都市篇」当第 1 章的
+    章名就是把卷名抄进了章名,必须跳过,回落正文反向提取。"""
+    ep_id = _make_episode(1, title="第 1 集", content="# 龙啸九天\n\n" + "正文" * 60)
+    _set_plan(ep_id, [{"title": "第一卷:都市篇", "range": "1-50",
+                       "goal": "g", "key_events": ["e"], "cliffhanger": "c"}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("AI 标题", calls))
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert (name, src) == ("龙啸九天", "content")
+    assert calls == []
+    assert db.q1("SELECT title FROM episodes WHERE id=?", (ep_id,))["title"] == "龙啸九天"
+
+
+def test_volume_plan_falls_back_to_ai(tmp_db, monkeypatch):
+    """分卷计划 + 正文取不出标题 → 照旧走 AI,不能因为跳过卷条目就没名字。"""
+    ep_id = _make_episode(1, title="第 1 集", content="正文" * 60)
+    _set_plan(ep_id, [{"title": "第一卷:都市篇", "range": "1-50"}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("龙啸九天", calls))
+    monkeypatch.setattr(nv, "prose_config_id", lambda: 4242)
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert (name, src) == ("龙啸九天", "ai")
+    assert len(calls) == 1
+
+
+def test_plan_for_other_chapter_or_empty_title_is_ignored(tmp_db, monkeypatch):
+    """计划里没有本章(number 对不上)/ 本章条目标题为空 → 同样回落 AI。"""
+    ep_id = _make_episode(1, title="第 1 集", content="正文" * 60)
+    _set_plan(ep_id, [{"number": 2, "title": "第二章的标题"},
+                      {"number": 1, "title": "   "}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("龙啸九天", calls))
+    monkeypatch.setattr(nv, "prose_config_id", lambda: 4242)
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert (name, src) == ("龙啸九天", "ai")
+    assert len(calls) == 1
+
+
+def test_plan_never_overwrites_a_real_title(tmp_db, monkeypatch):
+    """与正文提取同一条守卫:用户已改好的名字,计划标题也不许覆盖。
+
+    守卫失效的后果不可撤销(episodes.title 没有历史版本),所以三条来源
+    必须共用同一道 is_placeholder_episode_title 闸门。
+    """
+    ep_id = _make_episode(1, title="我手打的名字", content="正文" * 60)
+    _set_plan(ep_id, [{"number": 1, "title": "计划里的标题"}])
+    calls = []
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent("AI 标题", calls))
+    monkeypatch.setattr(nv, "prose_config_id", lambda: 4242)
+
+    name, src = nv.gen_chapter_title(ep_id)
+
+    assert src == "ai", "非占位标题不该走计划来源"
+    assert name == "AI 标题"
+    assert db.q1("SELECT title FROM episodes WHERE id=?", (ep_id,))["title"] != "计划里的标题"
 
 
 # ---------------------------------------------------------------- 语言

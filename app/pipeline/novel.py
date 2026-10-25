@@ -446,7 +446,7 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
     a, b = _range_of(vol)
     title = vol.get("title") or ""
     ctx = _novel_settings_ctx(drama_id)
-    plan_txt = chapters_to_text(chapters)[:6000]
+    plan_txt = _character_plan_context(chapters)[:6000]
     parts = [ctx, f"【当前只处理第 {a}-{b} 章(卷名:{title})】"]
     if vol.get("goal"):
         parts.append(f"本卷目标:{vol['goal']}")
@@ -454,7 +454,7 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
         parts.append("本卷关键事件:" + " / ".join(
             str(x) for x in vol["key_events"]))
     parts.append("本卷章节计划:\n" + plan_txt)
-    parts.append(CHARACTER_PROMPT)
+    parts.append(_character_prompt("章节计划"))
     parts.append("只列**本卷出场**的角色;前几卷已建立的可只保留姓名,不重复描述。")
     # 键名两个都认 —— 见 _extract_characters_payload 的说明。
     # 之前这里只认 `characters`,而 novel_planner 的系统提示词要的是
@@ -790,17 +790,30 @@ def _clean_chapter_list(raw, expected: int, allow_sparse: bool = False) -> list:
     return out[:expected] or out
 
 
-CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与章节计划,设计**主要角色**。
+# {plan_basis} = 角色动机的依据来源(「章节计划」/「总纲与故事合约」)。
+# 有章节计划时按计划里的实际行为写动机,没有就按总纲与故事合约写 ——
+# 否则提示词自相矛盾(要「与章节计划对得上」但根本没有章节计划)。
+CHARACTER_PROMPT = """你是小说策划。基于已确定的设定与{plan_basis},设计**主要角色**。
 
 要求:
 - 6-12 个:1 个主角 + 2-3 个核心对手/伙伴 + 若干关键配角
 - role 写"主角"/"对手"/"同伴"/"配角" 之一
-- motivation(动机)与章节计划中的实际行为对得上,不要空泛
+- motivation(动机)与{plan_basis}中的实际行为对得上,不要空泛
 - appearance(外形)要能直接转成文生图提示词(年龄段/性别/发型/体型/标志特征/典型穿着)
 - styling(服装风格)同样给出可出图的具体描述
 
-输出 JSON:{{"characters":[{{"name":"","role":"","identity":"","motivation":"",
-"appearance":"","styling":""}}]}}只输出 JSON。"""
+输出 JSON:{"characters":[{"name":"","role":"","identity":"","motivation":"",
+"appearance":"","styling":""}]}只输出 JSON。"""
+
+
+def _character_prompt(plan_basis: str) -> str:
+    """按「上下文里有没有章节计划」拼角色设计提示词。
+
+    用 replace 而不是 format:这段提示词里满是 JSON 的花括号,format 要求
+    所有花括号都写两遍,以后谁顺手加一句说明就 KeyError 崩在策划链路上。
+    """
+    return CHARACTER_PROMPT.replace("{plan_basis}", plan_basis)
+
 
 # 规格块由软件层统一注入(不再依赖某个语言变体的提示词文件)。小说策划这条
 # 链路原先只有一句「要能直接转成文生图提示词」,实测产出 45~70 字,远低于
@@ -875,26 +888,37 @@ def _extract_characters_payload(raw) -> list:
 
 
 def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
-    """AI 生成主要角色。章节计划缺失时先在后台补章节计划(依赖先行)。"""
+    """AI 生成主要角色 —— **只管角色**,不顺带生成章节计划。
+
+    旧实现在章节计划缺失时先跑一遍 `plan_chapters()` —— 而章节计划是按
+    `dramas.total_episodes` 的**全书章数**生成的(drama 4 是 500 章),
+    用户点一下「✨ AI 生成主要角色」就等于点了一次「生成 500 章计划」:
+    几十次 LLM 调用、十几分钟,最后才轮到角色;中途失败则角色一个都没有,
+    用户看到的是「点了半天,啥也没出」。
+    按钮该干什么就干什么:章节计划缺失时**只按已有设定(总纲/世界观/合约)
+    设计角色**,并在返回值里带 `plan_missing=True` 让界面如实提示一句。
+    """
     config_id = config_id or plan_config_id()
     d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
     chapters = db.jload(d["novel_chapters"], []) if d else []
-    if not chapters:
-        plan_chapters(drama_id, config_id=config_id)          # 章节计划是角色设计的前置
-        d = db.q1("SELECT novel_chapters FROM dramas WHERE id=?", (drama_id,))
-        chapters = db.jload(d["novel_chapters"], []) or []
     ctx = _novel_settings_ctx(drama_id)
-    plan_txt = chapters_to_text(chapters)[:6000]
+    plan_txt = _character_plan_context(chapters)[:6000]
+    has_plan = bool(plan_txt.strip())
     # 规格块按内容语言注入(软件层单一来源,不再依赖提示词文件手工维护)
     lang = config.resolve_content_language(drama_id)
+    parts = [ctx]
+    if has_plan:
+        parts.append("章节计划:\n" + plan_txt)
+    else:
+        parts.append("(章节计划尚未生成 —— 本次只按总纲/世界观/故事合约设计角色)")
+    parts.append(_character_prompt("章节计划" if has_plan else "总纲与故事合约"))
+    parts.append(character_spec.rules_for(lang))
     # 走 JSON 模式(与 plan_novel 同口径):novel_planner 的提示词是 Mastra 工具
     # 调用版(「调用 save_main_characters」),而本仓 runner 没有工具 —— 用普通
     # run_agent 时模型拿到的指令自相矛盾,输出形状不可控。JSON 模式由网关兜住形状。
     try:
         data = runner.run_agent_json(
-            "novel_planner",
-            f"{ctx}\n\n章节计划:\n{plan_txt}\n\n{CHARACTER_PROMPT}"
-            f"\n\n{character_spec.rules_for(lang)}",
+            "novel_planner", "\n\n".join(parts),
             lang=lang, config_id=config_id)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"角色生成失败:{str(exc)[:160]}") from exc
@@ -908,8 +932,43 @@ def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     meta["main_characters"] = chars
     db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
           (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
-    _sync_characters(drama_id, chars)
-    return {"characters": chars, "count": len(chars)}
+    added = _sync_characters(drama_id, chars)
+    return {"characters": chars, "count": len(chars), "added": added,
+            "plan_missing": not has_plan}
+
+
+def _character_plan_context(chapters: list) -> str:
+    """角色设计的上下文 —— **逐章形态与分卷形态都认**。
+
+    `novel_chapters` 这一列有两种存法(同一列,不同项目):
+      1. 逐章计划:{"number","title","goal","events","cliffhanger"}
+      2. 分卷结构:{"title","range","goal","key_events","cliffhanger"}
+         —— 开书策划(plan_novel)把模型返回的 chapters **原样**落库,
+            模型给卷结构就是卷结构(实测 drama 4:3 卷 / 500 章)。
+    `chapters_to_text` 只认 events,分卷形态的 key_events **整段丢失**,
+    渲染出来是「第?章 第一卷:… | 事件:(空)」—— 人物的关键行为一个都没进上下文。
+    而 CHARACTER_PROMPT 要求「motivation 与章节计划中的实际行为对得上」:
+    行为都被丢了,角色动机只能靠模型瞎编。
+    """
+    lines: list[str] = []
+    for c in chapters or []:
+        if not isinstance(c, dict):
+            continue
+        title = str(c.get("title") or "").strip()
+        goal = str(c.get("goal") or "").strip()
+        raw_events = c.get("events")
+        if raw_events in (None, ""):
+            raw_events = c.get("key_events")
+        if isinstance(raw_events, list):
+            events = " / ".join(str(x).strip() for x in raw_events if str(x).strip())
+        else:
+            events = str(raw_events or "").strip()
+        hook = str(c.get("cliffhanger") or "").strip()
+        rng = str(c.get("range") or "").strip()
+        head = (f"{title}(第 {rng} 章)" if rng
+                else f"第{c.get('number', '?')}章 {title}".strip())
+        lines.append(f"{head} | 目标:{goal} | 事件:{events} | 钩子:{hook}")
+    return "\n".join(lines)
 
 
 def _clean_characters(raw) -> list:
@@ -1664,13 +1723,28 @@ def _chapter_title_length_rule(lang: str, sample: str) -> str:
     return "不超过 24 个字符"
 
 
+def _plan_chapter_number(c: dict) -> int:
+    """计划条目的章号;缺 number / 非数字都算「不是逐章形态」(返回 -1 永不命中)。
+
+    `novel_chapters` 是模型原样落库的 JSON,实测里 number 可能是字符串、缺失甚至
+    中文数字 —— `chapter_prompt` 里裸 `int()` 一炸整条写章链路就挂,这里宁可认
+    不出来回落正文/AI,也不能为拿个标题把生成章节名这个动作弄崩。
+    """
+    try:
+        return int(c.get("number", 0))
+    except (TypeError, ValueError):
+        return -1
+
+
 def gen_chapter_title(episode_id: int, config_id: int | None = None,
                       lang: str | None = None) -> tuple[str, str]:
-    """一键章节名(对齐原版 POST /novel/chapter-title)。
+    """一键章节名(对齐原版 POST /novel/chapter-title,来源优先级见下)。
 
-    优先反向提取:正文首行已有 `# 名字` / 「第N集 名字」时直接取用,不调模型;
-    提取不到才走 AI(上下文=总纲 400 字 + 前三章摘要各 200 字 + 本章节选 2000 字)。
-    返回 (章节名, 来源 'content' | 'ai')。
+    1. 「章节计划」:novel_chapters 里本章的既有标题,零模型调用(桌面版新增,
+       原版没有 —— 有计划却还让 AI 现起一个名字,等于用户白做了规划);
+    2. 正文反向提取:首行已有 `# 名字` / 「第N集 名字」时直接取用,不调模型;
+    3. AI(上下文=总纲 400 字 + 前三章摘要各 200 字 + 本章节选 2000 字)。
+    返回 (章节名, 来源 'plan' | 'content' | 'ai')。
 
     lang 决定产出语言。**必须在函数体内兜底** —— 调用点有 UI/项目页/批量/程序化
     十几处,任一处漏传就会退回全局默认,界面上选了语种也没用(同 plan/prose
@@ -1681,16 +1755,37 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None,
         raise RuntimeError("剧集不存在")
     lang = lang or config.resolve_content_language(ep["drama_id"])
     text = ep["content"] or ""
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
+    if not d:
+        # 与上面 ep 的守卫同款:孤儿剧集(有集无项目)不该等到取总纲/章节计划时
+        # 才以 AttributeError 炸出来,mypy 也认这个收窄(db.q1 标 Row | None)。
+        raise RuntimeError("项目不存在")
+    # 仅在标题为占位时提取,避免覆盖用户已改好的名字
+    if is_placeholder_episode_title(ep["title"], ep["episode_number"]):
+        # 「章节计划」放最前,且**放在「正文太短」闸门之前**:计划标题是规划
+        # 模型预先定好的(chapter_prompt 也要求写章时「优先沿用计划里的标题,
+        # 原样使用」),标题照搬计划才符合预期,还省一次模型调用。正文反向
+        # 提取只能救「已写完且首行带标题」的章,新鲜章原先直接被「正文太短」
+        # 挡死 —— Ctrl+T 想先定名再写正文,这个顺序才成立。
+        # 只认逐章形态:分卷条目没有 number,title 是卷名(「第一卷:都市篇」),
+        # 拿它当第 37 章的标题就是把卷名抄进了章名 —— 必须跳过回落原逻辑。
+        plan = next((c for c in (db.jload(d["novel_chapters"], []) or [])
+                     if isinstance(c, dict)
+                     and _plan_chapter_number(c) == ep["episode_number"]
+                     and str(c.get("title") or "").strip()), None)
+        if plan:
+            name = _clean_chapter_name(str(plan.get("title") or ""))
+            if name:
+                _apply_chapter_title(ep, name)
+                return name, "plan"
     if len(text.strip()) < 50:
         raise RuntimeError("本集正文太短,先粘贴或生成原文再起章节名")
-    # 仅在标题为占位时提取,避免覆盖用户已改好的名字
     if is_placeholder_episode_title(ep["title"], ep["episode_number"]):
         extracted = extract_title_from_content(text)
         if extracted:
             db.ex("UPDATE episodes SET title=?, updated_at=? WHERE id=?",
                   (extracted, db.now(), episode_id))
             return extracted, "content"
-    d = db.q1("SELECT * FROM dramas WHERE id=?", (ep["drama_id"],))
     parts: list[str] = []
     if d["novel_outline"]:
         parts.append("【总纲节选】\n" + (d["novel_outline"] or "")[:400])
