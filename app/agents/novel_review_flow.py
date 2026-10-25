@@ -83,7 +83,8 @@ def writer_node(state: NovelReviewState) -> dict:
     不要 return 全 state(TypedDict 的 partial update 语义)。
     """
     from .runner import run_agent_json  # 现有的单步调用
-    from ..pipeline.novel import write_chapter, _strip_think
+    from ..pipeline.novel import (write_chapter, _strip_think,
+                                   check_chapter_content, _enforce_novel_gate)
     cycle = state.get("cycle", 0) + 1
     episode_id = state["episode_id"]
     config_id = state.get("config_id")
@@ -351,7 +352,22 @@ def run_novel_review_loop(*, episode_id: int, outline: str = "",
         }
 
     # Fallback:直接 cycle loop,逐节点调,跟 StateGraph 同语义
+    # ── 写作门控:必须无条件先跑,不能因为「流式路径已经给了 content」就跳过 ──
+    # 旧实现 `if draft is None or decision == "rewrite"` 才调 writer_node,
+    # 而 writer_node 是**唯一**调用 _enforce_novel_gate 的地方 →
+    # 流式路径(界面「写小说」按钮走的就是它)整个绕过了写作红线:
+    # 设定没齐也能写,门控形同虚设。
+    from ..pipeline.novel import _enforce_novel_gate, check_chapter_content
+    from ..core import db as _db
+    _ep = _db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    if _ep:
+        _enforce_novel_gate(_ep["drama_id"])
     draft = content                       # 流式路径:已生成的正文直接当首轮 draft
+    if draft:
+        # 流式正文同样要过体检:模型在流式里也可能吐出「复述设定」的过程说明
+        _bad = check_chapter_content(draft, _ep["drama_id"] if _ep else 0)
+        if _bad:
+            draft = None                  # 丢弃,退回 writer_node 重新生成
     critique = None
     while decision in ("revise", "rewrite") and cycles < max_cycles:
         if on_cycle:

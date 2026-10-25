@@ -1317,6 +1317,15 @@ class EpisodePage(QWidget):
         W.set_icon(self.novel_btn, "book")
         self.novel_btn.clicked.connect(self._ai_novel)
         row.addWidget(self.novel_btn)
+        # 小说设定入口(总纲/世界观/合约/分卷战略,各页签都有「AI 起草」)。
+        # 写作红线拦下「AI 生成本章」时,提示只说缺哪几步,却不说去哪补 ——
+        # 剧集页此前**没有任何按钮能打开这个向导**(_open_plan 写了但没接线),
+        # 用户被卡在剧集页出不去(实测:门控拦住后无路可走)。
+        self.novel_plan_btn = QPushButton(tr("novel_settings"))
+        W.set_icon(self.novel_plan_btn, "doc")
+        self.novel_plan_btn.setToolTip(tr("novel_settings_tip"))
+        self.novel_plan_btn.clicked.connect(self._open_plan)
+        row.addWidget(self.novel_plan_btn)
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         W.set_icon(self.batch_btn, "list")
         self.batch_btn.setToolTip(tr("batch_write_tip"))
@@ -1659,7 +1668,11 @@ class EpisodePage(QWidget):
         ok(tr("保存成功,可按 Ctrl+L 让 AI 修改本段"))
 
     def _novel_redline_hint(self) -> str:
-        """写作红线闸门:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。"""
+        """写作红线闸门:缺哪几步(对齐原版 batchMissingSteps);齐全返回空串。
+
+        提示必须**指出去哪补** —— 之前只说缺哪几步,用户被拦在剧集页,
+        而剧集页又没有打开小说设定的入口(现已补上「小说设定」按钮)。
+        """
         try:
             # 直接从库取 work_type,避免 _drama 未就绪导致闸门失效
             row = db.q1("SELECT work_type FROM dramas WHERE id=?", (self.drama_id,))
@@ -1667,7 +1680,10 @@ class EpisodePage(QWidget):
                 return ""
             from .novel_dialogs import gate_message
             missing = gate_message(self.drama_id)
-            return tr('请先完成步骤 {} 的设定').format(missing) if missing else ""
+            if not missing:
+                return ""
+            return tr('请先完成步骤 {} 的设定(点「{}」逐项生成)').format(
+                missing, tr("novel_settings"))
         except Exception:  # noqa: BLE001
             return ""
 

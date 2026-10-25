@@ -762,3 +762,38 @@ def test_regenerate_no_source_episode(tmp_db):
         overseas.regenerate_chapter(
             project_id=pid, episode_id=0, chapter_no=4,
             platform="goodnovel", category="billionaire", level="B")
+
+
+# ---------------------------------------------------------------- 文本模型 token 默认值
+
+def test_text_config_auto_fills_token_budget(tmp_db):
+    """新增文本模型配置时,上下文长度/输出预算自动填默认值。
+
+    max_tokens 留空会掉到 8192 —— 思考型模型(deepseek-v4-pro / MiniMax-M3)的
+    思考与正文共用这份预算,8192 经常思考完就吐空(「点了没反应 / 正文只有
+    标题一行」)。所以新增时直接给 32768 / 1000000,不必用户手填。
+    """
+    from app.ai import registry
+    cid = registry.add_config("text", "demo", "https://api.example.com/v1", "demo-model")
+    row = db.q1("SELECT ctx_tokens, max_tokens FROM ai_service_configs WHERE id=?", (cid,))
+    assert row["max_tokens"] == registry.TEXT_DEFAULT_MAX_TOKENS == 32768
+    assert row["ctx_tokens"] == registry.TEXT_DEFAULT_CTX_TOKENS == 1000000
+
+
+def test_explicit_token_values_are_not_overwritten(tmp_db):
+    """用户显式填的值不能被默认值覆盖。"""
+    from app.ai import registry
+    cid = registry.add_config("text", "demo", "https://api.example.com/v1", "demo-model",
+                              max_tokens=8192, ctx_tokens=64000)
+    row = db.q1("SELECT ctx_tokens, max_tokens FROM ai_service_configs WHERE id=?", (cid,))
+    assert row["max_tokens"] == 8192
+    assert row["ctx_tokens"] == 64000
+
+
+def test_non_text_configs_get_no_token_defaults(tmp_db):
+    """生图/视频的 token 语义不同,不能套文本模型的默认值。"""
+    from app.ai import registry
+    cid = registry.add_config("image", "demo", "https://api.example.com", "demo-model")
+    row = db.q1("SELECT ctx_tokens, max_tokens FROM ai_service_configs WHERE id=?", (cid,))
+    assert row["max_tokens"] is None
+    assert row["ctx_tokens"] is None

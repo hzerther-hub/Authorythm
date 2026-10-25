@@ -274,8 +274,28 @@ class NovelPlanDialog(QDialog):
 
         lay.addWidget(W.h2(tr("主要角色")))
         nm = db.jload(d["novel_meta"], {}) or {}
+        # 「✨ AI 生成主要角色」按钮。
+        # 之前**没有这个入口**:角色只能靠「开书策划」顺带产出,或者用户手写 JSON
+        # 贴进文本框再点保存。截图里的现象正是这个 —— 章节计划生成了 50 章,
+        # 「主要角色」一片空白,用户完全不知道该从哪生成。
+        # 而角色设定是写作红线的**第 5 步**(check_novel_redlines 检查 characters 表),
+        # 没有角色 → 门控永远报「缺步骤 5(角色设定)」→ 小说一章都写不了。
+        # 注释里写着「章节计划 + 主要角色(同一页,各自可 AI 生成)」,缺的正是这个按钮。
+        # `_sync_busy_buttons` 里早就预留了 getattr(self, "chars_btn", None) —— 更说明
+        # 这个按钮是规划过但没落地。
+        chars_row = QHBoxLayout()
+        chars_row.setSpacing(6)
+        self.chars_btn = WaitingButton(tr("✨ AI 生成主要角色"))
+        W.set_icon(self.chars_btn, "magic")
+        self.chars_btn.clicked.connect(self._ai_characters)
+        chars_row.addWidget(self.chars_btn)
+        chars_row.addStretch(1)
+        lay.addLayout(chars_row)
+        # 角色来源要跟写作门控一致(资产库也认),否则库里明明有 10 个角色、
+        # 这个框却是一片空白 —— 实测 drama 4 就是这个状态。
         self.chars_edit = QPlainTextEdit(
-            json.dumps(nm.get("main_characters", []), ensure_ascii=False, indent=1))
+            json.dumps(novel_pipe.load_main_characters(self.drama_id),
+                       ensure_ascii=False, indent=1))
         self.chars_edit.setPlaceholderText('尚未生成角色。JSON 数组:[{"name":"","role":"主角",'
                                            '"identity":"","motivation":"","appearance":"","styling":""}]')
         self.chars_edit.setMinimumHeight(140)
@@ -607,6 +627,7 @@ class NovelPlanDialog(QDialog):
                 editor.setPlainText(novel_pipe.chapters_to_text(result['chapters']))
                 ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(
                     result['count'], result['word_count']))
+                self._chain_characters()      # 顺带把主要角色也生出来
 
             TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
             return
@@ -631,6 +652,7 @@ class NovelPlanDialog(QDialog):
             # NameError 把整个保存流程带崩。这里按实际语义:章节计划落库后
             # 刷新章节列表即可,卷结构列表不受影响。
             ok(tr('章节计划已生成:{} 章 / 每章约 {} 字').format(result['count'], result['word_count']))
+            self._chain_characters()          # 顺带把主要角色也生出来
 
         def failed(msg: str) -> None:
             btn.idle()
@@ -646,6 +668,87 @@ class NovelPlanDialog(QDialog):
                              max_tokens=None,
                              on_finished=finished, on_failed=failed, owner=self)
         self._stream_worker = worker
+
+    def _chain_characters(self, after: str = ""):
+        """章节计划生成完**顺带把主要角色也生出来**。
+
+        章节计划与角色本来是有依赖的:「AI 生成主要角色」是拿章节计划当上下文
+        设计角色的(见 novel.plan_characters)。拆成两个按钮让人多跑一趟,而且
+        用户常常只看见「章节计划」那个按钮 —— 角色区一直空白,却不知道该点哪。
+        角色设定又是写作红线的第 5 步,缺它就一章也写不了。
+
+        已有角色时**不覆盖**(用户可能手改过);要重来请点「✨ AI 生成主要角色」。
+        """
+        from ..core.taskmgr import TASKMGR
+        from ..pipeline import novel as novel_pipe
+        try:
+            nm = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
+                                (self.drama_id,))["novel_meta"], {}) or {}
+            if (nm.get("main_characters") or []):
+                return
+        except Exception:  # noqa: BLE001
+            return
+        cid = self.plan_model_combo.currentData()
+        config_id = int(cid) if cid else None
+
+        def job(tid):
+            return novel_pipe.plan_characters(self.drama_id, config_id=config_id)
+
+        def done(tid, result, error):
+            if error:
+                # 角色生成失败**不打断**章节计划的结果 —— 章节计划已经落库了,
+                # 提示一句让用户单独重试即可。
+                err(tr('主要角色生成失败:{}').format(short_error(str(error))[:220]))
+                return
+            chars = (result or {}).get("characters") or []
+            self.chars_edit.setPlainText(
+                json.dumps(chars, ensure_ascii=False, indent=1))
+            self._update_plan_stat()
+            ok(tr('已生成 {} 个主要角色(已同步到资产库)').format(len(chars)))
+
+        TASKMGR.submit("novel_chars", job, done, drama_id=self.drama_id)
+
+    def _ai_characters(self):
+        """✨ AI 生成主要角色。
+
+        走 `novel.plan_characters`:它从**已有的章节计划**出发设计角色
+        (章节计划缺失时会先自动补一份),套 150 字外观规格,写 novel_meta 并
+        同步到 characters 表 —— 正好补上写作红线第 5 步缺的那一项。
+
+        用后台任务而不是流式:plan_characters 是单次非流式调用(输出是 JSON 数组,
+        不适合流式往编辑器里灌),但一次要几十秒,放主线程会把界面卡死。
+        """
+        from ..core.preflight import ensure_ready
+        from ..core.taskmgr import TASKMGR
+        from ..pipeline import novel as novel_pipe
+        if not ensure_ready("text", None):
+            return
+        if not self._enter_busy():
+            return
+        self._save_project_meta()          # 先落库,上下文里才有题材/简介
+        btn = self.chars_btn
+        btn.busy(tr("生成主要角色中"))
+        # 规划侧走「规划模型」(与章节计划/起草同口径:deepseek-v4-pro 的结构化
+        # 输出更规整);没单独选就回退全局默认。
+        cid = self.plan_model_combo.currentData()
+        config_id = int(cid) if cid else None
+
+        def job(tid):
+            return novel_pipe.plan_characters(self.drama_id, config_id=config_id)
+
+        def done(tid, result, error):
+            btn.idle()
+            self._leave_busy()
+            if error:
+                err(tr('主要角色生成失败:{}').format(short_error(str(error))[:220]))
+                return
+            chars = (result or {}).get("characters") or []
+            self.chars_edit.setPlainText(
+                json.dumps(chars, ensure_ascii=False, indent=1))
+            self._update_plan_stat()
+            ok(tr('已生成 {} 个主要角色(已同步到资产库)').format(len(chars)))
+
+        TASKMGR.submit("novel_chars", job, done, drama_id=self.drama_id)
 
     def _save_plan_tab(self):
         from ..pipeline import novel as novel_pipe
@@ -993,7 +1096,8 @@ class NovelPlanDialog(QDialog):
             self.chapter_spin.blockSignals(True)
             self.chapters_edit.setPlainText(novel_pipe.chapters_to_text(db.jload(d["novel_chapters"], [])))
             self.chars_edit.setPlainText(
-                json.dumps(nm.get("main_characters", []), ensure_ascii=False, indent=1))
+                json.dumps(novel_pipe.load_main_characters(self.drama_id),
+                           ensure_ascii=False, indent=1))
             self.word_spin.setValue(int(nm.get("word_count") or 2500))
             self.chapter_spin.setValue(
                 int(nm.get("chapter_count") or d["total_episodes"] or 60))

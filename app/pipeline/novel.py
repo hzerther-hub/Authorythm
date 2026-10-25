@@ -105,18 +105,48 @@ def set_novel_style(drama_id: int, style: str) -> None:
 
 
 def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
-    """开书策划:总纲/世界观/合约/卷战略/章节清单/主要角色,写入 dramas。"""
+    """开书策划:总纲/世界观/合约/卷战略/章节清单/主要角色,写入 dramas。
+
+    **novel_meta 必须 read-modify-write,不能整块覆盖。**
+    旧实现直接写 `json.dumps({"main_characters": ...})`,把 novel_meta 里
+    `world` / `contract` 的结构化字段一并抹掉 —— 后果是重跑一次开书策划,
+    用户在向导里选好的叙事人称(contract.pov)和写作规则/语调全部消失,
+    而且写作红线门控会永远报「缺步骤 3、4」,用户再也写不了小说
+    (实测 drama 4 就是这个状态:列里 898/656 字全文还在,novel_meta 却空了)。
+    """
     config_id = config_id or plan_config_id()
     lang = config.resolve_content_language(drama_id)
     prompt = f"新书创意:\n{idea[:6000]}\n\n请给出完整开书规划。"
     data = runner.run_agent_json("novel_planner", prompt, lang=lang, config_id=config_id)
     chapters = data.get("chapters", [])
+    # 保留既有 novel_meta(世界观/合约的结构化字段、叙事人称、导入档案…)
+    row = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+    meta = db.jload(row["novel_meta"], {}) if row else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["main_characters"] = data.get("main_characters", []) or []
+    # 策划若给了结构化的世界观/合约,一并落进 novel_meta(门控认这个)。
+    # 文本列只存**可读全文**:策划有时返回 {"text": "...", "era": ...} 这种
+    # 带结构化的对象,直接塞进 TEXT 列 sqlite 会绑定失败 —— 取 text 部分落列,
+    # 整个对象落 meta。
+    def _split(section) -> tuple[str, dict]:
+        if isinstance(section, dict):
+            text = str(section.get("text") or "").strip()
+            return text, {k: v for k, v in section.items() if k != "text"}
+        return str(section or "").strip(), {}
+
+    world_text, world_struct = _split(data.get("world"))
+    contract_text, contract_struct = _split(data.get("contract"))
+    if world_struct:
+        meta["world"] = world_struct
+    if contract_struct:
+        meta["contract"] = contract_struct
     db.ex("""UPDATE dramas SET novel_outline=?, novel_world=?, novel_contract=?, novel_volume=?,
              novel_chapters=?, novel_meta=?, updated_at=? WHERE id=?""",
-          (data.get("outline", ""), data.get("world", ""), data.get("contract", ""),
+          (data.get("outline", ""), world_text, contract_text,
            json.dumps(data.get("volume", ""), ensure_ascii=False),
            json.dumps(chapters, ensure_ascii=False),
-           json.dumps({"main_characters": data.get("main_characters", [])}, ensure_ascii=False),
+           json.dumps(meta, ensure_ascii=False),
            db.now(), drama_id))
     # 主要角色直接入资产库
     _sync_characters(drama_id, data.get("main_characters", []) or [])
@@ -884,6 +914,37 @@ def save_chapters(drama_id: int, chapters: list) -> int:
     return len(chapters)
 
 
+def load_main_characters(drama_id: int) -> list[dict]:
+    """读主要角色 —— **两个来源都认**,按优先级。
+
+    1. `novel_meta.main_characters`(向导里的 JSON,带 identity/motivation 等完整字段)
+    2. `characters` 表(资产库;角色也可能从资产提取、整书导入等别的路径进来)
+
+    为什么要有第 2 个来源:写作红线门控查的是**资产库**(`check_novel_redlines`
+    第 5 步 `SELECT id FROM characters WHERE drama_id=?`),而向导的「主要角色」
+    框只读 `novel_meta.main_characters` —— 两边不同源时,用户看到的是
+    **一片空白,但角色其实在库里**(实测 drama 4:库里 10 个角色,向导显示空)。
+    门控说「已齐」、界面说「没有」,用户完全不知道该信哪个。
+    """
+    meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?",
+                          (drama_id,))["novel_meta"], {}) or {}
+    chars = meta.get("main_characters")
+    if isinstance(chars, list) and chars:
+        return chars
+    rows = db.q("SELECT name, role_type, appearance, styling FROM characters "
+                "WHERE drama_id=? ORDER BY id", (drama_id,))
+    if not rows:
+        return []
+    role_cn = {"lead": "主角", "supporting": "配角"}
+    return [{
+        "name": r["name"] or "",
+        "role": role_cn.get((r["role_type"] or "").strip(), "配角"),
+        "identity": "", "motivation": "",
+        "appearance": r["appearance"] or "",
+        "styling": r["styling"] or "",
+    } for r in rows]
+
+
 def save_characters(drama_id: int, chars: list) -> int:
     chars = _clean_characters(chars)
     meta = db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))["novel_meta"], {}) or {}
@@ -1024,11 +1085,69 @@ def write_chapter(episode_id: int, config_id: int | None = None,
     # 配置留空才退到 _chapter_budget 兜底,后两次才升到 32768。
     budgets = (_configured_max_tokens(config_id) or 32768, 32768, 32768)
     content = ""
+    problem = ""
     for budget in budgets:
         content, _reason = _write_chapter_text(chapter_prompt(episode_id), config_id, lang, budget)
-        if len(content) >= 200:
+        problem = check_chapter_content(content, ep["drama_id"])
+        if not problem:
             break
+    if problem:
+        # 三次都出的是「过程说明」而不是正文 → 宁可报错也不要把设定原文
+        # 当正文存进第 1 章(用户反馈:「AI 生成总纲的过程被写到第一章了」)。
+        raise RuntimeError(
+            f"模型这次只返回了「在讲怎么写」而不是正文,已重试 3 次未纠正"
+            f"({problem})。请重试,或把该模型的输出预算调大后重试。")
     return _save_with_title(episode_id, content)
+
+
+# 正文里照抄了设定原文的判定阈值(连续这么多字一模一样 = 复述,不是正文)
+_SETTINGS_OVERLAP_MIN = 40
+
+
+def check_chapter_content(content: str, drama_id: int) -> str:
+    """正文内容体检;返回问题描述(空串=正常)。
+
+    写章提示词会把总纲/世界观/合约喂给模型(novel.py:912-914)。**第 1 章尤其危险**:
+    它没有上一章做正文样例锚定(`prev_summary` 是「(本章为第一章)」),
+    提示词里元信息的占比最高,模型容易滑进「先复述设定、再开写」的模式 ——
+    于是总纲原文被当成正文存进第 1 章(其它用户的反馈原文:
+    「你把 AI 生成的总纲的过程写到第一章了」)。
+
+    判据用「输出里是否包含设定原文的**连续长片段**」,而不是匹配开头特征词:
+      · 特征词会漏 —— 模型换个说法就绕过(「根据总纲」不在 META_TALK 的词表里);
+      · 照抄是硬证据 —— 只要有一大段原文被复制进正文,那就不是叙事。
+    误伤面很窄:正文里引用一句设定里的专名/短句不会命中(长度不够)。
+    """
+    text = (content or "").strip()
+    if not text:
+        return "正文为空"
+    if len(text) < 200:
+        return f"正文过短({len(text)} 字)"
+    d = db.q1("SELECT novel_outline, novel_world, novel_contract FROM dramas WHERE id=?",
+              (drama_id,))
+    if not d:
+        return ""
+
+    def _col(name: str) -> str:
+        # sqlite3.Row 与 dict 都可能缺这个键(测试桩会返回不完整的行),
+        # 取不到就当空 —— 判不出复述不等于有复述,不能因此崩掉整次生成。
+        try:
+            v = d[name]
+        except (KeyError, IndexError):
+            v = ""
+        return str(v or "").strip()
+
+    for label, field in (("总纲", "novel_outline"), ("世界观", "novel_world"),
+                         ("故事合约", "novel_contract")):
+        src = _col(field)
+        if len(src) < _SETTINGS_OVERLAP_MIN:
+            continue
+        # 源串按窗口切片,任一片段出现在正文里就算复述
+        step = _SETTINGS_OVERLAP_MIN // 2
+        for i in range(0, len(src) - _SETTINGS_OVERLAP_MIN + 1, step):
+            if src[i:i + _SETTINGS_OVERLAP_MIN] in text:
+                return f"正文里照抄了{label}原文(连续 {_SETTINGS_OVERLAP_MIN} 字以上的复述段)"
+    return ""
 
 
 def _strip_think(content: str) -> str:
@@ -1104,6 +1223,17 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
     )
     # 兼容老 caller 返回形状(content/review/fixed):
     final = (out.get("final") or [None])[0]
+    # ── 终态落库 ──
+    # `compressor_node` 的注释写「调用方自行入库」,但**没有任何调用方真的入库**:
+    # writer_node(write_chapter)与 repair_node 都会写,可**审校第一轮就判 ok**
+    # 时这两条路都不走 → 正文生成完了却一���没进库,界面上照样弹「本章已生成」,
+    # 用户刷新一下就没了(静默丢数据)。这里补上,只在判 ok 时写 ——
+    # giveup 的稿子不该落库。
+    text = final or ""
+    if out.get("decision") == "ok" and text:
+        cur = db.q1("SELECT content FROM episodes WHERE id=?", (episode_id,))
+        if not cur or (cur["content"] or "") != text:
+            _save_with_title(episode_id, text)
     return {
         "content": final or content or "",
         "review": None,                      # StateGraph 内部跑过 caller 拿不到详情,如需可见再扩
@@ -1504,9 +1634,30 @@ NOVEL_REQUIRED_STEPS = [1, 2, 3, 4, 5, 7]
 STEP_NAMES = {1: "项目设定", 2: "总纲", 3: "世界观", 4: "故事合约",
               5: "角色设定", 6: "卷战略", 7: "章节规划"}
 
+# 「世界观 / 故事合约」的文本列达到这个长度才算填过(≈ 一段真内容,不是占位)。
+# 门控认文本列是为了消除误报(见 check_novel_redlines 的 docstring),
+# 但也不能一行字就放行 —— 那会让「世界观」形同虚设。
+SETTING_TEXT_MIN = 30
+
 
 def check_novel_redlines(drama_id: int) -> list[int]:
-    """返回未完成的步骤号列表;空列表=设定齐全。"""
+    """返回未完成的步骤号列表;空列表=设定齐全。
+
+    **门控必须看写作实际会读到的那一份数据。**
+    写章提示词(`chapter_prompt`)消费的是 `dramas.novel_world` / `novel_contract`
+    这两个**文本列**(novel.py:912-914),不是 `novel_meta` 里的结构化字段。
+    旧实现只认 `novel_meta.world/contract`,于是出现两种荒谬状态:
+      · 用户在「世界观/故事合约」页填完了(列里有 898/656 字全文),
+        但 novel_meta 里没有结构化字段 → 门控永远报「缺步骤 3、4」,
+        用户**永远写不了小说**(实测 drama 4 就是这个状态);
+      · `plan_novel`(开书策划)把 world/contract 写成纯文本塞进列里,
+        天然没有结构化字段 → 跑完开书策划立刻卡死。
+
+    所以两边都认,任一成立即算完成:
+      · 文本列有实质内容(≥ SETTING_TEXT_MIN 字),或
+      · novel_meta 里有完整的结构化字段(era+location / pov+rules+tones)。
+    结构化字段仍然是「认真填过」的证据,只是不再是唯一证据。
+    """
     d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
     if not d:
         return NOVEL_REQUIRED_STEPS
@@ -1515,6 +1666,10 @@ def check_novel_redlines(drama_id: int) -> list[int]:
     proj = db.jload(d["metadata"], {}) or {}
     world = meta.get("world") or {}
     contract = meta.get("contract") or {}
+    if not isinstance(world, dict):
+        world = {}
+    if not isinstance(contract, dict):
+        contract = {}
     missing: list[int] = []
     # 1 项目设定:标题 + 简介
     if not (d["title"] or "").strip() or not (proj.get("intro") or "").strip():
@@ -1522,12 +1677,21 @@ def check_novel_redlines(drama_id: int) -> list[int]:
     # 2 总纲
     if not (d["novel_outline"] or "").strip():
         missing.append(2)
-    # 3 世界观:era + location
-    if not (str(world.get("era") or "").strip() and str(world.get("location") or "").strip()):
+    # 3 世界观:列里有实质全文,或 novel_meta 有 era+location
+    world_text = (d["novel_world"] or "").strip()
+    world_ok = (len(world_text) >= SETTING_TEXT_MIN
+                or (str(world.get("era") or "").strip()
+                    and str(world.get("location") or "").strip()))
+    if not world_ok:
         missing.append(3)
-    # 4 故事合约:pov + rules(非空)+ tones(非空)
+    # 4 故事合约:列里有实质全文,或 novel_meta 有 pov+rules(非空)+tones(非空)
+    contract_text = (d["novel_contract"] or "").strip()
     rules, tones = contract.get("rules") or [], contract.get("tones") or []
-    if not (contract.get("pov") and any(str(r or "").strip() for r in rules) and len(tones) > 0):
+    contract_ok = (len(contract_text) >= SETTING_TEXT_MIN
+                   or (contract.get("pov")
+                       and any(str(r or "").strip() for r in rules)
+                       and len(tones) > 0))
+    if not contract_ok:
         missing.append(4)
     # 5 角色设定
     if not db.q1("SELECT id FROM characters WHERE drama_id=? LIMIT 1", (drama_id,)):

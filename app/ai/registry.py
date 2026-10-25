@@ -9,6 +9,15 @@ from ..core.secrets import ensure_decrypted, ensure_encrypted
 
 SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev", "stockphoto"]
 
+# 文本模型的 token 预算默认值(新增配置时自动填,见 add_config)。
+#   · max_tokens = 实际发给模型的输出预算。留空会掉到 8192,思考型模型
+#     (deepseek-v4-pro / MiniMax-M3)的思考与正文共用这份预算,8192 经常
+#     思考完就吐空 —— 表现为「点了没反应」「正文只有标题一行」。
+#   · ctx_tokens = 上下文长度,本仓只作提示/校验用。
+# 与用户手工在设置里填的值一致,不会覆盖用户的判断(只在留空时填)。
+TEXT_DEFAULT_MAX_TOKENS = 32768
+TEXT_DEFAULT_CTX_TOKENS = 1000000
+
 
 def _decrypt_row(row) -> dict:
     """把 sqlite3.Row 变 dict,并对 api_key 字段做解密。
@@ -302,7 +311,8 @@ def add_config(service_type: str, provider: str, base_url: str, model: str,
                api_key: str = "", is_default: bool = False, remark: str = "",
                priority: int = 0, models: list[str] | None = None,
                temperature: float | None = None,
-               max_tokens: int | None = None) -> int:
+               max_tokens: int | None = None,
+               ctx_tokens: int | None = None) -> int:
     ts = db.now()
     if is_default:
         db.ex("UPDATE ai_service_configs SET is_default=0 WHERE service_type=?", (service_type,))
@@ -313,13 +323,25 @@ def add_config(service_type: str, provider: str, base_url: str, model: str,
     base_url = normalize_base_url(service_type, provider, base_url)
     # 入库前加密 api_key(salt 派生自机器指纹,跨用户/机器不可解)
     api_key_cipher = ensure_encrypted(api_key or "")
+    # 文本模型的 token 预算**自动填默认值**。
+    #   · max_tokens 决定实际发给模型的输出预算,留空会掉到 8192 ——
+    #     思考型模型(deepseek-v4-pro / MiniMax-M3)思考与正文共用这份预算,
+    #     8192 经常思考完就吐空,表现为「点了没反应 / 正文只有标题一行」。
+    #     写死 32768 与用户在设置里手工填的值一致,不会覆盖用户的判断。
+    #   · ctx_tokens 只作提示/校验用,填 1000000 与现有三条文本配置一致。
+    # 非文本类型(生图/视频/TTS)不填 —— 它们的 token 语义不同。
+    if service_type == "text":
+        if not max_tokens:
+            max_tokens = TEXT_DEFAULT_MAX_TOKENS
+        if not ctx_tokens:
+            ctx_tokens = TEXT_DEFAULT_CTX_TOKENS
     return db.ex(
-        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,max_tokens,created_at,updated_at)"
-        " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?)",
+        "INSERT INTO ai_service_configs(service_type,provider,base_url,api_key,model,is_default,is_active,remark,priority,models,temperature,max_tokens,ctx_tokens,created_at,updated_at)"
+        " VALUES(?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)",
         (service_type, provider, base_url, api_key_cipher, model,
          1 if is_default else 0, remark, priority,
          _json.dumps(models or [model], ensure_ascii=False),
-         temperature, max_tokens, ts, ts))
+         temperature, max_tokens, ctx_tokens, ts, ts))
 
 
 def update_config(cid: int, **fields) -> None:
