@@ -1083,10 +1083,22 @@ class ClonePage(QWidget):
         self.clone_text_combo.setMinimumWidth(120)
         self.clone_text_combo.setMaximumWidth(240)
         mrow.addWidget(self.clone_text_combo)
+        # 标题(片头):红框处(用户要求「标题放在红框处,功能参考加入片头」)。
+        # 可勾选开关 + 点击配置:开 = 合并时按 dramas 片头字段(标题/方式/字体/
+        # 字号/位置/时长,由 IntroEditorDialog 写入)给成片加片头;关 = 纯拼接。
+        # 片头机制与短剧合并页同源(merge._merge_filtered / render_intro_clip)。
+        self.intro_toggle = QPushButton("🏷 " + tr("标题"))
+        self.intro_toggle.setToolTip(tr("给合并成片加片头标题;点击先配置标题/字体/位置"))
+        self.intro_toggle.setCheckable(True)
+        self.intro_toggle.setCursor(Qt.PointingHandCursor)
+        self.intro_toggle.toggled.connect(self._toggle_intro)
+        self.intro_toggle.clicked.connect(self._on_intro_clicked)
+        mrow.addWidget(self.intro_toggle)
         mrow.addStretch(1)
         root.addLayout(mrow)
         self._reload_clone_image_models()
         self._reload_clone_text_models()
+        self._sync_intro_toggle()
         # 项目设置:画面风格 + 人物参照图重建。
         srow = QHBoxLayout()
         slab = QLabel(tr("画面风格"))
@@ -1381,6 +1393,38 @@ class ClonePage(QWidget):
         """播放这一镜生成的视频(复用成片/单镜共用的视频预览弹窗)。"""
         from .asset_dialogs import VideoPreviewDialog
         VideoPreviewDialog(self, url, tr("preview")).exec()
+
+    def _sync_intro_toggle(self):
+        """标题开关随 clone.intro_enabled 状态刷新。"""
+        from ..pipeline import video_clone
+        meta = video_clone._meta(self.drama_id)
+        on = bool((meta.get("clone") or {}).get("intro_enabled"))
+        self.intro_toggle.blockSignals(True)
+        self.intro_toggle.setChecked(on)
+        self.intro_toggle.blockSignals(False)
+
+    def _toggle_intro(self, on: bool):
+        """开关状态落 clone.intro_enabled;开启时弹片头编辑器配置。"""
+        from ..pipeline import video_clone
+        meta = video_clone._meta(self.drama_id)
+        meta.setdefault("clone", {})["intro_enabled"] = bool(on)
+        video_clone._save_meta(self.drama_id, meta)
+
+    def _on_intro_clicked(self):
+        """点击「标题」:勾上时打开片头编辑器(短剧同款,写 dramas 片头字段);
+        取消勾选只关开关。勾选状态以编辑器保存为准。"""
+        if not self.intro_toggle.isChecked():
+            self._toggle_intro(False)
+            return
+        from .intro_dialog import IntroEditorDialog
+        _arow = db.q1("SELECT aspect_ratio FROM dramas WHERE id=?", (self.drama_id,))
+        aspect = ((_arow or {}).get("aspect_ratio") if _arow else None) or "16:9"
+        dlg = IntroEditorDialog(self, self.drama_id, aspect=aspect,
+                                on_saved=self._toggle_intro)
+        dlg.exec()
+        # 编辑器里点了保存 → 保持勾选;直接关掉(没保存)→ 回退为关,
+        # 避免「看着开着、实际没配标题」的假开启状态
+        self._toggle_intro(self.intro_toggle.isChecked())
 
     def _analyze(self, direct: bool = False):
         from ..pipeline import video_clone

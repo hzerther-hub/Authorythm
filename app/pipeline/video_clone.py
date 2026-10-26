@@ -1358,13 +1358,40 @@ def clone_done_videos(drama_id: int) -> list[Path]:
 
 
 def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> Path:
-    """第 4 步:按原片节奏无损拼接成片(复用 easymerger auto_merge)。"""
+    """第 4 步:按原片节奏无损拼接成片(复用 easymerger auto_merge)。
+
+    片头(用户要求「标题功能参考加入片头」):复刻页「标题」开关开启时
+    (clone.intro_enabled),复用短剧的 dramas 片头字段(标题/方式/字体/
+    字号/位置/时长 —— 由复刻页弹出的 IntroEditorDialog 写入)给成片加
+    片头;机制与 merge_episode 同源(标题卡前置 render_intro_clip /
+    文字叠加 _merge_filtered)。配置异常不阻断拼接,退回纯拼接。
+    """
     from . import merge as merge_mod
     files = [str(p) for p in clone_done_videos(drama_id) if p.exists()]
     if len(files) < 2:
         raise RuntimeError("至少完成 2 个镜头视频才能拼接")
     out = out or (config.STATIC_DIR / "merged" / f"clone_{drama_id}_{uuid.uuid4().hex[:8]}.mp4")
-    path, _channel = merge_mod.auto_merge(files, out, progress=progress)
+    # 片头:开关在 clone.intro_enabled,配置在 dramas 片头字段
+    meta = _meta(drama_id)
+    intro = None
+    if (meta.get("clone") or {}).get("intro_enabled"):
+        try:
+            from . import intro as _intro
+            intro = _intro.build_intro_spec(drama_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[clone] 片头配置异常({exc}),本次合并不带片头", flush=True)
+            intro = None
+    if intro and intro.get("card") and not intro.get("overlay"):
+        # 纯标题卡:渲染片头片段后无损前置
+        from . import intro as _intro
+        clip = _intro.render_intro_clip(intro, fps_hint=30.0)
+        path, _channel = merge_mod.auto_merge([str(clip)] + files, out, progress=progress)
+    elif intro:
+        # 文字叠加(或叠加+标题卡同时开):走统一 filter_complex 拼接
+        path = merge_mod._merge_filtered([Path(f) for f in files], [],
+                                         Path(out), intro, progress)
+    else:
+        path, _channel = merge_mod.auto_merge(files, out, progress=progress)
     return path
 
 
