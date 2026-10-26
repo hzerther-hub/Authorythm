@@ -2405,10 +2405,15 @@ class ClonePage(QWidget):
         def job(tid):
             return str(video_clone.merge_clone(self.drama_id))
         def done(tid, result, error):
+            # 完成后**必须 reload**:成片槽位(素材行尾部,最多 8 个)由
+            # clone.merges 渲染,不刷新就永远不出现。此前这里 os.startfile
+            # 拉起系统播放器 —— 用户不要外部播放,应用内点成片缩略即播
+            # (⏸ 暂停 / ↻ 重播),且槽位带 ↓ 下载 / 🗑 删除。
             if error:
-                err(tr("merge_now"))
-            else:
-                import os
-                os.startfile(result)  # noqa
+                err(str(error)[:280])
+                return
+            self.reload()
+            from pathlib import Path as _P
+            ok(tr("merge_done").format(_P(str(result)).name))
         TASKMGR.submit("clone_merge", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
