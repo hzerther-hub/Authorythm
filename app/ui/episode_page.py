@@ -7640,6 +7640,42 @@ class EpisodePage(QWidget):
         dot.setToolTip(tr("done") if vid else tr("pending"))
         line.addWidget(dot)
         lay.addLayout(line)
+        # ── 本镜参考图(主图/场景/道具)──
+        # 以前只在底部「首帧预览」面板里能看到这一镜用了哪些参考,得先选中镜头
+        # 再低头找面板(用户要求:「红框处要在镜头处,提示这一个镜头要参考的
+        # 主图/场景/道具」)。直接在每张镜头卡上铺一行小缩略:主=角色主图,
+        # 景=场景,具=道具;点图看大图,点底部标签跳到右栏绑定区切换绑定。
+        try:
+            from ..pipeline import refs as _refs_mod
+            ref_items = (_refs_mod.build_shot_reference_list(dict(r), limit=5)
+                         if sid else [])
+        except Exception:  # noqa: BLE001 —— 参考取失败不该拖垮整张卡
+            ref_items = []
+        if ref_items:
+            refs_row = QHBoxLayout()
+            refs_row.setSpacing(4)
+            kind_tag = {"character": "主", "scene": "景", "prop": "具"}
+            kind_full = {"character": "主图(角色)", "scene": "场景", "prop": "道具"}
+            for item in ref_items[:5]:
+                cell = QVBoxLayout()
+                cell.setContentsMargins(0, 0, 0, 0)
+                cell.setSpacing(0)
+                im = QLabel()
+                im.setFixedSize(44, 30)
+                im.setAlignment(Qt.AlignCenter)
+                im.setPixmap(W.pixmap_from_media(item.get("image_url"), 44, 30))
+                im.setCursor(Qt.PointingHandCursor)
+                url_full = item.get("image_url") or ""
+                im.setToolTip(f"{kind_full.get(item.get('kind'), '参考')} · {item.get('name') or ''}")
+                im.mousePressEvent = lambda _e, u=url_full: self._preview_reference_image(u)
+                cell.addWidget(im)
+                tag = QLabel(kind_tag.get(item.get("kind"), "参"))
+                tag.setObjectName("muted")
+                tag.setAlignment(Qt.AlignCenter)
+                cell.addWidget(tag)
+                refs_row.addLayout(cell)
+            refs_row.addStretch(1)
+            lay.addLayout(refs_row)
         self._paint_shot_card(sid, card)
         self.shot_checks[sid] = cb
         self.shot_cards[sid] = card

@@ -1225,6 +1225,22 @@ class ClonePage(QWidget):
         self._shot_thumbs = []
         from ..pipeline import video_clone
         boards = video_clone._clone_storyboards(self.drama_id)
+        # 本镜三要素参考(主图/场景/产品)—— 与生图端 generate_shot_image 注入的
+        # 完全同源,每张卡铺一行小缩略,点开可放大核对(用户要求「用在复刻上」)。
+        _clone_meta = video_clone._meta(self.drama_id).get("clone", {})
+        _standing_ref = None
+        try:
+            if _clone_meta.get("turnaround_image"):
+                _s = video_clone.standing_ref_of(_clone_meta.get("turnaround_image"))
+                _standing_ref = str(_s) if _s else None
+        except Exception:  # noqa: BLE001 —— 三视图缺失时参考行少一格即可
+            _standing_ref = None
+        _card_refs = [(t, full, video_clone._resolve_local(p))
+                      for t, full, p in (
+                          ("主", "人物设定图(出镜者本人)", _clone_meta.get("turnaround_image") and _standing_ref),
+                          ("景", "场景图(本片唯一场景)", _clone_meta.get("scene_image")),
+                          ("具", "产品图(主推产品)", _clone_meta.get("product")))]
+        _card_refs = [(t, full, str(p)) for t, full, p in _card_refs if p]
         self._refresh_board_note()
         self._refresh_materials()
         self._refresh_settings_note()
@@ -1271,6 +1287,21 @@ class ClonePage(QWidget):
                 head.addWidget(W.tag(tr("done")))
             head.addStretch(1)
             info.addLayout(head)
+            # 本镜参考行(主/景/具):与生图端注入的三要素同源,点缩略可放大核对
+            if _card_refs:
+                refs_row = QHBoxLayout()
+                refs_row.setSpacing(4)
+                for t, full, p in _card_refs:
+                    im = QLabel()
+                    im.setFixedSize(44, 30)
+                    im.setAlignment(Qt.AlignCenter)
+                    im.setPixmap(W.pixmap_from_media(p, 44, 30))
+                    im.setCursor(Qt.PointingHandCursor)
+                    im.setToolTip(full)
+                    im.mousePressEvent = lambda _e, u=str(p): self._view_image_big(u)
+                    refs_row.addWidget(im)
+                refs_row.addStretch(1)
+                info.addLayout(refs_row)
             steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
             action_txt = "；".join(f"{i}.{s}" for i, s in enumerate(steps, 1)) if steps else b.get("action", "")
             head_bits = " · ".join(x for x in (b.get("shot", ""), b.get("camera", "")) if x)
