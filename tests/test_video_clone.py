@@ -588,21 +588,20 @@ def test_sync_assets_marks_swap_failure_visibly(tmp_path, monkeypatch):
 
 
 def test_pick_ref_kind_uses_single_reference_image():
-    """主体参考的角色分工(2026-10-26 用户定版「每镜三要素」后更新):
+    """主体参考的角色分工(2026-10-26 用户定版「每一镜都带齐三主图」后更新):
 
-    · 人物要素只进人物镜 —— 产品/特写镜带人物设定图会把完整人物画进
-      单肢特写(实测);
-    · 场景锚可进两类镜 —— 空景图里没有人可抄(旧场景图带人才出半透明
-      第二人,见 extract_scene_anchor);
+    · **每一镜**(含特写)都带齐三要素:三视图立绘 + 场景空景 + 产品图,
+      顺序按镜类排主体优先;
+    · 特写镜的立绘只为锚手部肤质,提示词必须点名「只参照手,严禁画出
+      面部或身体」(否则照设定图把整个人画进腕部特写,实测 #03);
     · 多图参考池(ref_pool)仍然禁止;多锚时逐一点名参考图1/2/3 各锁什么。
     """
     import inspect
     src = inspect.getsource(vc.generate_shot_image)
     assert "ref_pool" not in src, "不应再有多图参考池(会引入重影)"
-    assert "scene_img" in src, "场景锚未注入"
-    assert src.count('main_kind == "presenter"') >= 2, \
-        "人物要素必须按镜类门控(特写镜不带人物设定图)"
+    assert "scene_img" in src and "standing_img" in src, "三要素未带齐"
     assert "参考图2(场景图)" in src, "多锚时必须逐一点名两张图各锁什么"
+    assert "严禁画出她的面部或身体" in src, "特写镜带立绘必须限只参照手"
 
 
 def test_shot_uses_cropped_standing_ref_not_full_turnaround():

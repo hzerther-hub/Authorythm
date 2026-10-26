@@ -1069,23 +1069,21 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     #   不是同一人」),景锁原视频空镜(痛点「背景跟原片对不上」)。
     scene_img = _resolve_local(clone.get("scene_image"))
     product_img = _asset_img("product")
+    standing_img = _asset_img("presenter")     # 三视图切格立绘
     refs: list = []
     if main_img:
         refs.append(main_img)
-    # ── 三要素(用户定版「每镜都要以三视图/场景图/商品为要素」)──
-    # 人物镜三张全带:人锁立绘、景锁空景、货锁产品图,提示词逐一点名各锁什么。
-    # 人物照+产品照曾实测「对称融合双头」—— 那是两张同类型正面照互相抢主体,
-    # 现在角色分工逐字点名;若再出融合,用「重绘备注」写一句即可压(见 user_hint)。
-    # 特写/产品镜**不喂人物要素**(喂了必把完整人物带进单肢特写,实测),
-    # 场景图补背景边缘信息。
-    if main_kind == "presenter":
-        if scene_img and scene_img not in refs:
-            refs.append(scene_img)
-        if product_img and product_img not in refs:
-            refs.append(product_img)
-    else:
-        if scene_img and scene_img not in refs:
-            refs.append(scene_img)
+    # ── 三要素(用户定版「每一镜都要有主图:三视图/产品图(道具)/场景图,
+    # 结合提示生成」)── **每一镜都带齐三张**,包括特写镜:特写的手部肤质
+    # 也要有立绘可锚。角色分工靠提示词逐一点名(参考图1/2/3 各锁什么),
+    # 特写镜的守卫(见下方 core 单肢规则)压住「照人物设定图画出全身」。
+    # 人物照+产品照曾实测「对称融合双头」—— 那是两张同类型正面照互相抢主体;
+    # 现在逐字点名分工,若再出融合,用「重绘备注」写一句即可压(见 user_hint)。
+    _extras = ((scene_img, product_img) if main_kind == "presenter"
+               else (scene_img, standing_img))
+    for extra in _extras:
+        if extra and extra not in refs:
+            refs.append(extra)
     if not refs:                       # 主图缺失 → 退回另一类资产,再退回空
         refs = [p for p in (_asset_img("presenter"), _asset_img("product"))
                 if p][:1]
@@ -1146,6 +1144,11 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                         "不改变大小比例,不凭空增加包装盒或外壳")
             if multi:
                 consist += (";背景环境严格参照**参考图2(场景图)**,同一间房、同一时间")
+            if standing_img and standing_img in refs:
+                # 特写镜带立绘只为锚**手部肤质**,必须点名「只参照手,不画全身」,
+                # 否则模型照着设定图把整个人画进腕部特写(实测 #03 的病灶)
+                consist += (";出镜者的手部肤质与指甲参照**参考图3(人物设定图)**中"
+                            "同一人的手,但本镜只拍手,严禁画出她的面部或身体")
     # ── 场景一致性:文字锚 + 空景图双保险 ──
     # scene_prompt 在**分析阶段**从原视频提取(extract_scene_anchor),是真实
     # 环境描述;配合空景图参考(上面 refs)把「同一间房」钉死。旧项目的
@@ -1242,18 +1245,20 @@ def generate_shot_video(drama_id: int, board_number: int, resolution: str = "720
     body = _shot_video_prompt(b)
     video_prompt = f"{style}。{body}" if body else style
     # 三要素喂视频模型(用户定版「每镜都要以三视图/场景图/商品为要素喂给视频
-    # 生成的模型」):首帧之外再注入 人物立绘/场景空景/产品图,视频动起来的
-    # 过程中人/景/物才有图可锚,而不是只在第一帧对、后面漂。agnes 走多模态
-    # 参考注入;不支持的 provider 忽略(video_client.generate_video 文档)。
-    # 特写镜不带人物要素(带进去会把完整人物画进单肢特写,同首帧口径)。
+    # 生成的模型」,且**每一镜都带齐**,含特写):首帧之外再注入 人物立绘/
+    # 场景空景/产品图,视频动起来的过程中人/景/物才有图可锚,而不是只在
+    # 第一帧对、后面漂。特写镜靠提示词守卫压「照设定图画出全身」。
+    # agnes 走多模态参考注入;不支持的 provider 忽略(video_client 文档)。
     clone = _meta(drama_id).get("clone", {})
     _standing = standing_ref_of(clone.get("turnaround_image"))
     _scene = _resolve_local(clone.get("scene_image"))
     _product = _resolve_local(clone.get("product"))
-    _shot_kind_v = str(b.get("shot") or "")
     video_refs = [str(p) for p in (_standing, _scene, _product) if p]
-    if any(w in _shot_kind_v for w in ("特写", "微距")) and _standing:
-        video_refs = [p for p in video_refs if p != str(_standing)]
+    _shot_kind_v = str(b.get("shot") or "")
+    if any(w in _shot_kind_v for w in ("特写", "微距")):
+        # 特写守卫与首帧同口径:只许本人的手,不许第二个人的手/全身入画
+        video_prompt += ("。画面中只出现出镜者本人的手与手腕(一手或双手皆可),"
+                         "不得出现第二个人的手或手臂,不得出现完整人物面部或身体")
     path, _ = video_client.generate_video(
         video_prompt, resolution=resolution,
         duration=dur, first_frame=first, config_id=config_id,
