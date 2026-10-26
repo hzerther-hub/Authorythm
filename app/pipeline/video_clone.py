@@ -1394,6 +1394,17 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
     merges = [m for m in (clone.get("merges") or []) if m.get("path") != str(path)]
     merges.insert(0, {"path": str(path), "poster": str(poster) if poster else "",
                       "at": db.now()})
+    # 超出 8 个的旧成片:**文件与海报一并删除**(用户要求「旧的要删掉」)——
+    # 只从列表移除会留下孤儿大文件,磁盘悄悄被吃满
+    import os as _os
+    for dropped in merges[8:]:
+        for key in ("path", "poster"):
+            f = _resolve_local(dropped.get(key))
+            if f and f.exists():
+                try:
+                    f.unlink()
+                except OSError as exc:
+                    print(f"[clone] 旧成片删除失败({exc}): {f}", flush=True)
     clone["merges"] = merges[:8]
     meta["clone"] = clone
     _save_meta(drama_id, meta)
