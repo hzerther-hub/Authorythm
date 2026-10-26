@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from ..core import config, db
 from ..core.i18n import LANGS, on_change, set_language, tr
-from .toast import err, ok
+from .toast import err, ok, warn
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
 from .episode_page import EpisodePage
@@ -1280,6 +1280,13 @@ class ClonePage(QWidget):
             head.addWidget(W.tag(f"{b.get('start','?')}-{b.get('end','?')}s"))
             if b.get("video"):
                 head.addWidget(W.tag(tr("done")))
+                # ▶ 播放:视频生成完成后**必须有地方看** —— 此前完成标签只是
+                # 状态标记,成片没有任何播放入口(用户:「要有生成的视频让我看到」)。
+                pv_btn = QPushButton("▶ " + tr("播放"))
+                pv_btn.setToolTip(tr("播放这一镜生成的视频"))
+                pv_btn.clicked.connect(
+                    lambda _=False, u=str(b["video"]): self._preview_shot_video(u))
+                head.addWidget(pv_btn)
             head.addStretch(1)
             info.addLayout(head)
             # 本镜参考行(主/景/具):与生图端注入的三要素同源,点缩略可放大核对
@@ -1293,7 +1300,17 @@ class ClonePage(QWidget):
                     im.setPixmap(W.pixmap_from_media(p, 44, 30))
                     im.setCursor(Qt.PointingHandCursor)
                     im.setToolTip(full)
-                    im.mousePressEvent = lambda _e, u=str(p): self._view_image_big(u)
+                    # 三格各走各的入口:主=三视图查看+直接换脸;景/具=与短剧页
+                    # 同款的资产详情弹窗(字段/最终提示词/生成形象/保存),传
+                    # drama_id 让弹窗内生成动作取项目当前视觉风格(风格统一)。
+                    if t == "主":
+                        im.mousePressEvent = lambda _e: self._view_turnaround_with_swap()
+                    elif t == "景":
+                        im.mousePressEvent = lambda _e: self._open_clone_asset_detail(
+                            "scene", _clone_meta.get("scene_asset_id"))
+                    else:
+                        im.mousePressEvent = lambda _e: self._open_clone_asset_detail(
+                            "prop", _clone_meta.get("product_asset_id"))
                     refs_row.addWidget(im)
                 refs_row.addStretch(1)
                 info.addLayout(refs_row)
@@ -1351,6 +1368,11 @@ class ClonePage(QWidget):
                     _b.setFixedHeight(26)
             lay.addLayout(btns)
             self.board_list.addWidget(box)
+
+    def _preview_shot_video(self, url: str):
+        """播放这一镜生成的视频(复用成片/单镜共用的视频预览弹窗)。"""
+        from .asset_dialogs import VideoPreviewDialog
+        VideoPreviewDialog(self, url, tr("preview")).exec()
 
     def _analyze(self, direct: bool = False):
         from ..pipeline import video_clone
@@ -1741,6 +1763,46 @@ class ClonePage(QWidget):
             ImageViewerDialog(self, url).exec()
         except Exception:  # noqa: BLE001
             pass
+
+    def _open_clone_asset_detail(self, kind: str, asset_id):
+        """打开与短剧页**同款**的资产详情弹窗(场景/道具)。
+
+        用户要求复刻参考行的「景/具」改成类似的详情弹窗,而不只是看图:
+        AssetDetailDialog 是短剧资产页同一套 —— 字段(名称/地点/时间/描述/
+        光照/标签)、最终提示词面板(AI 生成/重新生成/复制)、下载原图、
+        生成形象、保存。传 drama_id 让弹窗内的生成动作取**项目当前的视觉
+        风格**,与项目设置一致(风格统一)。
+        """
+        if not asset_id:
+            warn(tr("还没有生成该资产,请先点「检测参数 · AI 分镜」或「提取场景图」"))
+            return
+        table = {"scene": "scenes", "prop": "props"}[kind]
+        row = db.q1(f"SELECT * FROM {table} WHERE id=?", (int(asset_id),))
+        if not row:
+            err(tr("资产不存在,可能已被删除"))
+            return
+        from .asset_dialogs import AssetDetailDialog
+        AssetDetailDialog(self, kind, dict(row), on_changed=self.reload,
+                          drama_id=self.drama_id).exec()
+
+    def _view_turnaround_with_swap(self):
+        """三视图大图查看 + 直接换脸入口。
+
+        用户在三视图放大核对时,发现脸不像本人就得回页面找「手动换脸」——
+        现在大图右下角直接给「手动换脸」(走 _swap_turnaround_face,只跑换脸
+        不耗生图额度);换完关掉弹窗,卡片参考行自动刷新。
+        """
+        from ..pipeline import video_clone
+        ta = str(video_clone._meta(self.drama_id).get("clone", {})
+                 .get("turnaround_image") or "")
+        if not ta:
+            return
+        from .asset_dialogs import ImageViewerDialog
+        dlg = ImageViewerDialog(self, ta, tr("人物三视图(角色资产)"),
+                                extra_text=tr("手动换脸"),
+                                on_extra=lambda _d: self._swap_turnaround_face())
+        dlg.exec()
+        self.reload()
 
     def _shot_image(self, n: int):
         from ..pipeline import video_clone
