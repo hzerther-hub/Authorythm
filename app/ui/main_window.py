@@ -1223,19 +1223,25 @@ class ClonePage(QWidget):
             box = W.make_card()
             lay = QHBoxLayout(box)
             lay.setContentsMargins(12, 8, 12, 8)
+            # **行高固定**(缩略图 180 + 上下边距 16):否则卡片高度随描述文字
+            # 行数浮动,右侧按钮列被压成小条(用户实测:「让行有固定高度,
+            # 可以下拉更多行」)。固定后列表滚动,每行按钮都有完整尺寸。
+            box.setFixedHeight(196)
             # 首帧缩略图:此前每张卡片只画了文字与按钮,generate_shot_image 写进
             # b["first_frame"] 的图**没有任何渲染分支**(b["video"] 有,首帧没有),
             # 于是首帧生成成功了界面也看不见,用户只能反复点重绘去磁盘里翻。
             # 加了之后「素材换没换成功」点一次重绘就能当场确认。
             ff = b.get("first_frame")
             thumb = QLabel()
-            thumb.setFixedSize(190, 150)
+            # 320x180 = 完整 16:9:此前 190x150 时首帧只能缩到 190x107 显示,
+            # 用户反馈「增加高度,让首帧图片能显示完全」。
+            thumb.setFixedSize(320, 180)
             thumb.setAlignment(Qt.AlignCenter)
             # 登记到索引:批量重绘「生成一张显示一张」靠它定位到具体那一张
             thumb.setProperty("shotNumber", int(b.get("number", 0)))
             self._shot_thumbs.append(thumb)
             if ff:
-                thumb.setPixmap(W.pixmap_from_media(ff, 190, 150))
+                thumb.setPixmap(W.pixmap_from_media(ff, 320, 180))
                 thumb.setCursor(Qt.PointingHandCursor)
                 full = str(ff)
                 thumb.mousePressEvent = lambda _e, u=full: self._view_image_big(u)
@@ -1267,10 +1273,10 @@ class ClonePage(QWidget):
                 line.setObjectName("muted")
                 info.addWidget(line)
             lay.addLayout(info, 1)
-            # 按钮横排一行:此前竖排塞在缩略图的 150px 高度旁,3~4 个按钮全部被
-            # 截断到看不清(用户实测:「三个按钮看不清,改为三个一行」)。
-            # 横排后按钮按内容取宽,不再受卡片高度约束。
-            btns = QHBoxLayout()
+            # 按钮竖排(自上而下):缩略图加高到 320x180 后,右侧 180px 高度
+            # 足够放下全部按钮;横排 5 个反而把卡片撑得过宽、按钮文字被压缩
+            # (用户实测:「三个按钮看不清」→ 横排 → 加高后又回到竖排)。
+            btns = QVBoxLayout()
             btns.setSpacing(6)
             img_btn = QPushButton("3️⃣ " + tr("redraw"))
             img_btn.setToolTip(tr("redraw_tip"))
@@ -1291,15 +1297,24 @@ class ClonePage(QWidget):
             hint_btn.clicked.connect(
                 lambda _=False, n=int(b.get("number", 0)): self._shot_hint(n))
             btns.addWidget(hint_btn)
+            # 口播可手动编辑:推测口播是模型猜的,难免有偏(实测换产品后口播还在说
+            # 旧产品)。用户改一句比重新拆解便宜得多,改完随视频合成走。
+            line_btn = QPushButton("💬 " + tr("口播"))
+            line_btn.setToolTip(tr("编辑这一镜的推测口播/字幕,改完随视频与配音使用"))
+            line_btn.clicked.connect(
+                lambda _=False, n=int(b.get("number", 0)): self._shot_line(n))
+            btns.addWidget(line_btn)
             btns.addWidget(img_btn)
-            vid_btn = W.primary_btn("▷ " + tr("batch_video"))
+            vid_btn = W.primary_btn("▷ " + tr("出视频"))
+            vid_btn.setToolTip(tr("生成这一镜的视频(图生视频,首帧=本镜已确认的镜头图)"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
             btns.addWidget(vid_btn)
-            btns.addStretch(1)
-            right_col = QVBoxLayout()
-            right_col.addLayout(btns)
-            right_col.addStretch(1)
-            lay.addLayout(right_col)
+            # 行高固定后,5 个竖排按钮各自锁高 26px(5×26 + 4×6 间距 = 154px,
+            # 卡内可用 180px 装得下),不再被布局压缩成小条。
+            for _b in (fs_btn if ff else None, hint_btn, line_btn, img_btn, vid_btn):
+                if _b is not None:
+                    _b.setFixedHeight(26)
+            lay.addLayout(btns)
             self.board_list.addWidget(box)
 
     def _analyze(self, direct: bool = False):
@@ -1810,6 +1825,29 @@ class ClonePage(QWidget):
         for x in c.setdefault("clone", {}).get("storyboards", []):
             if int(x.get("number", 0)) == n:
                 x["user_hint"] = text.strip()
+        video_clone._save_meta(self.drama_id, c)
+        self.reload()
+
+    def _shot_line(self, n: int):
+        """本镜口播编辑:推测口播是模型猜的,难免有偏(换产品后尤其容易留着
+        旧产品的说法),用户改一句比重新拆解便宜得多 —— 改完随视频合成与配音走。
+        """
+        from ..pipeline import video_clone
+        from PySide6.QtWidgets import QInputDialog
+        b = next((x for x in video_clone._clone_storyboards(self.drama_id)
+                  if int(x.get("number", 0)) == n), None)
+        if b is None:
+            return
+        text, okd = QInputDialog.getMultiLineText(
+            self, tr("口播"),
+            tr("这一镜的口播/字幕,改完随视频合成与配音使用(留空 = 删除口播)"),
+            str(b.get("line") or ""))
+        if not okd:
+            return
+        c = video_clone._meta(self.drama_id)
+        for x in c.setdefault("clone", {}).get("storyboards", []):
+            if int(x.get("number", 0)) == n:
+                x["line"] = text.strip()
         video_clone._save_meta(self.drama_id, c)
         self.reload()
 

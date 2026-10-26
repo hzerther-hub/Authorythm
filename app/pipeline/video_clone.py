@@ -106,6 +106,22 @@ def replace_material(drama_id: int, kind: str, image_path: str | Path,
             # 读图失败不能静默:删掉旧描述,让 generate_shot_image 退回"见产品图",
             # 好过拿旧产品的文案去描述新图
             clone.pop("product_desc", None)
+        # ── 分镜文本跟着产品走(通用,不限品类)──
+        # 换产品图后 product_desc 只管生图提示词,已生成分镜里的
+        # action / product_use / **line(推测口播)** 还写着旧产品 ——
+        # 实测:动作都换成玉手镯了,口播还在说"刚到的新口红"(旧产品),
+        # 合成的片子嘴上夸的是换掉前的货。这里用现成的
+        # rewrite_boards_for_product 把整份分镜文本按新产品重写一遍;
+        # 改写失败保留原表(用户可手动改口播,见 _shot_line)。
+        boards = clone.get("storyboards") or []
+        if boards and desc:
+            new_boards = rewrite_boards_for_product(
+                boards, desc, str(clone.get("presenter_desc") or ""),
+                config_id=config_id)
+            if new_boards and new_boards != boards:
+                clone["storyboards"] = new_boards
+                print("[clone] 产品已更换,分镜文本(action/口播)已按新产品重写",
+                      flush=True)
     else:
         # 换出镜照 = 换了人:旧三视图还是**上一张脸**,必须作废重生成,否则分镜
         # 参考锁的仍是旧人(实测:换照后首帧出的是前一张脸);描述同样作废,
