@@ -1037,8 +1037,11 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     if _resolve_local(clone.get("presenter")) and \
             not (clone.get("presenter_desc") or "").strip():
         try:
+            # **必须用文本配置**:本函数的 config_id 参数是生图配置(agnes-image),
+            # 塞进 read_presenter_desc 的多模态文本调用必然失败 —— 实测 6 镜
+            # 连续提取失败、文字锚始终为空,就是这里错用了命名空间。
             _pd = read_presenter_desc(clone.get("presenter"),
-                                      config_id=config_id or _selected_text_cfg())
+                                      config_id=_selected_text_cfg())
         except Exception as exc:  # noqa: BLE001
             _pd = None
             print(f"[clone] 人物描述惰性提取失败({exc}),本镜用兜底描述", flush=True)
