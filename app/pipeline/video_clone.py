@@ -1027,6 +1027,29 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     style = db.style_prompt(style_value)
     product_desc = clone.get("product_desc") or "用户产品(见产品图)"
     presenter_desc = clone.get("presenter_desc") or "亲和力强的出镜人物(见模特形象)"
+    # ── 人物文字锚惰性补齐 ──
+    # sync_assets 里的填充是「一次性且静默」的:read_presenter_desc 那次若失败
+    # (文本服务抖动/网关超时),presenter_desc/presenter_styling 就永远空着,
+    # 首帧提示词的人物描述退化为兜底文案,「服装固定为「X」」这句锁没有内容
+    # 可锁 —— 实测表现就是发型/服装逐镜漂(用户截图:updo → 披肩发,深色裙
+    # → 绿裙)。这里在生成入口**惰性补齐**:空就现场读一次图并落库,失败仅
+    # 跳过(下一镜再试),不阻断生成。
+    if _resolve_local(clone.get("presenter")) and \
+            not (clone.get("presenter_desc") or "").strip():
+        try:
+            _pd = read_presenter_desc(clone.get("presenter"),
+                                      config_id=config_id or _selected_text_cfg())
+        except Exception as exc:  # noqa: BLE001
+            _pd = None
+            print(f"[clone] 人物描述惰性提取失败({exc}),本镜用兜底描述", flush=True)
+        if _pd and (_pd.get("appearance") or _pd.get("styling")):
+            clone["presenter_desc"] = _pd.get("appearance") or ""
+            clone["presenter_styling"] = _pd.get("styling") or ""
+            meta["clone"] = clone
+            _save_meta(drama_id, meta)
+            print(f"[clone] 人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字 /"
+                  f"服装 {len(clone['presenter_styling'])} 字", flush=True)
+        presenter_desc = clone.get("presenter_desc") or presenter_desc
     # ── 参考图:1 张主图 + 最多 4 张参考图,靠**名字**在提示词里关联 ──
     #
     # 官方能力(agnes-image-25-flash 文档):`image` 是 string[],明确支持
@@ -1228,9 +1251,47 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     if len(core) > SHOT_PROMPT_MAX_CHARS:
         print(f"[clone] 分镜#{board_number} 内容超 {SHOT_PROMPT_MAX_CHARS} 字,已截断", flush=True)
         core = core[:SHOT_PROMPT_MAX_CHARS]
-    prompt = f"{style}, {span}{core}{tail}"
+    # ── 参考图分工 + 身份锁定块(移植短剧首帧 shot_tools.generate_first_frame
+    # 的做法 —— 用户实测短剧分镜没有发型/服装/陈设漂移,让复刻照抄):在提示词
+    # **开头**逐张点名「参考图 N = 什么、锁什么」。克隆此前的一致性约束堆在
+    # 提示词末尾(tail),没有「图 N = 谁」的绑定关系,模型会把几张图平均融合。
+    def _role_of(p: str) -> str:
+        if standing_img and p == standing_img:
+            return "人物设定图(出镜者本人)"
+        if product_img and p == product_img:
+            return "产品图(主推产品)"
+        if scene_img and p == scene_img:
+            return "场景图(本片唯一场景,陈设/窗景/光源以它为准)"
+        return "参考图"
+    identity = ""
+    if refs:
+        role_lines = [f"- 参考图{i} = {_role_of(p)}" for i, p in enumerate(refs, start=1)]
+        person_line = ""
+        if standing_img in refs:
+            person_line = ("- 出镜者的五官、脸型、发型、体型、服装、配饰全片严格一致,"
+                           "头发/服装/体型以人物设定图为准,是同一个人,不是长相相近的"
+                           "另一个人;分镜文案里若提到其他发型或服装,一律以人物设定图为准")
+        identity = ("【参考图分工与身份锁定 / 逐张对照生成,禁止自由改动】\n"
+                    + "\n".join(role_lines)
+                    + (("\n" + person_line) if person_line else "")
+                    + "\n")
+    # ── 画幅指令 + size(同样移植自短剧首帧):克隆此前从不传 size,首帧全是
+    # provider 默认 16:9(2624x1472);项目画幅写进提示词让模型先想清楚构图,
+    # size 参数让接口按画幅出图。
+    _arow = db.q1("SELECT aspect_ratio FROM dramas WHERE id=?", (drama_id,))
+    aspect = ((_arow or {}).get("aspect_ratio") if _arow else None) or "16:9"
+    from .shot_tools import _aspect_to_size
+    size = _aspect_to_size(aspect)
+    if aspect in ("9:16", "3:4"):
+        layout_hint = f"【画幅】竖屏构图({aspect}),主体人物居中或略偏下,上下留更多空间,不要横构图。"
+    elif aspect in ("16:9", "4:3", "21:9"):
+        layout_hint = f"【画幅】横屏构图({aspect}),主体居中或略偏左,左右留更多空间。"
+    else:
+        layout_hint = f"【画幅】{aspect} 构图。"
+    prompt = f"{identity}{layout_hint}\n{style}, {span}{core}{tail}"
     out, _ = image_client.generate_image(prompt, out_name=f"clone_s{board_number}_{uuid.uuid4().hex[:6]}.png",
-                                         config_id=config_id, reference_images=refs)
+                                         config_id=config_id, reference_images=refs,
+                                         people=1, size=size)
     # 记录首帧
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):

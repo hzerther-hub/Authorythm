@@ -4417,6 +4417,11 @@ class EpisodePage(QWidget):
         hl3.addWidget(self.sb_history_scroll)
         # 尾部竖向 stretch:把右栏多余的高度吃掉,不再灌进标题行把计数标签拉变形
         hl3.addStretch(1)
+        # **历史容器只占内容自然高度**:QVBoxLayout 会把多余高度分给所有可增长
+        # 项,历史容器内部那条 stretch 会把多余吃成一大块空白,垫在缩略图和
+        # 「绑定参考图」之间(用户实测:「红框处空白太高,单元格底部上移」)。
+        # Maximum = 高度只随内容走,空白全部还给播放器舞台(它大一点无害)。
+        self.sb_history.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         self.sb_history.setVisible(False)
         rl3.addWidget(self.sb_history)
         self._history_preview_path = ""
