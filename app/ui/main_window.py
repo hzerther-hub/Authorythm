@@ -10,7 +10,7 @@ from PySide6.QtCore import Qt, QTimer, Signal, QUrl
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog, QFrame,QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QPushButton, QStackedWidget,
+                               QMessageBox, QPushButton, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
 
 from ..core import config, db
@@ -1186,8 +1186,17 @@ class ClonePage(QWidget):
         self.board_clear_btn.setVisible(False)
         root.addWidget(self.board_clear_btn)
         self.board_list = QVBoxLayout()
-        root.addLayout(self.board_list)
-        root.addStretch(1)
+        self.board_list.setContentsMargins(0, 0, 0, 0)
+        # 分镜列表包进滚动区:6+ 张定高卡片(196px/张)远超一屏,直接铺在页面
+        # 根布局里会被窗口底边裁掉且无法滚动(用户实测:「红框可以下拉 scroll,
+        # 里面的内容要全部显示」)。滚动区占剩余全部高度,列表在内部滚动。
+        self.board_host = QWidget()
+        self.board_host.setLayout(self.board_list)
+        board_scroll = QScrollArea()
+        board_scroll.setWidgetResizable(True)
+        board_scroll.setWidget(self.board_host)
+        board_scroll.setFrameShape(QFrame.NoFrame)
+        root.addWidget(board_scroll, 1)
         # 首帧缩略图索引:镜号 → QLabel。批量重绘时单镜出图就能只换那一张,
         # 不必整表 reload(整表会把已出的图闪掉重来)。
         self._shot_thumbs = []

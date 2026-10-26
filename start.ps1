@@ -15,8 +15,15 @@ if (Test-Path $venvPy) {
     & $venvPy -m app.main 2>&1
     exit $LASTEXITCODE
 }
-try {
+# py 启动器存在就**只用它**:此前的写法是 py 失败(非 0 退出)就再落回
+# `python -m app.main` —— 而"失败"也包括用户关窗/被杀/单实例闸门拦下,
+# 于是每次退出都会**自动再起一个新实例**,和用户手动启动的实例撞单实例闸门,
+# 弹「易好短剧已在运行」的警告(2026-10-26 实测:杀一个、弹两个,越杀越多)。
+# 本机 py -3.13 依赖齐全(3.13.15 + cryptography),回落分支只留给没有 py
+# 启动器的机器。
+$pyCmd = Get-Command py -ErrorAction SilentlyContinue
+if ($pyCmd) {
     & py -3.13 -m app.main 2>&1
-    if ($LASTEXITCODE -eq 0) { exit 0 }
-} catch {}
+    exit $LASTEXITCODE
+}
 python -m app.main 2>&1
