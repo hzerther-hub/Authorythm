@@ -1437,6 +1437,15 @@ class ClonePage(QWidget):
         video_clone._save_meta(self.drama_id, meta)
         self.reload()
 
+    def _download_merged(self, path: str):
+        """成片下载到本地(另存为对话框,文件名自动带时间戳)。"""
+        from datetime import datetime
+        from ..core import download as dl_mod
+        day = datetime.now().strftime("%m%d_%H%M")
+        p = dl_mod.download_media_ask(self, path, f"克_成片_{day}.mp4")
+        if p:
+            ok(tr("已下载:{}").format(p.name))
+
     def _delete_merge(self, path: str):
         from .confirm import ask
         from ..pipeline import video_clone
@@ -1871,6 +1880,23 @@ class ClonePage(QWidget):
             thumb.setToolTip(tr("点击播放;弹窗内 ↻ 可重播"))
             thumb.mousePressEvent = lambda _e, u=mpath: self._preview_shot_video(u)
             slot_col.addWidget(thumb)
+            # 下载/删除做成**可见按钮**:合并槽此前只有隐藏角标删除,没有下载
+            # (用户:「要有删除下载按钮」)。一行两枚小按钮,居中放在缩略下方。
+            btn_row = QHBoxLayout()
+            btn_row.setContentsMargins(0, 0, 0, 0)
+            btn_row.setSpacing(2)
+            dl_b = QPushButton("↓")
+            dl_b.setFixedSize(34, 20)
+            dl_b.setToolTip(tr("下载该成片到本地"))
+            dl_b.clicked.connect(lambda _=False, u=mpath: self._download_merged(u))
+            btn_row.addWidget(dl_b)
+            del_b = QPushButton("🗑")
+            del_b.setFixedSize(34, 20)
+            del_b.setToolTip(tr("删除该成片(文件与海报一并删除)"))
+            del_b.clicked.connect(lambda _=False, u=mpath: self._delete_merge(u))
+            btn_row.addWidget(del_b)
+            btn_row.addStretch(1)
+            slot_col.addLayout(btn_row)
             cap_row = QHBoxLayout()
             cap_row.setContentsMargins(0, 0, 0, 0)
             cap_row.setSpacing(2)
@@ -1878,11 +1904,6 @@ class ClonePage(QWidget):
             cap.setObjectName("muted")
             cap.setStyleSheet("font-size:10.5px;color:#86909c;")
             cap_row.addWidget(cap)
-            del_b = QPushButton("🗑")
-            del_b.setFixedSize(22, 18)
-            del_b.setToolTip(tr("删除该成片(文件与海报一并删除)"))
-            del_b.clicked.connect(lambda _=False, u=mpath: self._delete_merge(u))
-            cap_row.addWidget(del_b)
             cap_row.addStretch(1)
             slot_col.addLayout(cap_row)
             host = QWidget()
