@@ -432,6 +432,18 @@ class VideoPreviewDialog(QDialog):
         self.play_btn.setFixedWidth(46)
         self.play_btn.clicked.connect(self._toggle)
         ctrl.addWidget(self.play_btn)
+        # 重新播放 + 最大化(与短剧大窗播放器同款控件)
+        self.replay_btn = QPushButton("↻")
+        self.replay_btn.setFixedWidth(46)
+        self.replay_btn.setToolTip(tr("replay"))
+        self.replay_btn.clicked.connect(self._replay)
+        ctrl.addWidget(self.replay_btn)
+        self.max_btn = QPushButton("⛶")
+        self.max_btn.setFixedWidth(46)
+        self.max_btn.setToolTip(tr("maximize"))
+        self.max_btn.setCheckable(True)
+        self.max_btn.toggled.connect(self._toggle_max)
+        ctrl.addWidget(self.max_btn)
         self.slider = QSlider(Qt.Horizontal)
         self.slider.sliderMoved.connect(lambda v: self.player.setPosition(v))
         ctrl.addWidget(self.slider, 1)
@@ -464,6 +476,19 @@ class VideoPreviewDialog(QDialog):
             self.player.pause()
         else:
             self.player.play()
+
+    def _replay(self):
+        """从头重新播放。"""
+        self.player.setPosition(0)
+        self.player.play()
+
+    def _toggle_max(self, on: bool):
+        """最大化 / 还原窗口。"""
+        from PySide6.QtCore import Qt
+        if on:
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        else:
+            self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
 
     def _on_pos(self, ms: int):
         from PySide6.QtMultimedia import QMediaPlayer

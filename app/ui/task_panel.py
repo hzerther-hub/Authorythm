@@ -423,6 +423,18 @@ class BigPlayerDialog(QDialog):
         self._player.playbackStateChanged.connect(
             lambda st: self._btn.setText("⏸" if st == QMediaPlayer.PlaybackState.PlayingState else "▶"))
         ctl.addWidget(self._btn)
+        # 重新播放 + 最大化(用户:「这一个界面要有重新播放 / 也要有最大化的功能」)
+        self._replay_btn = QPushButton("↻")
+        self._replay_btn.setFixedSize(44, 32)
+        self._replay_btn.setToolTip(tr("replay"))
+        self._replay_btn.clicked.connect(self._replay)
+        ctl.addWidget(self._replay_btn)
+        self._max_btn = QPushButton("⛶")
+        self._max_btn.setFixedSize(44, 32)
+        self._max_btn.setToolTip(tr("maximize"))
+        self._max_btn.setCheckable(True)
+        self._max_btn.toggled.connect(self._toggle_max)
+        ctl.addWidget(self._max_btn)
         ctl.addWidget(self._pos, 1)
         ctl.addWidget(self._lab)
         lay.addLayout(ctl)
@@ -450,3 +462,17 @@ class BigPlayerDialog(QDialog):
             self._player.pause()
         else:
             self._player.play()
+
+    def _replay(self):
+        """从头重新播放。"""
+        self._player.setPosition(0)
+        self._player.play()
+
+    def _toggle_max(self, on: bool):
+        """最大化 / 还原窗口(视频随窗口缩放,QVideoWidget 自适应)。"""
+        from PySide6.QtCore import Qt
+        if on:
+            self._prev_geo = self.geometry()
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        else:
+            self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
