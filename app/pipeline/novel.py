@@ -1300,11 +1300,18 @@ def check_chapter_content(content: str, drama_id: int) -> str:
 
 def _strip_think(content: str) -> str:
     """剥掉模型把思考过程混进正文通道的片段:成对 <think> 块、未闭合的 <think> 尾巴,
-    以及开头整段的英文元思考(Wait/Let me... —— 见 nov 综合征,实测出现过)。"""
+    以及开头整段的英文元思考(Wait/Let me... —— 见 nov 综合征,实测出现过)。
+    还有**开头就未闭合**的 <think>:M3 偶发把指令行「<think>We need answer only
+    chapter title...」直接吐在正文首行且没有闭合标签 —— 旧规则只删标签不删内容,
+    思考正文残留成首行,标题提取把它整句当成章节名写进页首(实测截图)。此时
+    丢弃首行(思考体与正文之间必有空行/换行分界)。"""
     import re as _re
     text = (content or "")
     text = _re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", text, flags=_re.S)
     text = _re.sub(r"<think>.*?</think>", "", text, flags=_re.S)
+    if text.lstrip().startswith("<think>") and "</think>" not in text:
+        lines = text.lstrip().splitlines()
+        text = "\n".join(lines[1:]).lstrip()
     text = _re.sub(r"(?s)^.*?<think>", "", text) if "<think>" in text else text
     text = _re.sub(r"(?s)^(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.(\s|(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.)+", "", text)
     return text.strip()
@@ -1334,6 +1341,10 @@ def _save_with_title(episode_id: int, content: str) -> str:
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
         return content
+    # 首行含思考标记(实测 M3 吐「<think>We need answer...」在正文最前):
+    # 丢弃该行再走标题提取,否则整句指令被当成章节名写进页首
+    if text.splitlines() and "<think>" in text.splitlines()[0]:
+        text = "\n".join(text.splitlines()[1:]).lstrip()
     m = _re.match(r"^#\s*(.+?)\s*$", text.splitlines()[0]) if text.splitlines() else None
     if m:
         name = _clean_chapter_name(m.group(1))
@@ -1632,8 +1643,12 @@ def is_placeholder_episode_title(title: str, episode_number: int | None = None) 
 
 
 def _clean_chapter_name(raw: str) -> str:
-    """章节名清洗(三级,对齐原版):取首行 → 去集号前缀 → 去引号/井号 → 截断。"""
+    """章节名清洗(三级,对齐原版):取首行 → 去集号前缀 → 去引号/井号 → 截断。
+    含 <think> 等思考标记的一律作废(实测:M3 把指令行吐进正文首行,整句
+    「<think>We need answer only chapter title...」被当成章节名写进页首)。"""
     import re as _re
+    if "<think>" in (raw or "") or "</think>" in (raw or ""):
+        return ""
     lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
     if not lines:
         return ""
@@ -1683,6 +1698,9 @@ def extract_title_from_content(content: str) -> str:
     import re as _re
     first = next((l.strip() for l in (content or "").splitlines() if l.strip()), "")
     if not first:
+        return ""
+    # 思考标记混进首行(M3 偶发把指令行吐在正文最前)→ 不是标题,作废回落 AI
+    if "<think>" in first or "</think>" in first:
         return ""
     if _re.match(r"^#{1,3}\s+", first):
         name = _re.sub(r"^#{1,3}\s+", "", first)

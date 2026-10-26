@@ -15,6 +15,7 @@ import pytest
 
 from app.ai.prompt_guards import VIDEO_MARKER, apply_video_guards
 from app.pipeline import video_clone as vc
+from app.pipeline import novel as vc_novel
 
 
 # ── 时间锚点 ───────────────────────────────────────────────────────────
@@ -987,3 +988,24 @@ def test_video_generation_feeds_three_elements():
     src = inspect.getsource(vc.generate_shot_video)
     assert "reference_images=video_refs" in src, "视频生成未带参考图"
     assert "standing_ref_of" in src, "视频参考未用三视图立绘"
+
+
+# ── 2026-10-26 第三批:think 垃圾不进标题(novel 侧闸门,归档在本文件便于回归)──
+
+def test_strip_think_drops_leading_unclosed_think_line():
+    """M3 偶发把指令行「<think>We need answer...」吐在正文首行且无闭合标签:
+    旧规则只删标签不删内容,思考体残留成首行 → 标题提取整句当章节名(实测)。"""
+    dirty = "<think>We need answer only chapter title only Simplified Chinese <=12 cha\n\n黑货运门外的铁皮应顶着额额。\n\n阿虎把烟头弹进里屋。"
+    out = vc_novel._strip_think(dirty)
+    assert "<think>" not in out and "We need answer" not in out
+    assert out.startswith("黑")
+
+
+def test_clean_chapter_name_rejects_think_markers():
+    assert vc_novel._clean_chapter_name("<think>We need answer only chapter title") == ""
+    assert vc_novel._clean_chapter_name("正常的章节名") == "正常的章节名"
+
+
+def test_extract_title_rejects_think_first_line():
+    assert vc_novel.extract_title_from_content("# <think>We need answer only chapter\n\n正文") == ""
+    assert vc_novel.extract_title_from_content("# 归乡的井\n\n正文") == "归乡的井"
