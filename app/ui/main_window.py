@@ -1717,22 +1717,31 @@ class ClonePage(QWidget):
         # 它只在管线内部由三视图切格而来(见 standing_ref_of)。
         # 三视图换脸失败时缩略图提示就地可见 —— 此前静默降级,用户拿着路人脸
         # 当参考图而不自知(实测)。
-        def _set_thumb(lab, path, tip):
+        def _set_thumb(lab, path, tip, detail_kind=None, asset_key=None):
+            """素材缩略;detail_kind/asset_key 给了就点开**资产详情弹窗**
+            (与短剧资产页同款:字段+最终提示词+生成/保存),否则退回纯看图。
+            用户实测:素材行此前只开纯图片预览,要改字段/重生成提示词得回
+            资产页找 —— 顶部素材与分镜卡参考行统一走详情弹窗。"""
             lab.setToolTip(tip)
             if path:
                 lab.setPixmap(W.pixmap_from_media(str(path), 110, 110))
                 lab.setCursor(Qt.PointingHandCursor)
-                lab.mousePressEvent = lambda _e, u=str(path): self._view_image_big(u)
+                if detail_kind:
+                    lab.mousePressEvent = lambda _e, k=detail_kind, key=asset_key:                         self._open_clone_asset_detail(k, clone.get(key))
+                else:
+                    lab.mousePressEvent = lambda _e, u=str(path): self._view_image_big(u)
             else:
                 lab.setPixmap(QPixmap())
                 lab.setText(tr("none"))
         turn = video_clone._resolve_local(clone.get("turnaround_image"))
         _set_thumb(self.mat_turn_lab, turn,
                    tr("人物三视图(角色资产)") if clone.get("turnaround_swapped") is not False
-                   else tr("人物三视图(未换脸,点「手动换脸」重试)"))
+                   else tr("人物三视图(未换脸,点「手动换脸」重试)"),
+                   detail_kind="character", asset_key="presenter_asset_id")
         _set_thumb(self.mat_scene_lab,
                    video_clone._resolve_local(clone.get("scene_image")),
-                   tr("场景图(原视频空景,锁背景)"))
+                   tr("场景图(原视频空景,锁背景)"),
+                   detail_kind="scene", asset_key="scene_asset_id")
 
     def _replace_material(self, kind: str):
         """换产品图 / 出镜人照片。换产品图会多跑一次多模态读图刷新描述。"""
