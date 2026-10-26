@@ -923,10 +923,27 @@ class _RefVideoDialog(QDialog):
         row = QHBoxLayout()
         play = QPushButton(tr("播放") + " / " + tr("暂停"))
         play.clicked.connect(self._toggle_play)
-        close = W.primary_btn(tr("close"))
-        close.clicked.connect(self._close_and_stop)
+        # ↻ 重新播放 / ⛶ 最大化 / ↓ 下载 —— 与其它视频弹窗同款控件
+        # (用户:「原视频可以弹出来 进行播放 以及下载，用弹框」)
+        replay = QPushButton("↻")
+        replay.setFixedSize(44, 32)
+        replay.setToolTip(tr("replay"))
+        replay.clicked.connect(self._replay_ref)
+        row.addWidget(replay)
+        self._max_btn = QPushButton("⛶")
+        self._max_btn.setFixedSize(44, 32)
+        self._max_btn.setCheckable(True)
+        self._max_btn.setToolTip(tr("maximize"))
+        self._max_btn.toggled.connect(self._toggle_max)
+        row.addWidget(self._max_btn)
+        dl = QPushButton("↓ " + tr("download"))
+        dl.setToolTip(tr("下载参考视频到本地"))
+        dl.clicked.connect(self._download_ref)
+        row.addWidget(dl)
         row.addWidget(play)
         row.addStretch(1)
+        close = W.primary_btn(tr("close"))
+        close.clicked.connect(self._close_and_stop)
         row.addWidget(close)
         root.addLayout(row)
         self._player.play()
@@ -938,6 +955,27 @@ class _RefVideoDialog(QDialog):
             self._player.pause()
         else:
             self._player.play()
+
+    def _replay_ref(self):
+        """从头重新播放原片。"""
+        self._player.setPosition(0)
+        self._player.play()
+
+    def _toggle_max(self, on: bool):
+        """最大化 / 还原窗口(视频随窗口自适应)。"""
+        from PySide6.QtCore import Qt
+        if on:
+            self.setWindowState(self.windowState() | Qt.WindowMaximized)
+        else:
+            self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
+
+    def _download_ref(self):
+        """参考原片下载到本地(另存为对话框,保留原文件名)。"""
+        from ..core import download as dl_mod
+        p = dl_mod.download_media_ask(self, self._path,
+                                      Path(str(self._path)).name or "参考视频.mp4")
+        if p:
+            ok(tr("download_ok") + ": " + p.name)
 
     def _close_and_stop(self):
         # 必须先 stop 再关:QMediaPlayer 还在播的话,窗口销毁后音频线程可能残留
@@ -1416,7 +1454,7 @@ class ClonePage(QWidget):
         from ..core import download as dl_mod
         p = dl_mod.download_media_ask(self, url, f"克_分镜{n:02d}.mp4")
         if p:
-            ok(tr("已下载:{}").format(p.name))
+            ok(tr("download_ok") + ": " + p.name)
 
     def _delete_shot_video(self, n: int):
         from .confirm import ask
@@ -1444,7 +1482,7 @@ class ClonePage(QWidget):
         day = datetime.now().strftime("%m%d_%H%M")
         p = dl_mod.download_media_ask(self, path, f"克_成片_{day}.mp4")
         if p:
-            ok(tr("已下载:{}").format(p.name))
+            ok(tr("download_ok") + ": " + p.name)
 
     def _delete_merge(self, path: str):
         from .confirm import ask
