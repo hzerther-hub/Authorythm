@@ -1070,7 +1070,9 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
         画面(实测中近景镜出三个并排人物);切格后参考里只有 1 个人,复制人
         从源头消失,且脸/服装/体型与角色资产**完全同源** —— 用户实测痛点
         「首帧的人跟三视图不是同一人、衣服变了」由此对锚。
-        旧项目的 presenter_fullshot(纯文字底图+换脸)保留作兼容兜底,不再生成。
+        旧路线的 presenter_fullshot(纯文字底图+换脸的单人全身图)已按用户要求
+        **整体删除**(用户:「单人全身的字段也要删掉」)—— 三视图路线接管后
+        它只剩误导性:文件还在时会被当成参考注入,把已废弃的全身图又拉回来。
         """
         if kind == "presenter":
             ta = clone.get("turnaround_image")
@@ -1078,9 +1080,6 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                 s = standing_ref_of(ta)
                 if s:
                     return s
-            full = _resolve_local(clone.get("presenter_fullshot"))
-            if full:
-                return full
             return _resolve_local(clone.get("presenter"))
         key = f"{kind}_asset_id"
         name = CLONE_PRESENTER_NAME if kind == "presenter" else CLONE_PRODUCT_NAME
