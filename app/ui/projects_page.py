@@ -289,6 +289,14 @@ class ProjectCard(QFrame):
         cl = QVBoxLayout(cover)
         cl.setContentsMargins(8, 8, 8, 8)
         self._thumb = drama.get("thumbnail") or ""
+        if not self._thumb and drama.get("work_type") == "video_clone":
+            # 复刻项目没有封面图:用**产品图**(clone.product,第一张图)当封面
+            # (用户要求)。metadata 在 SELECT * 里,direct 取;本地路径
+            # pixmap_from_media/media_url_to_path 都认得,无需转 URL。
+            _cm = db.jload(drama.get("metadata"), {}) or {}
+            _prod = str((_cm.get("clone") or {}).get("product") or "")
+            if _prod:
+                self._thumb = _prod
         if self._thumb:
             # 封面高度:按图比例缩放,但**必须给底部信息区留出空间** ——
             # 卡片 setFixedSize(CARD_W, CARD_H=348),信息区(标题/统计/状态)约 142px。
