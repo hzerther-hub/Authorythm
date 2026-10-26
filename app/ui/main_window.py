@@ -1193,14 +1193,10 @@ class ClonePage(QWidget):
         _mat_slot(self.mat_scene_lab, "场景图(原视频空景)")
         self.material_row.addStretch(1)
         root.addLayout(self.material_row)
-        # ── 合并成片区(红框):开始合并后成片出现在这里 ──
-        # 历史最多 8 个(新的顶掉最旧的,pipeline 侧裁剪),每条可播放/下载/删除
-        # (用户:「这里最多生成八个。有删除。」「要有生成的视频让我看到」)。
-        self.merges_title = W.muted("")
-        root.addWidget(self.merges_title)
-        self.merges_row = QHBoxLayout()
-        self.merges_row.setSpacing(10)
-        root.addLayout(self.merges_row)
+        # ── 合并成片槽位(红框):开始合并后成片以 110x110 缩略出现在素材行
+        # 尾部(最多 8 个,新的顶掉最旧的),点击弹出播放(弹窗内 ↻ 可重播),
+        # 缩略角标可删除 —— 与素材行其它格子同款,用户指定布局。动态槽位在
+        # _refresh_materials 里增删。
         # 直传产物落在 storyboards 表,本页列表(读 metadata)看不到它 —— 单独一行
         # 显示条数并给跳转入口,否则用户点了按钮像什么都没发生。
         self.board_note = W.muted("")
@@ -1265,7 +1261,6 @@ class ClonePage(QWidget):
         _card_refs = [(t, full, str(p)) for t, full, p in _card_refs if p]
         self._refresh_board_note()
         self._refresh_materials()
-        self._refresh_merges()
         self._refresh_settings_note()
         for b in boards:
             box = W.make_card()
@@ -1441,66 +1436,6 @@ class ClonePage(QWidget):
                 x["video"] = None
         video_clone._save_meta(self.drama_id, meta)
         self.reload()
-
-    def _refresh_merges(self):
-        """合并成片区(红框):历史最多 8 个,新在前;可播放/下载/删除。"""
-        from ..pipeline import video_clone
-        merges = video_clone.clone_merges(self.drama_id)
-        self.merges_title.setText(
-            tr("成片") + f" · {len(merges)}/8" if merges else "")
-        self.merges_title.setVisible(bool(merges))
-        while self.merges_row.count():
-            it = self.merges_row.takeAt(0)
-            w = it.widget()
-            if w:
-                w.deleteLater()
-        for m in merges:
-            path = str(m.get("path") or "")
-            box = W.make_card()
-            bl = QVBoxLayout(box)
-            bl.setContentsMargins(8, 8, 8, 8)
-            thumb = QLabel()
-            thumb.setFixedSize(200, 112)
-            thumb.setAlignment(Qt.AlignCenter)
-            poster = m.get("poster")
-            if poster and Path(poster).exists():
-                thumb.setPixmap(W.pixmap_from_media(poster, 200, 112))
-            else:
-                thumb.setText("▶")
-            thumb.setStyleSheet("background:#14161a; border-radius:6px;")
-            thumb.setCursor(Qt.PointingHandCursor)
-            thumb.mousePressEvent = lambda _e, u=path: self._preview_shot_video(u)
-            bl.addWidget(thumb)
-            meta_row = QHBoxLayout()
-            day = str(m.get("at") or "")[:16].replace("T", " ")
-            meta_row.addWidget(W.tag(day))
-            dur = (m.get("dur") or "")
-            if dur:
-                meta_row.addWidget(W.tag(f"{int(float(dur))}s"))
-            meta_row.addStretch(1)
-            bl.addLayout(meta_row)
-            act = QHBoxLayout()
-            act.setSpacing(4)
-            play_b = QPushButton("▶ " + tr("播放"))
-            play_b.clicked.connect(lambda _=False, u=path: self._preview_shot_video(u))
-            act.addWidget(play_b)
-            dl_b = QPushButton(tr("download"))
-            dl_b.clicked.connect(lambda _=False, u=path: self._download_merge(u))
-            act.addWidget(dl_b)
-            del_b = W.danger_btn(tr("delete"))
-            del_b.clicked.connect(lambda _=False, u=path: self._delete_merge(u))
-            act.addWidget(del_b)
-            bl.addLayout(act)
-            self.merges_row.addWidget(box)
-        self.merges_row.addStretch(1)
-
-    def _download_merge(self, path: str):
-        from datetime import datetime
-        from ..core import download as dl_mod
-        day = datetime.now().strftime("%m%d_%H%M")
-        p = dl_mod.download_media_ask(self, path, f"克_成片_{day}.mp4")
-        if p:
-            ok(tr("已下载:{}").format(p.name))
 
     def _delete_merge(self, path: str):
         from .confirm import ask
@@ -1878,6 +1813,12 @@ class ClonePage(QWidget):
         # 它只在管线内部由三视图切格而来(见 standing_ref_of)。
         # 三视图换脸失败时缩略图提示就地可见 —— 此前静默降级,用户拿着路人脸
         # 当参考图而不自知(实测)。
+        # 清掉上一轮的合并成片动态槽位
+        for w in getattr(self, "_merge_slot_widgets", []) or []:
+            self.material_row.removeWidget(w)
+            w.deleteLater()
+        self._merge_slot_widgets = []
+
         def _set_thumb(lab, path, tip, detail_kind=None, asset_key=None):
             """素材缩略;detail_kind/asset_key 给了就点开**资产详情弹窗**
             (与短剧资产页同款:字段+最终提示词+生成/保存),否则退回纯看图。
@@ -1903,6 +1844,54 @@ class ClonePage(QWidget):
                    video_clone._resolve_local(clone.get("scene_image")),
                    tr("场景图(原视频空景,锁背景)"),
                    detail_kind="scene", asset_key="scene_asset_id")
+        # ── 合并成片槽位(最多 8 个,新在前):点击弹出播放(弹窗内 ↻ 重播),
+        # 角标 🗑 删除(文件一并删)。放在素材行尾部、拉伸条之前。──
+        merges = []
+        try:
+            merges = video_clone.clone_merges(self.drama_id)[:8]
+        except Exception:  # noqa: BLE001 —— 历史读取失败不影响素材行
+            merges = []
+        for m in merges:
+            mpath = str(m.get("path") or "")
+            if not mpath:
+                continue
+            poster = m.get("poster")
+            slot_col = QVBoxLayout()
+            slot_col.setContentsMargins(0, 0, 0, 0)
+            slot_col.setSpacing(2)
+            thumb = QLabel()
+            thumb.setFixedSize(110, 110)
+            thumb.setAlignment(Qt.AlignCenter)
+            if poster and Path(poster).exists():
+                thumb.setPixmap(W.pixmap_from_media(poster, 110, 110))
+            else:
+                thumb.setPixmap(W.pixmap_from_media(mpath, 110, 110))
+            thumb.setStyleSheet("background:#14161a; border-radius:6px;")
+            thumb.setCursor(Qt.PointingHandCursor)
+            thumb.setToolTip(tr("点击播放;弹窗内 ↻ 可重播"))
+            thumb.mousePressEvent = lambda _e, u=mpath: self._preview_shot_video(u)
+            slot_col.addWidget(thumb)
+            cap_row = QHBoxLayout()
+            cap_row.setContentsMargins(0, 0, 0, 0)
+            cap_row.setSpacing(2)
+            cap = QLabel("成片 " + str(m.get("at") or "")[11:16])
+            cap.setObjectName("muted")
+            cap.setStyleSheet("font-size:10.5px;color:#86909c;")
+            cap_row.addWidget(cap)
+            del_b = QPushButton("🗑")
+            del_b.setFixedSize(22, 18)
+            del_b.setToolTip(tr("删除该成片(文件与海报一并删除)"))
+            del_b.clicked.connect(lambda _=False, u=mpath: self._delete_merge(u))
+            cap_row.addWidget(del_b)
+            cap_row.addStretch(1)
+            slot_col.addLayout(cap_row)
+            host = QWidget()
+            host.setLayout(slot_col)
+            self._merge_slot_widgets.append(host)
+            # 插在拉伸条之前(保持「成片在素材尾部」的顺序);插的是 **host 控件**
+            # —— slot_col 已是 host 的布局,再 insertLayout 会重复挂父并告警
+            self.material_row.insertWidget(max(0, self.material_row.count() - 1),
+                                           host)
 
     def _replace_material(self, kind: str):
         """换产品图 / 出镜人照片。换产品图会多跑一次多模态读图刷新描述。"""
