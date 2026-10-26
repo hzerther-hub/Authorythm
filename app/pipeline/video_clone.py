@@ -236,10 +236,17 @@ REWRITE_PROMPT = """下面是一条带货视频的**镜头节奏表**,以及用�
 
 ═══ 必须照抄的(这是「复刻」的本质,一个字都不能改)═══
 - number / start / end —— 每镜的编号与起止秒数
-- shot(景别)、camera(运镜方式)、line(台词)—— 完全沿用
+- shot(景别)、camera(运镜方式)—— 完全沿用
 
 ═══ 必须完全重新设计的(原片的动作一律作废)═══
 - action / action_steps / product_use / prompt
+- **line(推测口播/字幕)也必须同步改写** —— 口播是博主在夸产品,夸的必须是
+  **新产品**。实测教训:动作都换成玉手镯了,口播还在说"打开看着口红正红",
+  合成出来的片子嘴上说的是旧产品。要求:
+  · 保留原 line 的结构(如「无明确商品字幕;推测口播:"…"」这类前缀照留),
+    只替换引号内的口播内容;
+  · 字数与原口播相近(视频要按它对口型,差太多会超时/不够长);
+  · 只夸新产品描述里明确写出的颜色/材质/质感,**不许臆造**它没有的功效。
 
 **为什么动作要整个丢掉重写**:用户的新产品与原片产品**品类往往不同**。
 例:原片是口红(动作是"开盒→取出→涂抹→展示上色"),新产品是玉手镯
@@ -1061,10 +1068,23 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     #   没有人可抄,人物镜才能安全带第二锚:人锁三视图立绘(用户痛点「脸/衣服
     #   不是同一人」),景锁原视频空镜(痛点「背景跟原片对不上」)。
     scene_img = _resolve_local(clone.get("scene_image"))
+    product_img = _asset_img("product")
     refs: list = []
     if main_img:
         refs.append(main_img)
-        if main_kind == "presenter" and scene_img and scene_img != main_img:
+    # ── 三要素(用户定版「每镜都要以三视图/场景图/商品为要素」)──
+    # 人物镜三张全带:人锁立绘、景锁空景、货锁产品图,提示词逐一点名各锁什么。
+    # 人物照+产品照曾实测「对称融合双头」—— 那是两张同类型正面照互相抢主体,
+    # 现在角色分工逐字点名;若再出融合,用「重绘备注」写一句即可压(见 user_hint)。
+    # 特写/产品镜**不喂人物要素**(喂了必把完整人物带进单肢特写,实测),
+    # 场景图补背景边缘信息。
+    if main_kind == "presenter":
+        if scene_img and scene_img not in refs:
+            refs.append(scene_img)
+        if product_img and product_img not in refs:
+            refs.append(product_img)
+    else:
+        if scene_img and scene_img not in refs:
             refs.append(scene_img)
     if not refs:                       # 主图缺失 → 退回另一类资产,再退回空
         refs = [p for p in (_asset_img("presenter"), _asset_img("product"))
@@ -1096,20 +1116,36 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     consist = ""
     if refs:
         # 单参考图时措辞只说「参考图」(说了"参考图2"模型会去找不存在的第 2 张);
-        # **双锚时必须逐一点名**两张图各锁什么 —— 不点名,模型会把两张图平均融合。
+        # **多锚时必须逐一点名**各图锁什么 —— 不点名,模型会把几张图平均融合。
         multi = len(refs) > 1
-        person_lbl = "参考图1(人物设定图)" if multi else "参考图"
         if main_kind == "presenter" and has_presenter_ref:
-            consist += (f", 同一人物跨镜完全一致:五官、脸型、发型、肤色、"
-                        f"**服装款式与颜色**与{person_lbl}完全相同,是同一个人,"
-                        "不是长相相近的另一个人;服装不得逐镜变化")
+            consist += (", 同一人物跨镜完全一致:五官、脸型、发型、肤色、"
+                        "**服装款式与颜色**与"
+                        + ("参考图1(人物设定图)" if multi else "参考图")
+                        + "完全相同,是同一个人,不是长相相近的另一个人;服装不得逐镜变化")
+            _clothing = (clone.get("presenter_styling") or "").strip()
+            if _clothing:
+                # 分镜文案继承自**原片博主**(rewrite 保镜头语言的同时保了原文描述),
+                # 文字里的服装和参考图里的不是同一套 —— 不逐字点名覆盖,模型会跟
+                # 文案走(用户实测「女主的服装变化」:光说"与参考图一致"拗不过
+                # 文案里明确写的另一套衣服)。presenter_styling 在 sync_assets
+                # 从上传照读图落库,与三视图同源,文字/图像两个锚从此说同一句话。
+                consist += (f";本片人物服装固定为「{_clothing}」,"
+                            "分镜文案里若提到其他服装,一律以此句为准")
             if multi:
                 consist += (";背景环境、陈设、窗景与光源方向严格参照"
                             "**参考图2(场景图)**,就是同一间房、同一时间")
-        if main_kind == "product" and has_product_ref:
-            consist += (", 产品外形 1:1 还原参考图的形状与轮廓,颜色、材质、光泽一致,"
+            if product_img and product_img in refs:
+                consist += (";产品外形 1:1 还原**参考图3(产品图)**的形状、颜色与材质,"
+                            "全片是同一件产品,不凭空改变形状")
+        elif main_kind == "product" and has_product_ref:
+            consist += (", 产品外形 1:1 还原"
+                        + ("参考图1(产品图)" if multi else "参考图")
+                        + "的形状与轮廓,颜色、材质、光泽一致,"
                         "全片是同一件产品,不做成别的形状(既不变方也不变圆),"
                         "不改变大小比例,不凭空增加包装盒或外壳")
+            if multi:
+                consist += (";背景环境严格参照**参考图2(场景图)**,同一间房、同一时间")
     # ── 场景一致性:文字锚 + 空景图双保险 ──
     # scene_prompt 在**分析阶段**从原视频提取(extract_scene_anchor),是真实
     # 环境描述;配合空景图参考(上面 refs)把「同一间房」钉死。旧项目的
@@ -1136,6 +1172,16 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     _no_person = any(w in _shot_kind for w in ("特写", "微距"))
     if rewritten:
         core = rewritten
+        # 特写镜的文案写「女性手腕」,模型会把「坐着的完整女主」和「特写手腕」
+        # 画进同一张 → 出现第二只伸进画面的手臂(用户实测截图)。文案改不了
+        # (rewrite 产物),单肢硬规则拼在后面压。
+        if _no_person:
+            # 措辞必须是「本人的手,不许第二个人的手」,而不是「只允许一只手」
+            # —— 分镜里大量正常动作是**双手**调整/佩戴(实测镜04/05),限一只
+            # 会把正常画面改坏;真正的缺陷是**别人的手**伸进画面(用户实测截图)
+            core += ("。画面中只允许出现出镜者本人的手与手腕(按本镜动作,一手或"
+                     "双手皆可),不得出现第二个人的手或手臂,没有旁人的手臂从画外"
+                     "伸入,不出现完整人物面部或身体")
     elif _no_person:
         core = (f"{b.get('shot','特写')},{action_txt},"
                 f"画面只有产品与手部特写,{product_desc}:{b.get('product_use','')}")
@@ -1144,6 +1190,16 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                 f"画面突出{product_desc}:{b.get('product_use','')}")
     tail = consist + (", " + scene_lock if scene_lock else "") + \
         ", 运镜与光线参考带货实拍视频, 清晰锐利, 电影质感"
+    # 重绘要求注入,两层(修图能力留在软件里,用户自己可修,不用改代码):
+    # · 全局(设置表 yihao.clone_redraw_hint):跨项目生效,所有镜重绘都带 ——
+    #   「只允许一只手」这类规则往往整条片都要,不该逐镜重抄;
+    # · 单镜(分镜条目 user_hint):只针对这一镜的问题。
+    global_hint = str(db.get_setting("yihao.clone_redraw_hint") or "").strip()
+    if global_hint:
+        tail += f"。{global_hint}"
+    user_hint = str(b.get("user_hint") or "").strip()
+    if user_hint:
+        tail += f"。{user_hint}"
     # 预算只约束**本镜的内容部分**(风格前缀 + 参考项目尾套合计 ~590 字符,
     # 它们是平台级固定文案,砍它等于换风格/丢掉一致性约束)。
     # 之前把全长一起塞进 200 字上限,算下来留给内容的额度是 **负 410** ——
@@ -1185,9 +1241,23 @@ def generate_shot_video(drama_id: int, board_number: int, resolution: str = "720
     style = db.style_prompt(db.drama_style(drama_id))
     body = _shot_video_prompt(b)
     video_prompt = f"{style}。{body}" if body else style
+    # 三要素喂视频模型(用户定版「每镜都要以三视图/场景图/商品为要素喂给视频
+    # 生成的模型」):首帧之外再注入 人物立绘/场景空景/产品图,视频动起来的
+    # 过程中人/景/物才有图可锚,而不是只在第一帧对、后面漂。agnes 走多模态
+    # 参考注入;不支持的 provider 忽略(video_client.generate_video 文档)。
+    # 特写镜不带人物要素(带进去会把完整人物画进单肢特写,同首帧口径)。
+    clone = _meta(drama_id).get("clone", {})
+    _standing = standing_ref_of(clone.get("turnaround_image"))
+    _scene = _resolve_local(clone.get("scene_image"))
+    _product = _resolve_local(clone.get("product"))
+    _shot_kind_v = str(b.get("shot") or "")
+    video_refs = [str(p) for p in (_standing, _scene, _product) if p]
+    if any(w in _shot_kind_v for w in ("特写", "微距")) and _standing:
+        video_refs = [p for p in video_refs if p != str(_standing)]
     path, _ = video_client.generate_video(
         video_prompt, resolution=resolution,
-        duration=dur, first_frame=first, config_id=config_id)
+        duration=dur, first_frame=first, config_id=config_id,
+        reference_images=video_refs)
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):
             x["video"] = str(path)

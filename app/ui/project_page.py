@@ -1078,7 +1078,7 @@ class ProjectPage(QWidget):
             d["storyboard_count"] = rcounts.get(d["id"], 0)
             self.recent_grid.addWidget(
                 EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
-                            enter=self._on_enter, rel_needed=self),
+                            enter=self._on_enter),
                 i // RECENT_EP_COLS, i % RECENT_EP_COLS)
         cells = list(rows)
         if self.can_add_episode():
@@ -1093,7 +1093,7 @@ class ProjectPage(QWidget):
             d = dict(ep)
             d["storyboard_count"] = counts.get(ep["id"], 0)
             grid.addWidget(EpisodeCard(d, is_novel=is_novel, on_changed=self.reload,
-                                       enter=self._on_enter, rel_needed=self),
+                                       enter=self._on_enter),
                            i // cols, i % cols)
         self.ep_hint.setText("" if self.can_add_episode() else tr("ep_limit_hint"))
         self.ep_hint.setVisible(not self.can_add_episode())

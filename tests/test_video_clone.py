@@ -588,19 +588,21 @@ def test_sync_assets_marks_swap_failure_visibly(tmp_path, monkeypatch):
 
 
 def test_pick_ref_kind_uses_single_reference_image():
-    """主体参考每镜仍只有**一张**(两张同类型图 → 对称融合双头,实测)。
+    """主体参考的角色分工(2026-10-26 用户定版「每镜三要素」后更新):
 
-    人物镜允许的第二张是**场景锚空景图**(图里没有人可抄,见
-    extract_scene_anchor),且严格限定 main_kind == "presenter" 时才附加;
-    特写/产品镜保持单锚。多图参考池(ref_pool)仍然禁止。
+    · 人物要素只进人物镜 —— 产品/特写镜带人物设定图会把完整人物画进
+      单肢特写(实测);
+    · 场景锚可进两类镜 —— 空景图里没有人可抄(旧场景图带人才出半透明
+      第二人,见 extract_scene_anchor);
+    · 多图参考池(ref_pool)仍然禁止;多锚时逐一点名参考图1/2/3 各锁什么。
     """
     import inspect
     src = inspect.getsource(vc.generate_shot_image)
     assert "ref_pool" not in src, "不应再有多图参考池(会引入重影)"
-    assert "scene_img" in src, "人物镜没有附加场景锚"
-    assert 'main_kind == "presenter" and scene_img' in src, \
-        "场景锚必须在人物镜才附加(产品/特写镜保持单锚)"
-    assert "参考图2(场景图)" in src, "双锚时必须逐一点名两张图各锁什么"
+    assert "scene_img" in src, "场景锚未注入"
+    assert src.count('main_kind == "presenter"') >= 2, \
+        "人物要素必须按镜类门控(特写镜不带人物设定图)"
+    assert "参考图2(场景图)" in src, "多锚时必须逐一点名两张图各锁什么"
 
 
 def test_shot_uses_cropped_standing_ref_not_full_turnaround():
@@ -933,3 +935,56 @@ def test_custom_provider_index_is_valid(qapp_stub):
     idx = dlg._custom_idx
     assert isinstance(idx, int), f"_custom_idx 应为 int,实际 {type(idx).__name__}"
     assert 0 <= idx < dlg.provider_combo.count()
+
+
+# ── 2026-10-26 第二批:三要素参考图 / 服装锁定 / 重绘要求 / 口播改写 ──
+
+def test_rewrite_prompt_rewrites_voiceover_line():
+    """口播(line)必须随产品同步改写 —— 实测:动作都换成玉手镯了,口播还在
+    说「打开看着口红正红」,合成出来嘴上夸的是旧产品(用户截图)。"""
+    assert "line(台词)—— 完全沿用" not in vc.REWRITE_PROMPT, "口播不得再列入照抄字段"
+    assert "line(推测口播/字幕)也必须同步改写" in vc.REWRITE_PROMPT
+
+
+def test_shot_person_refs_carry_three_elements():
+    """用户定版「每镜三要素:人物/场景/商品」:人物镜三张全带并逐一点名
+    (参考图3=产品图);特写镜不喂人物要素(会把完整人物带进单肢特写)。"""
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "product_img" in src, "产品图未进入参考图组装"
+    assert "参考图3(产品图)" in src, "三要素未逐一点名"
+    assert 'main_kind == "presenter"' in src
+
+
+def test_shot_locks_clothing_from_presenter_desc():
+    """服装锁定:分镜文案继承自原片博主,不逐字点名覆盖,模型会跟文案走
+    (用户实测「女主的服装变化」)。presenter_styling 与三视图同源。"""
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "presenter_styling" in src
+    assert "一律以此句为准" in src
+
+
+def test_closeup_rule_permits_both_hands_of_presenter():
+    """特写单肢规则必须措辞为「只许本人的手、不许第二个人的手」,不能限
+    「一只手」—— 分镜里大量正常动作是双手调整/佩戴(实测镜04/05)。"""
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "只允许出现一只" not in src, "限一只手会把双手动作改坏"
+    assert "第二个人的手" in src and "一手或" in src
+
+
+def test_redraw_hints_global_and_per_shot():
+    """重绘要求两层注入:全局(设置表,跨项目)+ 单镜(分镜条目)。"""
+    import inspect
+    src = inspect.getsource(vc.generate_shot_image)
+    assert "yihao.clone_redraw_hint" in src, "全局重绘要求未注入"
+    assert "user_hint" in src, "单镜重绘备注未注入"
+
+
+def test_video_generation_feeds_three_elements():
+    """视频生成同样带三要素参考图(用户定版),特写镜剔除人物要素。"""
+    import inspect
+    src = inspect.getsource(vc.generate_shot_video)
+    assert "reference_images=video_refs" in src, "视频生成未带参考图"
+    assert "standing_ref_of" in src, "视频参考未用三视图立绘"

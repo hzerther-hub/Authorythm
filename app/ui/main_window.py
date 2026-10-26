@@ -1109,6 +1109,25 @@ class ClonePage(QWidget):
             tr("对当前三视图重新换上出镜照的脸(只跑换脸,不重新生成)"))
         self.clone_swap_btn.clicked.connect(self._swap_turnaround_face)
         srow.addWidget(self.clone_swap_btn)
+        # 场景锚手动入口:拆解末尾会自动提取;失败退回文字锚后,或换了画面
+        # 风格想重提时,点这里单做这一件事 —— 不必重跑拆解(重跑会改分镜
+        # 切分、丢掉已出的首帧)
+        self.scene_btn = QPushButton(tr("提取场景图"))
+        self.scene_btn.setObjectName("ffAction")
+        self.scene_btn.setCursor(Qt.PointingHandCursor)
+        self.scene_btn.setToolTip(
+            tr("从参考视频挑一帧生成无人空景图,锁定全片背景(不重跑拆解)"))
+        self.scene_btn.clicked.connect(self._extract_scene)
+        srow.addWidget(self.scene_btn)
+        # 通用重绘要求(全局,跨项目):「画面只允许一只手」这类规则往往整条片
+        # 甚至每个项目都要,不该逐镜重抄 —— 存设置表,所有镜重绘时注入
+        self.ghint_btn = QPushButton(tr("通用重绘要求"))
+        self.ghint_btn.setObjectName("ffAction")
+        self.ghint_btn.setCursor(Qt.PointingHandCursor)
+        self.ghint_btn.setToolTip(
+            tr("对所有分镜重绘生效的硬要求(例:不要出现第二个人的手),跨项目保存"))
+        self.ghint_btn.clicked.connect(self._global_hint)
+        srow.addWidget(self.ghint_btn)
         srow.addStretch(1)
         root.addLayout(srow)
         # 控件建好之后再填数据/接信号 —— 顺序反了会 AttributeError
@@ -1125,32 +1144,34 @@ class ClonePage(QWidget):
         self.settings_note.setWordWrap(True)
         self.settings_note.setObjectName("inspectorLabel")
         root.addWidget(self.settings_note)
-        # 素材缩略图:换完之后要能一眼确认换成功了,不必点重绘才知道
+        # 素材缩略图 + **文字标识**(用户反馈:光秃秃一排图分不清哪张是什么,
+        # 也找不到换脸入口对应哪张图)。单人立绘不再展示(用户定版:有三视图
+        # 就够了)—— 但**切格机制保留在管线里**:分镜参考仍取三视图切出的
+        # 单人格,防止整张拼版把 4 个人物实例画进画面(实测复制人问题)。
         self.material_row = QHBoxLayout()
-        self.material_row.setSpacing(6)
+        self.material_row.setSpacing(10)
+
+        def _mat_slot(thumb: QLabel, caption_key: str):
+            thumb.setFixedSize(110, 110)
+            thumb.setAlignment(Qt.AlignCenter)
+            cap = QLabel(tr(caption_key))
+            cap.setObjectName("muted")
+            cap.setStyleSheet("font-size:10.5px;color:#86909c;")
+            cap.setAlignment(Qt.AlignCenter)
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(thumb)
+            col.addWidget(cap)
+            self.material_row.addLayout(col)
+
         self.mat_product_lab = QLabel()
-        self.mat_product_lab.setFixedSize(110, 110)
-        self.mat_product_lab.setAlignment(Qt.AlignCenter)
-        self.mat_product_lab.setToolTip(tr("当前产品图"))
+        _mat_slot(self.mat_product_lab, "当前产品图")
         self.mat_presenter_lab = QLabel()
-        self.mat_presenter_lab.setFixedSize(110, 110)
-        self.mat_presenter_lab.setAlignment(Qt.AlignCenter)
-        self.mat_presenter_lab.setToolTip(tr("当前出镜人"))
-        # 派生资产缩略图:分镜参考立绘 / 三视图 / 场景图 —— 此前只存在磁盘上,界面看不到
-        self.mat_standing_lab = QLabel()
-        self.mat_standing_lab.setFixedSize(110, 110)
-        self.mat_standing_lab.setAlignment(Qt.AlignCenter)
+        _mat_slot(self.mat_presenter_lab, "当前出镜人")
         self.mat_turn_lab = QLabel()
-        self.mat_turn_lab.setFixedSize(110, 110)
-        self.mat_turn_lab.setAlignment(Qt.AlignCenter)
+        _mat_slot(self.mat_turn_lab, "人物三视图(角色资产)")
         self.mat_scene_lab = QLabel()
-        self.mat_scene_lab.setFixedSize(110, 110)
-        self.mat_scene_lab.setAlignment(Qt.AlignCenter)
-        self.material_row.addWidget(self.mat_product_lab)
-        self.material_row.addWidget(self.mat_presenter_lab)
-        self.material_row.addWidget(self.mat_standing_lab)
-        self.material_row.addWidget(self.mat_turn_lab)
-        self.material_row.addWidget(self.mat_scene_lab)
+        _mat_slot(self.mat_scene_lab, "场景图(原视频空景)")
         self.material_row.addStretch(1)
         root.addLayout(self.material_row)
         # 直传产物落在 storyboards 表,本页列表(读 metadata)看不到它 —— 单独一行
@@ -1178,6 +1199,10 @@ class ClonePage(QWidget):
         from ..pipeline import video_clone as _vc
         ref = _vc._resolve_local((_vc._meta(drama_id).get("clone") or {}).get("reference"))
         self.ref_player.set_source(ref or "")
+        # 风格下拉必须在这里重填:__init__ 时 drama_id 还没设,选中的是空项目的
+        # 第一项 —— 实测界面显示「3D 漫剧」、库里其实是「真人写实」,用户一碰
+        # 下拉还会把显示值写回库,把项目真实风格顶掉
+        self._reload_clone_styles()
         self.reload()
 
     def reload(self):
@@ -1253,6 +1278,14 @@ class ClonePage(QWidget):
                 fs_btn.clicked.connect(
                     lambda _=False, n=int(b.get("number", 0)): self._shot_face_swap(n))
                 btns.addWidget(fs_btn)
+            # 重绘备注:这一镜画面有问题(多余的手/人物等)时,用户写一句硬要求,
+            # 随下次重绘注入提示词 —— 有备注的镜号上加 • 提示
+            hint = str(b.get("user_hint") or "").strip()
+            hint_btn = QPushButton("✎ " + tr("重绘备注") + (" •" if hint else ""))
+            hint_btn.setToolTip(hint or tr("对这一镜画面的硬要求,将附加到重绘提示词末尾(例:不要出现第二个人的手)"))
+            hint_btn.clicked.connect(
+                lambda _=False, n=int(b.get("number", 0)): self._shot_hint(n))
+            btns.addWidget(hint_btn)
             vid_btn = W.primary_btn("▷ " + tr("batch_video"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
             btns.addWidget(img_btn)
@@ -1591,7 +1624,8 @@ class ClonePage(QWidget):
                 lab.setPixmap(QPixmap())
                 lab.setText(tr("none"))
                 lab.setToolTip(tip)
-        # 派生资产:分镜参考立绘(三视图切格)/ 三视图整图(角色资产)/ 场景空景图。
+        # 派生资产:三视图整图(角色资产)/ 场景空景图。单人立绘不再展示(用户定版),
+        # 它只在管线内部由三视图切格而来(见 standing_ref_of)。
         # 三视图换脸失败时缩略图提示就地可见 —— 此前静默降级,用户拿着路人脸
         # 当参考图而不自知(实测)。
         def _set_thumb(lab, path, tip):
@@ -1604,9 +1638,6 @@ class ClonePage(QWidget):
                 lab.setPixmap(QPixmap())
                 lab.setText(tr("none"))
         turn = video_clone._resolve_local(clone.get("turnaround_image"))
-        _set_thumb(self.mat_standing_lab,
-                   video_clone.standing_ref_of(clone.get("turnaround_image")),
-                   tr("分镜参考立绘(三视图自动切格,锁人锁服装)"))
         _set_thumb(self.mat_turn_lab, turn,
                    tr("人物三视图(角色资产)") if clone.get("turnaround_swapped") is not False
                    else tr("人物三视图(未换脸,点「手动换脸」重试)"))
@@ -1666,6 +1697,45 @@ class ClonePage(QWidget):
         TASKMGR.submit("clone_image", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
+    def _extract_scene(self):
+        """手动提取场景锚(空景图)。拆解末尾会自动做,这是**补做/重做**入口:
+
+        自动提取失败会静默退回文字锚,而重跑拆解才能再次触发 —— 重跑会改分镜
+        切分、丢掉已出的首帧。此按钮让「只补一张场景图」成为独立动作。
+        """
+        from ..pipeline import video_clone
+        from .confirm import ask
+        clone = (video_clone._meta(self.drama_id).get("clone") or {})
+        if not video_clone._resolve_local(clone.get("reference")):
+            err(tr("请先导入参考视频"))
+            return
+        if not ask(self, tr("提取场景图"),
+                   tr("将从参考视频挑帧生成无人空景图(一次文本 + 一次生图调用)。\n\n继续?")):
+            return
+        btn = getattr(self, "scene_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+
+        def job(tid):
+            return video_clone.extract_scene_anchor(
+                self.drama_id, config_id=self._clone_image_cfg(),
+                text_cfg_id=video_clone._selected_text_cfg())
+
+        def done(tid, result, error):
+            if btn is not None:
+                btn.setEnabled(True)
+            if error:
+                err(str(error)[:280])
+                return
+            if result:
+                ok(tr("已从原视频提取场景图,重绘首帧后生效"))
+            else:
+                err(tr("场景图提取失败,详见日志"))
+            self.reload()
+
+        TASKMGR.submit("clone_scene", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
     def _shot_face_swap(self, n: int):
         """手动换脸兜底:把出镜照的脸换到这一镜**已生成的首帧**上。
 
@@ -1710,6 +1780,42 @@ class ClonePage(QWidget):
 
         TASKMGR.submit("clone_faceswap", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
+
+    def _shot_hint(self, n: int):
+        """本镜重绘备注:用户对这一镜画面问题的硬要求(如「只允许一只手」),
+        存进分镜条目、随下一轮重绘注入提示词 —— 修图能力留在软件里,用户
+        自己写一句、点重绘即修,不必改代码。"""
+        from ..pipeline import video_clone
+        from PySide6.QtWidgets import QInputDialog
+        b = next((x for x in video_clone._clone_storyboards(self.drama_id)
+                  if int(x.get("number", 0)) == n), None)
+        if b is None:
+            return
+        text, okd = QInputDialog.getMultiLineText(
+            self, tr("重绘备注"),
+            tr("对这一镜画面的硬要求,将附加到重绘提示词末尾(例:不要出现第二个人的手)"),
+            str(b.get("user_hint") or ""))
+        if not okd:
+            return
+        c = video_clone._meta(self.drama_id)
+        for x in c.setdefault("clone", {}).get("storyboards", []):
+            if int(x.get("number", 0)) == n:
+                x["user_hint"] = text.strip()
+        video_clone._save_meta(self.drama_id, c)
+        self.reload()
+
+    def _global_hint(self):
+        """全局重绘要求(存设置表,跨项目、对所有镜生效)。"""
+        from PySide6.QtWidgets import QInputDialog
+        cur = db.get_setting("yihao.clone_redraw_hint") or ""
+        text, okd = QInputDialog.getMultiLineText(
+            self, tr("通用重绘要求"),
+            tr("对所有分镜重绘生效的硬要求(例:不要出现第二个人的手),跨项目保存"),
+            str(cur))
+        if not okd:
+            return
+        db.set_setting("yihao.clone_redraw_hint", text.strip())
+        ok(tr("通用重绘要求已保存,重绘首帧后生效"))
 
     def _redraw_all_shots(self):
         """一键重绘:串行跑完所有缺首帧的分镜。

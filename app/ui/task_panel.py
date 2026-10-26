@@ -39,6 +39,7 @@ TASK_TYPE_LABEL = {
     "clone_replace_material": "克隆 · 替换素材",
     "clone_turnaround": "克隆 · 重建三视图",
     "clone_faceswap": "克隆 · 换脸",
+    "clone_scene": "克隆 · 提取场景图",
     "clone_redraw_all": "克隆 · 一键重绘",
     "clone_merge": "克隆 · 合并成片",
 }
