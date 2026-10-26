@@ -1303,7 +1303,14 @@ def wizard_step_done(drama_id: int, step: int) -> bool:
     """步骤完成判定(对齐原版 wizardStepDone)。
 
     ★ 步骤 3/4 读**已落库的** novel_meta,而非向导内存草稿 —— 刷新页面后未开向导也能正确判定。
+    ★ 步骤 3/4 **必须与 pipeline 的写作门控(novel.check_novel_redlines)同一把尺子**:
+      文本列(novel_world / novel_contract)有实质内容也算完成。此前这里只认
+      novel_meta 结构化字段,而写章提示词消费的是文本列 —— 结果 pipeline 门控
+      放行、UI 按钮却锁死:「共享修仙」第 3 集的生成按钮就是这么灰掉的
+      (列里 898/656 字全文,按钮提示「缺步骤 3、4」)。两份实现必须同步改,
+      改一处漏一处就是这个症状。
     """
+    from ..pipeline.novel import SETTING_TEXT_MIN
     d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
     if not d:
         return False
@@ -1313,15 +1320,18 @@ def wizard_step_done(drama_id: int, step: int) -> bool:
         return bool((d["title"] or "").strip() and (m.get("intro") or "").strip())
     if step == 2:
         return bool((d["novel_outline"] or "").strip())
-    if step == 3:                        # 世界观 = era + location
+    if step == 3:                        # 世界观 = 文本列有实质全文,或 era + location
         w = meta.get("world") or {}
-        return bool(str(w.get("era") or "").strip() and str(w.get("location") or "").strip())
-    if step == 4:                        # 故事合约 = pov + rules + tones
+        return bool(len((d["novel_world"] or "").strip()) >= SETTING_TEXT_MIN
+                    or (str(w.get("era") or "").strip()
+                        and str(w.get("location") or "").strip()))
+    if step == 4:                        # 故事合约 = 文本列有实质全文,或 pov + rules + tones
         c = meta.get("contract") or {}
         rules = c.get("rules") or []
         tones = c.get("tones") or []
         rules_ok = any(str(r or "").strip() for r in rules)
-        return bool(c.get("pov") and rules_ok and len(tones) > 0)
+        return bool(len((d["novel_contract"] or "").strip()) >= SETTING_TEXT_MIN
+                    or (c.get("pov") and rules_ok and len(tones) > 0))
     if step == 5:                        # 角色设定
         return bool(db.q1("SELECT id FROM characters WHERE drama_id=? LIMIT 1", (drama_id,)))
     if step == 6:

@@ -484,3 +484,29 @@ def test_ui_classes_do_not_read_undefined_self_attributes():
     assert not problems, (
         "以下类读到了自己没定义过的属性(一用就 AttributeError):\n  "
         + "\n  ".join(problems))
+
+
+def test_ui_gate_agrees_with_pipeline_gate(tmp_db):
+    """UI 的 wizard_step_done 与 pipeline 的 check_novel_redlines 必须同一把尺子。
+
+    这是两份独立实现,曾经 UI 侧只认 novel_meta 结构化字段、pipeline 侧认文本列
+    —— pipeline 放行、按钮锁死,「共享修仙」第 3 集就是这么灰掉的。
+    用同一个项目断言两边判定一致(世界观/合约写的是**文本列**)。
+    """
+    from app.ui.novel_dialogs import missing_steps
+    did = _make_drama(title="双门控一致", novel_outline="一句话主题:测试",
+                      novel_world="青岚界以灵脉为根基,凡有灵脉处皆可开炉炼器,宗门以贡献点换算资源。",
+                      novel_contract="第三人称限知,只写主角林岚能感知到的范围,不写他人内心,每章三千字左右。",
+                      novel_chapters=json.dumps([{"number": 1}]),
+                      metadata=json.dumps({"intro": "简介"}))
+    db.ex("INSERT INTO characters(drama_id,name,role_type,created_at,updated_at)"
+          " VALUES(?,?,?,?,?)", (did, "林岚", "lead", db.now(), db.now()))
+    # 两边都必须说「无缺失」
+    assert nv.check_novel_redlines(did) == [], "pipeline 门控误拦"
+    assert missing_steps(did) == [], "UI 门控误拦(按钮会锁死)"
+
+    # 再断言:两边对「只有总纲」的项目也一致地拦
+    did2 = _make_drama(title="只有总纲", novel_outline="一句话主题:测试",
+                       metadata=json.dumps({"intro": "简介"}))
+    assert 3 in nv.check_novel_redlines(did2)
+    assert 3 in missing_steps(did2)
