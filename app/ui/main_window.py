@@ -1226,18 +1226,13 @@ class ClonePage(QWidget):
         from ..pipeline import video_clone
         boards = video_clone._clone_storyboards(self.drama_id)
         # 本镜三要素参考(主图/场景/产品)—— 与生图端 generate_shot_image 注入的
-        # 完全同源,每张卡铺一行小缩略,点开可放大核对(用户要求「用在复刻上」)。
+        # 完全同源,每张卡铺一行小缩略,点开可放大核对(用户要求「用在复刻上」;
+        # 主格显示**三视图整张** —— 旧的单人全身图路线已废弃,角色资产就是三视图)。
         _clone_meta = video_clone._meta(self.drama_id).get("clone", {})
-        _standing_ref = None
-        try:
-            if _clone_meta.get("turnaround_image"):
-                _s = video_clone.standing_ref_of(_clone_meta.get("turnaround_image"))
-                _standing_ref = str(_s) if _s else None
-        except Exception:  # noqa: BLE001 —— 三视图缺失时参考行少一格即可
-            _standing_ref = None
         _card_refs = [(t, full, video_clone._resolve_local(p))
                       for t, full, p in (
-                          ("主", "人物设定图(出镜者本人)", _clone_meta.get("turnaround_image") and _standing_ref),
+                          ("主", "人物三视图(主图;实际注入为三视图切出的单人立绘,防多实例)",
+                           _clone_meta.get("turnaround_image")),
                           ("景", "场景图(本片唯一场景)", _clone_meta.get("scene_image")),
                           ("具", "产品图(主推产品)", _clone_meta.get("product")))]
         _card_refs = [(t, full, str(p)) for t, full, p in _card_refs if p]
