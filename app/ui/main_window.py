@@ -1052,6 +1052,13 @@ class ClonePage(QWidget):
         bar.addWidget(product_btn)
         bar.addWidget(presenter_img_btn)
         bar.addWidget(redraw_all_btn)
+        # 批量出视频:弹出选「全部 / 仅补缺」,串行逐镜生成(3️⃣ 与 4️⃣ 之间 ——
+        # 视频齐了才有得合并)。逐镜「出视频」太碎,分镜多时点不过来(用户要求)。
+        batch_video_btn = W.primary_btn("▶ " + tr("batch_video"))
+        batch_video_btn.setToolTip(tr("弹出选择「全部视频 / 补全视频」,串行逐镜生成(逐镜消耗视频额度)"))
+        batch_video_btn.clicked.connect(self._batch_video)
+        self.batch_video_btn = batch_video_btn
+        bar.addWidget(batch_video_btn)
         bar.addWidget(merge_btn)
         bar.addStretch(1)
         root.addLayout(bar)
@@ -1300,11 +1307,12 @@ class ClonePage(QWidget):
                     im.setPixmap(W.pixmap_from_media(p, 44, 30))
                     im.setCursor(Qt.PointingHandCursor)
                     im.setToolTip(full)
-                    # 三格各走各的入口:主=三视图查看+直接换脸;景/具=与短剧页
+                    # 三格各走各的入口:主=角色资产详情(含换脸);景/具=与短剧页
                     # 同款的资产详情弹窗(字段/最终提示词/生成形象/保存),传
                     # drama_id 让弹窗内生成动作取项目当前视觉风格(风格统一)。
                     if t == "主":
-                        im.mousePressEvent = lambda _e: self._view_turnaround_with_swap()
+                        im.mousePressEvent = lambda _e: self._open_clone_asset_detail(
+                            "character", _clone_meta.get("presenter_asset_id"))
                     elif t == "景":
                         im.mousePressEvent = lambda _e: self._open_clone_asset_detail(
                             "scene", _clone_meta.get("scene_asset_id"))
@@ -1765,25 +1773,35 @@ class ClonePage(QWidget):
             pass
 
     def _open_clone_asset_detail(self, kind: str, asset_id):
-        """打开与短剧页**同款**的资产详情弹窗(场景/道具)。
+        """打开与短剧页**同款**的资产详情弹窗。
 
-        用户要求复刻参考行的「景/具」改成类似的详情弹窗,而不只是看图:
-        AssetDetailDialog 是短剧资产页同一套 —— 字段(名称/地点/时间/描述/
-        光照/标签)、最终提示词面板(AI 生成/重新生成/复制)、下载原图、
-        生成形象、保存。传 drama_id 让弹窗内的生成动作取**项目当前的视觉
-        风格**,与项目设置一致(风格统一)。
+        用户要求复刻参考行的三格改成类似的详情弹窗,而不只是看图:
+        AssetDetailDialog 是短剧资产页同一套 —— 字段(角色:名称/定位/样貌/
+        妆造;场景:地点/时间/描述/光照/标签)、最终提示词面板(AI 生成/
+        重新生成/复制)、下载原图、生成形象、保存。传 drama_id 让弹窗内的
+        生成动作取**项目当前的视觉风格**,与项目设置一致(风格统一)。
+
+        角色格额外挂「手动换脸」(extra_actions):把出镜照的脸换到三视图上,
+        不消耗生图额度 —— 换脸是资产级动作,放详情弹窗里比散在页面上顺。
         """
         if not asset_id:
             warn(tr("还没有生成该资产,请先点「检测参数 · AI 分镜」或「提取场景图」"))
             return
-        table = {"scene": "scenes", "prop": "props"}[kind]
+        table = {"character": "characters", "scene": "scenes", "prop": "props"}[kind]
         row = db.q1(f"SELECT * FROM {table} WHERE id=?", (int(asset_id),))
         if not row:
             err(tr("资产不存在,可能已被删除"))
             return
+        extra = []
+        if kind == "character":
+            extra = [(tr("手动换脸"),
+                      tr("把出镜照的脸换到当前三视图上(不消耗生图额度)"),
+                      self._swap_turnaround_face)]
         from .asset_dialogs import AssetDetailDialog
-        AssetDetailDialog(self, kind, dict(row), on_changed=self.reload,
-                          drama_id=self.drama_id).exec()
+        dlg = AssetDetailDialog(self, kind, dict(row), on_changed=self.reload,
+                                drama_id=self.drama_id, extra_actions=extra)
+        dlg.exec()
+        self.reload()
 
     def _view_turnaround_with_swap(self):
         """三视图大图查看 + 直接换脸入口。
@@ -2080,12 +2098,102 @@ class ClonePage(QWidget):
 
     def _shot_video(self, n: int):
         from ..pipeline import video_clone
+        if getattr(self, "_video_batch_running", False):
+            warn(tr("批量出视频进行中,请等它跑完"))
+            return
         def job(tid):
             return str(video_clone.generate_shot_video(self.drama_id, n, "720p"))
         def done(tid, result, error):
             if error:
                 err("AI")
             self.reload()
+        TASKMGR.submit("clone_video", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
+    def _batch_video(self):
+        """批量出视频:弹出选「全部视频 / 补全视频(只出没有的)」。
+
+        与一键重绘同一条纪律:**串行**逐镜生成 —— 视频是外部付费接口,并发
+        互相踩限流(QThreadPool 上限 6 线程,6 镜齐发大概率触发上游拥塞);
+        每镜完成即刷新,完成标签旁的「▶ 播放」当场可用。
+        """
+        from ..pipeline import video_clone
+        from ..core.taskmgr import on_main
+        from PySide6.QtWidgets import QMessageBox
+        boards = video_clone._clone_storyboards(self.drama_id)
+        if not boards:
+            err(tr("还没有分镜,请先运行 AI 分镜"))
+            return
+        no_ff = [b for b in boards if not (b.get("first_frame") or "").strip()]
+        if no_ff:
+            err(tr("{} 个分镜还没有首帧,先生成首帧再出视频").format(n=len(no_ff)))
+            return
+        missing = [b for b in boards if not (b.get("video") or "").strip()]
+
+        box = QMessageBox(self)
+        box.setWindowTitle(tr("batch_video"))
+        box.setText(tr("共 {n} 镜,其中 {m} 个还没有视频。选择生成范围:")
+                    .format(n=len(boards), m=len(missing)))
+        all_btn = box.addButton(tr("全部视频"), QMessageBox.AcceptRole)
+        fill_btn = box.addButton(tr("补全视频"), QMessageBox.ActionRole)
+        box.addButton(tr("取消"), QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is all_btn:
+            todo = list(boards)
+        elif box.clickedButton() is fill_btn:
+            if not missing:
+                ok(tr("所有分镜都已有视频,无需补全"))
+                return
+            todo = missing
+        else:
+            return
+
+        btn = getattr(self, "batch_video_btn", None)
+        total = len(todo)
+        self._video_batch_running = True
+
+        def _set_busy(done_n: int, running: bool):
+            def _ui():
+                if btn is None:
+                    return
+                btn.setEnabled(not running)
+                btn.setText(tr("出视频中 {done}/{total}").format(done=done_n, total=total)
+                            if running else "▶ " + tr("batch_video"))
+            on_main(_ui)
+
+        _set_busy(0, True)
+
+        def job(tid):
+            done_n = failed = 0
+            for b in todo:
+                n = int(b.get("number", 0))
+                # 每镜独立 try:单镜失败(额度/超时/审核)不停整批,最后汇总
+                try:
+                    video_clone.generate_shot_video(self.drama_id, n, "720p")
+                    done_n += 1
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    print(f"[clone] 分镜#{n} 视频失败: {exc}", flush=True)
+                _set_busy(done_n, True)
+
+                def _refresh():
+                    self.reload()          # 完成标签与「▶ 播放」当场出现
+                on_main(_refresh)
+            return {"done": done_n, "total": total, "failed": failed}
+
+        def done(tid, result, error):
+            self._video_batch_running = False
+            _set_busy((result or {}).get("done", 0), False)
+            if error:
+                err(str(error)[:280])
+                return
+            self.reload()
+            r = result or {}
+            msg = tr("批量视频完成:{}/{} 成功").format(r.get("done", 0), r.get("total", 0))
+            if r.get("failed"):
+                msg += tr("(失败 {n} 镜)").format(n=r["failed"])
+            ok(msg)
+
         TASKMGR.submit("clone_video", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 

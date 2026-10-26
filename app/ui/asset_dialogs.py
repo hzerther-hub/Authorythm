@@ -807,7 +807,8 @@ class AssetDetailDialog(QDialog):
     KINDS = {"character": ("characters", tr("chars")), "scene": ("scenes", tr("scenes")), "prop": ("props", tr("props"))}
 
     def __init__(self, parent, kind: str, row: dict, on_changed=None,
-                 drama_id: int | None = None):
+                 drama_id: int | None = None,
+                 extra_actions: list | None = None):
         super().__init__(parent)
         # props/characters 两张表不带 drama_id,换画风要靠它取项目当前画风
         self.drama_id = drama_id if drama_id is not None else row.get("drama_id")
@@ -815,6 +816,10 @@ class AssetDetailDialog(QDialog):
         self.table = self.KINDS[kind][0]
         self.row = row
         self._on_changed = on_changed
+        # 调用方附加的 footer 按钮(置于最前):[(label, tooltip, callback), …]
+        # 复刻页用它给三视图资产塞「换脸」入口 —— 换脸是资产级动作,放详情
+        # 弹窗里比散在页面上更顺(用户要求「加上一个换脸的功能」)。
+        self._extra_actions = extra_actions or []
         self.setWindowTitle(f"{self.KINDS[kind][1]} · {row['name']}")
         self.resize(860, 660)
         root = QVBoxLayout(self)
@@ -932,6 +937,13 @@ class AssetDetailDialog(QDialog):
 
         # footer
         footer = QHBoxLayout()
+        # 调用方附加按钮放最前(如复刻三视图的「换脸」)
+        for _label, _tip, _cb in self._extra_actions:
+            _b = QPushButton(_label)
+            if _tip:
+                _b.setToolTip(_tip)
+            _b.clicked.connect(lambda _=False, cb=_cb: cb())
+            footer.addWidget(_b)
         delete = W.danger_btn(tr("delete"))
         delete.clicked.connect(self._delete)
         footer.addWidget(delete)
