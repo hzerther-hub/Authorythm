@@ -1267,8 +1267,13 @@ class ClonePage(QWidget):
                 line.setObjectName("muted")
                 info.addWidget(line)
             lay.addLayout(info, 1)
-            btns = QVBoxLayout()
-            img_btn = QPushButton("3️⃣ " + tr("redraw") + tr(" · 首帧图"))
+            # 按钮横排一行:此前竖排塞在缩略图的 150px 高度旁,3~4 个按钮全部被
+            # 截断到看不清(用户实测:「三个按钮看不清,改为三个一行」)。
+            # 横排后按钮按内容取宽,不再受卡片高度约束。
+            btns = QHBoxLayout()
+            btns.setSpacing(6)
+            img_btn = QPushButton("3️⃣ " + tr("redraw"))
+            img_btn.setToolTip(tr("redraw_tip"))
             img_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_image(n))
             # 首帧换脸兜底:自动链路(三视图换脸 + 立绘参考)已把脸锚住,但生图
             # 模型偶尔仍画偏;只动人脸像素比整镜重生成便宜得多,换完重出视频即可
@@ -1286,11 +1291,15 @@ class ClonePage(QWidget):
             hint_btn.clicked.connect(
                 lambda _=False, n=int(b.get("number", 0)): self._shot_hint(n))
             btns.addWidget(hint_btn)
+            btns.addWidget(img_btn)
             vid_btn = W.primary_btn("▷ " + tr("batch_video"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
-            btns.addWidget(img_btn)
             btns.addWidget(vid_btn)
-            lay.addLayout(btns)
+            btns.addStretch(1)
+            right_col = QVBoxLayout()
+            right_col.addLayout(btns)
+            right_col.addStretch(1)
+            lay.addLayout(right_col)
             self.board_list.addWidget(box)
 
     def _analyze(self, direct: bool = False):
