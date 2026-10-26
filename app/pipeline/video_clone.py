@@ -190,16 +190,14 @@ def read_presenter_desc(presenter_path: str | Path,
     if not p.exists():
         return None
     mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
-    prompt = """这张照片是一个带货视频里要出镜的真人模特。请只描述**这个人本身**,
+    prompt = """这张照片是一个带货视频里要出镜的真人模特。请只描述**这个人的长相**,
 **完全忽略背景、灯光、道具、画面氛围**,输出 JSON:
 {
- "appearance": "外观:性别年龄、脸型、五官特征、肤色、发型发色(30字内)",
- "styling": "服装:上衣/下装的款式与颜色、面料质感、配饰首饰(40字内)",
- "footwear": "鞋履与下肢配件:鞋子款式与颜色、袜子、裤脚露出情况(25字内)"
+ "appearance": "外观:性别年龄、脸型、五官特征、肤色、发型发色(30字内)"
 }
 要求:
-1. 只写照片里**真实可见**的特征,**不要臆造**;
-2. **画面里看不到脚或鞋时,footwear 留空字符串**,不要猜测;
+1. 只写照片里**真实可见**的头部与体貌特征,**不要臆造**;
+2. **不要描述服装/配饰/鞋履** —— 复刻的着装跟原片分镜走,与出镜照无关;
 3. 不要写背景描述。"""
     try:
         raw = text_client.chat(prompt, temperature=0.3, max_tokens=1024,
@@ -207,12 +205,9 @@ def read_presenter_desc(presenter_path: str | Path,
                                image_urls=[_image_data_url(p, mime)])
         data = runner.extract_json(raw) or {}
         app_ = str(data.get("appearance") or "").strip()
-        sty = str(data.get("styling") or "").strip()
-        shoe = str(data.get("footwear") or "").strip()
-        if shoe:                      # 鞋履单独一栏,拼进服装描述一起喂给生图
-            sty = f"{sty}, 穿{shoe}" if sty else f"穿{shoe}"
-        return ({"appearance": app_, "styling": sty, "footwear": shoe}
-                if (app_ or sty) else None)
+        # **只回长相**:服装/配饰不取出镜照(用户要求)—— 复刻的着装跟原片
+        # 分镜文案走,锁定到照片衣服反而让成片服装跟原片对不上。
+        return {"appearance": app_} if app_ else None
     except Exception as exc:  # noqa: BLE001
         print(f"[clone] 人物描述提取失败: {exc}", flush=True)
         return None
@@ -590,7 +585,7 @@ def sync_assets(drama_id: int,
         desc = read_presenter_desc(presenter, config_id=_selected_text_cfg())
         if desc:
             clone["presenter_desc"] = desc.get("appearance") or ""
-            clone["presenter_styling"] = desc.get("styling") or ""
+            clone.pop("presenter_styling", None)   # 出镜照不提供服装描述(用户要求)
     # 角色资产 = **三视图**(正脸特写 + 正面/侧面/背面)+ 生成后立刻换脸 —— 用户定版:
     # 复刻不要全身像。此前「单人全身像当分镜参考」的路线(纯文字底图 + 换脸)实测
     # 两个致命伤,正是用户抱怨的「首帧的人跟三视图不是同一人 / 衣服变了」:
@@ -1029,11 +1024,11 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     presenter_desc = clone.get("presenter_desc") or "亲和力强的出镜人物(见模特形象)"
     # ── 人物文字锚惰性补齐 ──
     # sync_assets 里的填充是「一次性且静默」的:read_presenter_desc 那次若失败
-    # (文本服务抖动/网关超时),presenter_desc/presenter_styling 就永远空着,
-    # 首帧提示词的人物描述退化为兜底文案,「服装固定为「X」」这句锁没有内容
-    # 可锁 —— 实测表现就是发型/服装逐镜漂(用户截图:updo → 披肩发,深色裙
-    # → 绿裙)。这里在生成入口**惰性补齐**:空就现场读一次图并落库,失败仅
-    # 跳过(下一镜再试),不阻断生成。
+    # (文本服务抖动/网关超时),presenter_desc 就永远空着,首帧提示词的人物
+    # 描述退化为兜底文案 —— 实测表现就是发型/服装逐镜漂(用户截图:updo →
+    # 披肩发,深色裙 → 绿裙)。这里在生成入口**惰性补齐**:空就现场读一次图
+    # 并落库(只取长相,不提取服装 —— 着装跟原片分镜文案走),失败仅跳过
+    # (下一镜再试),不阻断生成。
     if _resolve_local(clone.get("presenter")) and \
             not (clone.get("presenter_desc") or "").strip():
         try:
@@ -1045,13 +1040,13 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
         except Exception as exc:  # noqa: BLE001
             _pd = None
             print(f"[clone] 人物描述惰性提取失败({exc}),本镜用兜底描述", flush=True)
-        if _pd and (_pd.get("appearance") or _pd.get("styling")):
-            clone["presenter_desc"] = _pd.get("appearance") or ""
-            clone["presenter_styling"] = _pd.get("styling") or ""
+        if _pd and _pd.get("appearance"):
+            clone["presenter_desc"] = _pd["appearance"]
+            clone.pop("presenter_styling", None)   # 出镜照不提供服装描述(用户要求)
             meta["clone"] = clone
             _save_meta(drama_id, meta)
-            print(f"[clone] 人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字 /"
-                  f"服装 {len(clone['presenter_styling'])} 字", flush=True)
+            print(f"[clone] 人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字",
+                  flush=True)
         presenter_desc = clone.get("presenter_desc") or presenter_desc
     # ── 参考图:1 张主图 + 最多 4 张参考图,靠**名字**在提示词里关联 ──
     #
@@ -1162,15 +1157,10 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                         "**服装款式与颜色**与"
                         + ("参考图1(人物设定图)" if multi else "参考图")
                         + "完全相同,是同一个人,不是长相相近的另一个人;服装不得逐镜变化")
-            _clothing = (clone.get("presenter_styling") or "").strip()
-            if _clothing:
-                # 分镜文案继承自**原片博主**(rewrite 保镜头语言的同时保了原文描述),
-                # 文字里的服装和参考图里的不是同一套 —— 不逐字点名覆盖,模型会跟
-                # 文案走(用户实测「女主的服装变化」:光说"与参考图一致"拗不过
-                # 文案里明确写的另一套衣服)。presenter_styling 在 sync_assets
-                # 从上传照读图落库,与三视图同源,文字/图像两个锚从此说同一句话。
-                consist += (f";本片人物服装固定为「{_clothing}」,"
-                            "分镜文案里若提到其他服装,一律以此句为准")
+            # 服装**不做文字锁**(用户要求):着装跟原片分镜文案走(rewrite 保
+            # 镜头语言时保留了原片着装描述),跨镜一致靠参考图1的人物设定图锚。
+            # 出镜照的服装描述已按用户要求移除 —— 锁到上传照的衣服会让成片
+            # 服装跟原片对不上。
             if multi:
                 consist += (";背景环境、陈设、窗景与光源方向严格参照"
                             "**参考图2(场景图)**,就是同一间房、同一时间")
@@ -1190,11 +1180,12 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                 # 否则模型照着设定图把整个人画进腕部特写(实测 #03 的病灶)
                 consist += (";出镜者的手部肤质与指甲参照**参考图3(人物设定图)**中"
                             "同一人的手,但本镜只拍手,严禁画出她的面部或身体")
-    # ── 场景一致性:文字锚 + 空景图双保险 ──
-    # scene_prompt 在**分析阶段**从原视频提取(extract_scene_anchor),是真实
-    # 环境描述;配合空景图参考(上面 refs)把「同一间房」钉死。旧项目的
-    # scene_prompt 是首镜后写死的兜底描述,照样可读,不必特判。
-    scene_lock = str(clone.get("scene_prompt") or "").strip()
+                consist += (";出镜者的手部肤质与指甲参照**参考图3(人物设定图)**中"
+                            "同一人的手,但本镜只拍手,严禁画出她的面部或身体")
+    # ── 场景一致性:靠**空景图参考**(上面 refs 已注入)+ consist 里「参照
+    # 参考图2」的点名。场景文字描写不再拼进提示词(用户要求:「环境描写也
+    # 不要出现,用参考图就行」—— 文字里的陈设清单会跟空景图打架,画面冒出
+    # 图片上没有的家具)。
     # 静帧取动作时序串(姿态更具体),无时序退回动作概述
     steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
     action_txt = "，".join(steps) if steps else str(b.get("action") or "展示产品")
@@ -1232,8 +1223,9 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     else:
         core = (f"{b.get('shot','中景')},{presenter_desc},{action_txt},"
                 f"画面突出{product_desc}:{b.get('product_use','')}")
-    tail = consist + (", " + scene_lock if scene_lock else "") + \
-        ", 运镜与光线参考带货实拍视频, 清晰锐利, 电影质感"
+    # 场景环境靠**空景图参考**(参考图2)+ consist 点名,不拼场景文字描写
+    # (用户要求:环境描写不要出现,用参考图就行 —— 文字陈设清单会跟空景图打架)
+    tail = consist + ", 运镜与光线参考带货实拍视频, 清晰锐利, 电影质感"
     # 重绘要求注入,两层(修图能力留在软件里,用户自己可修,不用改代码):
     # · 全局(设置表 yihao.clone_redraw_hint):跨项目生效,所有镜重绘都带 ——
     #   「只允许一只手」这类规则往往整条片都要,不该逐镜重抄;
@@ -1392,7 +1384,46 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
                                          Path(out), intro, progress)
     else:
         path, _channel = merge_mod.auto_merge(files, out, progress=progress)
+    # ── 合并历史(用户要求「最多生成 8 个合并视频」,新的顶掉最旧的)──
+    # 成片要在红框区可见可播;反复合并不能无限堆文件。海报帧顺手抽出
+    # (黑底标题卡的成片开头是纯黑,poster 自带黑帧探测),供列表缩略使用。
+    from . import video_poster
+    poster = video_poster.extract_video_poster(Path(path))
+    meta = _meta(drama_id)
+    clone = meta.get("clone") or {}
+    merges = [m for m in (clone.get("merges") or []) if m.get("path") != str(path)]
+    merges.insert(0, {"path": str(path), "poster": str(poster) if poster else "",
+                      "at": db.now()})
+    clone["merges"] = merges[:8]
+    meta["clone"] = clone
+    _save_meta(drama_id, meta)
     return path
+
+
+def clone_merges(drama_id: int) -> list[dict]:
+    """合并成片历史(新在前,最多 8 条)。"""
+    return _meta(drama_id).get("clone", {}).get("merges") or []
+
+
+def delete_clone_merge(drama_id: int, path: str) -> int:
+    """删除一条合并成片:从历史移除,文件与海报一并删除。返回剩余条数。"""
+    import os
+    meta = _meta(drama_id)
+    clone = meta.get("clone") or {}
+    kept = [m for m in (clone.get("merges") or []) if m.get("path") != str(path)]
+    old = next((m for m in (clone.get("merges") or []) if m.get("path") == str(path)), None)
+    if old:
+        for key in ("path", "poster"):
+            f = _resolve_local(old.get(key))
+            if f and f.exists():
+                try:
+                    f.unlink()
+                except OSError as exc:
+                    print(f"[clone] 成片文件删除失败({exc}): {f}", flush=True)
+    clone["merges"] = kept
+    meta["clone"] = clone
+    _save_meta(drama_id, meta)
+    return len(kept)
 
 
 # ═══ 升级:整段视频直传多模态理解(对齐原版 aedab02 / 7ae518c)═══

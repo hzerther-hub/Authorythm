@@ -1193,6 +1193,14 @@ class ClonePage(QWidget):
         _mat_slot(self.mat_scene_lab, "场景图(原视频空景)")
         self.material_row.addStretch(1)
         root.addLayout(self.material_row)
+        # ── 合并成片区(红框):开始合并后成片出现在这里 ──
+        # 历史最多 8 个(新的顶掉最旧的,pipeline 侧裁剪),每条可播放/下载/删除
+        # (用户:「这里最多生成八个。有删除。」「要有生成的视频让我看到」)。
+        self.merges_title = W.muted("")
+        root.addWidget(self.merges_title)
+        self.merges_row = QHBoxLayout()
+        self.merges_row.setSpacing(10)
+        root.addLayout(self.merges_row)
         # 直传产物落在 storyboards 表,本页列表(读 metadata)看不到它 —— 单独一行
         # 显示条数并给跳转入口,否则用户点了按钮像什么都没发生。
         self.board_note = W.muted("")
@@ -1257,6 +1265,7 @@ class ClonePage(QWidget):
         _card_refs = [(t, full, str(p)) for t, full, p in _card_refs if p]
         self._refresh_board_note()
         self._refresh_materials()
+        self._refresh_merges()
         self._refresh_settings_note()
         for b in boards:
             box = W.make_card()
@@ -1306,6 +1315,20 @@ class ClonePage(QWidget):
                 pv_btn.clicked.connect(
                     lambda _=False, u=str(b["video"]): self._preview_shot_video(u))
                 head.addWidget(pv_btn)
+                # 下载 / 删除:成片能看了,也要能带走和重出(用户要求)
+                dl_btn = QPushButton("↓")
+                dl_btn.setFixedSize(28, 24)
+                dl_btn.setToolTip(tr("download"))
+                dl_btn.clicked.connect(
+                    lambda _=False, u=str(b["video"]), n=int(b.get("number", 0)):
+                    self._download_shot_video(u, n))
+                head.addWidget(dl_btn)
+                del_v_btn = QPushButton("🗑")
+                del_v_btn.setFixedSize(28, 24)
+                del_v_btn.setToolTip(tr("删除该镜视频(文件一并删除)"))
+                del_v_btn.clicked.connect(
+                    lambda _=False, n=int(b.get("number", 0)): self._delete_shot_video(n))
+                head.addWidget(del_v_btn)
             head.addStretch(1)
             info.addLayout(head)
             # 本镜参考行(主/景/具):与生图端注入的三要素同源,点缩略可放大核对
@@ -1393,6 +1416,100 @@ class ClonePage(QWidget):
         """播放这一镜生成的视频(复用成片/单镜共用的视频预览弹窗)。"""
         from .asset_dialogs import VideoPreviewDialog
         VideoPreviewDialog(self, url, tr("preview")).exec()
+
+    def _download_shot_video(self, url: str, n: int):
+        from ..core import download as dl_mod
+        p = dl_mod.download_media_ask(self, url, f"克_分镜{n:02d}.mp4")
+        if p:
+            ok(tr("已下载:{}").format(p.name))
+
+    def _delete_shot_video(self, n: int):
+        from .confirm import ask
+        from ..pipeline import video_clone
+        if not ask(self, tr("删除该镜视频"),
+                   tr("确认删除这一镜的视频?文件会一并删除。继续?"), danger=True):
+            return
+        meta = video_clone._meta(self.drama_id)
+        for x in meta.get("clone", {}).get("storyboards", []):
+            if int(x.get("number", 0)) == n:
+                v = video_clone._resolve_local(x.get("video"))
+                if v and v.exists():
+                    try:
+                        v.unlink()
+                    except OSError as exc:
+                        print(f"[clone] 视频文件删除失败({exc})", flush=True)
+                x["video"] = None
+        video_clone._save_meta(self.drama_id, meta)
+        self.reload()
+
+    def _refresh_merges(self):
+        """合并成片区(红框):历史最多 8 个,新在前;可播放/下载/删除。"""
+        from ..pipeline import video_clone
+        merges = video_clone.clone_merges(self.drama_id)
+        self.merges_title.setText(
+            tr("成片") + f" · {len(merges)}/8" if merges else "")
+        self.merges_title.setVisible(bool(merges))
+        while self.merges_row.count():
+            it = self.merges_row.takeAt(0)
+            w = it.widget()
+            if w:
+                w.deleteLater()
+        for m in merges:
+            path = str(m.get("path") or "")
+            box = W.make_card()
+            bl = QVBoxLayout(box)
+            bl.setContentsMargins(8, 8, 8, 8)
+            thumb = QLabel()
+            thumb.setFixedSize(200, 112)
+            thumb.setAlignment(Qt.AlignCenter)
+            poster = m.get("poster")
+            if poster and Path(poster).exists():
+                thumb.setPixmap(W.pixmap_from_media(poster, 200, 112))
+            else:
+                thumb.setText("▶")
+            thumb.setStyleSheet("background:#14161a; border-radius:6px;")
+            thumb.setCursor(Qt.PointingHandCursor)
+            thumb.mousePressEvent = lambda _e, u=path: self._preview_shot_video(u)
+            bl.addWidget(thumb)
+            meta_row = QHBoxLayout()
+            day = str(m.get("at") or "")[:16].replace("T", " ")
+            meta_row.addWidget(W.tag(day))
+            dur = (m.get("dur") or "")
+            if dur:
+                meta_row.addWidget(W.tag(f"{int(float(dur))}s"))
+            meta_row.addStretch(1)
+            bl.addLayout(meta_row)
+            act = QHBoxLayout()
+            act.setSpacing(4)
+            play_b = QPushButton("▶ " + tr("播放"))
+            play_b.clicked.connect(lambda _=False, u=path: self._preview_shot_video(u))
+            act.addWidget(play_b)
+            dl_b = QPushButton(tr("download"))
+            dl_b.clicked.connect(lambda _=False, u=path: self._download_merge(u))
+            act.addWidget(dl_b)
+            del_b = W.danger_btn(tr("delete"))
+            del_b.clicked.connect(lambda _=False, u=path: self._delete_merge(u))
+            act.addWidget(del_b)
+            bl.addLayout(act)
+            self.merges_row.addWidget(box)
+        self.merges_row.addStretch(1)
+
+    def _download_merge(self, path: str):
+        from datetime import datetime
+        from ..core import download as dl_mod
+        day = datetime.now().strftime("%m%d_%H%M")
+        p = dl_mod.download_media_ask(self, path, f"克_成片_{day}.mp4")
+        if p:
+            ok(tr("已下载:{}").format(p.name))
+
+    def _delete_merge(self, path: str):
+        from .confirm import ask
+        from ..pipeline import video_clone
+        if not ask(self, tr("delete"),
+                   tr("确认删除这一合并成片?文件与海报会一并删除。继续?"), danger=True):
+            return
+        video_clone.delete_clone_merge(self.drama_id, path)
+        self.reload()
 
     def _sync_intro_toggle(self):
         """标题开关随 clone.intro_enabled 状态刷新。"""
@@ -1845,8 +1962,31 @@ class ClonePage(QWidget):
         if not row:
             err(tr("资产不存在,可能已被删除"))
             return
+        row = dict(row)
         extra = []
+        from ..pipeline import video_clone
+        clone_meta = video_clone._meta(self.drama_id).get("clone") or {}
         if kind == "character":
+            # 预览对准**三视图整张**:角色资产的 image_url 存的是上传照/单张立绘,
+            # 而这个入口叫「人物三视图」—— 用户点开就是要看三视图(实测截图:
+            # 弹出来的却是单张站立照)。显示层换成 turnaround;库里 image_url
+            # 不动(它仍是提取/生成的锚点图)。
+            from ..pipeline import video_clone
+            ta = video_clone._resolve_local(clone_meta.get("turnaround_image"))
+            if ta:
+                row["image_url"] = str(ta)
+            # 样貌/妆造自愈:角色行空但 clone 文字锚有值(惰性提取成功)→ 回填,
+            # 详情字段与「最终提示词 · AI 生成」才有内容可吃(实测出镜人物两栏
+            # 全空 —— 提取曾失败,后来补齐只写了 metadata,角色表没跟上)。
+            if not (str(row.get("appearance") or "").strip()
+                    or str(row.get("styling") or "").strip()):
+                if (clone_meta.get("presenter_desc") or "").strip():
+                    db.ex("UPDATE characters SET appearance=?, styling=?, updated_at=? WHERE id=?",
+                          (clone_meta["presenter_desc"],
+                           clone_meta.get("presenter_styling") or "",
+                           db.now(), row["id"]))
+                    row["appearance"] = clone_meta["presenter_desc"]
+                    row["styling"] = clone_meta.get("presenter_styling") or ""
             extra = [(tr("手动换脸"),
                       tr("把出镜照的脸换到当前三视图上(不消耗生图额度)"),
                       self._swap_turnaround_face)]

@@ -477,15 +477,19 @@ def test_turnaround_prompt_follows_project_style():
     assert "标准参考图" in src
 
 
-def test_read_presenter_desc_declares_footwear_field():
-    """原照常是半身照看不到鞋,提取提示词要显式要求 footwear 字段,且允许留空。
+def test_read_presenter_desc_extracts_look_only():
+    """出镜照提取**只取长相**,不提取服装/配饰/鞋履(用户要求:
+    「出镜照不要有服装形象的描述」「环境描写也不要出现,用参考图就行」)。
 
-    不允许臆造 —— 拍不到就报空,生成时再补默认鞋款。
+    复刻的着装跟原片分镜文案走;把出镜照的衣服写成文字锁,成片服装反而
+    与原片对不上。旧版提取 footwear/styling 字段,已随该决策移除。
     """
     import inspect
     src = inspect.getsource(vc.read_presenter_desc)
-    assert "footwear" in src, "未提取鞋履"
-    assert "留空" in src, "未说明看不到时可留空"
+    assert "appearance" in src, "长相提取缺失"
+    # 返回值只有长相;styling/footwear 字段已随决策删除(pop 清理旧键不算)
+    assert 'return {"appearance": app_} if app_ else None' in src
+    assert "不要描述服装" in src, "提示词应显式禁止描述服装"
 
 
 def _tmp_db(tmp_path, monkeypatch, work_type: str = "video_clone", style: str = ""):
@@ -956,13 +960,16 @@ def test_shot_person_refs_carry_three_elements():
     assert 'main_kind == "presenter"' in src
 
 
-def test_shot_locks_clothing_from_presenter_desc():
-    """服装锁定:分镜文案继承自原片博主,不逐字点名覆盖,模型会跟文案走
-    (用户实测「女主的服装变化」)。presenter_styling 与三视图同源。"""
+def test_shot_does_not_lock_clothing_to_presenter_desc():
+    """服装**不做文字锁**(用户要求,反转旧决策):着装跟原片分镜文案走,
+    跨镜一致靠参考图1(人物设定图)锚定。出镜照的服装描述已按用户要求
+    移除 —— 锁到上传照的衣服会让成片服装跟原片对不上。"""
     import inspect
     src = inspect.getsource(vc.generate_shot_image)
-    assert "presenter_styling" in src
-    assert "一律以此句为准" in src
+    assert "服装固定为" not in src, "出镜照服装文字锁应已删除"
+    assert "一律以此句为准" not in src
+    # 人物身份锁仍在(五官/发型/体型以人物设定图为准),只是不锁服装文字
+    assert "发型" in src and "人物设定图" in src
 
 
 def test_closeup_rule_permits_both_hands_of_presenter():
