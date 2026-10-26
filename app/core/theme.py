@@ -99,7 +99,7 @@ QPushButton#ffAction:hover { background: #fef3e8; border-color: #f3c9a4; color: 
 QPushButton#ffAction:disabled { color: #c0c6cf; background: #f7f8fa; }
 QPushButton#ffAction[primary="1"] { background: #f97316; border-color: #f97316; color: #ffffff; }
 QPushButton#ffAction[primary="1"]:hover { background: #ea580c; border-color: #ea580c; }
-QPushButton#ffAction[primary="1"]:disabled { background: #fde0c8; border-color: #fde0c8; color: #ffffff; }
+QPushButton#ffAction[primary="1"]:disabled { background: #fde0c8; border-color: #fde0c8; color: #c2410c; }
 QFrame#refCard { background: #ffffff; border: 1px solid #e4e7ec; border-radius: 8px; }
 QFrame#refCard[bound="1"] { border-color: #f97316; }
 QFrame#videoHistoryCard { background: #ffffff; border: 1.5px solid #e4e7ec; border-radius: 6px; }
@@ -365,7 +365,7 @@ QLabel#taskBadge { background: #f97316; color: #ffffff; border-radius: 8px;
   padding: 1px 6px; font-size: 10px; font-weight: 700; }
 QPushButton#primary { background: #f97316; border: none; color: white; font-weight: 600; }
 QPushButton#primary:hover { background: #ea580c; }
-QPushButton#primary:disabled { background: #f6c9a3; color: #f0f1f5; }
+QPushButton#primary:disabled { background: #f6c9a3; color: #8a4a12; }
 QPushButton#blackAction { background: #17181c; border: none; color: #ffffff; font-weight: 600; }
 QPushButton#blackAction:hover { background: #2e2f36; }
 QPushButton#blackAction:disabled { background: #c9cdd4; color: #f5f6f8; }
