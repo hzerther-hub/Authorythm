@@ -1,4 +1,10 @@
-PySide6>=6.6.0
+# PySide6 6.9.2 —— **不要**升到 ≥6.10(实测踩坑,见 AGENTS.md「PySide6 版本」):
+# ≥6.10 的 Qt6Core.dll 依赖 ICU ≥74 的 icuuc.dll(导出 ucnv_open 这类不带
+# 版本后缀的符号),而 Anaconda 自带的是 ICU 73(导出 ucnv_open_73)→ 符号对不上,
+# `import PySide6.QtCore` 报「DLL load failed while importing QtCore」。
+# 6.9.2 完全不依赖 ICU,各平台通用。
+# 上限写死是有意的:pip 只认下界,写 >=6.6.0 迟早有人装到 6.11 然后起不来。
+PySide6>=6.6.0,<6.10
 requests>=2.31.0
 Pillow>=10.0.0
 edge-tts

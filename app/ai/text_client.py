@@ -23,6 +23,19 @@ def _needs_json_word(err_text: str) -> bool:
     return "response_format" in t and "json" in t and ("must contain" in t or "invalid_parameter" in t)
 
 
+def _default_max_tokens() -> int:
+    """配置里没有 max_tokens 时的兜底:32768(用户要求,与 registry 自动回填同源)。
+
+    曾写死 8192 —— 世界观/分卷这类长文起草(5-9k 字)在推理型模型上会被
+    <think> 吃掉大半预算,正文被拦腰截断,表现为「只出骨架/半截 JSON」。
+    """
+    try:
+        from .registry import TEXT_DEFAULT_MAX_TOKENS
+        return TEXT_DEFAULT_MAX_TOKENS
+    except Exception:  # noqa: BLE001 —— 循环导入等异常退回字面量
+        return 32768
+
+
 def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
                 max_tokens: int, json_mode: bool, image_urls: list[str] | None) -> dict:
     """组装请求体(chat 与 chat_stream 共用,避免两处参数漂移)。"""
@@ -48,7 +61,7 @@ def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
             mt = int(cfg.get("max_tokens") or 0) or None
         except (TypeError, ValueError):
             mt = None
-    body["max_tokens"] = mt or 8192
+    body["max_tokens"] = mt or _default_max_tokens()
     # 配置级 Temperature(对齐原版:留空跟随服务默认;填写则强制覆盖,应对强制温度模型)
     cfg_temp = cfg.get("temperature")
     if cfg_temp is not None and cfg_temp != "":

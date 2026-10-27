@@ -33,3 +33,8 @@ htmlcov/
 .coverage
 .tmp_*.py
 .tmp_*.log
+
+# ffmpeg 等本地二进制(find_ffmpeg 的 vendor 探测点,体积大不入库)
+vendor/
+# 本地工具链状态(finding-ledger / hook-state / reports 等,纯本机会话数据)
+.mimosa/

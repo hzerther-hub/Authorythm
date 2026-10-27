@@ -337,10 +337,9 @@ class CoverBox(QFrame):
             self._content = ph
         # 预览图右上角下载钮(对齐参考项目 asset-cover 的 ⬇)。
         # 原先用 '⬇' 字符 + 24×24:该码位没字形,且撞上全局 padding,渲染成纯空白
-        # (实测颜色数=1)。改用 Qt 原生下箭头,跨字体稳定。
-        from PySide6.QtWidgets import QStyle
-        self._dl_btn = W.icon_btn(QStyle.StandardPixmap.SP_ArrowDown,
-                                  tr("download"), size=24, fallback="⬇")
+        # (实测颜色数=1)。扁平 SVG 下载图标,与全站 iconfont 同风格
+        # (2026-10-27 用户定版:图标按钮一律扁平 SVG,不再用 Qt 原生拟物图标)。
+        self._dl_btn = W.svg_icon_btn("download", tr("download"), size=24)
         if on_download:
             self._dl_btn.clicked.connect(on_download)
         g.addWidget(self._dl_btn, 0, 0, Qt.AlignRight | Qt.AlignTop)
@@ -1173,15 +1172,12 @@ class VideoHistoryCard(QFrame):
         foot.addStretch(1)
         # 纯图标(文字挪 tooltip):原先用 '↓' / '×' 字符,16×16 固定尺寸撞上全局
         # QPushButton 的 padding:6px 14px,内容区被挤没,按钮渲染成一片空白
-        # (实测改前只有 1 种颜色=纯背景)。改用 Qt 原生图标,同 main_window 任务键。
-        from PySide6.QtWidgets import QStyle
-        dl = W.icon_btn(QStyle.StandardPixmap.SP_ArrowDown, tr("download"),
-                        fallback="↓")
+        # (实测改前只有 1 种颜色=纯背景)。扁平 SVG(2026-10-27 统一定版)。
+        dl = W.svg_icon_btn("download", tr("download"), size=28)
         if on_download:
             dl.clicked.connect(lambda _=False: on_download())
         foot.addWidget(dl)
-        de = W.icon_btn(QStyle.StandardPixmap.SP_TrashIcon, tr("delete"),
-                        fallback="×")
+        de = W.svg_icon_btn("delete", tr("delete"), size=28)
         if on_delete:
             de.clicked.connect(lambda _=False: on_delete())
         foot.addWidget(de)
@@ -1331,12 +1327,13 @@ class ComicPanelCard(QFrame):
             # 右上双角标:⟳ 重绘 / 🩹 擦除(局部重绘,对齐参考 ecda917)
             corner = QHBoxLayout()
             corner.setSpacing(4)
-            from PySide6.QtWidgets import QStyle
-            redo = W.icon_btn(QStyle.StandardPixmap.SP_BrowserReload, labels["redraw"],
-                            size=24, fallback="⟳")
+            # 重绘:扁平 SVG 刷新图标(2026-10-27 统一)。擦除暂无对应 glyph
+            # (iconfont 30 枚里没有橡皮),保留原生图标,见 _set_narr_play_icon 同款取舍。
+            redo = W.svg_icon_btn("refresh", labels["redraw"], size=24)
             redo.clicked.connect(lambda _=False: on_draw() if on_draw else None)
             corner.addWidget(redo)
             if on_erase:
+                from PySide6.QtWidgets import QStyle
                 er = W.icon_btn(QStyle.StandardPixmap.SP_DialogResetButton,
                                 tr("擦除漫画格"), size=24, fallback="🩹")
                 er.clicked.connect(lambda _=False: on_erase())

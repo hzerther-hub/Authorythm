@@ -307,6 +307,27 @@ def pixmap_from_media(url_or_path: str | None, w: int, h: int = 0) -> QPixmap:
     return pm
 
 
+def pixmap_fit_height(url_or_path: str | None, h: int) -> QPixmap:
+    """高度统一为 h,宽度按原图比例自适应(素材条:三视图/场景图/成片同高可变宽)。
+
+    与 pixmap_from_media(w,h) 的区别:后者把图**塞进 w×h 方框**,横图(三视图
+    四联条 ≈4:1)会被缩成 110×28 的小条,几乎看不清;这里只锁高度,宽度放开。
+    加载失败给 2:1 纯色占位。
+    """
+    pm = QPixmap()
+    if url_or_path:
+        p = config.media_url_to_path(url_or_path) if str(url_or_path).startswith(("/static/", "static/")) else Path(url_or_path)
+        if p.exists():
+            pm = QPixmap(str(p))
+    dpr = _ui_dpr()
+    if pm.isNull():
+        pm = QPixmap(int(h * 2 * dpr), int(h * dpr))
+        pm.fill(QColor("#e8eaf0"))
+    pm = pm.scaledToHeight(int(h * dpr), Qt.SmoothTransformation)
+    pm.setDevicePixelRatio(dpr)
+    return pm
+
+
 class StatBar(QWidget):
     """统计条:若干「数值 标签」段。"""
     def __init__(self, items: list[tuple[str, str]]):

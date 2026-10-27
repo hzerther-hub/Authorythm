@@ -96,6 +96,21 @@ def download_asset_image(row: dict, kind: str, variant_label: str = "") -> Path:
     return download_media(url, fn)
 
 
+def download_asset_image_ask(parent, row: dict, kind: str,
+                             variant_label: str = "") -> Path | None:
+    """资产图下载(弹「另存为」选位置;取消返回 None)。
+
+    2026-10-27 用户定版:资产原图下载与分镜视频一致,弹「另存为」——
+    静默落到 Downloads 用户找不到文件在哪(实测问「下载到那里?」)。
+    默认目录仍是 Downloads,文件名可改。
+    """
+    url = row.get("image_url") or row.get("comic_image_url")
+    name = row.get("name") or row.get("location") or "asset"
+    ext = _ext_from(url)
+    fn = f"{name}{('_' + variant_label) if variant_label else ''}{ext}"
+    return download_media_ask(parent, url, fn)
+
+
 def download_storyboard_video(sb: dict, suffix: str = "") -> Path:
     """分镜视频下载。"""
     n = int(sb.get("storyboard_number") or 0)

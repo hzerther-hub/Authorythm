@@ -233,9 +233,28 @@ class NewProjectDialog(QDialog):
             self.presenter_btn = QPushButton(tr("👤 选择出镜照片(可选)…"))
             W.set_icon(self.presenter_btn, "user")
             self.presenter_btn.clicked.connect(self._pick_presenter)
+            # 产品名称:紧跟产品照片(2026-10-27 用户定版布局)
+            self.product_name_edit = QLineEdit()
+            self.product_name_edit.setPlaceholderText(
+                tr("例如:翠绿色宽圆玉镯(留空 = 主推产品)"))
+            # 出镜人照片同行:照片 + 性别 + 名字(名字贯穿 分镜绑定/提示词/资产行)
+            from PySide6.QtWidgets import QComboBox
+            prow = QHBoxLayout()
+            prow.setSpacing(6)
+            prow.addWidget(self.presenter_btn, 1)
+            prow.addWidget(W.muted(tr("性别")))
+            self.presenter_gender_combo = QComboBox()
+            self.presenter_gender_combo.addItem(tr("女"), "女")
+            self.presenter_gender_combo.addItem(tr("男"), "男")
+            prow.addWidget(self.presenter_gender_combo)
+            prow.addWidget(W.muted(tr("名字")))
+            self.presenter_name_edit = QLineEdit()
+            self.presenter_name_edit.setPlaceholderText(tr("如:小雅"))
+            prow.addWidget(self.presenter_name_edit, 1)
             lay.addRow(tr("参考视频 *"), self.ref_btn)
             lay.addRow(tr("产品照片 *"), self.product_btn)
-            lay.addRow(tr("出镜人照片"), self.presenter_btn)
+            lay.addRow(tr("产品名称"), self.product_name_edit)
+            lay.addRow(tr("出镜人照片"), prow)
             box = QWidget()
             box.setLayout(lay)
             self.dynamic.addWidget(box)
@@ -284,9 +303,19 @@ class NewProjectDialog(QDialog):
             meta = {"platform": self.platform_combo.currentData(),
                     "format": self.fmt_combo.currentData()}
         elif wt == "video_clone":
-            meta = {"clone": {"reference_src": self._ref_video,
-                              "product_src": self._product_img,
-                              "presenter_src": self._presenter_img}}
+            clone = {"reference_src": self._ref_video,
+                     "product_src": self._product_img,
+                     "presenter_src": self._presenter_img}
+            # 资产命名与出镜人性别:贯穿 分镜绑定/提示词/资产行/配音音色
+            pn = self.presenter_name_edit.text().strip() if hasattr(self, "presenter_name_edit") else ""
+            gn = self.product_name_edit.text().strip() if hasattr(self, "product_name_edit") else ""
+            if pn:
+                clone["presenter_name"] = pn
+            if gn:
+                clone["product_name"] = gn
+            if hasattr(self, "presenter_gender_combo"):
+                clone["presenter_gender"] = self.presenter_gender_combo.currentData() or "女"
+            meta = {"clone": clone}
         # 「项目说明」生成的简介与题材写进 metadata —— 复用项目里既有的
         # meta["intro"] / meta["genre"] 槽位(extractor / novel / auto_generate
         # 都已经按这两个键读上下文),不另开新列,免得两套语义打架。

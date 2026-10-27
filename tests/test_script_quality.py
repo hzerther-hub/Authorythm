@@ -10,7 +10,7 @@
 - 坏剧本(满篇画外音/单人独角戏/同一间屋)→ 体检命中
 - 项目标准样例(SAMPLE_SCRIPT)→ 体检通过
 - 15 语言画外音标记(中英日韩德西…)→ 命中
-- 地点高度重复 → 命中;场景数少时���判
+- 地点高度重复 → 命中;场景数少时误判
 - enforce:返工成功→返回新剧本;返工仍失败→RuntimeError
 - 集成:rewrite_script / outline_to_script 遇到坏剧本 → RuntimeError 且**不落库**
 """

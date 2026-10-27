@@ -1,20 +1,74 @@
 # AGENTS.md — 易好短剧 · PySide6 版
 
 AI 短剧/小说/漫画一站式桌面制作工具,对齐开源 Web 版 `ooooinfo/yihao_drama`。
-Python 3.13 + PySide6 6.11 + SQLite(23 张表)。只依赖 PySide6 / requests / Pillow,
+Python 3.13 + PySide6(本机 6.11.3,见 STARTUP.md)+ SQLite(29 张表)。只依赖
+PySide6 / requests / Pillow / edge-tts / cryptography / numpy / opencc,
 ffmpeg 走外部二进制(`config.find_ffmpeg()` 探测)。
 
 ## 运行与校验
 
 ```bash
-pip install -r requirements.txt           # 最小依赖(PySide6 / requests / Pillow / edge-tts / cryptography)
-pip install -r requirements-dev.txt       # 开发期(rust + mypy + pytest + pyinstaller)
-python -m app.main          # 启动(GUI,需显示环境)
-python -m pytest tests/ -q  # 730+ 个回归测试,约 30 秒
+pip install -r requirements.txt           # 最小依赖(PySide6 / requests / Pillow / edge-tts / cryptography / numpy / opencc)
+pip install -r requirements-dev.txt       # 开发期(ruff + mypy + pytest + pyinstaller)
+python -m app.main          # 启动(GUI,需显示环境;启动判据见 STARTUP.md)
+python -m pytest tests/ -q  # 800+ 个回归测试,约 30 秒
 ruff check . && mypy        # lint + 类型检查(pyproject.toml 已配)
 ```
 
 Git Bash 里**不要**用 `cmd //c start.bat` 启动(路径编码会炸,用 `start.ps1`)。
+**智能体启动应用前先读 [`STARTUP.md`](STARTUP.md)** —— 启动验收判据、本机
+环境事实(PySide6 版本、icuuc.dll 副本不可删)与启动失败对照表都在那里。
+
+### ⚠ PySide6 版本:必须 6.11.3 完整发行版 + icuuc.dll 副本(2026-10-27 双会话实测汇合)
+
+**背景**:本机原是 conda 混装(旧 cp313 绑定 + qtbase 运行时,缺 Multimedia/WebEngine,
+「看原视频」报 No module named QtMultimedia)。升级 pip 轮子时连环踩三个坑,全部实测:
+
+1. **PySide6 ≥ 6.10 的 Qt6Core 硬依赖带 `ucnv_open`(无版本后缀)的 `icuuc.dll`**。
+   Anaconda 自带 ICU 73(`Library\bin`)符号对不上 → `import QtCore` 报
+   `DLL load failed ... 找不到指定的模块`。**迷惑点**:文案说「模块」,实际是
+   ERROR_PROC_NOT_FOUND(文件找到但缺导出符号);分辨要手工解析 PE 的
+   import/export table。6.8.3/6.9.2 的 Qt6Core 不依赖 ICU——但在本机仍不可用,见第 2 条。
+   ✅ **修法:把 `C:\Windows\System32\icuuc.dll`(Windows 自带,有 ucnv 符号)
+   拷进 `site-packages/PySide6/`**(该目录加载顺序最优先)。别下第三方 ICU——
+   上游 ICU 76 的 icuuc 反而没有 ucnv_open(转换器符号挪进了 icuin),System32 才是对的。
+2. **pip 6.9.2 / 6.10.3 的 shiboken 在 CPython 3.13.9 上多模块连导必炸**:
+   单模块 `import PySide6.QtCore` 正常,`QtCore` 之后再导 `QtWidgets`/`QtMultimedia`
+   → `Fatal Python error: could not init enum`(RecursionError)。
+   ❌ 所以「装回 6.9.2」在本机不成立——单模块测试会骗过你。
+3. **混装陷阱**:site-packages 里残留旧 `*.cp313-win_amd64.pyd`(conda 时代绑定)时,
+   Python 优先加载它们,与新 pip 组件两套 shiboken 同进程 → 段错误(139)静默闪退。
+   必须全部隔离。
+
+**当前唯一可用状态(勿动)**:pip 完整发行版 6.11.3 四件套
+(`--force-reinstall --ignore-installed --no-deps` 安装)+ `PySide6/icuuc.dll`
+(System32 副本,删了连 QtCore 都加载不了)。已验证 QtCore / QtWidgets /
+QtMultimedia / QtWebEngine 全绿、应用完整启动。**6.12.0 别升**——内嵌浏览器
+(QtWebEngineWidgets)加载失败。
+
+启动验收判据与失败对照表见 [STARTUP.md](STARTUP.md)。
+
+**另一个坑(同一天踩)**:反复 `pip install PySide6==<不同版本>` 会**就地覆盖**
+同一个 `PySide6/` 目录,留下**混装的 .pyd** —— 实测 4 个版本的 dist-info
+(6.9.2/6.10.3/6.11.3/6.12.0)并存,`.pyd` 文件带 3 种时间戳,
+`importlib.metadata` 报的版本与磁盘上 DLL 的版本对不上,ABI 不一致 →
+同样报「DLL load failed」。**换版本必须先彻底清干净**:
+
+```bash
+pip uninstall -y PySide6 PySide6-Essentials PySide6-Addons shiboken6
+# 再手工删干净残留(uninstall 常常删不干净,尤其有进程占用时):
+rm -rf <site-packages>/PySide6 <site-packages>/shiboken6
+rm -rf <site-packages>/pyside6*.dist-info <site-packages>/shiboken6*.dist-info
+pip install --no-cache-dir "PySide6==6.9.2"
+```
+
+**删不掉(Access denied)时**:先关掉正在跑 `python -m app.main` 的实例 ——
+它把 DLL 加载进内存后就锁住了文件(`Get-Process | ? {$_.Path -like '*Anaconda3*'}`)。
+这不是权限问题(ACL 是正常的),别去乱改权限。
+
+**修好后**:全量 849 passed / 4 skipped(此前 Qt 相关的 38 failed + 36 errors
+全是这个环境问题,不是代码问题)。
+
 
 ## 目录与分层
 
@@ -26,8 +80,8 @@ app/agents/        runner(调 LLM + 抽 JSON)/ prompts(System Prompt 种子与�
 app/ai/            各供应商客户端: image_client / video_client / text_client / inpaint /
                    registry(API Key 自动加密存取)
 app/pipeline/      业务编排: storyboard / comic / novel / shot_tools / erase / extract
-app/ui/            36 个 widget/page,最大的 episode_page.py ≈ 5.8k 行
-workspace/prompts/ 150 个 Agent System Prompt(.md,15 语言 × 10 Agent),用户可改
+app/ui/            46 个 py(含 chat_edit/ 子包),最大的 episode_page.py ≈ 8k 行
+workspace/prompts/ 168 个 Agent System Prompt(13 类 Agent,15 语言为主;overseas 诊断/改写暂仅中文),用户可改
 workspace/skills/  技能文件
 ```
 
@@ -203,6 +257,119 @@ def some_new_entry(..., config_id: int | None = None):
 - **缺翻译也能跑**:`tr()` 会回退英文再回退 key 本身,所以只加中文键不会崩,
   但界面会显示英文 —— 补全时别只改一处。
 
+### 派生链:语种表是从谁派生的(改语种表前必读)
+
+`T["en"] = _t(Z, ...)` → `T["ja"] = _t(T["en"], ...)` → … → `T["zh-Hant"] = _t(T["en"], ...)`。
+**每张语种表都是从英文表继承的**,所以没翻译的键继承的是**英文**(不是中文)。
+这带来两个必须记住的推论:
+
+1. **补充词典 `ui_strings.S` 只覆盖 15 语言,不含 zh-Hant** —— 所以
+   `tr()` 兜底链里那句「查补充词典」对繁中**永远查不到**。
+   实测踩过:`T["zh-Hant"]` 派生自 `T["en"]` + 补充词典没有繁中槽位 →
+   1554 个基准键里只有 107 键是真繁体,1251 键显示简体、1446 键显示英文,
+   **「繁體中文」这个选项等于没做**,而且不抛任何异常。
+   现在改成「简体基准 → `zh_convert.to_traditional`(OpenCC `s2twp`)→ 人工表覆盖」,
+   见 `i18n.ZH_HANT_MANUAL` 与 `i18n._build_zh_hant()`(惰性建表,首次切到繁中才付转换成本)。
+   **新增语种时要问一句:补充词典有这一档吗?没有的话 UI 会整屏继承英文。**
+2. **漏译判据(`tests/test_i18n_coverage.py` 的 `_leaks()`)走的是 `U.LANGS`**,
+   也就是**只覆盖 15 语言**。zh-Hant 不在里面 → 繁中整条线长期没人看。
+   现已单列 `test_zh_hant_table_is_complete()` + `test_zh_hant_renders_chinese_not_english()`
+   两条硬守卫(不走基线,缺值即红)。
+
+### 中文基准不是「键名」,键名是 ASCII 时要另给基准
+
+`tr()` 的键有两种形态:snake_case(`nav_projects`)和**中文原文**
+(`tr("一键重绘")`)。两种都能用,但:
+- ASCII 键必须**在 `Z` 里另写中文基准**(如 `batch_capped` → `"单批最多 {0} 张,其余已忽略"`),
+  否则 `tr()` 找不到就原样返回键名,界面上直接显示 `batch_capped`。
+- **带 `.format()` 的调用点,基准里必须有占位符**。`tr("batch_capped").format(MAX_BATCH)`
+  如果基准是 `"batch_capped"`(无占位符),数字会被静默吞掉。
+  补译这类键**不能靠自动补译**:键名不是中文,得人工重写基准 + 15 语译文
+  (见 `scripts/i18n_merge_translations.py` 的 `H_manual.json` 覆盖表)。
+
+### 体检脚本
+
+- `python scripts/i18n_audit.py` —— 全 16 语言缺口报告(露键名 / 漏译 / 繁中缺值 /
+  占位符丢失 / 有基准零译文)。回答「翻译完整了没」用它。
+- `python scripts/i18n_runtime_check.py` —— **运行时**逐语种体检(串语种 / 回落英文)。
+  **必须查运行时,不能查原始表**:各语种主表是从英文表继承的
+  (`T["ja"] = _t(T["en"], ...)`),原始表里 ja 槽写着 'Settings' 是**正常**的,
+  `tr()` 会用补充词典顶掉。查原始表会把 1700 个键全报成「日语显示英文」,全是假警报。
+- `python scripts/i18n_gap_baseline.py` —— 回归基线快照,配合 `tests/_i18n_gaps.json`。
+- `python scripts/readme_factcheck.py` —— README 里的数字(表数/提示词数/UI 文件数)
+  与仓库实际状态对账,防止文档漂。
+- 修复脚本(`i18n_fix_mirror.py` / `i18n_fix_mixed_lang.py` / `i18n_fix_mojibake.py` /
+  `i18n_fix_quality.py`)都是**幂等**的:重复跑不会报错,已修过的项跳过。
+  改完用 `python scripts/i18n_verify_fixes.py` 核对槽位落点。
+
+### 改 ui_strings.py 的三条纪律(踩过坑)
+
+1. **按槽位下标改,不要按字符串替换**。同一行的 15 个槽里 **en 槽与目标槽可能值完全相同**
+   (机翻没翻完,两处都留着同一段英文)→ `line.replace(旧值, 新值, 1)` 打到的是
+   **第一个**出现位置(en 槽),目标槽没动、en 槽被写坏,而命令报「成功」。
+   实测改 3 个键连锁串了 5 个槽。用 `scripts/i18n_rowedit.py`(按槽位下标改整行)
+   + `scripts/i18n_verify_fixes.py`(逐条核对下标)。
+2. **中文「镜」在分镜语境是「镜头」不是「镜子」**。shot/plan/컷/ช็อต/cảnh,
+   机翻当镜子翻会出现「Commentary for this mirror」「全部 5 面镜子」。
+3. **U+FFFD 别误伤**:app/core/encoding.py 的 `_REPLACEMENT` 与
+   app/pipeline/book_import.py 的 `text.count("\ufffd")` 是**乱码检测器本身**,
+   靠这个字符识别坏数据;别的地方出现才是真乱码(界面会直接显示「���」)。
+
+### 「翻译完整」的判据不止一条(2026-10-26 实测)
+
+「漏译」(没值)和「翻译错了」(有值但不对)是**两类问题,判据完全不同**:
+前者是存量债,用基线还;后者**永远是 bug**,基线不该收它,得单列硬守卫。
+补齐 291 个键的 15 语译文之后,审计脚本报的**全是零**,但界面上还藏着 4 类错:
+
+| 形态 | 实测例子 | 怎么发现 |
+|---|---|---|
+| 量词/正文被吞 | `items_n`(基准 `{0} 个`)7 个语种只剩 `{0}` | 基准**同时**含占位符与实词、译文只剩占位符 |
+| 拉丁语种互串 | pt 译文原样塞进 es 槽(5 键) | es 槽逐字 == pt 槽;或 es 槽含**葡语专有词** |
+| 整句留英文 | `,{} 章失败` 6 个语种全是 `,{} Chapter Failure` | 非英语种槽值 == 有效英文值 |
+| 词义错 | `应用` 全项目只当 Apply 按钮用,却按「应用程序/app」译了 15 个语种 | 查调用点语义,不能只看键面 |
+
+**教训:「审计全零」≠「翻译完整」。** 前者只说明「没有漏的」,后者要说明「有的都是对的」。
+新增判据前先问一句:**这个错法,现有判据能抓到吗?**
+
+三个必须记住的坑:
+
+1. **拉丁语种之间互串,汉字判据和英文判据都抓不到**。葡语和西语都是拉丁字母,
+   既不含汉字、又不等于英文槽 → 两条判据同时失效。要靠「同一行两个拉丁语种
+   逐字相同」+「目标语种的专有词表」两条一起抓。
+2. **英文基准不能直接取 `i18n.T["en"]`**。T 是从 Z 派生的,只含 Z 里的键;
+   S(补充词典)里有 **324 个 S-only 键**(其中 72 个还是中文名)不在 T["en"] 里 →
+   「渲染值 == 英文槽」这条判据对它们**从未生效**。要取「有效英文值」
+   (T["en"] 缺则回落到 S 行的 en 槽)。
+3. **碎片键会让判据误报**。`请先生成「` 的正确译法就是半个引号(不含实词),
+   截断判据必须要求「基准含占位符 **且** 基准含实词」两个条件同时成立。
+
+还有两个更隐蔽的:
+
+4. **「与中文基准逐字相同」这个判据会漏掉「差一个字」的中文**。
+   实测 ar 槽整段是中文原文,只把「妆造」写成「妆容」,就同时躲过了漏译判据
+   和运行时体检(后者对非拉丁语种的判据是「没有本族文字却有拉丁字母」,
+   而中文**没有拉丁字母**)。所以:
+   - 拉丁字母语种(en/fr/de/es/pt/it/vi/tr/id)渲染出**汉字** → 直接算漏译;
+   - ar/hi/th 不用汉字 → 另配一条独立守卫。
+   ja/ko 合法使用汉字,不在此列。
+5. **中文基准不能只取 `i18n.Z`**。Z 里没有 S-only 键(324 个,其中 72 个还是中文名),
+   `Z.get(key)` 返回 None → 漏译判据直接跳过 → **这批键从来没被看过**。
+   用 S 行的第 0 槽兜底。
+
+已落地的三条硬守卫(不走基线):`test_no_truncated_translation`、
+`test_no_spanish_slot_contains_portuguese`、`test_no_han_chars_in_non_han_languages`
+(见 `tests/test_i18n_coverage.py`)。新增同类判据时**必须做负向验证**:
+把修前的坏值注入回去,确认守卫会红,再确认还原后归零 —— 否则可能写了个空转的守卫。
+
+### 修补脚本的两个工具坑
+
+- `scripts/i18n_rowedit.py` **不能靠 `repr(key)` 拼行前缀**:`ui_strings.py` 里
+  同一个文件的键有单引号和双引号**两种写法**(含 `{a}`/`{b}` 片段的当初是双引号写的),
+  `repr()` 只给单引号形式 → 命中 0 行,脚本报「找到 0 行以此键开头」
+  而**实际键就在文件里**。已改成解析行首键字面量再比对。
+- **同一个键在一个修复表里写两遍 = 后者覆盖前者**(Python dict 字面量行为),
+  会静默丢掉前者的槽位修复。`ruff` 的 F601 能抓到 —— 修复表写完先 `ruff check`。
+
 ## Qt / UI 约定(本项目特有的坑)
 
 - **新增一种页面必须同步三处**:`_PAGE_KINDS`(与 addWidget 顺序一一对应)、
@@ -240,8 +407,17 @@ def some_new_entry(..., config_id: int | None = None):
 - **API Key 加密**:`app/core/secrets.py` 提供 `encrypt` / `decrypt` / `ensure_*` /
   `migrate_unencrypted_keys`。库内对用户完全透明 —— 业务侧 `registry.get_config()` /
   `default_config()` 拿到的就是明文,落库前自动 `ensure_encrypted`。
-  - **派生密钥 = 机器指纹 + salt**(PBKDF2 200k 轮)。换机器 / 换用户 / 删
-    `data/.secret_salt` 都会让旧 key 解不出来 → 重新输入。
+  - **派生密钥 = 机器指纹 + salt**(PBKDF2 200k 轮)。指纹 = 主机名 + MAC,
+    **故意不含 Windows 用户名**(2026-10-27 实测:Administrator / user 两账户
+    来回启动,`getpass.getuser()` 参与派生导致全部存量密文解不开,设置弹窗
+    构造即崩、设置页都打不开;已剔除用户名,存量用
+    `scripts/migrate_secrets_fingerprint.py` 一次性重加密)。换机器 / 删
+    `data/.secret_salt` 仍解不出来 → 重新输入。
+  - **解不开绝不能抛**:`registry._decrypt_row` 有降级(置空 + key_error),
+    但 `settings_dialog._build_stockphoto_card` / `_test_stock_key` /
+    `stock_photo._cfg_rows` 曾裸调 `ensure_decrypted` 让异常冒泡 —— 前者直接
+    炸掉 SettingsDialog 构造(设置弹窗点不开)。新接入密路径先问一句:
+    这行密文解不开时,调用方会崩吗?
   - **不要在代码里硬编码 key**;AGENTS.md 顶部已说明自查命令。
 
 ## 并行会话协作(本项目常见冲突)

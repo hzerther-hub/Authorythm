@@ -270,7 +270,8 @@ def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None,
                    people: int = 1, skip_guard: bool = False,
-                   extra_negative: str | None = None) -> tuple[Path, str]:
+                   extra_negative: str | None = None,
+                   reference_lock: bool = True) -> tuple[Path, str]:
     """生图:返回 (本地路径, provider)。reference_images 为本地路径列表(图生图参考)。
 
     仅 agnes 注入(extra_body.image[],≤6 张压缩 data URI);qwen-image / volcengine 等
@@ -279,6 +280,8 @@ def generate_image(prompt: str, out_name: str | None = None,
     **平台级质量守卫**:prompt 统一追加画面质量要求(幂等),negative_prompt 统一下发禁用词。
     people = 画面应有的人物数(漫画格=绑定角色数),>1 时守卫措辞切到「恰好 N 人」,
     否则双人格子会收到「只许一个人」的自相矛盾指令、模型可能随机删掉第二个角色。
+    reference_lock=False 给**自带逐张身份块**的调用方(如复刻:参考图里有场景/产品,
+    通用锁「参考图N=人物N」会把场景图也当成要画的人,实测诱导出第二个人/窗外人脸)。
     """
     from .prompt_guards import (apply_image_quality_guard,
                                build_image_negative_guard, REFERENCE_LOCK_GUARD)
@@ -287,7 +290,7 @@ def generate_image(prompt: str, out_name: str | None = None,
     # 避免模型按 prompt 文本自己脑补外貌(实测 sb 60 绑了陈默参考图,
     # 模型却出了个 POLO 少年 —— 没有这句锁它就不看图)。
     # 幂等(带 marker,二次调用不重复追加);没 reference 就跳过。
-    if not skip_guard and reference_images:
+    if reference_lock and not skip_guard and reference_images:
         from .prompt_guards import _append_guard, REFERENCE_LOCK_MARKER
         prompt = _append_guard(prompt, REFERENCE_LOCK_GUARD, REFERENCE_LOCK_MARKER)
     negative = build_image_negative_guard(people) if not skip_guard else None

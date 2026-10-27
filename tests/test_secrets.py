@@ -73,6 +73,30 @@ def test_decrypt_unencrypted_passthrough(tmp_secrets_dir):
     assert secrets.decrypt("legacy-plain-key") == "legacy-plain-key"
 
 
+def test_fingerprint_binds_machine_not_user(tmp_secrets_dir, monkeypatch):
+    """指纹必须与 Windows 账户无关、与机器相关(2026-10-27 事故守卫)。
+
+    事故:原派生含 getpass.getuser(),Administrator 与 user 两账户来回启动,
+    存量密文全部解不开 → SettingsDialog 构造即崩,设置弹窗永远弹不出来。
+    """
+    import getpass as _getpass
+
+    def _poison():
+        raise RuntimeError("密钥派生不得读取用户名")
+    monkeypatch.setattr(_getpass, "getuser", _poison)
+
+    plain = "sk-user-independent-1234567890"
+    cipher = secrets.encrypt(plain)
+    secrets._reset_for_testing()
+    assert secrets.decrypt(cipher) == plain, "换 Windows 账户后必须仍能解开"
+
+    # 机器变化(主机名)仍必须解不开 —— 保持机器绑定语义
+    monkeypatch.setattr(secrets.platform, "node", lambda: "other-machine")
+    secrets._reset_for_testing()
+    with pytest.raises(secrets.SecretError):
+        secrets.decrypt(cipher)
+
+
 def test_salt_file_created_with_0600_on_unix(tmp_secrets_dir):
     """首次运行应在 DATA_DIR/.secret_salt 落 16 字节。"""
     # 调用一次触发 salt 生成

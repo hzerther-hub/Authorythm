@@ -24,6 +24,19 @@ from app.ai import text_client
 from app.pipeline import storyboard as sb
 
 
+@pytest.fixture(autouse=True)
+def _fake_text_config(monkeypatch):
+    """chat() 入口先走 registry.check_ready 查真实库 —— 本机文本配置
+    缺 Key / 未配置时直接抛 NotConfigured,断言根本走不到网络层
+    (实测:真实库里 MiniMax 无 Key,两条用例在不同机器上时绿时红)。
+    本文件只测传输层行为,配置一律给假值。
+    """
+    monkeypatch.setattr(text_client.registry, "check_ready",
+                        lambda *a, **k: {"id": 1, "provider": "test",
+                                         "model": "m", "base_url": "http://x",
+                                         "api_key": "k"})
+
+
 # ------------------------------------------------------------------ 网络重试
 
 def test_retries_transient_network_error(monkeypatch):

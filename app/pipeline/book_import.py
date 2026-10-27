@@ -481,6 +481,11 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
     raw = _ask(SETTINGS_PROMPT.format(rules=IMITATE_RULES, profile=profile,
                                       chapters=analysis.get("chapters") or "未知"))
     st = runner.extract_json(raw) or {}
+    # `or {}` 只兜得住 None(解析失败→默认值,既有行为);模型若直接回 JSON
+    # 数组,st.get 会抛 AttributeError('list' object has no attribute 'get'),
+    # 仿写任务以一句天书失败。明确报错让用户知道是输出格式问题、可重试。
+    if not isinstance(st, dict):
+        raise RuntimeError("设定阶段模型输出不是 JSON 对象,请重试仿写")
     try:
         planned_n = int(st.get("planned_chapters") or 0)
     except (TypeError, ValueError):

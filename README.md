@@ -22,7 +22,17 @@ AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [o
 - 切换后界面文案与 AI 产出(剧本/资产提取/分镜/提示词/小说/文案)**同时**使用所选语言;
 - 非 zh/en/ja/ko 的语言通过在 Agent System Prompt 末尾注入显式输出语言指令实现(防止模型漂回英文);
 - **繁体中文不走 AI**:`zh-Hant` 的产出在 AI 出口统一经 OpenCC(`s2twp`,词组级消歧 + 台湾用词,如「软件→軟體」)转换,不额外调模型;OpenCC 缺装时优雅退化为简体,不影响启动;
-- 本地化文件:`app/core/i18n.py`(主表 + `_t()` fallback)+ `app/core/ui_strings.py`(15 语言全量翻译表,新增语言只需在 `LANGS` 加一行 + 补一列 15 元素 list)。
+- **繁体界面也走同一套 OpenCC**:繁中表不再从英文表派生,而是「简体中文基准 → `s2twp` 转台湾正字 → 人工校订覆盖」。此前 `T["zh-Hant"] = _t(T["en"], ...)` 导致未翻译的键继承英文,实测 1554 个基准键里只有 107 键是真繁体、1251 键显示简体、1446 键显示英文 —— 「繁體中文」这个选项等于没做。现已修正为 1870 键全覆盖(基准 1554 + 补充词典独有条目 316),英文泄漏 0、缺值 0。
+  - 转换在**首次切到繁中时惰性执行**(opencc import 约 45ms + 1554 键转换约 70ms),没选繁中的用户不付这个成本;
+  - 与 AI 产出同源:界面看到的繁体和 AI 写的繁体是同一套转换规则,不会出现「界面『頭髮』、正文『头发』」;
+  - 人工校订表 `ZH_HANT_MANUAL`(`app/core/i18n.py`)优先于自动转换,留给 OpenCC 转不地道的地方(台湾惯用词、全角标点、专有名词);
+- 本地化文件:`app/core/i18n.py`(主表 + `_t()` fallback + `ZH_HANT_MANUAL`)+ `app/core/ui_strings.py`(15 语言全量翻译表,新增语言只需在 `LANGS` 加一行 + 补一列 15 元素 list)。
+- **完整度已清零**(2026-10-26 全量体检):`python scripts/i18n_audit.py` 当前输出 **露键名 0 / 露中文 0 / 漏译 0 键 0 处 / 繁中缺值·显英文·值不符 0/0/0 / 日语同中文 0 / 占位符丢失 0 / 有基准零译文 0**;`tests/_i18n_gaps.json` 回归基线**已清空**(此前 146 个露键名 + 145 键/2015 处漏译)。
+  - 同轮还修掉三类「不是漏译、但更难看」的问题:**「镜(镜头)」被机翻成「镜子/mirror」**(26 槽)、**串语种**(印尼语串进阿拉伯语槽、法语串进日语槽、中文串进越南语槽等 20 槽)、**U+FFFD 乱码残留**(界面直接显示「���」,23 处)。
+  - `scripts/i18n_runtime_check.py` 做**运行时**逐语种体检(查原始表没用:各语种主表是从英文表继承的,全是假警报);英文基准要取「有效英文值」而不是 `T["en"]` —— 补充词典里 324 个 S-only 键不在 `T["en"]` 里,直接取会漏判。
+  - `tests/test_i18n_coverage.py` + `tests/_i18n_gaps.json` 守住基线不反弹,另有 **5 条硬守卫**(2 条繁中 + 3 条「值错」类,缺值/错值即红,不走基线)。
+  - **第 2 轮**(同日晚些时候)又挖出 4 类「有值、但值是错的」问题 —— 这类**不会触发任何漏译判据**,审计全零也照样存在,共 56 个槽位:**量词/正文被吞**(`items_n` 有 7 个语种只剩 `{0}`)、**葡语原文串进西语槽**(5 键;葡西都是拉丁字母,汉字判据与英文判据**同时失效**)、**整句留英文**(`,{} 章失败` 有 6 个语种全是英文)、**词义错**(`应用` 只当 Apply 按钮用,却按「应用程序/app」译了 15 个语种)。全部已修,并补了 2 条对应硬守卫。
+  - **第 3 轮**继续挖出:**非汉字语种(ar/hi/th)漏出中文** 5 处(ar 槽整段中文、ar 里塞汉字「切换」、hi 留个「第」、th 结尾留「生效」)、**语言列表 ja/id/th 三行共用中文列表**(泰语/印尼语用户看到的是中文语言列表)、4 处标签重复词(`Diller / Diller:`)。同时把漏译判据本身的两个盲点补上:中文基准不能只取 `i18n.Z`(324 个 S-only 键从来没被漏译判据看过)、拉丁字母语种渲染出**汉字**就算漏译(逐字相同会漏掉「差一个字」的中文)。全部已修,并补了 1 条对应硬守卫。
 - **Edge TTS 朗读同步 16 语种**: 切换到「朗读音色」(女声/男声)后,Edge TTS 读出章节文本时,按主脚本自动从 16 语种 × 男女 = 32 个微软神经 voice 中选一个,语种变了 voice 自动切。
 
 ## 🔊 Edge TTS 朗读(免费神经语音)
@@ -71,7 +81,7 @@ AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [o
 | AI 服务 | 文本/图片/视频/配音 四类多供应商(OpenAI 兼容、Gemini、火山 Seedance/Seedream、MiniMax、阿里 Wan、Agnes、qwen-image、本地 InsightFace 换脸),易好 Key 一键配置,连通测试 |
 | 任务系统 | 统一任务队列(sys_task),processing → completed/failed,任务面板 |
 | 无损合并工具页 | ffprobe 参数一致性检测(分辨率/编码/帧率/Profile/采样率)→ 三通道:全一致 `-c copy` 秒合 / 视频一致音频不同→智能直通 / 少数异类→一键对齐多数派;失败回退链(换中间容器→重编码) |
-| 同款复刻 | 参考视频抽帧 → AI 出分镜表 → 产品/模特素材 → 逐镜首帧图+图生视频 → 按原片节奏无损拼接 |
+| 同款复刻 | 参考视频抽帧 → AI 出分镜表 → 产品/模特素材 → 逐镜首帧图+图生视频 → 按原片节奏无损拼接。**三要素锚定**(立绘/空景/产品三图同喂首帧与视频模型)+ 服装锁定 + 特写只禁第二个人的手 + 口播随产品同步改写 + 场景锚空景双锚 + 视觉风格贯穿;步骤按钮按执行顺序排列,批量出视频(全部/补全),成片区最多 8 个可播放/下载/删除,合并可加片头 |
 | 小说线 | 开书策划(总纲/世界观/合约/卷/章节)→ 逐章生成 → 六维审校 → 按指令改稿 → 导出整本 |
 | 审校降噪 | 审校 issue 真假混杂 → Jev 一次性评分(0 忽略/1 应修/2 必修),修复循环只修值得修的,不为误报烧重写轮(`jev_triage`) |
 | 漫画一键出整话 | 「📚 梗概生漫画」:100-1000 字梗概 → 扩成 4-8 场景剧本 → 拆格 → 逐格出图(链式馈送)→ 拼长图,两阶段后台任务任一失败都报 toast;单格失败不中断 |
@@ -80,7 +90,14 @@ AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [o
 | 项目级"朗读音色" | `dramas.metadata.tts_gender` 字段统一男女声(女声/男声) → Edge TTS 16 语种 × 男女 32 个神经 voice 自动选 |
 | Edge TTS 免费神经朗读 | 微软云端 Microsoft Edge TTS,**无需 API Key**,**不需下载语言包**,只要联网就有声;脚本旁白 + 整章朗读 同一链路;播放窗口带 voice 名字 |
 | 漫画跨格一致性 | 链式 keyframe 馈送(上一张 panel 出图后 url 喂给下一张)+ character_variants 多角度参考图(优先取变体图,没有时退回主图),跨格角色/场景/光影保持一致 |
-| 数据 | SQLite 单文件(23 张表)+ 本体媒体存储,`data/` 目录即全部数据 |
+| 整书导入 → 仿写 | TXT 整书导入 → 三级切章入库 → 12 章一组 Map-Reduce 出仿写档案(失败率过高自动暂停)→ 按设定/总纲/分卷建新项目。**专名全换、情节仿而不抄、结构保留**;依赖链未满足时按钮置灰并给原因 |
+| 换脸工具页 | 独立三段式向导:①源人脸(上传/剪贴板/URL/从其他角色形象选)→ ②角色模板图(载入基础形象 + 全部造型变体)→ ③结果区(逐张 ok/失败角标 + 进度条)。角色卡内另有「资产·角色换脸」弹窗,可写回 `characters.image_url` |
+| 封面加字 | 文字/字体/字号/颜色/透明度/位置(3×3 九宫格 + **预览图上直接拖拽定位**)/竖排;字体下拉来自 `app/assets/fonts` 10 款(含之芒行楷) |
+| 局部修补 | 涂抹要改的区域 → 洋葱填充式 inpaint,**蒙版外像素与原图逐字节一致** —— 比例必然相同、绝不凭空加人物、还不花生图额度 |
+| 图库搜图 | 「图片处理」「聊天改图」共用弹窗,选中图**先下载到本地**再交给下游(下游按本地路径写,直接塞远程 URL 会在一半地方炸);没配 key 只提示不阻断 |
+| 片头模拟器 | 对齐原版 IntroEditorDialog.vue:预览项目画幅 → 拖拽定位文字中心点 → 真字体 WYSIWYG → 播放预览模拟淡入淡出 → 改动即存 |
+| 盲文等待指示器 | 全项目统一的忙碌指示(点字方块 ⠿ 循环变化),替代各页各写一套的「生成中…」标签 |
+| 数据 | SQLite 单文件(**29 张表**)+ 本体媒体存储,`data/` 目录即全部数据 |
 
 ## 📊 功能对照表(原版 Web ↔ 本桌面版)
 
@@ -110,7 +127,7 @@ AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [o
 
 | 能力 | 原版 Web | 本版 |
 |---|---|---|
-| UI 语言 | 15 种 | 16 种(含 zh-Hant,繁体产出走 OpenCC 词组级转换) |
+| UI 语言 | 15 种 | 16 种(zh-Hant 的**界面**与**AI 产出**同走 OpenCC `s2twp` 词组级转换,界面不再漏英文/简体) |
 | AI 内容语言 | 15 种(跟随项目) | 16 种(全局 + **项目级独立**) |
 | Agent 提示词变体 | 4 语言硬编码 | **多语言**(168 文件,13 Agent;含漫画梗概扩剧本与海外诊断/改写) |
 | Skill 变体 | 4 语言 | **多语言**(165 文件,含打斗运镜技能) |
@@ -127,6 +144,8 @@ AI 短剧/小说/漫画一站式制作工具。功能 100% 对齐开源项目 [o
 | 中断任务归位 | 重启时按"产出是否已落"判 completed/failed,不一律 failed |
 | 参考图序号 | 单一真相源,`@图片N ≡ reference_image_urls[N-1]` |
 | 结构化日志 | JSON 落 `data/logs/`(10MB×5 轮转),`sk-xxx`/`Bearer`/长 base64 自动脱敏;WARNING+ 可挂 toast |
+| 单实例闸门 | 启动时 `db.claim_single_instance()` 抢锁,抢不到直接退出并提示已在运行 —— 两个进程同时写同一个 SQLite 会互相覆盖用户数据(实测踩过)。需要多开时设 `PYDRAMA_ALLOW_MULTI=1` |
+| i18n 回归守卫 | `tests/test_i18n_coverage.py` + `tests/_i18n_gaps.json` 基线快照:露键名/漏译/日语同中文/占位符丢失四类缺口**只减不增**;`scripts/i18n_audit.py` 出全 16 语言的当前缺口报告 |
 | 进程内指标 | `metrics.incr/observe` 埋点(命名 `subsystem.event.unit`),周期刷盘 |
 | API Key 加密 | Fernet + 机器指纹派生密钥(`app/core/secrets.py`),落库自动加密、读出透明解密;老库自动迁移 |
 
@@ -177,6 +196,15 @@ python -m app.main          # 推荐(包内模块方式)
 # 或双击 start.bat
 ```
 
+体检脚本(改完 i18n 或文档后跑一遍):
+
+```bash
+python scripts/i18n_audit.py        # 全 16 语言 i18n 缺口报告(露键名/漏译/繁中缺值/占位符)
+python scripts/i18n_runtime_check.py # 运行时逐语种体检(串语种/回落英文 —— 查原始表会全是假警报)
+python scripts/i18n_gap_baseline.py # 回归基线快照(只减不增,配合 tests/_i18n_gaps.json)
+python scripts/readme_factcheck.py  # README 里的数字与仓库实际状态对账(表数/提示词数/UI 文件数)
+```
+
 <details>
 <summary>导演台预演内核下载(可选,也可在应用内一键获取)</summary>
 
@@ -209,18 +237,23 @@ py -3.13 -m scripts.migrate_ai_configs             # 迁移(读 E:\\xiaoshuo 的
 
 ```
 app/
-  core/    config.py(路径/ffmpeg) db.py(23表+种子) i18n.py(16语言) ui_strings.py(15语翻译表)
-           zh_convert.py(OpenCC 繁体) secrets.py(Key加密) logging_setup.py metrics.py taskmgr.py theme.py(QSS)
+  core/    config.py(路径/ffmpeg) db.py(29表+种子) i18n.py(16语言+ZH_HANT_MANUAL) ui_strings.py(15语翻译表)
+           zh_convert.py(OpenCC 繁体,AI 产出 + 繁中界面共用) secrets.py(Key加密) logging_setup.py metrics.py
+           taskmgr.py theme.py(QSS)
   ai/      registry.py(服务注册表) text_client.py image_client.py video_client.py tts_client.py face_swap.py
-  agents/  prompts.py(10 Agent 提示词+多语言机制) runner.py(执行器,出口收口繁体转换)
+  agents/  prompts.py(13 Agent 提示词+多语言机制) runner.py(执行器,出口收口繁体转换)
   pipeline/ rewriter.py extractor.py storyboard.py prompts_gen.py comic.py comic_pipeline.py(一键整话)
-           novel.py(规划/正文模型分设) promo.py overseas.py(海外改写) previz.py+previz_gen.py(导演台工程)
-           merge.py(easymerger 逻辑) stitch.py(长图) video_clone.py(同款复刻) jev_triage.py(审校降噪)
+           novel.py(规划/正文模型分设) book_import.py(整书导入→分析→仿写) promo.py overseas.py(海外改写)
+           previz.py+previz_gen.py(导演台工程) merge.py(easymerger 逻辑) stitch.py(长图) video_clone.py(同款复刻)
+           jev_triage.py(审校降噪) video_poster.py(视频海报帧)
   ui/      main_window.py projects_page.py new_project_dialog.py project_page.py
-           episode_page.py(六阶段工作台) previz_page.py(导演台内嵌) overseas_dialog.py
+           episode_page.py(六阶段工作台,≈8k 行) previz_page.py(导演台内嵌) overseas_dialog.py
            settings_dialog.py task_panel.py merger_tool_page.py chat_edit_drawer.py widgets.py
+           book_import_dialog.py(整书导入) face_swap_page.py(换脸向导) cover_text_dialog.py(封面加字)
+           patch_dialog.py(局部修补) stock_photo_dialog.py(图库搜图) intro_dialog.py(片头) braille.py(盲文等待)
 assets/fonts/  打包字体(微软雅黑,对齐原版 drama 字体栈回落策略)
-workspace/prompts/  150 个 Agent System Prompt(多语言,用户可改)
+workspace/prompts/  168 个 Agent System Prompt(13 类 Agent,多语言,用户可改)
+workspace/skills/   165 个技能文件
 data/vendor/directordesk/  导演台 web 构建(fetch_directordesk.py 解包,gitignore)
 docs/          分析报告/计划/过程/截图
 ```

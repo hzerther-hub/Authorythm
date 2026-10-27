@@ -4,7 +4,12 @@
 设计要点:
 - 算法:`cryptography.fernet.Fernet`(AES-128-CBC + HMAC-SHA256,标准做法)。
 - 密钥派生:`PBKDF2HMAC(SHA256, 200_000 轮, salt, 32 bytes)`。
-  - 输入 = `getpass.getuser() + platform.node() + str(uuid.getnode())`。
+  - 输入 = `platform.node() + str(uuid.getnode())`(主机名 + MAC)。
+    **故意不含 Windows 用户名**(2026-10-27 实测事故:Administrator 与 user
+    两账户来回启动,`getpass.getuser()` 参与派生导致全部存量密文解不开,
+    设置弹窗构造即崩、设置页都打不开;单人机器上用户名档不提供真实隔离
+    —— 库文件和 salt 两边账户都读得到)。换 Windows 账户启动不再废 key;
+    换机器(主机名/MAC 变)仍解不开,保持机器绑定语义。
   - **不要把派生输入本身写盘**:只存 salt。
 - 存储格式:`enc:<base64-fernet-token>`,加 `enc:` 前缀便于检测旧明文值。
 - 迁移:`migrate_unencrypted_keys()` 启动时一次性扫表,旧值批量升级为
@@ -25,8 +30,6 @@ API:
 from __future__ import annotations
 
 import base64
-import getpass
-import hashlib
 import os
 import platform
 import threading
@@ -120,11 +123,14 @@ def _load_or_create_salt() -> bytes:
 # ── 密钥派生 ──────────────────────────────────────────────────────────────
 
 def _machine_fingerprint() -> str:
-    """机器指纹:用户名 + 主机名 + MAC 地址。"""
-    try:
-        user = getpass.getuser()
-    except Exception:  # noqa: BLE001
-        user = "unknown"
+    """机器指纹:主机名 + MAC 地址,**不含用户名**。
+
+    ⚠️ 历史事故(2026-10-27):原实现含 `getpass.getuser()`,同一台机器上
+    Administrator 与 user 两个账户先后启动应用,双方加密的密文互相解不开
+    → 全部 key 失效 + SettingsDialog 构造即崩(设置页打不开)。
+    单人机器上用户名档不提供真实隔离(库文件和 salt 谁都读得到),剔除;
+    存量旧格式密文用 scripts/migrate_secrets_fingerprint.py 一次性重加密。
+    """
     try:
         node = platform.node() or "unknown"
     except Exception:  # noqa: BLE001
@@ -133,7 +139,7 @@ def _machine_fingerprint() -> str:
         mac = str(uuid.getnode())
     except Exception:  # noqa: BLE001
         mac = "unknown"
-    return f"{user}|{node}|{mac}"
+    return f"{node}|{mac}"
 
 
 def _derive_key(salt: bytes) -> bytes:

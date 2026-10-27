@@ -3209,7 +3209,12 @@ class EpisodePage(QWidget):
                                         on_prompt=self._cb_prompt(r, kind),
                                         on_open=self._cb_open(r, kind),
                                         on_delete=self._cb_delete_asset(r, kind),
-                                        on_variants=(lambda rid=r["id"]: self._open_variants(rid, kind[:-1]))
+                                        # kind 必须绑进默认参数:回调在循环结束后
+                                        # 才触发,晚绑定会拿到最后一轮的 "props",
+                                        # 场景卡的变体按钮拿场景 id 去查 props 表,
+                                        # 静默打不开(rid 漏绑是同类坑,别只绑一个)。
+                                        on_variants=(lambda rid=r["id"], k=kind:
+                                                     self._open_variants(rid, k[:-1]))
                                         if kind in ("scenes", "props") else None,
                                         busy=_busy))
                 self._asset_cards[(kind, r["id"])] = card
@@ -3859,7 +3864,10 @@ class EpisodePage(QWidget):
         if not p:
             return
         import shutil
-        dst = config.STATIC_DIR / "uploads" / f"up_{row_id}_{config.uuid.uuid4().hex[:6]}{p[p.rfind('.'):][:8]}"
+        import uuid
+        # uuid 用标准库 —— config 里没有 uuid 属性,写 config.uuid 会选完文件
+        # 即 AttributeError 且被 Qt 吞掉,表现为「上传无效」(实测 asset_dialogs 同款)。
+        dst = config.STATIC_DIR / "uploads" / f"up_{row_id}_{uuid.uuid4().hex[:6]}{p[p.rfind('.'):][:8]}"
         shutil.copy(p, dst)
         db.ex(f"UPDATE {table} SET image_url=?, updated_at=? WHERE id=?",
               (config.path_to_media_url(dst), db.now(), row_id))
@@ -4087,17 +4095,15 @@ class EpisodePage(QWidget):
         # 应用字体里没有字形,按钮渲染出来是**纯空白**(实测颜色数=1,同纯背景),
         # 用户反馈「合成配音没有办法播放 删除」——代码在、数据在、mp3 也在,
         # 就是那颗按钮看不见也点不着。#iconBtn 另把 padding 压到 0。
-        from PySide6.QtWidgets import QStyle
-        self.sb_narr_play_btn = W.icon_btn(
-            QStyle.StandardPixmap.SP_MediaPlay, tr("play_narration"),
-            size=22, fallback="▶")
+        # 播放钮初始为扁平 SVG(播放态由 _set_narr_play_icon 换回原生暂停图标
+        # —— iconfont 30 枚里没有暂停 glyph,见该函数注释)。
+        self.sb_narr_play_btn = W.svg_icon_btn("play", tr("play_narration"), size=22)
         self.sb_narr_play_btn.setVisible(False)
         self.sb_narr_play_btn.clicked.connect(self._toggle_narration_audio)
         nr_foot.addWidget(self.sb_narr_play_btn)
         # 删除已合成音频(有 url 才显示)
-        self.sb_narr_del_btn = W.icon_btn(
-            QStyle.StandardPixmap.SP_TrashIcon, "删除已合成旁白,可重新合成",
-            size=22, fallback="×")
+        self.sb_narr_del_btn = W.svg_icon_btn("delete", "删除已合成旁白,可重新合成",
+                                              size=22)
         self.sb_narr_del_btn.setVisible(False)
         self.sb_narr_del_btn.clicked.connect(self._delete_narration_audio)
         nr_foot.addWidget(self.sb_narr_del_btn)
@@ -4196,9 +4202,8 @@ class EpisodePage(QWidget):
         lf_title.setObjectName("inspectorLabel")
         lf_head.addWidget(lf_title)
         lf_head.addStretch(1)
-        self.sb_lf_clear_btn = W.icon_btn(
-            QStyle.StandardPixmap.SP_TrashIcon, tr("clear_last_frame"),
-            size=18, fallback="×")
+        self.sb_lf_clear_btn = W.svg_icon_btn("delete", tr("clear_last_frame"),
+                                              size=18)
         self.sb_lf_clear_btn.clicked.connect(lambda _=False: self._clear_last_frame())
         lf_head.addWidget(self.sb_lf_clear_btn)
         lf_lay.addLayout(lf_head)
@@ -5338,12 +5343,31 @@ class EpisodePage(QWidget):
         if not self._sb_id:
             return
         sb_id = self._sb_id
+        # 场景走的是**列**不是关联表:绑定真相源是 storyboards.scene_id
+        # (refs.build_shot_reference_list 读它;场景图只有进了这一列才会
+        # 真正进参考图列表)。此前这里给 scene 配了 None 直接 return,
+        # 场景卡点了毫无反应 —— 用户以为绑了,实际没绑,场景逐镜漂。
+        # 关联表 storyboard_scenes 同步写一份,供变体覆盖
+        # (refs._variant_image_of)与 variant_detector 用。
+        if kind == "scene":
+            cur = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (sb_id,))
+            if cur and cur["scene_id"] == row_id:
+                db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (sb_id,))
+                db.ex("UPDATE storyboards SET scene_id=NULL, updated_at=? WHERE id=?",
+                      (db.now(), sb_id))
+            else:
+                db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (sb_id,))
+                db.ex("INSERT OR IGNORE INTO storyboard_scenes(storyboard_id,scene_id) VALUES(?,?)",
+                      (sb_id, row_id))
+                db.ex("UPDATE storyboards SET scene_id=?, updated_at=? WHERE id=?",
+                      (row_id, db.now(), sb_id))
+            r = db.q1("SELECT * FROM storyboards WHERE id=?", (sb_id,))
+            self._render_refs(dict(r) if r else {})
+            self._render_bound_refs(dict(r) if r else {})
+            return
         # 不同 kind 走不同的关联表
         link_table = {"character": ("storyboard_characters", "character_id"),
-                      "scene": None,    # 场景不在 storyboard 上绑,跳过
                       "prop": ("storyboard_props", "prop_id")}[kind]
-        if link_table is None:
-            return
         table, ref_col = link_table
         cur = db.q(f"SELECT * FROM {table} WHERE storyboard_id=? AND {ref_col}=?",
                    (sb_id, row_id))
@@ -5796,16 +5820,32 @@ class EpisodePage(QWidget):
                 ok(f"已绑定:{item.get('name')}")
         elif kind == "scene":
             # 单选语义:勾了新场景就清旧场景
+            #
+            # 绑定的真相源是 **storyboards.scene_id 列**,不是 storyboard_scenes 表:
+            # refs.build_shot_reference_list 读的是 sb["scene_id"],场景图只有写进
+            # 这一列才会真正进首帧/视频的参考图列表(否则用户点了"绑定",场景陈设
+            # 仍然逐镜漂)。storyboard_scenes 表只是**变体覆盖**的旁路
+            # (refs._variant_image_of 查 variant_id、variant_detector 查变体),
+            # 两边都要写,否则手动选的造型覆盖会丢。
+            #
+            # 此前这里写的是 `storyboard_scenes(panel_id,scene_id)` —— 表里根本没有
+            # panel_id 列(实为 storyboard_id),一执行就抛
+            # OperationalError: table storyboard_scenes has no column named panel_id,
+            # 且异常无人捕获 → 点场景卡必崩。
             existing = db.q1(
                 "SELECT 1 FROM storyboard_scenes WHERE storyboard_id=? AND scene_id=?",
                 (self._sb_id, item.get("scene_id")))
             if existing:
                 db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (self._sb_id,))
+                db.ex("UPDATE storyboards SET scene_id=NULL, updated_at=? WHERE id=?",
+                      (db.now(), self._sb_id))
                 ok(f"已解除绑定:{item.get('name')}")
             else:
                 db.ex("DELETE FROM storyboard_scenes WHERE storyboard_id=?", (self._sb_id,))
-                db.ex("INSERT OR IGNORE INTO storyboard_scenes(panel_id,scene_id) VALUES(?,?)",
+                db.ex("INSERT OR IGNORE INTO storyboard_scenes(storyboard_id,scene_id) VALUES(?,?)",
                       (self._sb_id, item.get("scene_id")))
+                db.ex("UPDATE storyboards SET scene_id=?, updated_at=? WHERE id=?",
+                      (item.get("scene_id"), db.now(), self._sb_id))
                 ok(f"已绑定:{item.get('name')}")
         elif kind == "prop":
             pid = item.get("prop_id")
@@ -6158,7 +6198,7 @@ class EpisodePage(QWidget):
             if error:
                 err(error)
             else:
-                ok(tr("批量补齐提示词完成:{}"))
+                ok(tr("批量补齐提示词完成:{}").format(result))
             self._reload_storyboard()
 
         TASKMGR.submit("sb_repair", repair_job, repair_done, episode_id=self.episode_id,
@@ -6702,11 +6742,14 @@ class EpisodePage(QWidget):
 
     def _set_narr_play_icon(self, playing: bool):
         """播放/暂停图标换切 —— 换图标而不是 setText:'▶'/'⏸' 字符没有字形,
-        换了也画不出来(见构造处注释)。"""
+        换了也画不出来(见构造处注释)。待播态用扁平播放图标(与构造处同款);
+        播放态换原生暂停 —— iconfont 30 枚里没有暂停 glyph,凑合用原生的。"""
+        if not playing:
+            self.sb_narr_play_btn.setIcon(W.svg_icon("play", size=16))
+            return
         from PySide6.QtWidgets import QStyle
-        sp = (QStyle.StandardPixmap.SP_MediaPause if playing
-              else QStyle.StandardPixmap.SP_MediaPlay)
-        ico = self.sb_narr_play_btn.style().standardIcon(sp)
+        ico = self.sb_narr_play_btn.style().standardIcon(
+            QStyle.StandardPixmap.SP_MediaPause)
         if not ico.isNull():
             self.sb_narr_play_btn.setIcon(ico)
 
@@ -7905,7 +7948,8 @@ class EpisodePage(QWidget):
             if error:
                 err(tr("export_stage"))
             else:
-                ok(tr("merge_done"))
+                # 基准是「合并完成: {}」,不带参数会把花括号原样显示给用户
+                ok(tr("merge_done", Path(str(result)).name if result else ""))
             # 先把结果刷进成片列表(「拼接中」→ 完成卡),再重选按钮态
             self._reload_export()
             # 拼好后自动打开成片预览 —— 结果立刻可见,不用再点一次

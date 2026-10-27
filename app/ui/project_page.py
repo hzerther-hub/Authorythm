@@ -240,13 +240,10 @@ class EpisodeCard(QFrame):
         st.setObjectName("muted")
         foot.addWidget(st)
         foot.addStretch(1)
-        from PySide6.QtWidgets import QStyle
-        # 纯图标(文字挪到 tooltip):🗑 字符在部分 Windows 字体下渲染成方块,
-        # 改用 Qt 标准垃圾桶图标,任何机器都正常,常显危险色保证可辨
-        del_btn = W.danger_btn("")
-        del_btn.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
-        del_btn.setFixedSize(30, 28)
-        del_btn.setToolTip(tr("delete_episode"))
+        # 纯图标(文字挪到 tooltip)。扁平 SVG 与克隆/成片卡的删除同款
+        # (2026-10-27 用户定版:所有删除统一 iconfont 扁平风格,不再用
+        # Qt 原生 SP_TrashIcon——那是立体拟物风,与全站线性图标不搭)
+        del_btn = W.svg_icon_btn("delete", tr("delete_episode"), size=30)
         del_btn.clicked.connect(self._del)
         foot.addWidget(del_btn)
         enter = W.primary_btn(tr("write_novel") if is_novel else tr("enter_production") + " ›")

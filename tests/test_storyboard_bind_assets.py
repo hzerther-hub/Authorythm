@@ -135,11 +135,88 @@ def test_fallback_does_not_bind_unmentioned_assets(sb_env):
 
 
 def test_fallback_needs_at_prefix(sb_env):
-    """正文里只是提到名字(没有 @)不算引用 —— 不绑。"""
+    """**角色**正文里只是提到名字(没有 @)不算引用 —— 不绑。
+
+    角色侧的 @ 前缀要求保持不变(角色绑错 = 分镜挂满无关人物,代价大);
+    道具侧已改为「裸名字也绑」(见 test_prop_bare_name_in_text_binds),
+    两者判据刻意不同。
+    """
     sb, fake = sb_env
     _bind(sb, fake, {"content": "叶尘和苏九在青铜戒旁说话"})
     assert fake.sb_char == []
-    assert fake.sb_prop == []
+    # 道具:裸名字也算 —— 道具出现在镜头里是客观事实
+    assert fake.sb_prop == [(100, 7)]
+
+
+# ── 道具降级绑定(裸名字):2026-10-27 ──
+#
+# bug 背景:实测全库 storyboard_props = 0 行 —— 道具图**一次都没进过**参考图
+# 列表,道具在分镜里 100% 靠文字描述,跨镜形状必然漂。根因是两条既有路径都太窄:
+#   ① 模型给 props:["青铜戒"] —— 模型经常不给(它只关心画面,不关心资产表);
+#   ② 正文里出现 "@青铜戒"  —— 模型十有八九直接写「她拿起青铜戒」,**不带 @**。
+# 即「道具出现在这个镜头里」这个客观事实被两条路同时漏掉了。
+
+
+def test_prop_bare_name_in_text_binds(sb_env):
+    """模型没给 props 数组时,描述里出现**裸道具名**也要绑上(降级绑定)。"""
+    sb, fake = sb_env
+    _bind(sb, fake, {"content": "她从口袋里掏出一枚青铜戒,在掌心转了半圈"})
+    assert fake.sb_prop == [(100, 7)], f"裸名字的道具没绑上: {fake.sb_prop}"
+    assert fake.ep_prop == [(42, 7)], f"本集道具关联没补: {fake.ep_prop}"
+
+
+def test_prop_bare_name_scans_all_description_fields(sb_env):
+    """扫描面要覆盖所有描述性字段 —— 道具常出现在 description 的动作句里,
+    不只 content(实测 content 常常只是一句标题)。"""
+    sb, fake = sb_env
+    _bind(sb, fake, {"description": "她握紧青铜戒,指节发白"})
+    assert fake.sb_prop == [(100, 7)], f"description 里的道具没绑上: {fake.sb_prop}"
+
+
+def test_prop_explicit_array_wins_over_text_fallback(sb_env):
+    """模型**显式**给了 props 数组时,降级绑定不介入(显式输出是权威的)。"""
+    sb, fake = sb_env
+    # 显式给「长刀」,但文本里提到「青铜戒」—— 只有长刀该绑
+    _bind(sb, fake, {"props": ["长刀"], "content": "她把青铜戒收进袖子"})
+    assert fake.sb_prop == [(100, 8)], f"显式 props 被文本降级污染了: {fake.sb_prop}"
+
+
+def test_prop_fallback_skips_unmentioned(sb_env):
+    """降级绑定不能把没提到的道具也绑上。"""
+    sb, fake = sb_env
+    _bind(sb, fake, {"content": "叶尘独自赶路"})
+    assert fake.sb_prop == [], f"绑了没提到的道具: {fake.sb_prop}"
+
+
+def test_prop_fallback_skips_single_char_names(sb_env):
+    """单字道具名不参与降级匹配 —— 「包」会命中「书包」「钱包」,误绑比不绑更糟。"""
+    sb, fake = sb_env
+    fake.props.append({"id": 9, "name": "包"})
+    _bind(sb, fake, {"content": "他背上书包赶路"})
+    assert fake.sb_prop == [], f"单字名误绑了: {fake.sb_prop}"
+
+
+def test_prop_fallback_longest_name_wins(sb_env):
+    """道具表里同时有「翡翠手镯」和「手镯」时,只绑**长名**(两张图抢同一主体)。"""
+    sb, fake = sb_env
+    fake.props.append({"id": 10, "name": "翡翠手镯"})
+    _bind(sb, fake, {"content": "她把翡翠手镯举到灯下"})
+    assert fake.sb_prop == [(100, 10)], f"长名优先没生效: {fake.sb_prop}"
+
+
+def test_prop_fallback_short_name_binds_when_standalone(sb_env):
+    """正文只写短名(没有长名)时,短名该绑上。"""
+    sb, fake = sb_env
+    fake.props.append({"id": 10, "name": "翡翠手镯"})
+    _bind(sb, fake, {"content": "她把翡翠手镯举到灯下"})
+    assert fake.sb_prop == [(100, 10)]
+    # 独立出现的短名也要能绑
+    fake2 = _FakeDB(chars=[], props=[{"id": 11, "name": "手镯"}])
+    sb.db = fake2
+    name_to_id = {}
+    sb._bind_assets(100, {"content": "她摩挲着手镯"}, name_to_id,
+                    {11: "手镯"}, ["手镯"], "ts", 42)
+    assert fake2.sb_prop == [(100, 11)]
 
 
 def test_batch_insert_uses_single_commit(sb_env):

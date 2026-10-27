@@ -107,8 +107,11 @@ def repair_storyboards(episode_id: int, storyboard_ids: list[int] | None = None,
             num=sb["storyboard_number"], sid=sb["id"],
             desc=(sb.get("description") or sb.get("content") or "")[:1200])
         try:
+            # 注意:run_agent_json 没有 temperature 形参(内部 _call_budgeted
+            # 已固定 0.4)。这里曾误传 temperature=0.4,每次调用都 TypeError,
+            # 被 except 吞掉后「补全残缺分镜」整个功能静默失效。
             data = runner.run_agent_json("prompt_generator", prompt, lang=lang,
-                                         temperature=0.4, config_id=config_id)
+                                         config_id=config_id)
             data = data if isinstance(data, dict) else {}
             ip = (data.get("image_prompt") or "").strip()
             if ip:

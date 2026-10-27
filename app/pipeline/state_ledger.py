@@ -214,7 +214,11 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     try:
         raw = runner.run_agent("novel_reviewer", prompt, temperature=0.2, config_id=config_id,
                             lang=config.resolve_content_language(drama_id))
-        parsed = runner.extract_json(raw) or {}
+        # `or {}` 只挡得住 None,挡不住「模型直接回了 JSON 数组」——数组是真值,
+        # 后面 parsed.get 会 AttributeError,而且 222 行起已在 try 之外,
+        # 手动重跑入口会把这个内部错误原样抛给 UI。统一压成 dict。
+        parsed = runner.extract_json(raw)
+        parsed = parsed if isinstance(parsed, dict) else {}
     except Exception:  # noqa: BLE001 —— 提取失败不阻断批量写作
         return None
 

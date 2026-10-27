@@ -72,6 +72,23 @@ def upload_material(drama_id: int, kind: str, image_path: str | Path) -> str:
     return str(dst)
 
 
+def refresh_clone_prompts(drama_id: int) -> str | None:
+    """复刻出镜人物:按角色行字段**重新生成最终提示词**(写回 final_prompt)。
+
+    换出镜照后样貌重读、旧提示词作废,由这里按新字段重出一份 —— 用户要求
+    「上传后要将提示词按图片重新生成」。失败打印日志返回 None,不打断业务。
+    """
+    row = _clone_asset_row(drama_id, "presenter")
+    if not row:
+        return None
+    from . import prompts_gen
+    try:
+        return str(prompts_gen.character_prompt(row["id"]))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 最终提示词重生成失败({exc})", flush=True)
+        return None
+
+
 def replace_material(drama_id: int, kind: str, image_path: str | Path,
                      config_id: int | None = None) -> str:
     """项目内换素材(产品图 / 出镜人照片),返回新素材路径。
@@ -133,6 +150,9 @@ def replace_material(drama_id: int, kind: str, image_path: str | Path,
         cid, pid, _sid = sync_assets(drama_id, config_id=config_id)
         if cid:
             clone["presenter_asset_id"] = cid
+            # 样貌已按新照片重读(见 sync_assets),最终提示词跟着重生成 ——
+            # 否则提示词描述的还是上一张照片的人物(用户实测反馈)。
+            refresh_clone_prompts(drama_id)
         if pid:
             clone["product_asset_id"] = pid
     meta["clone"] = clone
@@ -159,13 +179,24 @@ def extract_frames(video_path: str | Path, count: int = 8) -> list[Path]:
 
 
 def _duration(video_path: str | Path) -> float:
+    # ffprobe 优先;本机没有系统 ffprobe(实测:Anaconda/用户 PATH 都没有,
+    # 只有剪映自带的裸 ffmpeg)→ 用 cv2 兜底读帧数/FPS,opencv 本就是依赖。
     fp = config.find_ffprobe()
-    if not fp:
-        return 0.0
-    out = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
-                          "-of", "csv=p=0", str(video_path)], capture_output=True, text=True, timeout=30)
+    if fp:
+        out = subprocess.run([fp, "-v", "error", "-show_entries", "format=duration",
+                              "-of", "csv=p=0", str(video_path)], capture_output=True, text=True, timeout=30)
+        try:
+            return float(out.stdout.strip())
+        except Exception:  # noqa: BLE001
+            return 0.0
     try:
-        return float(out.stdout.strip())
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        n = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        cap.release()
+        dur = float(n) / float(fps) if fps and fps > 0 else 0.0
+        return dur if dur > 0 else 0.0
     except Exception:  # noqa: BLE001
         return 0.0
 
@@ -281,11 +312,17 @@ REWRITE_PROMPT = """下面是一条带货视频的**镜头节奏表**,以及用�
 
 逐镜输出 JSON:{{"storyboards":[...]}},字段:
 number, start, end, shot, camera, action, action_steps, line, product_use, prompt
+characters(本镜出镜人物名数组), props(本镜出现的道具名数组), scene(本镜场景名)
 
 其中 prompt 是该镜的重绘提示词(英文),必须满足:
 - 只描述**新产品与新人物**,原片产品与原片包装一个字都不许出现
 - 写出时间锚点(如"0-4 seconds: ..."),必须与该镜 start/end 一致
-- 只讲一个重点,只用一种主运镜"""
+- 只讲一个重点,只用一种主运镜
+
+**characters / props / scene 是资产绑定字段**(与短剧分镜同构):写本镜里
+**实际出现**的人物/道具/场景的名字;没出现就写空数组/空串。这三个字段
+决定本镜把哪些参考图喂给模型、特写镜是否带人物立绘 —— 写错会导致
+画面里的人物与设定图对不上。名称沿用原分镜表里已有的写法,不要新造。"""
 
 
 def rewrite_boards_for_product(boards: list[dict], product_desc: str,
@@ -349,6 +386,13 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
                 if new.get(k):
                     row[k] = new[k]
                     touched = True
+            # 资产绑定(角色/道具/场景):改写后的画面内容变了,绑定可能也变
+            # (原片里只摆手镯的镜,新产品是戒指 → 道具引用要跟着变)。
+            # 但模型给的可能是编的名字,所以**只在原表已有绑定时**才采纳,
+            # 原表没绑定就不凭空造(否则会引入对不上的名字)。
+            for k in ("characters", "props", "scene"):
+                if row.get(k) and new.get(k):
+                    row[k] = new[k]
             # 镜头语言:**强制用原片的**,无视模型输出。节奏对齐是复刻的本质,
             # 模型一旦自作主张改 start/end/shot,成片节奏就跟原片对不上了。
             for k in ("start", "end", "duration", "shot", "camera", "number"):
@@ -382,6 +426,12 @@ def _normalize_shot(shot: dict, index: int) -> dict:
     两条拆解路径合并成一条能力(抽帧 / 整段直传只是喂给模型的东西不同),
     产物必须同构,否则下游 rewrite / generate_shot_image / _shot_video_prompt
     要分两套写法 —— 那正是当初两套分镜并存、各自缺功能的根源。
+
+    **资产引用字段**(characters/props/scene)与短剧侧分镜同构:短剧分镜的
+    video_prompt 里带 @角色名/@场景名/@道具名,模型据此把画面里的对象
+    对上参考图;复刻此前完全没有这一层,三个资产是「每镜无差别全带」,
+    提示词里也没有名字可指 —— 于是「这一镜到底该锁谁」无处表达。
+    这里给复刻补上同构的三个字段。
     """
     s = dict(shot or {})
     acts = [str(x).strip() for x in (s.get("action_steps") or []) if str(x).strip()]
@@ -403,12 +453,83 @@ def _normalize_shot(shot: dict, index: int) -> dict:
         "line": " / ".join(dlg) or str(s.get("line") or "").strip(),
         "product_use": str(s.get("product_use") or "").strip(),
         "prompt": str(s.get("prompt") or "").strip(),
+        # 资产引用(名字数组/单值),与短剧侧同构;模型没给就空,后面按需补
+        "characters": [str(x).strip() for x in (s.get("characters") or []) if str(x).strip()],
+        "props": [str(x).strip() for x in (s.get("props") or []) if str(x).strip()],
+        "scene": str(s.get("scene") or s.get("location") or "").strip(),
     }
 
 
 CLONE_PRESENTER_NAME = "出镜人物"
 CLONE_PRODUCT_NAME = "主推产品"
+
+# 「通用重绘要求」的默认值(用户可改可清空,见 main_window 的 ghint 弹窗):
+# 通用质量规则不写死在管线里 —— 比如对戒/情侣款产品合法地需要两个人,
+# 写死的「严禁第二个人」会毁掉那类项目。管线只在设置表有值时才注入。
+DEFAULT_CLONE_RULES = (
+    "画面中只有出镜人物一个人,产品在她本人手上或身前,严禁出现第二个或多个人物;"
+    "产品的颜色只属于产品本身,不得染到人物的服装、皮肤或背景")
 CLONE_SCENE_NAME = "主场景"
+
+# ── 复刻资产的「身份键」:一律用 id,不用名字 ──
+#
+# 背景(2026-10-27 实测):复刻的三个资产(出镜人物/主推产品/主场景)此前有 8 处
+# **按名字**查库(SELECT ... WHERE drama_id=? AND name='出镜人物'),于是用户一旦
+# 在资产详情弹窗里改名字,整条复刻链就断了:
+#   · 素材行点「当前出镜人/当前产品图」→ 按旧名查不到 → 弹窗打不开(提示
+#     「还没有生成该资产」),用户以为资产没了;
+#   · sync_assets._upsert 按旧名 upsert → **新建一条重复资产**(旧名那条还在),
+#     于是资产页出现两个「出镜人物」,三视图写进旧行、新行是空壳;
+#   · refresh_clone_prompts / build_presenter_turnaround 读样貌 → 读到空,
+#     人物文字锚静默消失(服装/发型逐镜漂的老毛病又回来了);
+#   · 提示词里的名字却**是对的**(generate_shot_image 按 id 读名字)—— 于是
+#     用户看到「名字生效了」,其它却全坏,极难自查。
+#
+# 修法:资产身份一律以 metadata.clone 里的 *_asset_id 为准,名字只是**展示**。
+# 名字改成什么都无所谓;id 丢了(老项目/手工删过资产)才回退到按名字找一次。
+_ASSET_KINDS = {
+    "presenter": ("characters", "presenter_asset_id", CLONE_PRESENTER_NAME),
+    "product":   ("props",      "product_asset_id",   CLONE_PRODUCT_NAME),
+    "scene":     ("scenes",     "scene_asset_id",     CLONE_SCENE_NAME),
+}
+
+
+def _clone_asset_row(drama_id: int, kind: str) -> dict | None:
+    """按 id 查复刻资产行(名字不是身份)。找不到再回退按名字找一次。
+
+    kind ∈ {"presenter", "product", "scene"}。
+    """
+    table, id_key, default_name = _ASSET_KINDS[kind]
+    meta = _meta(drama_id)
+    clone = meta.get("clone", {}) or {}
+    aid = clone.get(id_key)
+    row = None
+    if aid:
+        try:
+            r = db.q1(f"SELECT * FROM {table} WHERE id=?", (int(aid),))
+        except (TypeError, ValueError):
+            r = None
+        if r:
+            row = dict(r)
+    if row is None:
+        # 回退:老项目没记 id,或资产被手工删过 → 按默认名找一次
+        r = db.q1(f"SELECT * FROM {table} WHERE drama_id=? AND name=?",
+                  (drama_id, default_name))
+        if r:
+            row = dict(r)
+            # 顺手把 id 记回 metadata,下次就都走 id 了
+            clone[id_key] = row.get("id")
+            meta["clone"] = clone
+            try:
+                _save_meta(drama_id, meta)
+            except Exception:  # noqa: BLE001 —— 回退写回失败不影响主流程
+                pass
+    return row
+
+
+def _clone_asset_id(drama_id: int, kind: str) -> int | None:
+    row = _clone_asset_row(drama_id, kind)
+    return (row or {}).get("id")
 
 
 def _turnaround_block() -> str:
@@ -423,7 +544,8 @@ def _turnaround_block() -> str:
 
 def build_presenter_turnaround(presenter_path,
                                config_id: int | None = None,
-                               style_value: str = "") -> Path:
+                               style_value: str = "",
+                               drama_id: int | None = None) -> Path:
     """用**你上传的人物照**生成全身三视图主图,返回本地路径。
 
     为什么要有这一步(一致性问题的根):
@@ -457,9 +579,32 @@ def build_presenter_turnaround(presenter_path,
                 "visible head to toe in every view, crisp sharp focus, "
                 "true-to-life body proportions, high detail")
     look = f"{style}, {backdrop}" if style else f"{realistic}"
+    # 样貌/妆造**文字**必须跟着进提示词:实测只靠参考图,agnes 会照收自拍却把
+    # 服装自由发挥(上传白毛衣自拍 → 三视图出青蓝色套装,用户实测「衣服不到位」)。
+    # 但只能给**压缩后的要点**:完整叙述有 250+ 字还带姿态描写(「双肩微含」),
+    # 实测把四格布局稀释成两个重复立绘(用户实测「也不是三视图了」)——生图模型
+    # 的提示词预算有限,布局规格必须占大头。
+    person = ""
+    if drama_id:
+        # 按 id 查(改名后按名字查会落空 → 人物文字锚静默消失 → 服装发型逐镜漂)
+        row = _clone_asset_row(drama_id, "presenter")
+
+        def _compact(t: str, limit: int) -> str:
+            t = " ".join(str(t or "").split())
+            return t[:limit].rstrip("，。,;； ") if len(t) > limit else t
+
+        if row:
+            a = _compact(row["appearance"], 60)
+            s = _compact(row["styling"], 60)
+            person = "；".join(x for x in (a, s) if x)
     prompt = (f"{look}\n"
               "以参考图中的人物为原型,生成该角色的**标准参考图**。"
-              f"{_turnaround_block()}")
+              + (f"\n外观与服装要点(与参考图一致,不得换装):{person}\n"
+                 if person else "")
+              + f"{_turnaround_block()}\n"
+              "FINAL CHECK: exactly 4 panels in ONE horizontal row — panel 1 "
+              "front-face close-up, panels 2-4 front/side/back full-body of the "
+              "SAME single character. No duplicated figures outside these 4 panels.")
     out, _ = image_client.generate_image(prompt, out_name="clone_turnaround.png",
                                          config_id=config_id,
                                          reference_images=[str(presenter_path)],
@@ -484,8 +629,17 @@ def swap_clone_face(source_path, template_path,
     不在本函数里吞异常。
     """
     from ..ai import face_swap   # face_swap 在 app.ai,不是 app.pipeline
+    # provider 必须显式传:用户选 remote-faceswap 配置时,不传 provider 会落进
+    # 本地兼容路径 swap_one —— 它发请求**不带 X-API-Key**,远程服务直接
+    # 401「无效的 API Key」(实测:任务台账 sys_task #1621,配置 face.mei.biz)。
+    # 选了哪条配置就按它的 provider 路由。
+    provider = None
+    if swap_cfg_id:
+        row = db.q1("SELECT provider FROM ai_service_configs WHERE id=?",
+                    (int(swap_cfg_id),))
+        provider = (row or {}).get("provider") if row else None
     return face_swap.swap_one_by_provider(str(source_path), str(template_path),
-                                          config_id=swap_cfg_id)
+                                          provider=provider, config_id=swap_cfg_id)
 
 
 def standing_ref_of(turnaround_path) -> Path | None:
@@ -553,11 +707,36 @@ def sync_assets(drama_id: int,
         return None, None
     ts = db.now()
 
-    def _upsert(table: str, name: str, url: str, extra: dict) -> int | None:
-        row = db.q1(f"SELECT id FROM {table} WHERE drama_id=? AND name=?", (drama_id, name))
+    def _upsert(table: str, name: str, url: str, extra: dict,
+                id_key: str = "") -> int | None:
+        """按 **id** 找现有行(名字不是身份),找到就更新、找不到才建。
+
+        为什么不能按名字找:用户可以在资产详情弹窗里改名字(需求:自定义
+        角色名/场景名/道具名)。按名字 upsert 的后果是**改名后这里认不出
+        旧行 → 新建一条重复资产**(资产页出现两个「出镜人物」,三视图写进
+        旧行、新行是空壳),而且**每次 sync_assets 都会再复制一份**。
+        名字是**展示字段**,用户改了就该保留,不能被这里覆盖回默认值。
+
+        id_key:metadata.clone 里存该资产 id 的键(presenter_asset_id 等)。
+        """
+        row = None
+        if id_key:
+            aid = clone.get(id_key)
+            if aid:
+                r = db.q1(f"SELECT id, name FROM {table} WHERE id=?", (int(aid),))
+                if r:
+                    row = r
+        if row is None:
+            # 回退:老项目没记 id → 按默认名找一次
+            r = db.q1(f"SELECT id, name FROM {table} WHERE drama_id=? AND name=?",
+                      (drama_id, name))
+            if r:
+                row = r
         cols = {"drama_id": drama_id, "name": name, "image_url": url,
                 "updated_at": ts, **extra}
         if row:
+            # **不覆盖 name**:用户自定义的名字保留(只有"还没有名字"才填默认)
+            cols["name"] = (row["name"] or "").strip() or name
             sets = ",".join(f"{k}=?" for k in cols)
             db.ex(f"UPDATE {table} SET {sets} WHERE id=?",
                   (*cols.values(), row["id"]))
@@ -568,7 +747,11 @@ def sync_assets(drama_id: int,
             f"SELECT id FROM {table} WHERE drama_id=? AND name=? ORDER BY id DESC LIMIT 1",
             (drama_id, name)).fetchone()["id"]
 
-    cid = _upsert("characters", CLONE_PRESENTER_NAME,
+    # 资产名支持自定义(2026-10-27 用户要求:建项目时填产品名/出镜人名字,
+    # 分镜绑定与提示词里直接叫名字,不再是笼统的「出镜人物/主推产品」)
+    presenter_name = clone.get("presenter_name") or CLONE_PRESENTER_NAME
+    product_name = clone.get("product_name") or CLONE_PRODUCT_NAME
+    cid = _upsert("characters", presenter_name,
                   config.path_to_media_url(presenter) if presenter else "",
                   # appearance / styling 填上:短剧侧的漫画链路会读这两个字段做
                   # **文字层**的资产锁定(comic.py:287),只靠图锁不住服装/妆造。
@@ -576,7 +759,7 @@ def sync_assets(drama_id: int,
                   {"role_type": "presenter",
                    "appearance": clone.get("presenter_desc") or "",
                    "styling": clone.get("presenter_styling") or "",
-                   "created_at": ts}) if presenter else None
+                   "created_at": ts}, id_key="presenter_asset_id") if presenter else None
     # 人物外观/服装描述只读一次并落库:generate_shot_image / rewrite /
     # characters.appearance 都读 clone.presenter_desc,但此前**没有任何地方给它
     # 赋值**(read_presenter_desc 的结果只在全身像函数内部用完即弃),首帧提示词
@@ -586,6 +769,14 @@ def sync_assets(drama_id: int,
         if desc:
             clone["presenter_desc"] = desc.get("appearance") or ""
             clone.pop("presenter_styling", None)   # 出镜照不提供服装描述(用户要求)
+            # 新照片的描述必须写回角色行,否则详情弹窗还显示上一张照的样貌/妆造
+            # (实测:换成白毛衣自拍照后,妆造仍写「黑色细肩带上装」,与三视图
+            # 服装对不上)。妆造清空(出镜照不提供服装描述);最终提示词一并作废
+            # —— 它描述的还是旧照片,由 refresh_clone_prompts 按新字段重生成。
+            if cid:
+                db.ex("UPDATE characters SET appearance=?, styling='', "
+                      "final_prompt='', updated_at=? WHERE id=?",
+                      (clone["presenter_desc"], db.now(), cid))
     # 角色资产 = **三视图**(正脸特写 + 正面/侧面/背面)+ 生成后立刻换脸 —— 用户定版:
     # 复刻不要全身像。此前「单人全身像当分镜参考」的路线(纯文字底图 + 换脸)实测
     # 两个致命伤,正是用户抱怨的「首帧的人跟三视图不是同一人 / 衣服变了」:
@@ -599,7 +790,8 @@ def sync_assets(drama_id: int,
     if presenter and not clone.get("turnaround_image"):
         try:
             ta = build_presenter_turnaround(presenter, config_id=_cfg,
-                                            style_value=_style_value)
+                                            style_value=_style_value,
+                                            drama_id=drama_id)
             swapped = True
             try:
                 ta = swap_clone_face(presenter, ta,
@@ -615,22 +807,24 @@ def sync_assets(drama_id: int,
                   f"{Path(str(ta)).name}", flush=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[clone] 三视图生成失败({exc})", flush=True)
-    # 资产图分列存(与短剧侧同构,见 comic.comic_asset_image):
-    #   image_url       = 三视图切出的**单人立绘**(分镜参考,画面里只有 1 个人)
-    #   comic_image_url = 三视图整图(角色资产,核对长相/手动换脸用)
+    # 资产图两列都写**三视图整张**。image_url 曾写「三视图切出的单人立绘」,
+    # 用户已定版废弃单人全身展示(实测:重建后角色资产页变成单人全身,被质疑
+    # 「早就不用了为什么还弹」)。切格立绘只在管线内部由 standing_ref_of 即时
+    # 计算,不落库;生成端读 clone["turnaround_image"],不读 characters 列。
+    # 只动 name=出镜人物 这一行 —— 用户手动添加的角色不会被碰。
     if clone.get("turnaround_image"):
-        db.ex("UPDATE characters SET comic_image_url=? WHERE drama_id=? AND name=?",
-              (config.path_to_media_url(clone["turnaround_image"]),
-               drama_id, CLONE_PRESENTER_NAME))
-        standing = standing_ref_of(clone["turnaround_image"])
-        if standing:
-            db.ex("UPDATE characters SET image_url=? WHERE drama_id=? AND name=?",
-                  (config.path_to_media_url(standing),
-                   drama_id, CLONE_PRESENTER_NAME))
-    pid = _upsert("props", CLONE_PRODUCT_NAME,
+        _ta_url = config.path_to_media_url(clone["turnaround_image"])
+        # 按 **id** 写回:按名字写的话,用户改了角色名就写不进去(静默失效),
+        # 三视图生成好了却没进资产行 → 首帧参考图仍是旧图。
+        _prow = _clone_asset_row(drama_id, "presenter")
+        if _prow:
+            db.ex("UPDATE characters SET comic_image_url=?, image_url=? "
+                  "WHERE id=?",
+                  (_ta_url, _ta_url, _prow["id"]))
+    pid = _upsert("props", product_name,
                   config.path_to_media_url(product) if product else "",
                   {"type": "product", "description": clone.get("product_desc") or "",
-                   "created_at": ts}) if product else None
+                   "created_at": ts}, id_key="product_asset_id") if product else None
     if pid and clone.get("product_desc"):
         db.ex("UPDATE props SET description=? WHERE id=?", (clone["product_desc"], pid))
 
@@ -641,7 +835,7 @@ def sync_assets(drama_id: int,
                   {"location": clone.get("scene_location") or "",
                    "prompt": clone.get("scene_prompt") or "",
                    "lighting": clone.get("scene_lighting") or "",
-                   "created_at": ts})
+                   "created_at": ts}, id_key="scene_asset_id")
     print(f"[clone] 资产已同步:出镜人物={cid} 主推产品={pid} 场景={sid}", flush=True)
     # 必须写回 meta:三视图路径、场景图等只改了局部 clone 字典,调用方
     # (analyze_reference)拿的是自己那份引用,不会自动落库 —— 实测生成了
@@ -685,8 +879,24 @@ def _residual_by_llm(rewritten: list[dict], product_desc: str,
         return ""
 
 
+def _asset_names_block(clone: dict) -> str:
+    """分镜 prompt 的「已知资产」段 —— 绑定字段必须**逐字**用这些名字。
 
-
+    自定义名(建项目时填的产品名/出镜人名字,见 new_project_dialog)优先,
+    缺省回落 出镜人物/主推产品。
+    实测教训:不把名字喂给模型,它会自创绑定名(「女生」「窗边木桌前」),
+    与资产名对不上 → 绑定全部失锚 → 参考图被裁得只剩主图,一致性崩坏
+    (窗外人脸、服装漂移都由此来,2026-10-27 实测)。
+    """
+    pn = clone.get("presenter_name") or CLONE_PRESENTER_NAME
+    gd = clone.get("presenter_gender") or "女"
+    pr = clone.get("product_name") or CLONE_PRODUCT_NAME
+    return (f"已知资产(本片固定,绑定字段只能用这些名字):\n"
+            f"- 出镜人物:「{pn}」({gd}性,所有出镜的都是这一个人)\n"
+            f"- 主推产品:「{pr}」\n"
+            f"- 主场景:「主场景」\n"
+            f"characters 只能填 [\"{pn}\"] 或空数组;props 出现产品时填 [\"{pr}\"];"
+            f"scene 场景出现时填 \"主场景\";自创名字会被系统忽略。")
 
 
 # 通用词:命中它们不代表画面里出现了新产品(旧分镜里本来就有这些)
@@ -719,9 +929,9 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         # 整段直传:模型看连续运动,信息密度高于抽帧推断(抽 8 帧看不到
         # 「手抬起→凑近→涂抹」这类帧间才成立的时序)。代价是慢、体积大。
         work, _cut = transcode_if_needed(Path(ref), drama_id)
-        prompt = UNDERSTAND_PROMPT + (
-            f"\n\n总时长 {dur:.1f} 秒。"
-            f"{('补充说明: ' + extra_hint) if extra_hint else ''}")
+        prompt = (UNDERSTAND_PROMPT + "\n\n" + _asset_names_block(clone)
+                  + (f"\n\n总时长 {dur:.1f} 秒。"
+                     f"{('补充说明: ' + extra_hint) if extra_hint else ''}"))
         raw = runner.run_agent("storyboard_breaker", prompt, temperature=0.3,
                                config_id=config_id, image_urls=[_inline_video(work)],
                                lang=config.resolve_content_language(drama_id))
@@ -729,7 +939,10 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         # 直传用 shots/duration/dialogue,统一映射到抽帧版的字段名,
         # 这样下游(rewrite / generate_shot_image / _shot_video_prompt)
         # 完全不用关心这条分镜表是哪条路产出的。
-        boards = [_normalize_shot(s, i + 1) for i, s in enumerate(data.get("shots") or [])]
+        # 模型也可能直接回 shots 数组(不带外层对象):先 isinstance 再 .get,
+        # 否则 list.get 直接 AttributeError(rewrite 那条路就是这么写的)。
+        shots = data if isinstance(data, list) else data.get("shots")
+        boards = [_normalize_shot(s, i + 1) for i, s in enumerate(shots or [])]
     else:
         frames = extract_frames(ref, count=8)
         # 帧目录落库:场景锚提取(extract_scene_anchor)要靠这些帧挑代表帧。
@@ -742,6 +955,7 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         prompt = f"""下面是一条待复刻的带货/种草类视频,已按时间均匀抽出 {len(frames)} 帧随消息附上(顺序对应):
 总时长: {dur:.1f} 秒
 {frame_desc}
+{_asset_names_block(clone)}
 {('补充说明: ' + extra_hint) if extra_hint else ''}
 
 请逐帧仔细看图,推断该视频的完整分镜表(8 秒上下每镜,共 2-6 镜):
@@ -752,6 +966,9 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
 - action(一句话动作概述), action_steps(连续动作时序数组,2-5 步,每步一句按时间先后排列的可见动作)
 - line(推测台词/字幕), product_use(产品如何出现)
 - prompt(给文生视频模型的重拍提示词:主体+动作+运镜+光线+氛围,不写人名)
+- characters(本镜出镜人物名数组), props(本镜出现的道具名数组), scene(本镜场景名)
+  —— 资产绑定字段,与短剧分镜同构:决定本镜把哪些参考图喂给模型,
+  取值规则见上方「已知资产」,自创名字会被系统忽略。
 以 JSON 输出:{{"storyboards":[...]}}"""
         # **不走 storyboard_breaker agent**:它的 system prompt 是给
         # 「剧本 → 分镜」设计的,开篇就要求「从用户消息中读取剧本与可用资产清单」,
@@ -773,7 +990,11 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
                 f"分镜表生成失败:模型响应 {len(raw or '')} 字符但无法解析为 JSON。"
                 f"若响应含大量 <think> 说明输出预算被推理块吃光(调大模型配置的"
                 f"「最大输出 token」);尾部 200 字: {(raw or '')[-200:]!r}")
-        boards = data.get("storyboards") or (data if isinstance(data, list) else [])
+        # 模型可能直接回分镜数组(不带 storyboards 外层)。必须先判 isinstance
+        # 再 .get —— 原来 `data.get(...) or (data if isinstance...)` 的写法在
+        # data 是 list 时先执行 data.get,AttributeError,兜底分支永远走不到。
+        boards = ((data.get("storyboards") if isinstance(data, dict) else None)
+                  or (data if isinstance(data, list) else []))
     if not boards:
         raise RuntimeError("分镜表生成失败:模型未产出任何分镜")
     clone["boards_mode"] = "direct" if direct else "frames"
@@ -906,9 +1127,26 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
         if style:
             # 空景图与首帧同画风:首帧生成时拿它当参考,不用自己跨风格翻译
             body += f"。渲染风格严格参照:{style}"
-        out, _ = image_client.generate_image(
-            body, out_name=f"clone_scene_{drama_id}.png", config_id=config_id,
-            reference_images=[str(pick)], skip_guard=True)
+        out = None
+        # people=0 + 启用守卫(2026-10-27 实测:skip_guard=True 时「去人」指令
+        # 只有一句英文,模型照样把参考帧里的人原样保留 —— 场景锚里坐着个人,
+        # 后续每镜参考它都会多人)。people=0 会注入「画面不出现任何人物,
+        # 也没有手/影子/倒影」强守卫 + 完整禁人负面词;reference_lock=False
+        # 是必须的:参考帧里有人,绝不能说「参考图1=人物1的外貌来源」。
+        for attempt in (1, 2):
+            try:
+                out, _ = image_client.generate_image(
+                    body, out_name=f"clone_scene_{drama_id}.png", config_id=config_id,
+                    reference_images=[str(pick)], people=0,
+                    skip_guard=False, reference_lock=False)
+                break
+            except Exception as exc:
+                if attempt == 2:
+                    raise
+                import time as _t
+                print(f"[clone] 场景锚生图第{attempt}次失败({str(exc)[:120]}),3 秒后重试",
+                      flush=True)
+                _t.sleep(3)
         clone["scene_image"] = str(out)
         clone["scene_location"] = location
         clone["scene_lighting"] = lighting
@@ -965,6 +1203,62 @@ def _shot_video_prompt(b: dict) -> str:
     except (TypeError, ValueError):
         span = ""
     return f"{span}{body}"
+
+
+def board_asset_names(drama_id: int, board: dict) -> dict:
+    """本镜要锁定的资产(名字)—— 与短剧侧同构的「@名字」来源。
+
+    返回 {"characters": [名...], "props": [名...], "scene": 名}。
+
+    规则:
+    · 角色/道具:取 board 里的 characters/props 数组(模型拆解时给的),
+      名字对不上已知资产时丢弃(拼错的名字进提示词比没有更糟);
+    · 场景:单值,board["scene"];复刻只有「主场景」一个场景资产,认它;
+    · board 没给(老分镜/模型没给)→ 全部回落到默认三资产
+      (出镜人物 / 主推产品 / 主场景),保持既有行为不变。
+
+    为什么要有这一层:短剧分镜的 video_prompt 带 @角色名/@场景名/@道具名,
+    模型据此把画面里的对象对上参考图;复刻此前完全没有名字可指,
+    三个资产「每镜无差别全带」—— 于是「这一镜该锁谁」无处表达,
+    特写镜硬带人物立绘只能靠文字守卫硬压。
+    """
+    known = {}
+    for kind in ("presenter", "product", "scene"):
+        row = _clone_asset_row(drama_id, kind)
+        known[kind] = (row or {}).get("name") or _ASSET_KINDS[kind][2]
+    # 角色名白名单:已知资产名 + 分镜里给的名字(后者的合法性靠「能不能对上
+    # 某个已知资产」判断 —— 复刻目前只有一个人物资产,分镜写别的名字说明
+    # 模型在编,直接丢弃)。
+    char_names = [str(x).strip() for x in (board.get("characters") or []) if str(x).strip()]
+    valid_chars = [n for n in char_names if n == known["presenter"]]
+    prop_names = [str(x).strip() for x in (board.get("props") or []) if str(x).strip()]
+    valid_props = [n for n in prop_names if n == known["product"]]
+    scene = str(board.get("scene") or "").strip()
+    if scene and scene != known["scene"]:
+        scene = ""
+    return {
+        "characters": valid_chars or ([known["presenter"]] if known["presenter"] else []),
+        "props": valid_props or ([known["product"]] if known["product"] else []),
+        "scene": scene or (known["scene"] or ""),
+    }
+
+
+def asset_ref_header(names: dict) -> str:
+    """「出场人物 / 场景 / 道具」头行 —— 与短剧分镜 video_prompt 的写法对齐。
+
+    短剧侧的分镜提示词第一行就是:
+        出场人物:@陈默 @张雯 @赵刚  场景:@云脉科技大厦会议室
+    模型据此把「@名字」与参考图对应起来。复刻此前只有英文 prompt,
+    没有任何名字可指 —— 这行头就是补上的那一层。
+    """
+    bits = []
+    if names.get("characters"):
+        bits.append("出场人物:" + " ".join("@" + n for n in names["characters"]))
+    if names.get("props"):
+        bits.append("道具:" + " ".join("@" + n for n in names["props"]))
+    if names.get("scene"):
+        bits.append("场景:@" + names["scene"])
+    return "  ".join(bits)
 
 
 def _pick_ref_kind(shot_text: str, shot: str = "") -> str:
@@ -1077,7 +1371,6 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                     return s
             return _resolve_local(clone.get("presenter"))
         key = f"{kind}_asset_id"
-        name = CLONE_PRESENTER_NAME if kind == "presenter" else CLONE_PRODUCT_NAME
         table = "characters" if kind == "presenter" else "props"
         aid = clone.get(key)
         if aid:
@@ -1110,16 +1403,52 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     if main_img:
         refs.append(main_img)
     # ── 三要素(用户定版「每一镜都要有主图:三视图/产品图(道具)/场景图,
-    # 结合提示生成」)── **每一镜都带齐三张**,包括特写镜:特写的手部肤质
+    # 结合提示生成」)── 默认**每一镜都带齐三张**,包括特写镜:特写的手部肤质
     # 也要有立绘可锚。角色分工靠提示词逐一点名(参考图1/2/3 各锁什么),
     # 特写镜的守卫(见下方 core 单肢规则)压住「照人物设定图画出全身」。
     # 人物照+产品照曾实测「对称融合双头」—— 那是两张同类型正面照互相抢主体;
     # 现在逐字点名分工,若再出融合,用「重绘备注」写一句即可压(见 user_hint)。
+    #
+    # 【本镜绑定裁剪】:分镜若**显式**声明了绑定(有 characters/props/scene 字段),
+    # 就只带这一镜真正用到的资产 —— 特写镜声明了「只要产品」就不必再带人物
+    # 立绘(那张图里有全身,模型容易照着画出人,靠文字守卫硬压不如直接不给)。
+    # 没声明(老分镜/模型没给)→ 保持「三张全带」的既有行为,一个都不少。
+    _anames_early = board_asset_names(drama_id, b)
+    _has_binding = bool(b.get("characters") or b.get("props") or b.get("scene"))
+    _want_person = True
+    _want_product = True
+    _want_scene = True
+    if _has_binding:
+        # 只要名字对得上已知资产才生效(对不上的名字是模型在编,忽略)
+        _pn = _anames_early["characters"][0] if _anames_early["characters"] else ""
+        _wn = (_clone_asset_row(drama_id, "presenter") or {}).get("name") or ""
+        _want_person = bool(_pn and _pn == _wn)
+        _pp = _anames_early["props"][0] if _anames_early["props"] else ""
+        _wp = (_clone_asset_row(drama_id, "product") or {}).get("name") or ""
+        _want_product = bool(_pp and _pp == _wp)
+        _sc = _anames_early["scene"]
+        _ws = (_clone_asset_row(drama_id, "scene") or {}).get("name") or ""
+        _want_scene = bool(_sc and _sc == _ws)
+        if not (_want_person or _want_product or _want_scene):
+            # 绑定名**全部**对不上已知资产 → 是模型在编名字(实测 2026-10-27:
+            # 新分镜绑定写「女生/窗边木桌前」,与资产名 出镜人物/主场景 对不上),
+            # 按绑定裁剪会把三张锚全裁掉只剩主图 → 一致性全崩(窗外人脸、服装
+            # 漂移都由此来)。此时无视绑定,回到**三张全带**(用户定版:
+            # 「只要将三张图喂给模型,不就能保持一致性了」)。
+            _want_person = _want_product = _want_scene = True
     _extras = ((scene_img, product_img) if main_kind == "presenter"
                else (scene_img, standing_img))
     for extra in _extras:
-        if extra and extra not in refs:
-            refs.append(extra)
+        if not extra or extra in refs:
+            continue
+        # 裁剪:额外图若对应的是本镜没绑的资产,就不带
+        if extra is scene_img and not _want_scene:
+            continue
+        if extra is product_img and not _want_product:
+            continue
+        if extra is standing_img and not _want_person:
+            continue
+        refs.append(extra)
     if not refs:                       # 主图缺失 → 退回另一类资产,再退回空
         refs = [p for p in (_asset_img("presenter"), _asset_img("product"))
                 if p][:1]
@@ -1157,10 +1486,22 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                         "**服装款式与颜色**与"
                         + ("参考图1(人物设定图)" if multi else "参考图")
                         + "完全相同,是同一个人,不是长相相近的另一个人;服装不得逐镜变化")
-            # 服装**不做文字锁**(用户要求):着装跟原片分镜文案走(rewrite 保
-            # 镜头语言时保留了原片着装描述),跨镜一致靠参考图1的人物设定图锚。
-            # 出镜照的服装描述已按用户要求移除 —— 锁到上传照的衣服会让成片
-            # 服装跟原片对不上。
+            # 服装**文字锚**(2026-10-27 起恢复注入):只靠参考图,实测 agnes 会被
+            # 提示词里的产品颜色带偏 —— 分镜文案「emerald-green jade bangle」×3,
+            # 出图把翡翠绿染到了连衣裙上(用户实测「三视图服装跟首帧不同」)。
+            # 旧决策「不锁服装」是原片人物当出镜照时代的产物(衣服跟原片走);
+            # 用户换上自己的照片后,衣服就该跟新照走。取角色行妆造要点(≤80字)。
+            # 注:这是**数据驱动**的机制(读各项目自己的妆造字段),不是写死的规则;
+            # 「单人物/颜色隔离」这类通用规则已移入「通用重绘要求」默认值,用户可改。
+            _person_style = ""
+            _pa = clone.get("presenter_asset_id")
+            if _pa:
+                _prow = db.q1("SELECT styling FROM characters WHERE id=?", (_pa,))
+                if _prow and (_prow["styling"] or "").strip():
+                    _person_style = " ".join(_prow["styling"].split())[:80]
+            if _person_style:
+                consist += (f";人物服装文字锚:{_person_style}"
+                            "(与参考图1里的人是同一套衣服)")
             if multi:
                 consist += (";背景环境、陈设、窗景与光源方向严格参照"
                             "**参考图2(场景图)**,就是同一间房、同一时间")
@@ -1177,10 +1518,10 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                 consist += (";背景环境严格参照**参考图2(场景图)**,同一间房、同一时间")
             if standing_img and standing_img in refs:
                 # 特写镜带立绘只为锚**手部肤质**,必须点名「只参照手,不画全身」,
-                # 否则模型照着设定图把整个人画进腕部特写(实测 #03 的病灶)
-                consist += (";出镜者的手部肤质与指甲参照**参考图3(人物设定图)**中"
-                            "同一人的手,但本镜只拍手,严禁画出她的面部或身体")
-                consist += (";出镜者的手部肤质与指甲参照**参考图3(人物设定图)**中"
+                # 否则模型照着设定图把整个人画进腕部特写(实测 #03 的病灶)。
+                # 图序号动态算:场景图缺失时立绘是参考图2,写死 3 会指错图。
+                _sn = refs.index(standing_img) + 1
+                consist += (f";出镜者的手部肤质与指甲参照**参考图{_sn}(人物设定图)**中"
                             "同一人的手,但本镜只拍手,严禁画出她的面部或身体")
     # ── 场景一致性:靠**空景图参考**(上面 refs 已注入)+ consist 里「参照
     # 参考图2」的点名。场景文字描写不再拼进提示词(用户要求:「环境描写也
@@ -1231,6 +1572,17 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     #   「只允许一只手」这类规则往往整条片都要,不该逐镜重抄;
     # · 单镜(分镜条目 user_hint):只针对这一镜的问题。
     global_hint = str(db.get_setting("yihao.clone_redraw_hint") or "").strip()
+    # 单人守卫(2026-10-27 实测:特写镜三参考融合出第二个人,用户反馈
+    # 「复刻要只有一个人才行」)。分镜文案没写多人词就默认「一镜一人」;
+    # 对戒/情侣款这类**合法双人**项目在分镜文案里写「两人/情侣/对戒」
+    # 即自动豁免,不必改代码(比旧 DEFAULT_CLONE_RULES 的写死禁令更稳)。
+    # 全局重绘要求里已写过同类约束时不重复注入。
+    if (not any(w in _shot_text for w in
+                ("两人", "两个人", "双人", "情侣", "对戒", "闺蜜", "多人"))
+            and "一个人" not in global_hint):
+        tail += ("。画面中只有出镜人物一个人,严禁出现第二个或多个人物、背景路人;"
+                 "窗户外、玻璃、镜面、屏幕上不得出现任何人影或倒影,"
+                 "墙面不得出现带人脸的照片或海报")
     if global_hint:
         tail += f"。{global_hint}"
     user_hint = str(b.get("user_hint") or "").strip()
@@ -1251,23 +1603,48 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     # 提示词末尾(tail),没有「图 N = 谁」的绑定关系,模型会把几张图平均融合。
     def _role_of(p: str) -> str:
         if standing_img and p == standing_img:
-            return "人物设定图(出镜者本人)"
+            return "person"
         if product_img and p == product_img:
-            return "产品图(主推产品)"
+            return "product"
         if scene_img and p == scene_img:
-            return "场景图(本片唯一场景,陈设/窗景/光源以它为准)"
-        return "参考图"
+            return "scene"
+        return "other"
     identity = ""
     if refs:
-        role_lines = [f"- 参考图{i} = {_role_of(p)}" for i, p in enumerate(refs, start=1)]
-        person_line = ""
-        if standing_img in refs:
-            person_line = ("- 出镜者的五官、脸型、发型、体型、服装、配饰全片严格一致,"
-                           "头发/服装/体型以人物设定图为准,是同一个人,不是长相相近的"
-                           "另一个人;分镜文案里若提到其他发型或服装,一律以人物设定图为准")
-        identity = ("【参考图分工与身份锁定 / 逐张对照生成,禁止自由改动】\n"
-                    + "\n".join(role_lines)
-                    + (("\n" + person_line) if person_line else "")
+        # 逐张绑定 + **逐属性枚举** —— 照抄短剧首帧的原文样式(用户实测短剧
+        # 「人物服装脸对不上变化」零漂移,复刻要的就是这个力度):每条绑定都
+        # 点名五官/发型/体型/年龄/服装/配饰并禁止自由改动,而不是只给角色标签。
+        # 名字从资产行现读(按 **id** 查,不再按名字查 —— 改名后按名字查会
+        # 全部落空,用户改个名整条复刻链就断了;详见 _clone_asset_row 注释)。
+        _person_name = (_clone_asset_row(drama_id, "presenter") or {}).get("name") or CLONE_PRESENTER_NAME
+        _product_name = (_clone_asset_row(drama_id, "product") or {}).get("name") or CLONE_PRODUCT_NAME
+        _scene_name = (_clone_asset_row(drama_id, "scene") or {}).get("name") or CLONE_SCENE_NAME
+        # 注意行是动态的:复刻的主图随景别变(特写=产品),人物不一定是图1,
+        # 必须算出人物是第几张图再指认 —— 短剧侧人物恒为图1,写死没错,这里不行。
+        lines = []
+        person_no = 0
+        for i, p in enumerate(refs, start=1):
+            role = _role_of(p)
+            if role == "person":
+                person_no = i
+                lines.append(f"- 参考图{i}(人物设定图)= 角色「{_person_name}」本人:"
+                             f"严格按图{i}的五官、发型、体型、年龄、服装、配饰 —— "
+                             "禁止模型自由改动。")
+            elif role == "product":
+                lines.append(f"- 参考图{i}(产品图)= 产品「{_product_name}」:"
+                             f"外形、颜色、材质、光泽严格按图{i} —— 禁止改动形状。")
+            elif role == "scene":
+                lines.append(f"- 参考图{i}(场景图)= 场景「{_scene_name}」:"
+                             f"陈设、窗景、光源方向严格按图{i},就是同一间房。")
+            else:
+                lines.append(f"- 参考图{i} = 参考图。")
+        note = (f"(注意:参考图{person_no}是角色「{_person_name}」的人物参考,"
+                "头发/服装/体型以它为准;分镜文案里若提到其他发型或服装,"
+                "一律以人物设定图为准。)"
+                if person_no else "")
+        identity = ("【人物身份锁定 / 严格按参考图外貌生成】\n"
+                    + "\n".join(lines)
+                    + (("\n" + note) if note else "")
                     + "\n")
     # ── 画幅指令 + size(同样移植自短剧首帧):克隆此前从不传 size,首帧全是
     # provider 默认 16:9(2624x1472);项目画幅写进提示词让模型先想清楚构图,
@@ -1282,10 +1659,37 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
         layout_hint = f"【画幅】横屏构图({aspect}),主体居中或略偏左,左右留更多空间。"
     else:
         layout_hint = f"【画幅】{aspect} 构图。"
-    prompt = f"{identity}{layout_hint}\n{style}, {span}{core}{tail}"
-    out, _ = image_client.generate_image(prompt, out_name=f"clone_s{board_number}_{uuid.uuid4().hex[:6]}.png",
-                                         config_id=config_id, reference_images=refs,
-                                         people=1, size=size)
+    # ── 「出场人物 / 场景 / 道具」头行(@名字)──
+    #
+    # 与短剧分镜的 video_prompt 写法对齐:短剧侧第一行就是
+    #   出场人物:@陈默 @张雯 @赵刚  场景:@云脉科技大厦会议室
+    # 模型据此把画面里的对象对上参考图。复刻此前只有英文 prompt、没有任何
+    # 名字可指,于是「这一镜该锁谁」无处表达 —— 三个资产只能每镜无差别全带。
+    # 现在把本镜的资产名字显式点名,并让**参考图集合由绑定决定**(见下方
+    # _extras 的按需裁剪),头行与图一一对应。
+    _anames = board_asset_names(drama_id, b)
+    _ref_header = asset_ref_header(_anames)
+    prompt = f"{identity}{layout_hint}\n{_ref_header}\n{style}, {span}{core}{tail}" if _ref_header \
+        else f"{identity}{layout_hint}\n{style}, {span}{core}{tail}"
+    out = None
+    # reference_lock=False:复刻的提示词里已有**逐张点名**的精确身份块
+    # (参考图1=人物/2=场景/3=产品);image_client 的通用锁「参考图N=人物N」
+    # 会把场景图、产品图也当成要画的人 —— 实测诱导出第二个人、窗外人脸。
+    # 网络抖动重试(与场景锚同款;2026-10-27 实测 agnes 连接超时,一批 6 镜挂 3 镜)
+    for attempt in (1, 2):
+        try:
+            out, _ = image_client.generate_image(
+                prompt, out_name=f"clone_s{board_number}_{uuid.uuid4().hex[:6]}.png",
+                config_id=config_id, reference_images=refs,
+                people=1, size=size, reference_lock=False)
+            break
+        except Exception as exc:
+            if attempt == 2:
+                raise
+            import time as _t
+            print(f"[clone] 分镜#{board_number} 生图第{attempt}次失败"
+                  f"({str(exc)[:120]}),3 秒后重试", flush=True)
+            _t.sleep(3)
     # 记录首帧
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):
@@ -1449,6 +1853,8 @@ UNDERSTAND_PROMPT = """这是一条参考短视频。请逐镜头分析并输出
 2. 每个镜头输出:index(从1递增)、duration(秒数,按原片节奏估)、title(4-10字镜头名)、
 shot_type(景别:近景/中景/全景/特写)、camera(运镜)、action_steps(连续动作时序数组,每步一句可见的动作描述)、
 dialogue(台词数组,格式"说话人:内容",无则空数组)、sound(环境音/音效描述)。
+2b. 资产绑定字段(与短剧分镜同构):characters(本镜出镜人物名数组)、props(本镜出现的道具名数组)、
+scene(本镜场景名) —— 决定本镜把哪些参考图喂给模型,没出现就写空数组/空串。
 3. 只输出 JSON:{"shots":[…]},不要解释。"""
 
 
@@ -1509,7 +1915,13 @@ def understand_video(episode_id: int, video_url: str, config_id=None) -> int:
     work, _t = transcode_if_needed(src, episode_id)
     from ..agents import runner
     ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
-    prompt = UNDERSTAND_PROMPT + "\n\n参考视频(base64 内联,直接读取):"
+    # 克隆项目注入「已知资产」段,绑定名才不会自创(与 analyze_reference 同理)
+    clone = (_meta(ep["drama_id"]).get("clone") or {}) if ep else {}
+    if clone:
+        prompt = (UNDERSTAND_PROMPT + "\n\n" + _asset_names_block(clone)
+                  + "\n\n参考视频(base64 内联,直接读取):")
+    else:
+        prompt = UNDERSTAND_PROMPT + "\n\n参考视频(base64 内联,直接读取):"
     raw = runner.run_agent("storyboard_breaker", prompt, temperature=0.3,
                            config_id=config_id, image_urls=[_inline_video(work)],
                            lang=config.resolve_content_language(

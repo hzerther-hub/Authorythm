@@ -1,0 +1,35 @@
+{
+"_note": "人工定稿的 i18n 覆盖表 —— 这些键**不能**靠自动补译。scripts/i18n_merge_translations.py 合并时最后生效,覆盖同名批次产出。原因:① 键名本身是 ASCII 标识符(如 batch_capped),中文基准要另写;② 调用点带 .format(MAX_BATCH),自动补译若照抄无占位符的键名,数字会被静默吞掉。语种序:zh en ja ko ar hi id th tr vi fr de es pt it",
+"batch_capped": {
+  "zh": "单批最多 {0} 张,其余已忽略",
+  "vals": ["单批最多 {0} 张,其余已忽略", "At most {0} images per batch; the rest were ignored", "1 回のバッチは最大 {0} 枚までです。残りは無視されました", "한 번에 최대 {0}장까지 처리되며, 나머지는 무시됩니다", "الحد الأقصى {0} صورة في الدفعة الواحدة؛ تم تجاهل الباقي", "एक बैच में अधिकतम {0} छवियाँ; बाकी को अनदेखा किया गया", "Maksimal {0} gambar per batch; sisanya diabaikan", "สูงสุด {0} ภาพต่อชุด รายการที่เหลือถูกข้าม", "Toplu işlemde en fazla {0} görsel; kalanlar yok sayıldı", "Tối đa {0} ảnh mỗi lô; những ảnh còn lại bị bỏ qua", "Au maximum {0} images par lot ; les autres sont ignorées", "Maximal {0} Bilder pro Stapel; der Rest wurde ignoriert", "Máximo {0} imágenes por lote; el resto se ignoró", "Máximo de {0} imagens por lote; as demais foram ignoradas", "Massimo {0} immagini per lotto; le altre sono state ignorate"]
+},
+"first_frame_preview": {
+  "zh": "首帧预览",
+  "vals": ["首帧预览", "First frame preview", "先頭フレームのプレビュー", "첫 프레임 미리보기", "معاينة الإطار الأول", "पहला फ़्रेम पूर्वावलोकन", "Pratinjau bingkai pertama", "ตัวอย่างเฟรมแรก", "İlk kare önizlemesi", "Xem trước khung hình đầu", "Aperçu de la première image", "Vorschau des Erstbilds", "Vista previa del primer fotograma", "Pré-visualização do primeiro quadro", "Anteprima del primo fotogramma"]
+},
+"concept_need_name": {
+  "zh": "请先填写项目名称",
+  "vals": ["请先填写项目名称", "Please fill in the project name first", "先にプロジェクト名を入力してください", "먼저 프로젝트 이름을 입력하세요", "يرجى إدخال اسم المشروع أولاً", "कृपया पहले परियोजना का नाम भरें", "Isi nama proyek terlebih dahulu", "กรุณากรอกชื่อโปรเจกต์ก่อน", "Lütfen önce proje adını girin", "Vui lòng nhập tên dự án trước", "Veuillez d'abord renseigner le nom du projet", "Bitte zuerst den Projektnamen eingeben", "Primero rellena el nombre del proyecto", "Preencha primeiro o nome do projeto", "Compila prima il nome del progetto"]
+},
+"dash_eyebrow": {
+  "zh": "YIHAO · SLATE · STUDIO",
+  "vals": ["YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO", "YIHAO · SLATE · STUDIO"]
+},
+"add_text_item_tip": {
+  "zh": "添加一行文字",
+  "vals": ["添加一行文字", "Add a text line", "テキスト行を追加", "텍스트 줄 추가", "إضافة سطر نص", "एक टेक्स्ट पंक्ति जोड़ें", "Tambah baris teks", "เพิ่มบรรทัดข้อความ", "Metin satırı ekle", "Thêm một dòng chữ", "Ajouter une ligne de texte", "Textzeile hinzufügen", "Añadir una línea de texto", "Adicionar uma linha de texto", "Aggiungi una riga di testo"]
+},
+"clear_items_tip": {
+  "zh": "清空所有文字行",
+  "vals": ["清空所有文字行", "Clear all text lines", "すべてのテキスト行を消去", "모든 텍스트 줄 지우기", "مسح كل أسطر النص", "सभी टेक्स्ट पंक्तियाँ हटाएँ", "Hapus semua baris teks", "ล้างข้อความทั้งหมด", "Tüm metin satırlarını temizle", "Xóa tất cả dòng chữ", "Effacer toutes les lignes de texte", "Alle Textzeilen löschen", "Borrar todas las líneas de texto", "Limpar todas as linhas de texto", "Cancella tutte le righe di testo"]
+},
+"API Key": {
+  "zh": "API Key",
+  "vals": ["API Key", "API Key", "API キー", "API 키", "مفتاح API", "API कुंजी", "Kunci API", "คีย์ API", "API Anahtarı", "Khóa API", "Clé API", "API-Schlüssel", "Clave de API", "Chave de API", "Chiave API"]
+},
+"—": {
+  "zh": "—",
+  "vals": ["—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—", "—"]
+}
+}

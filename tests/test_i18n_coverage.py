@@ -31,6 +31,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from app.core import i18n
 from app.core import ui_strings as U
 
@@ -42,13 +44,36 @@ PATTERNS = ("ui/**/*.py", "pipeline/**/*.py", "agents/**/*.py", "core/*.py")
 SKIP_FILES = {"i18n.py", "ui_strings.py"}
 
 PLACEHOLDER = re.compile(r"\{[0-9a-zA-Z_]*\}")
+# 「含汉字」判据只看**表意文字**(U+4E00–U+9FFF),不含 CJK 标点与全角符号。
+# 原因:「、」是中文顿号,各语言通用同一个字形 —— 拿它当「漏译」是误报。
+# 单位/符号(如 total_dur 的 '{}s')同理。
+_CJK = re.compile(r"[一-鿿]")
 
 # 中日共用汉字:这些词日语本来就那么写,ja 槽 == zh 槽不是漏译。
 # 与 scripts/i18n_gap_baseline.py 保持一致。
 JA_EQUIVOKENT = {
     "AI", "⤢", "生成中", "生成中…", "生成中 {}", "停止", "保存", "位置", "文字",
     "人", "成功", "生成", "水彩", "失败", "确定", "取消", "名称", "标题",
+    # 「◑ 生成中…」:前缀是状态图标,「生成中…」本身日语照抄。
+    "◑ 生成中…",
+    # 以下几组日语与中文同形,是**正确**的日文写法,不是漏译:
+    "合成中…",                 # 合成中…(朗读合成中)
+    "LLM 解析",                # LLM 解析(技术标签)
+    "生成中 {done}/{total}",   # 生成中 {done}/{total}
+    "生成中 {}%",              # 生成中 {}%
+    "{0}/{1} 成功",            # {0}/{1} 成功
 }
+
+# 拉丁字母语种(不用汉字)。这些语种渲染出**汉字**就是中文漏出来了。
+# ja/ko 合法使用汉字(词素),ar/hi/th 另有一条守卫(见 NON_HAN_LANGS)。
+_LATIN_SCRIPT_LANGS = {"en", "fr", "de", "es", "pt", "it", "vi", "tr", "id"}
+# 例外:这些键的值里**故意**含中文 —— 说明文字举的例子本身就是中文词
+# (功能就是「把『他』批量替换成『她』」),不是漏译。
+HAN_IN_QUOTES_OK = {"kbd_r_desc"}
+
+# 不用汉字、也不用本族文字的语种:ar(阿拉伯文)/ hi(天城文)/ th(泰文)。
+# 它们的槽里出现汉字 = 中文漏出来了(2026-10-26 实测 ar 槽整段是中文)。
+NON_HAN_LANGS = ("ar", "hi", "th")
 
 
 def _baseline() -> dict:
@@ -85,6 +110,23 @@ def _used_tr_keys() -> set[str]:
     return out
 
 
+def _zh_baseline(key: str) -> str | None:
+    """取该键的中文基准。
+
+    为什么不能只看 `i18n.Z`:Z 是**中文基准表**,而补充词典 S 里有 324 个 S-only 键
+    (其中 72 个还是中文名)根本不在 Z 里 → `Z.get(key)` 返回 None,
+    漏译判据直接 `continue` 跳过,**这 324 个键从来没被漏译判据看过**。
+    S 的第 0 槽就是中文基准,拿它兜底。
+    """
+    base = i18n.Z.get(key)
+    if base is not None:
+        return base
+    row = U.S.get(key)
+    if isinstance(row, list) and len(row) == 15:
+        return row[0]
+    return None
+
+
 def _leaks() -> dict[str, list[str]]:
     out: dict[str, list[str]] = {}
     for lang in U.LANGS:
@@ -95,16 +137,55 @@ def _leaks() -> dict[str, list[str]]:
             val = U.ui_lookup(lang, key)
             if val is None:
                 val = table.get(key)
-            zh = i18n.Z.get(key)
-            if val is None or (zh is not None and val == zh):
+            zh = _zh_baseline(key)
+            if val is None:
+                out.setdefault(key, []).append(lang)
+                continue
+            # 拉丁字母语种渲染出**汉字** → 中文漏出来了。
+            # 为什么不能只靠「与中文基准逐字相同」:差一个字就逃逸。
+            # 实测(2026-10-26):ar 槽整段是中文原文,只把「妆造」写成「妆容」,
+            # 就同时躲过了漏译判据和运行时体检(后者对非拉丁语种的判据是
+            # 「没有本族文字却有拉丁字母」,而中文**没有拉丁字母**)。
+            if (lang in _LATIN_SCRIPT_LANGS and _CJK.search(val)
+                    and key not in HAN_IN_QUOTES_OK):
+                out.setdefault(key, []).append(lang)
+                continue
+            if zh is None or val != zh:
+                continue
+            # 槽位与中文基准逐字相同才算「漏中文」。两个例外:
+            # ① 基准本身不含汉字(单位/符号,如 total_dur 的 '{}s'),
+            #    别语言原样复用是正确的,谈不上漏中文;
+            # ② ja 且值在中日共用汉字表里(保存/停止/生成中…) —— 日语本来就那么写。
+            if _CJK.search(zh) and not (lang == "ja" and zh in JA_EQUIVOKENT):
                 out.setdefault(key, []).append(lang)
     return {k: sorted(set(v)) for k, v in out.items()}
 
 
+def _han_in_non_han_languages() -> list[tuple[str, str]]:
+    """ar/hi/th 渲染值里出现汉字(这三个语种不用汉字)。"""
+    out: list[tuple[str, str]] = []
+    old = i18n.current_language()
+    try:
+        for lang in NON_HAN_LANGS:
+            i18n.set_language(lang)
+            for key in set(i18n.Z) | set(U.S):
+                if key in HAN_IN_QUOTES_OK:
+                    continue
+                v = i18n.tr(key)
+                if v and _CJK.search(v):
+                    out.append((key, lang))
+    finally:
+        i18n.set_language(old)
+    return sorted(out)
+
+
 def _ja_equals_zh() -> list[str]:
     iz, ija = 0, U.LANGS.index("ja")
+    # 与 leak 判据同口径:基准不含汉字的(标点「、」、破折号「—」、品牌字样),
+    # ja 槽逐字相同是**应该**的,不算「日语未译」。
     return sorted(k for k, v in U.S.items()
-                  if len(v) == 15 and v[ija] == v[iz] and v[iz] not in JA_EQUIVOKENT)
+                  if len(v) == 15 and v[ija] == v[iz]
+                  and v[iz] not in JA_EQUIVOKENT and _CJK.search(v[iz]))
 
 
 def _placeholder_loss() -> dict[str, list[str]]:
@@ -121,6 +202,99 @@ def _placeholder_loss() -> dict[str, list[str]]:
             if src - set(PLACEHOLDER.findall(vals[idx])):
                 out.setdefault(key, []).append(lang)
     return {k: sorted(set(v)) for k, v in out.items()}
+
+
+# 葡萄牙语专有词:这些词/词形在**西班牙语里不存在,或拼法不同**。
+# 为什么单独盯西语槽:葡语和西语都是拉丁字母,「露中文」判据(汉字)抓不到,
+# 「回落英文」判据(与英文槽逐字相同)也抓不到 —— 2026-10-26 那轮合并
+# 把 5 条葡语译文原样塞进了西语槽,西班牙语用户看到的是葡萄牙语,
+# 而所有既有判据**一个都没报**。
+PT_ONLY_TOKENS = (
+    "você", "não", "pela ", "nesta ", "neste ", "ao clicar", "a escolhida",
+    "oito acima", "são calculados", "envie pela", "suporta imagens",
+    "Pesquise imagens", "de imagem do chat", "edição de imagem",
+    "Função", "funções", "bem sucedido", "confirme que o ponto",
+    "o corpo existente", "Papéis", "classificado como duplicado",
+)
+
+
+def _truncated_slots() -> list[tuple[str, str]]:
+    """译文只剩占位符(正文/量词被吞)→ 界面上是个孤零零的数字。
+
+    判据要收紧到「中文基准**同时**含占位符和实词」,否则碎片键会误报:
+    '请先生成「' 这种碎片键的正确译法就是半个引号(没有实词),
+    ' 字)' 同理 —— 它们的中文基准本来就不含实词。
+    """
+    out: list[tuple[str, str]] = []
+    for key, vals in U.S.items():
+        if len(vals) != 15:
+            continue
+        zh = vals[0]
+        if not PLACEHOLDER.search(zh):
+            continue
+        if not any(c.isalpha() for c in zh):
+            continue
+        for idx, lang in enumerate(U.LANGS):
+            if lang == "zh":
+                continue
+            if not any(c.isalpha() for c in vals[idx]):
+                out.append((key, lang))
+    return sorted(out)
+
+
+def _spanish_with_portuguese() -> list[tuple[str, str]]:
+    """西语槽里出现葡萄牙语专有词。"""
+    out: list[tuple[str, str]] = []
+    ies = U.LANGS.index("es")
+    for key, vals in U.S.items():
+        if len(vals) != 15:
+            continue
+        es = vals[ies]
+        low = es.lower()
+        for tok in PT_ONLY_TOKENS:
+            if tok.lower() in low:
+                out.append((key, tok))
+                break
+    return sorted(out)
+
+
+def _zh_hant_problems() -> tuple[list[str], list[str], list[str]]:
+    """繁中表(ZH-HANT)的三类问题:缺值 / 值不对 / 显英文。
+
+    为什么单列:漏译判据 `_leaks()` 走的是 U.LANGS(15 语言,**不含 zh-Hant**),
+    繁中这条线长期没人看 —— 实测就是靠这个盲区,繁中界面整体显示英文/简体
+    烂了很久没人发现。所以这里单独用精确判据查,不走基线。
+    """
+    from app.core.zh_convert import to_traditional
+
+    i18n.ensure_zh_hant()
+    zht = i18n.T["zh-Hant"]
+    missing: list[str] = []
+    wrong: list[str] = []
+    english: list[str] = []
+
+    for key in set(i18n.Z) | set(U.S):
+        val = zht.get(key)
+        if val is None:
+            missing.append(key)
+            continue
+        if key in i18n.Z:
+            base = i18n.Z[key]
+        else:
+            row = U.S[key]
+            base = row[0] if isinstance(row, list) and len(row) == 15 else None
+        if base is None:
+            continue
+        # 期望值 = OpenCC 自动转换,人工校订表优先
+        expect = to_traditional(base)
+        if val != expect and val != i18n.ZH_HANT_MANUAL.get(key):
+            wrong.append(key)
+        # 显英文:值等于英文表的值,说明又从 T["en"] 继承了
+        en_val = i18n.T["en"].get(key)
+        if en_val is not None and val == en_val and val != base:
+            english.append(key)
+
+    return sorted(missing), sorted(wrong), sorted(english)
 
 
 def _assert_no_new_gaps(kind, current, base, hint):
@@ -180,6 +354,91 @@ def test_no_new_placeholder_loss():
 
 
 # ---------------------------------------------------------------- 定点守卫
+
+def test_no_truncated_translation():
+    """译文只剩占位符 —— 量词/正文被吞。
+
+    实测(2026-10-26):'items_n'(中文基准 '{0} 个')有 7 个语种只剩 '{0}',
+    界面上显示成孤零零的数字;'＋ 添加{}' 的西语槽、'确定删除「{}」?…'
+    的韩语/印地语槽同样被清空。
+
+    这条是**硬约束不走基线** —— 译文只剩占位符永远是 bug,不存在「合理」情形。
+    """
+    bad = _truncated_slots()
+    assert not bad, (
+        f"有 {len(bad)} 个译文只剩占位符(量词/正文被吞):{bad[:10]}\n"
+        f"修法:app/core/ui_strings.py 里补齐该语种的名词/量词,别只留 {{}}。")
+
+
+def test_no_spanish_slot_contains_portuguese():
+    """西语槽不能出现葡萄牙语专有词。
+
+    实测(2026-10-26):合并译员把 5 条葡语译文原样塞进西语槽,
+    因为葡西都是拉丁字母,「露中文」「回落英文」两条判据**一个都没报**。
+    """
+    bad = _spanish_with_portuguese()
+    assert not bad, (
+        f"有 {len(bad)} 个西语槽含葡萄牙语专有词:{bad[:10]}\n"
+        f"修法:app/core/ui_strings.py 里把 es 槽重译成西班牙语。")
+
+
+def test_no_han_chars_in_non_han_languages():
+    """ar/hi/th 的槽里不能出现汉字。
+
+    实测(2026-10-26):ar 槽整段是中文原文(只差一个字就躲过了逐字比较的漏译判据),
+    ar 槽里塞了个汉字「切换」,hi 槽开头留了个「第」,th 槽结尾留了个「生效」。
+    """
+    bad = _han_in_non_han_languages()
+    assert not bad, (
+        f"有 {len(bad)} 个非汉字语种的槽里含汉字:{bad[:10]}\n"
+        f"修法:app/core/ui_strings.py 里把该语种重译成自己语言。")
+
+
+def test_zh_hant_table_is_complete():
+    """繁中表必须每个键都有值、值是对的、且不能显英文。
+
+    这条是**硬约束不走基线** —— 繁中表由「简体基准 → OpenCC → 人工表」生成,
+    本来就不该有缺口;有了缺口就是代码坏了(不是「存量债」)。
+
+    修之前的实测:繁中表从 T["en"] 派生,1554 个基准键里只有 107 键是真繁体,
+    1251 键显示简体、1446 键显示英文,1446 个键里没有任何一个语种检查会发现
+    —— 因为漏译判据只扫 U.LANGS(15 语言),zh-Hant 不在里面。
+    """
+    from app.core import zh_convert
+
+    if not zh_convert.available():
+        pytest.skip("opencc 未安装,繁中表退化为简体,本项无法校验")
+
+    missing, wrong, english = _zh_hant_problems()
+    assert not missing, (
+        f"繁中表缺 {len(missing)} 个键(会回退成英文):{missing[:10]}\n"
+        f"修法:确认 app/core/i18n.py 的 _build_zh_hant() 覆盖了 Z 与 ui_strings.S。")
+    assert not wrong, (
+        f"繁中表有 {len(wrong)} 个键与 OpenCC 基准/人工表都不符:{wrong[:10]}\n"
+        f"修法:改 app/core/i18n.py 的 ZH_HANT_MANUAL,或检查 _build_zh_hant() 的合并顺序。")
+    assert not english, (
+        f"繁中表有 {len(english)} 个键显英文(又从 T['en'] 继承了):{english[:10]}\n"
+        f"修法:检查 _build_zh_hant() 是否真的用 OpenCC 基准覆盖了 T['zh-Hant']。")
+
+
+def test_zh_hant_renders_chinese_not_english():
+    """抽几个顶栏/导航键,确认繁中模式下真的出繁体而不是英文或简体。"""
+    from app.core import zh_convert
+
+    if not zh_convert.available():
+        pytest.skip("opencc 未安装,本项无法校验")
+
+    old = i18n.current_language()
+    try:
+        i18n.set_language("zh-Hant")
+        for key in ("nav_projects", "nav_dashboard", "new_project", "settings",
+                    "episodes", "raw_content", "storyboard"):
+            v = i18n.tr(key)
+            assert v and v != key, f"zh-Hant 下 {key} 渲染成键名/空串"
+            assert v != i18n.T["en"].get(key), f"zh-Hant 下 {key} 显示英文:{v!r}"
+    finally:
+        i18n.set_language(old)
+
 
 def test_navigation_labels_never_fall_back():
     """顶栏三个导航键必须有真译文 —— 这条单列,因为它已经真炸过。

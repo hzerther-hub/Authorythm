@@ -17,25 +17,28 @@ pip install -r requirements.txt        # 运行依赖(PySide6/requests/Pillow/ed
 pip install -r requirements-dev.txt    # 开发(ruff/mypy/pytest)
 
 python -m app.main                     # 启动 GUI(Windows 桌面;start.bat 同)
-python -m pytest tests/ -q             # 全量回归(约 30s,730+ 用例)
+python -m pytest tests/ -q             # 全量回归(约 30s,800+ 用例)
 python -m pytest tests/test_book_import.py -q        # 单文件
 python -m pytest tests/test_book_import.py::test_short_book_splits_by_chapter_headings -q   # 单用例
 ruff check .                           # lint(CI 会跑)
 mypy                                   # 类型检查(core/ai/agents/pipeline;ui/ 与 tests/ 未纳入)
+python scripts/i18n_audit.py           # 16 语言 i18n 缺口体检(改 UI 文案/翻译后跑)
+python scripts/readme_factcheck.py     # README 里的数字与仓库实际状态对账
 ```
 
-- Git Bash 启动用 `start.ps1`,**不要** `cmd //c start.bat`(路径编码炸)。
-- CI(GitHub Actions,三平台 × py3.13)跑 ruff + mypy + pytest,测试环境 `QT_QPA_PLATFORM=offscreen`、`PYDRAMA_OFFLINE=1`(测试不许联网、不许真调 LLM)。
+- Git Bash 启动用 `start.ps1`,**不要** `cmd //c start.bat`(路径编码炸)。**启动/验收应用前先读 [STARTUP.md](STARTUP.md)**(「怎么跑起来」的唯一真相源:启动判据、失败对照表、环境事实)。
+- **PySide6 版本敏感,分环境两种事实**(2026-10-27 双会话实测):CI/干净机器走 requirements.txt 的 `>=6.6.0,<6.10`(6.9.x 三平台 CI 全绿);**本机(Anaconda)必须 pip 完整发行版 6.11.3 + `PySide6/icuuc.dll` 副本,勿动** —— 装回 6.9.2 在本机 CPython 3.13.9 上多模块连导必炸,且单模块 `import QtCore` 测试会骗过你。换版本前必读 STARTUP.md 与 AGENTS.md「PySide6 版本」。
+- CI(GitHub Actions,三平台 × py3.13)跑 ruff + mypy + pytest,测试环境 `QT_QPA_PLATFORM=offscreen`、`PYDRAMA_OFFLINE=1`(测试不许联网、不许真调 LLM)、`PYDRAMA_TEST_MODE=1`,pytest 带 `--timeout=60 -x`(单用例 60s 超时即红、首个失败即停 —— 新测试跑超过 60s 就是写法错了)。
 
 ## 大局架构
 
-**分层单向依赖**:`app/ui → app/pipeline → app/ai → app/core`,`core` 不 import 上层。
+**分层单向依赖**:`app/ui → app/pipeline → app/ai → app/core`,`core` 不 import 上层(实测全仓扫描确认)。已知例外(函数内懒导入,为绕循环依赖,别当 bug 修):`pipeline/comic.py:_style_for` 被 storyboard/prompts_gen 反向复用;`ai/photocraft_bridge.py` 懒导入 `pipeline/inpaint.py` 的 `inpaint_masked`。
 
-- `app/core/` 基建:`db.py`(SQLite 23 张表,`q/q1/ex/exmany`,连接 **thread-local** —— 后台线程各自建连,这点支撑了 pipeline 里的多线程并发)、`config.py`(路径/ffmpeg 探测)、`i18n.py + ui_strings.py`(16 语言)、`taskmgr.py`(QThreadPool 上限 6)、`secrets.py`(API Key Fernet 加密)、`logging_setup.py` / `metrics.py`。
-- `app/ai/` 供应商客户端:`registry.py`(配置 CRUD + `check_ready` 就绪判定 + `PROVIDER_PRESETS` 模板)、`text/image/video/tts_client.py`、`face_swap.py`。多供应商统一走 OpenAI 兼容 + 各家原生协议;TTS 是**四通道**(火山豆包收费 / Edge 免费 / 本机 Windows 离线 / 降级链,显式选免费通道不降级)。
+- `app/core/` 基建:`db.py`(SQLite 29 张表;源码里有 30 处 `CREATE TABLE`,因 `storyboard_scenes` 在迁移列表重复定义一次给老库补表 —— 数表数别按 CREATE TABLE 计数。`q/q1/ex/exmany`,连接 **thread-local** —— 后台线程各自建连,这点支撑了 pipeline 里的多线程并发)、`config.py`(路径/ffmpeg 探测)、`i18n.py + ui_strings.py`(16 语言)、`taskmgr.py`(QThreadPool 上限 6)、`secrets.py`(API Key Fernet 加密)、`logging_setup.py` / `metrics.py`、`encoding.py`(乱码防护:GBK 误读不可逆,必须抛 `MojibakeError` 中止,绝不静默落库)、`preflight.py`(AI 未就绪拦截,按钮点击即校验)。
+- `app/ai/` 供应商客户端:`registry.py`(配置 CRUD + `check_ready` 就绪判定 + `PROVIDER_PRESETS` 模板)、`text/image/video/tts_client.py`、`face_swap.py`,另有 `jev_client/ask/gate`(辅助判定服务,只作线索不进决策,能力边界见 AGENTS.md)、`prompt_guards.py`(人数/画风守卫)、`photocraft_bridge.py` / `text_replace_skill.py`(PhotoCraft 桥接 / 多模态改图)。多供应商统一走 OpenAI 兼容 + 各家原生协议;TTS 是**四通道**(火山豆包收费 / Edge 免费 / 本机 Windows 离线 / 降级链,显式选免费通道不降级)。
 - `app/agents/`:`runner.run_agent(type, prompt)` 单次调 LLM(无工具),System Prompt 从 `workspace/prompts/<type>.<lang>.md` 加载(用户可改,150+ 文件);`runner.extract_json()` 是**唯一** JSON 解析入口 —— 必须先剥 `<think>` 再剥围栏(推理型模型必坑)。繁体(zh-Hant)产出在 runner 出口统一 OpenCC 转换,不走 AI。
-- `app/pipeline/` 业务编排:`novel.py`(小说线,规划/正文双模型分设 + LangGraph 审校循环)、`book_import.py`(TXT 整书导入→Map-Reduce 分析→仿写新书三段式)、`storyboard.py` / `comic.py` / `comic_pipeline.py`、`video_clone.py`(同款复刻)、`previz*.py`(导演台)、`overseas.py`(海外改写)、`merge.py`(无损合并)。
-- `app/ui/`:页面 + 对话框;`main_window.py` 持有 QStackedWidget 与 `_open_drama(drama_id)` 导航;`episode_page.py` 最大(六阶段工作台)。
+- `app/pipeline/` 业务编排:`novel.py`(小说线,规划/正文双模型分设 + LangGraph 审校循环)、`book_import.py`(TXT 整书导入→Map-Reduce 分析→仿写新书三段式)、`storyboard.py` / `comic.py` / `comic_pipeline.py`、`video_clone.py`(同款复刻)、`previz*.py`(导演台)、`overseas.py`(海外改写)、`merge.py`(无损合并)、`state_ledger.py`(人物状态台账 —— 长篇跨章的「世界状态事实层」,提取→合并→Jev 门控,全链路软失败)、`storyboard_repair.py`(拆分中途失败留下的残缺分镜自动补全,成败以落库为准)。
+- `app/ui/`:页面 + 对话框;`main_window.py` 持有 QStackedWidget 与 `_open_drama(drama_id)` 导航;`episode_page.py` 最大(六阶段工作台,≈8k 行)。
 - 数据全部落 `data/`(SQLite + 媒体文件,gitignore);`data/vendor/directordesk/` 是导演台渲染内核(fetch 脚本下载,不入库)。
 
 **新增页面的三处同步**(`_PAGE_KINDS` / `_make_page` / `_goto` 映射)、worker 线程禁碰 Qt 控件等坑,详见 AGENTS.md「Qt / UI 约定」与「线程模型」。

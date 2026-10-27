@@ -808,7 +808,8 @@ class AssetDetailDialog(QDialog):
 
     def __init__(self, parent, kind: str, row: dict, on_changed=None,
                  drama_id: int | None = None,
-                 extra_actions: list | None = None):
+                 extra_actions: list | None = None,
+                 on_upload=None):
         super().__init__(parent)
         # props/characters 两张表不带 drama_id,换画风要靠它取项目当前画风
         self.drama_id = drama_id if drama_id is not None else row.get("drama_id")
@@ -816,6 +817,10 @@ class AssetDetailDialog(QDialog):
         self.table = self.KINDS[kind][0]
         self.row = row
         self._on_changed = on_changed
+        # 上传回调:传了就在 _upload 写库后调用(参数为新 /static URL)。
+        # 复刻素材条入口用它把新照同步进 clone["presenter"] —— 业务源只能由
+        # 明确的上传动作改,不能从角色行图反推(角色行是派生资产)。
+        self._on_upload = on_upload
         # 调用方附加的 footer 按钮(置于最前):[(label, tooltip, callback), …]
         # 复刻页用它给三视图资产塞「换脸」入口 —— 换脸是资产级动作,放详情
         # 弹窗里比散在页面上更顺(用户要求「加上一个换脸的功能」)。
@@ -838,6 +843,11 @@ class AssetDetailDialog(QDialog):
         _cover = ((row.get("image_url") or "").strip()
                   or (row.get("comic_image_url") or "").strip())
         self.img.setPixmap(W.pixmap_from_media(_cover, 276, 276))
+        # 当前展示图。点击放大**优先用它**:复刻入口会故意让弹窗显示与库不同的图
+        # (出镜人物详情显示三视图整张,而库里 image_url 是切出的单人立绘)——
+        # 只现读库会把「单人全身」弹出来,正是用户实测撞到的。下面每次更新图片
+        # 都同步更新它;现读库保留为空值回退(防外部改库后拿不到地址)。
+        self._cover_url = str(_cover or "")
         # 点击看大图:URL **点击时从库现读**,不能用构造期闭包 —— 生成形象/
         # 改图/换画风/上传都会更新 image_url,闭包里存的地址是旧图(用户实测:
         # 缩略图已是新四格,弹窗还停在旧三格)
@@ -1056,6 +1066,7 @@ class AssetDetailDialog(QDialog):
         if row:
             self.row = dict(row)
         self.img.setPixmap(W.pixmap_from_media(self.row.get("image_url"), 280, 280))
+        self._cover_url = str(self.row.get("image_url") or "")
 
     def _bg_remove(self):
         from ..ai import registry
@@ -1186,6 +1197,7 @@ class AssetDetailDialog(QDialog):
                 err(str(error)[:200])
                 return
             self.img.setPixmap(W.pixmap_from_media(result, 276, 276))
+            self._cover_url = str(result)
             ok(tr("形象已生成"))
             if self._on_changed:
                 self._on_changed()
@@ -1193,15 +1205,25 @@ class AssetDetailDialog(QDialog):
 
     def _upload(self):
         import shutil
+        import uuid
         from PySide6.QtWidgets import QFileDialog
         p, _ = QFileDialog.getOpenFileName(self, tr("upload"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if not p:
             return
-        dst = config.STATIC_DIR / "uploads" / f"up_{self.row['id']}_{config.uuid.uuid4().hex[:6]}{p[p.rfind('.'):][:8]}"
+        # uuid 用标准库 —— config 里从来没有 uuid 这个属性,写 config.uuid
+        # 会在选完文件后立刻 AttributeError 且被 Qt 吞掉,表现为「上传无效」。
+        dst = config.STATIC_DIR / "uploads" / f"up_{self.row['id']}_{uuid.uuid4().hex[:6]}{p[p.rfind('.'):][:8]}"
         shutil.copy(p, dst)
         url = config.path_to_media_url(dst)
         db.ex(f"UPDATE {self.table} SET image_url=?, updated_at=? WHERE id=?", (url, db.now(), self.row["id"]))
+        self.row["image_url"] = url
         self.img.setPixmap(W.pixmap_from_media(url, 276, 276))
+        self._cover_url = str(url)
+        # 复刻素材条入口:上传即换出镜照原料 —— 由调用方决定要不要同步业务源
+        # (clone["presenter"])。绝不能靠「关弹窗抄行图」回写:角色行是派生资产
+        # (三视图/切格图),抄它会拿派生图当人脸源,实测把出镜照污染成了切格图。
+        if self._on_upload:
+            self._on_upload(url)
         if self._on_changed:
             self._on_changed()
 
@@ -1216,16 +1238,19 @@ class AssetDetailDialog(QDialog):
                 b.setEnabled(not busy)
 
     def _view_large_image(self):
-        """点击预览图看大图:image_url/comic_image_url **现读库**,保证弹窗
-        与缩略图是同一张(生成形象/上传/擦除/换画风之后都不会再拿旧图)。
+        """点击预览图看大图:**优先用当前展示的图**,库里有值则现读刷新
+        (生成形象/上传/擦除/换画风之后不会再拿旧图);展示图非空时以展示图
+        为准 —— 复刻入口故意显示与库不同的图(三视图整张 vs 库里的单人立绘),
+        现读库会把「单人全身」弹出来(用户实测)。
 
         本方法属于 AssetDetailDialog —— 第一次修时误插进了 ImageViewerDialog,
         点击时 AttributeError 被事件循环吞掉,弹窗直接弹不出(实测)。
         """
+        shown = (getattr(self, "_cover_url", "") or "").strip()
         d = db.q1(f"SELECT image_url, comic_image_url FROM {self.table} WHERE id=?",
                   (self.row["id"],))
-        url = ""
-        if d:
+        url = shown
+        if not url and d:
             url = ((d.get("image_url") or "").strip()
                    or (d.get("comic_image_url") or "").strip())
         if not url:
@@ -1283,6 +1308,7 @@ class AssetDetailDialog(QDialog):
             new_url = SC.apply_result(self.row["id"], self.table, str(result))
             self.row["image_url"] = new_url
             self.img.setPixmap(W.pixmap_from_media(new_url, 280, 280))
+            self._cover_url = str(new_url)
             viewer.show_local_image(str(result))
             viewer.transformed_url = str(result)
             _ok(tr("已转换并写回资产"))
@@ -1293,8 +1319,11 @@ class AssetDetailDialog(QDialog):
         from ..core import download as dl_mod
         from .toast import err, ok
         try:
-            p = dl_mod.download_asset_image(self.row, self.kind)
-            ok(tr('已下载:{}').format(p.name))
+            # 弹「另存为」选位置(2026-10-27 用户定版):静默落 Downloads
+            # 用户找不到文件在哪(实测问「下载到那里?」);取消 = 不下载
+            p = dl_mod.download_asset_image_ask(self, self.row, self.kind)
+            if p:
+                ok(tr('已下载:{}').format(p.name))
         except Exception as e:  # noqa: BLE001
             err(str(e))
 

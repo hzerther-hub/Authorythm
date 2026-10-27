@@ -517,6 +517,7 @@ def _bind_assets(sb_id: int, b: dict, name_to_id: dict, prop_by_id: dict,
     # 这段曾经被误挪进 _refs_to_names 的 `return out` **之后** —— 变成永远
     # 不执行的死代码,兜底等于从来没生效过(且 mypy 报 4 个未定义名)。
     text = b.get("content") or ""
+    bound_prop_ids: set[int] = set()
     if text:
         for name, cid in name_to_id.items():
             if cid and ("@" + name) in text:
@@ -527,6 +528,97 @@ def _bind_assets(sb_id: int, b: dict, name_to_id: dict, prop_by_id: dict,
             if pid and ("@" + name) in text:
                 db.ex("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) "
                       "VALUES(?,?)", (sb_id, pid))
+                bound_prop_ids.add(pid)
+
+    # ── 降级绑定:模型没给 props 数组时,按**裸名字**在描述文本里找道具 ──
+    #
+    # 为什么需要:实测全库 storyboard_props = 0 行 —— 道具图**一次都没进过**
+    # 参考图列表,道具在分镜里 100% 靠文字描述,跨镜形状必然漂。
+    # 根因是上面的两条路都太窄:
+    #   ① 模型给 props:["手镯"] —— 模型经常不���(它只关心画面,不关心资产表);
+    #   ② 正文里出现 "@手镯" —— 提示词要求段内用 @道具名 引用,但模型十有八九
+    #      直接写「她拿起手镯」,**不带 @**。
+    # 也就是说「道具在镜头里出现了」这个事实,在这两条路里都被漏掉了。
+    #
+    # 降级规则(只补不覆盖):
+    #   · 仅当模型**没有**给出任何 props 时才启用(显式输出是权威的,不推翻);
+    #   · 扫**所有描述性字段**,不只 content —— description/result/atmosphere/
+    #     image_prompt 里都可能提到道具(实测道具多在 description 的动作句里);
+    #   · 名字长度 ≥2 才参与匹配:单字名("包""笔")会命中"书包""笔记本"这类
+    #     无关词,误绑比不绑更糟(道具图会被塞进不该出现的镜头);
+    #   · 重名包含时**长名优先**且短名不再单独绑:道具表里有「翡翠手镯」和
+    #     「手镯」时,正文只写「手镯」不应把两个都绑上(两张图抢同一个主体)。
+    if not props and prop_name_to_id:
+        _bind_props_by_text(sb_id, b, prop_name_to_id, ts, episode_id,
+                            skip_ids=bound_prop_ids)
+
+
+def _bind_props_by_text(sb_id: int, b: dict, prop_name_to_id: dict,
+                        ts: str, episode_id: int | None = None,
+                        skip_ids: set[int] | None = None) -> list[str]:
+    """降级绑定:按裸名字在分镜描述文本里找道具,写入 storyboard_props。
+
+    返回本镜实际绑上的道具名(测试用)。**只补不覆盖** —— 调用方保证
+    模型没给 props 数组时才走这里。
+
+    skip_ids:已经通过「@名字」兜底绑上的道具 id,不再重复写一遍
+    (表上是 INSERT OR IGNORE,写重了不报错,但白跑一次 IO)。
+
+    为什么值得做:道具图不进参考图列表 = 道具 100% 靠文字描述,跨镜必漂。
+    而"道具出现在这个镜头里"是客观事实,不该因为模型忘了写 props 数组就丢掉。
+    """
+    # 1) 收集扫描面:所有描述性字段。video_prompt 此时还没生成(拆分阶段不出它,
+    #    由后续「逐镜补写」补),但带上它也无害(有值就一起扫)。
+    parts: list[str] = []
+    for k in ("content", "description", "result", "atmosphere",
+              "image_prompt", "location", "title", "video_prompt"):
+        v = b.get(k)
+        if isinstance(v, str) and v.strip():
+            parts.append(v)
+    text = "\n".join(parts)
+    if not text:
+        return []
+
+    # 2) 候选名:长度 ≥2 的道具名(单字名误绑风险高,见调用点注释)
+    cands = [n for n in prop_name_to_id if len(n.strip()) >= 2]
+    if not cands:
+        return []
+    # 3) 命中判定:按名字长度降序,长的先占位 —— 「翡翠手镯」与「手镯」同时存在
+    #    时,正文里的「翡翠手镯」应只绑长名;正文只写「手镯」时两个都命中,
+    #    也要只绑最长的那个,否则两张图抢同一个主体。
+    #    做法:命中长名后,把正文里该名字的出现**标记消费掉**,短名若只出现在
+    #    已消费的长名内部则跳过。
+    hits: list[tuple[str, int]] = []   # (名字, id)
+    consumed: list[tuple[int, int]] = []  # (start, end) 已占用区间
+    skip = skip_ids or set()
+    for name in sorted(cands, key=len, reverse=True):
+        start = 0
+        while True:
+            i = text.find(name, start)
+            if i < 0:
+                break
+            j = i + len(name)
+            # 已被更长的名字占用 → 跳过(短名不重复绑)
+            if any(s <= i < e for s, e in consumed):
+                start = j
+                continue
+            pid = prop_name_to_id.get(name)
+            if pid and pid not in skip:
+                hits.append((name, pid))
+                consumed.append((i, j))
+            elif pid:
+                # 已经通过「@名字」兜底绑过 → 仍要消费这段文本,
+                # 否则短名会因长名的存在区间没被消费而重复绑上
+                consumed.append((i, j))
+            start = j
+    if not hits:
+        return []
+    db.exmany("INSERT OR IGNORE INTO storyboard_props(storyboard_id,prop_id) VALUES(?,?)",
+              [(sb_id, pid) for _n, pid in hits])
+    if episode_id:
+        db.exmany("INSERT OR IGNORE INTO episode_props(episode_id,prop_id) VALUES(?,?)",
+                  [(episode_id, pid) for _n, pid in hits])
+    return [n for n, _pid in hits]
 
 
 def _refs_to_names(b: dict, key: str, id_by_name: dict, prop_by_id: dict) -> list:

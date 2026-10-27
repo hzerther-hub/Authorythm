@@ -525,8 +525,16 @@ class SettingsDialog(QDialog):
             edit = QLineEdit()
             cfg = db.q1("SELECT id, api_key FROM ai_service_configs "
                         "WHERE service_type='stockphoto' AND provider=?", (prov,))
-            from ..core.secrets import ensure_decrypted
-            edit.setText(ensure_decrypted((cfg["api_key"] if cfg else "") or ""))
+            from ..core.secrets import SecretError, ensure_decrypted
+            try:
+                key_val = ensure_decrypted((cfg["api_key"] if cfg else "") or "")
+            except SecretError:
+                # 旧密文解不开(换机器/换账户遗留)→ 置空让用户重填。
+                # 绝不能让异常冒泡:这里在 SettingsDialog.__init__ 的构造路径上,
+                # 一抛整个设置弹窗就永远弹不出来(实测踩过)。
+                # registry._decrypt_row 同款纪律。
+                key_val = ""
+            edit.setText(key_val)
             edit.setPlaceholderText(tr("API Key"))
             edit.editingFinished.connect(lambda p=prov: self._save_stock_key(p))
             row.addWidget(edit, 1)
@@ -565,8 +573,11 @@ class SettingsDialog(QDialog):
             row = db.q1("SELECT provider, api_key FROM ai_service_configs "
                         "WHERE service_type='stockphoto' AND provider=? "
                         "AND is_active=1", (provider,))
-            from ..core.secrets import ensure_decrypted
-            key = ensure_decrypted((row["api_key"] or "").strip()) if row else ""
+            from ..core.secrets import SecretError, ensure_decrypted
+            try:
+                key = ensure_decrypted((row["api_key"] or "").strip()) if row else ""
+            except SecretError:
+                return False, tr("API Key 无效或已失效,请重新申请")
             if not key:
                 return False, tr("未填 API Key")
             try:

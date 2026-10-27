@@ -176,7 +176,7 @@ class DashboardWidget(QWidget):
         # 顶部文字 hero(mono caps + 大字),跟设计稿的 home hero 一致
         hero = QVBoxLayout()
         hero.setSpacing(4)
-        eye = QLabel(tr("dash_eyebrow") if False else "YIHAO · SLATE · STUDIO")
+        eye = QLabel(tr("dash_eyebrow"))
         eye.setStyleSheet(
             "font-family:ui-monospace,Menlo,Consolas,monospace;"
             "font-size:11px; letter-spacing:4px; color:#6B727A; font-weight:700;"

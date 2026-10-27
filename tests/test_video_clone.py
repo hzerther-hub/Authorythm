@@ -767,6 +767,73 @@ def test_closeup_shot_prompt_excludes_person():
     assert "_no_person" in src, "未对特写镜做人物剔除"
 
 
+def test_single_person_guard_and_closeup_ref_trim(tmp_path, monkeypatch):
+    """三张全带 + 单人守卫 + 绑定名失锚兜底(2026-10-27 三次实测事故,**必须真实调用**):
+
+    · 事故一:改单人守卫时 `tail = consist + ...` 初始化行被挪丢 → 所有镜
+      首帧 UnboundLocalError 全灭(任务表 1668/1669)。源码断言抓不到这种
+      「代码顺序」错误 —— 本测试走真实调用路径;
+    · 事故二:模型把立绘人物照画进画面、又配了第二个人 + 窗外巨大人脸
+      (用户:「复刻要只有一个人」)→ 提示词必含单人守卫;
+    · 事故三:绑定名全对不上(模型写「女生」,资产叫「出镜人物」)→ 三张锚
+      被裁得只剩主图,一致性崩。绑定名全部失锚时必须**忽略绑定**回到三张全带
+      (用户定版:「只要将三张图喂给模型,不就能保持一致性了」)。
+    """
+    import json
+    from PIL import Image
+    _db = _tmp_db(tmp_path, monkeypatch)
+    static = tmp_path / "static"
+    static.mkdir()
+    monkeypatch.setattr(_db.config, "STATIC_DIR", static)
+    presenter = tmp_path / "presenter.png"
+    product = tmp_path / "product.png"
+    scene = tmp_path / "scene.png"
+    for p in (presenter, product, scene):
+        Image.new("RGB", (64, 64), "white").save(p)
+    # 旧分镜形态:绑定名**对不上**资产名(「女生」≠「出镜人物」),与用户
+    # 新拆解的数据一致 —— 应触发「全部失锚 → 忽略绑定 → 三张全带」兜底
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?", (json.dumps({"clone": {
+        "presenter": str(presenter),
+        "presenter_desc": "女,25岁,测试外观",
+        "product": str(product),
+        "scene_image": str(scene),
+        "storyboards": [
+            {"number": 1, "shot": "中", "camera": "固定", "start": 0.0, "end": 2.5,
+             "action": "出镜人物手托玉镯展示", "action_steps": [], "line": "",
+             "product_use": "展示玉镯", "prompt": "",
+             "characters": ["女生"], "props": ["玉镯"], "scene": "窗边木桌前"},
+            {"number": 2, "shot": "特", "camera": "固定", "start": 2.5, "end": 4.0,
+             "action": "手指托住玉镯特写", "action_steps": [], "line": "",
+             "product_use": "特写展示", "prompt": "",
+             "characters": [], "props": ["玉镯"], "scene": "窗边木桌前"},
+        ],
+    }}), 801))
+
+    calls = []
+
+    def _fake_gen(prompt, out_name=None, config_id=None, reference_images=None,
+                  skip_guard=False, **kw):
+        calls.append({"prompt": prompt, "refs": reference_images})
+        out = tmp_path / f"ff{len(calls)}.png"
+        Image.new("RGB", (32, 32), "white").save(out)
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+
+    vc.generate_shot_image(801, 1, "真人写实")
+    vc.generate_shot_image(801, 2, "真人写实")
+
+    mid, close = calls[0], calls[1]
+    # 单人守卫:文案无多人词 → 两镜提示词都必须带(含窗外/倒影条款)
+    assert "只有出镜人物一个人" in mid["prompt"], "中景镜缺单人守卫"
+    assert "不得出现任何人影或倒影" in close["prompt"], "特写镜缺窗外/倒影条款"
+    # 绑定名全部失锚 → 忽略绑定,三张全带(人物立绘/空景/产品一个不少)
+    assert presenter in (mid["refs"] or []), "中景镜应带人物立绘锚脸"
+    assert presenter in (close["refs"] or []), "特写镜也带立绘(用户定版三张全带)"
+    assert scene in (close["refs"] or []), "失锚兜底后场景锚必须回来"
+    assert product in (close["refs"] or []), "失锚兜底后产品锚必须回来"
+
+
 # ── 分卷分批生成(章数大时必然截断)──────────────────────────────────
 
 def test_volume_batch_threshold_and_plan_size():

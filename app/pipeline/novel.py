@@ -1385,7 +1385,7 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
     # ── 终态落库 ──
     # `compressor_node` 的注释写「调用方自行入库」,但**没有任何调用方真的入库**:
     # writer_node(write_chapter)与 repair_node 都会写,可**审校第一轮就判 ok**
-    # 时这两条路都不走 → 正文生成完了却一���没进库,界面上照样弹「本章已生成」,
+    # 时这两条路都不走 → 正文生成完了却一条没进库,界面上照样弹「本章已生成」,
     # 用户刷新一下就没了(静默丢数据)。这里补上,只在判 ok 时写 ——
     # giveup 的稿子不该落库。
     text = final or ""
@@ -1985,6 +1985,7 @@ def draft_prompt(drama_id: int, key: str) -> str:
 
 【输出格式】
 {spec['spec']}
+{'' if key == 'volume' else '注意:本板块与分卷结构无关,严禁输出「第 N 卷」之类的分卷标题 —— 那是「分卷战略」步骤的产物。'}
 
 只输出这一份内容本身,不要任何前后说明。"""
 
@@ -2126,6 +2127,7 @@ chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重�
     # ── 阶段 2:逐批展开 ──
     batch = VOLUME_BATCH_SIZE
     done = 0
+    expanded = 0                       # 拿到 goal/key_events 的卷数;全 0 = 模型在抄骨架
     for i in range(0, len(skel), batch):
         group = skel[i:i + batch]
         listing = "\n".join(f"{n}. 卷名「{c.get('title')}」 覆盖第 {c.get('range')} 章"
@@ -2142,7 +2144,8 @@ chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重�
 只输出 JSON,不要解释:
 {{"chapters":[{{"title":"卷名","range":"章号范围","goal":"本卷目标(60字内)","
 "key_events":["关键事件1","关键事件2"],"cliffhanger":"卷末钩子"}}]}}
-必须正好 {len(group)} 项,title 与 range 与上面给的完全一致。"""
+必须正好 {len(group)} 项,title 与 range 与上面给的完全一致。
+严禁只输出卷标题 —— 每一卷都必须有 goal / key_events / cliffhanger 三个字段。"""
         try:
             r2 = text_client.chat(exp_prompt, temperature=0.4,
                                   json_mode=True, config_id=config_id)
@@ -2167,11 +2170,19 @@ chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重�
                        or (got[idx] if idx < len(got) else None))   # 顺序兜底
                 if hit:
                     c.update({k: v for k, v in hit.items() if v})
+                if (c.get("goal") or "").strip() or (c.get("key_events") or []):
+                    expanded += 1
         except Exception as exc:  # noqa: BLE001
             print(f"[novel] 分卷第 {i + 1}-{i + len(group)} 卷细节失败({exc}),保留骨架", flush=True)
         done += len(group)
         if on_progress:
             on_progress(done, len(skel))
+    if expanded == 0:
+        # 实测(deepseek-flash,999 章):每一批都只回「### (第 1 卷)」空头,
+        # 旧行为静默保留骨架,用户拿到 34 个空卷还以为成功了。全批失败必须报错。
+        raise RuntimeError(
+            "分卷细节全部生成失败 —— 模型每一批都只回了卷标题,没有 goal/关键事件"
+            "(多半是模型太弱或上下文被骨架带偏)。请重试,或到设置页换一个规划模型。")
     return skel
 
 
@@ -2195,6 +2206,29 @@ def save_volume_chapters(drama_id: int, chapters: list[dict]) -> None:
           (json.dumps(meta, ensure_ascii=False), db.now(), drama_id))
 
 
+_SKELETON_LINE = re.compile(r"^#{0,6}\s*[（(]?第\s*\d+\s*[卷章][）)]?\s*$")
+
+
+def looks_like_skeleton_echo(text: str) -> bool:
+    """起草结果是不是「分卷骨架回声」:只有 (第 N 卷) 之类的空标题堆,没有正文。
+
+    实测:deepseek-flash 在 999 章的书上起草世界观,项目上下文带着分卷战略文本,
+    模型照抄出 7 行「### (第 1 卷)」空头 —— 不是世界观,是上下文回声。这种
+    "成功"比失败更糟:显示为正常、落库为垃圾。命中即判定为「没真出稿」。
+    """
+    t = (text or "").strip()
+    if not t:
+        return True
+    lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
+    if not lines:
+        return True
+    skeleton = sum(1 for ln in lines if _SKELETON_LINE.match(ln))
+    # 骨架行占绝大多数、且实质内容行平均不到 20 字 → 判为回声
+    body_lines = [ln for ln in lines if not _SKELETON_LINE.match(ln)]
+    return skeleton >= max(2, len(lines) // 2) and (
+        not body_lines or sum(len(ln) for ln in body_lines) / len(body_lines) < 20)
+
+
 def persist_draft(drama_id: int, key: str, raw: str) -> dict:
     """解析并落库一次起草结果;返回 {key, field, text, extra}。"""
     spec = SECTION_SPEC.get(key)
@@ -2208,6 +2242,11 @@ def persist_draft(drama_id: int, key: str, raw: str) -> dict:
         raise RuntimeError(f"{spec['name']}起草结果无法解析(原始输出前 120 字:{raw[:120]})")
     if looks_like_meta_talk(text):
         raise RuntimeError(f"{spec['name']}这次只返回了过程说明,没有实际内容(前 80 字:{text[:80]})")
+    if looks_like_skeleton_echo(text):
+        raise RuntimeError(
+            f"{spec['name']}这次只返回了分卷骨架标题,没有实际内容 ——"
+            f"多半是上下文里的分卷文本被照抄了。请重试;反复出现就换一个规划模型"
+            f"(前 80 字:{text[:80]})")
     if key == "volume" and not structured:      # 分卷战略必须要卷/章结构,纯散文不算数
         raise RuntimeError(f"{spec['name']}没有返回分卷结构(前 80 字:{text[:80]})")
     # 落库前的乱码闸门:流式路径的文本没经过 text_client._guarded,

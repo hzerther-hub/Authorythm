@@ -170,6 +170,7 @@ MODEL_CHOICES: dict[str, list[str]] = {
 VISION_EXACT = (
     # 名称无规律、只能整串列出的
     "minimax-m", "minimax-m2", "minimax-m3",
+    "deepseek-v4-flash",   # 2026-10-27 用户标注:v4 闪电版支持看图(此前警告误报)
 )
 VISION_HINTS = ("vision", "-vl", "vl-", "3.0-flash", "3-pro", "gpt-4o",
                 "gemini-2", "gemini-3", "glm-4v", "kimi-vl", "qwen-vl")

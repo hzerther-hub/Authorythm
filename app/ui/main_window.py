@@ -908,7 +908,13 @@ class _RefVideoDialog(QDialog):
 
     def __init__(self, parent, path):
         super().__init__(parent)
-        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoWidget
+        # 下载/重播都要用;之前漏存这一行,点「↓ 下载」槽里直接 AttributeError,
+        # PySide6 把异常吞进 stderr —— 表现为「点了没任何反应」。
+        self._path = str(path)
+        # QVideoWidget 在 QtMultimediaWidgets 里,不在 QtMultimedia ——
+        # 一起从 QtMultimedia 导会 ImportError,点「看原视频」就只剩一条红 toast。
+        from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+        from PySide6.QtMultimediaWidgets import QVideoWidget
         from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout
         self.setWindowTitle(tr("参考视频") + " · " + Path(str(path)).name)
         self.resize(760, 520)
@@ -970,12 +976,22 @@ class _RefVideoDialog(QDialog):
             self.setWindowState(self.windowState() & ~Qt.WindowMaximized)
 
     def _download_ref(self):
-        """参考原片下载到本地(另存为对话框,保留原文件名)。"""
-        from ..core import download as dl_mod
-        p = dl_mod.download_media_ask(self, self._path,
-                                      Path(str(self._path)).name or "参考视频.mp4")
-        if p:
-            ok(tr("download_ok") + ": " + p.name)
+        """参考原片下载到本地(另存为对话框,保留原文件名)。
+
+        下的是 _playable_video() 的 H.264 可播副本而非原始文件:实测 B 站参考片
+        是 AV1 编码,Windows 自带播放器没装「AV1 视频扩展」就是黑屏 —— 用户
+        反馈「下载下来的视频不能播」。副本已在 temp 缓存就直接用;不存在则现转
+        (15 秒片子不到 1 秒);转码失败回退原文件。
+        """
+        try:
+            from ..core import download as dl_mod
+            playable = _playable_video(self._path)
+            p = dl_mod.download_media_ask(self, playable,
+                                          Path(str(self._path)).name or "参考视频.mp4")
+            if p:
+                ok(tr("download_ok") + ": " + p.name)
+        except Exception as exc:  # 失败必须可见,不能静默
+            err(str(exc)[:200])
 
     def _close_and_stop(self):
         # 必须先 stop 再关:QMediaPlayer 还在播的话,窗口销毁后音频线程可能残留
@@ -999,8 +1015,28 @@ class _RefVideoWidget(QWidget):
         self.hint = QLabel("")
         self.hint.setObjectName("inspectorLabel")
         lay.addWidget(self.hint)
+        # Jev 开通状态(用户要求标在「看原视频 + 文件名」之后):纯只读提示,
+        # 未配置/状态取不到一律显示未开通,绝不影响任何流程(软建议器契约)。
+        self.jev_tag = QLabel("")
+        self.jev_tag.setObjectName("muted")
+        self.jev_tag.setStyleSheet("font-size:10.5px;color:#94a3b8;")
+        self.jev_tag.setToolTip(tr("jev_status_tip"))
+        lay.addWidget(self.jev_tag)
+        self._refresh_jev_tag()
         lay.addStretch(1)
         self._path = ""
+
+    def _refresh_jev_tag(self):
+        """Jev 开通状态。设置页配置(api_key+base_url 齐全)或环境变量即算开通;
+        任何异常都按「未开通」显示 —— 提示归提示,业务照常。"""
+        on = False
+        try:
+            from ..ai.jev_gate import get_jev_gate
+            on = bool(get_jev_gate().usable)
+        except Exception:
+            on = False
+        self.jev_tag.setText(("● " if on else "○ ")
+                             + tr("jev_on" if on else "jev_off"))
 
     def set_source(self, path):
         p = str(path or "")
@@ -1014,6 +1050,14 @@ class _RefVideoWidget(QWidget):
             return
         try:
             _RefVideoDialog(self.window(), self._path).exec()
+        except ImportError:
+            # 环境里没有 QtMultimedia(阉割版 PySide6)→ 退回系统默认播放器,
+            # 别只丢一条红 toast(实测:点「看原视频」什么都不发生)。
+            import os
+            try:
+                os.startfile(self._path)  # noqa: Windows 默认播放器
+            except OSError:
+                err(tr("无法播放参考视频:"))
         except Exception as exc:  # noqa: BLE001
             err(tr("无法播放参考视频:") + str(exc)[:200])
 
@@ -1225,6 +1269,15 @@ class ClonePage(QWidget):
         _mat_slot(self.mat_product_lab, "当前产品图")
         self.mat_presenter_lab = QLabel()
         _mat_slot(self.mat_presenter_lab, "当前出镜人")
+        # 两张原料缩略图可点:弹出资产详情弹窗(大图 + 🎨 改图 + 替换图片)。
+        # 出镜人/产品对应 characters/props 行(sync_assets 落库),界面直接
+        # 复用短剧资产页同款(用户:「可以有出现改图的界面 同时有替换按钮」)。
+        self._mat_kinds = {id(self.mat_product_lab): "product",
+                           id(self.mat_presenter_lab): "presenter"}
+        for _lab in (self.mat_product_lab, self.mat_presenter_lab):
+            _lab.setCursor(Qt.PointingHandCursor)
+            _lab.setToolTip(tr("u_view_large"))
+            _lab.installEventFilter(self)
         self.mat_turn_lab = QLabel()
         _mat_slot(self.mat_turn_lab, "人物三视图(角色资产)")
         self.mat_scene_lab = QLabel()
@@ -1348,17 +1401,18 @@ class ClonePage(QWidget):
                 pv_btn.clicked.connect(
                     lambda _=False, u=str(b["video"]): self._preview_shot_video(u))
                 head.addWidget(pv_btn)
-                # 下载 / 删除:成片能看了,也要能带走和重出(用户要求)
-                dl_btn = QPushButton("↓")
+                # 下载 / 删除:成片能看了,也要能带走和重出(用户要求)。
+                # 必须用 iconfont SVG —— "↓"/"🗑" 在 Windows 应用字体里没有字形,
+                # 渲染成纯空白按钮(AGENTS 记过的坑,用户实测红框)。
+                dl_btn = W.svg_icon_btn("download", tr("download"), size=24)
                 dl_btn.setFixedSize(28, 24)
-                dl_btn.setToolTip(tr("download"))
                 dl_btn.clicked.connect(
                     lambda _=False, u=str(b["video"]), n=int(b.get("number", 0)):
                     self._download_shot_video(u, n))
                 head.addWidget(dl_btn)
-                del_v_btn = QPushButton("🗑")
+                del_v_btn = W.svg_icon_btn("delete", tr("删除该镜视频(文件一并删除)"),
+                                           size=24)
                 del_v_btn.setFixedSize(28, 24)
-                del_v_btn.setToolTip(tr("删除该镜视频(文件一并删除)"))
                 del_v_btn.clicked.connect(
                     lambda _=False, n=int(b.get("number", 0)): self._delete_shot_video(n))
                 head.addWidget(del_v_btn)
@@ -1675,21 +1729,23 @@ class ClonePage(QWidget):
             ok(tr("画面风格已更新"))
 
     def _write_turnaround_assets(self, turnaround: str):
-        """三视图落库 + 刷新 characters 两列(image_url=切格立绘,comic_image_url=整图)。
+        """三视图落库 + 刷新 characters 两列(两列都是三视图整张)。
 
         UI 重建与管线 sync_assets 共用这一份写法,免得两边列语义漂移。
+        image_url 曾写「三视图切出的单人立绘」—— 用户已定版废弃:单人全身
+        不再作为展示图(实测截图:重建后角色资产页显示单人全身,用户质疑
+        「早就不用了为什么还弹」)。切格立绘只在管线内部由 standing_ref_of
+        **即时计算**,不落 characters 列、生成端也不读它。
         """
         from ..pipeline import video_clone
-        db.ex("UPDATE characters SET comic_image_url=?, updated_at=? "
-              "WHERE drama_id=? AND name=?",
-              (config.path_to_media_url(turnaround), db.now(),
-               self.drama_id, video_clone.CLONE_PRESENTER_NAME))
-        standing = video_clone.standing_ref_of(turnaround)
-        if standing:
-            db.ex("UPDATE characters SET image_url=?, updated_at=? "
-                  "WHERE drama_id=? AND name=?",
-                  (config.path_to_media_url(standing), db.now(),
-                   self.drama_id, video_clone.CLONE_PRESENTER_NAME))
+        url = config.path_to_media_url(turnaround)
+        # 按 **id** 写回:按名字写的话,用户改了角色名就写不进去(静默失效),
+        # 三视图生成好了却没进资产行 → 首帧参考图仍是旧图。
+        _prow = video_clone._clone_asset_row(self.drama_id, "presenter")
+        if _prow:
+            db.ex("UPDATE characters SET comic_image_url=?, image_url=?, updated_at=? "
+                  "WHERE id=?",
+                  (url, url, db.now(), _prow["id"]))
 
     def _rebuild_turnaround(self):
         """重建三视图并自动换脸(换模型/换风格/换出镜照后都要重来)。"""
@@ -1712,7 +1768,8 @@ class ClonePage(QWidget):
         def job(tid):
             ta = video_clone.build_presenter_turnaround(
                 src, config_id=self._clone_image_cfg(),
-                style_value=(d["style"] if d else "") or "")
+                style_value=(d["style"] if d else "") or "",
+                drama_id=self.drama_id)
             swapped = True
             try:
                 ta = video_clone.swap_clone_face(
@@ -1834,6 +1891,21 @@ class ClonePage(QWidget):
             parts.append(tr("已出首帧") + f": {have}/{bs}")
         self.settings_note.setText("   |   ".join(parts))
 
+    def _slot_thumb(self, lab, path, h: int = 110):
+        """素材槽缩略:**高度统一 h,宽度随原图比例**(用户要求三视图/场景图
+        同高、可以变宽)。空槽给文字占位,宽度回落到 h。"""
+        lab.setFixedHeight(h)
+        if path:
+            pm = W.pixmap_fit_height(str(path), h)
+            lab.setPixmap(pm)
+            dpr = pm.devicePixelRatio() or 1.0
+            lab.setFixedWidth(max(48, int(pm.width() / dpr)))
+            lab.setText("")
+        else:
+            lab.setPixmap(QPixmap())
+            lab.setText(tr("none"))
+            lab.setFixedWidth(h)
+
     def _refresh_materials(self):
         """素材与派生资产缩略图:换完素材当场能看到换没换成功。
 
@@ -1849,13 +1921,8 @@ class ClonePage(QWidget):
                  ("presenter", self.mat_presenter_lab, tr("当前出镜人")))
         for kind, lab, tip in items:
             path = video_clone._resolve_local(clone.get(kind))
-            if path:
-                lab.setPixmap(W.pixmap_from_media(str(path), 110, 110))
-                lab.setToolTip(tip)
-            else:
-                lab.setPixmap(QPixmap())
-                lab.setText(tr("none"))
-                lab.setToolTip(tip)
+            self._slot_thumb(lab, path)
+            lab.setToolTip(tip)
         # 派生资产:三视图整图(角色资产)/ 场景空景图。单人立绘不再展示(用户定版),
         # 它只在管线内部由三视图切格而来(见 standing_ref_of)。
         # 三视图换脸失败时缩略图提示就地可见 —— 此前静默降级,用户拿着路人脸
@@ -1873,15 +1940,15 @@ class ClonePage(QWidget):
             资产页找 —— 顶部素材与分镜卡参考行统一走详情弹窗。"""
             lab.setToolTip(tip)
             if path:
-                lab.setPixmap(W.pixmap_from_media(str(path), 110, 110))
+                self._slot_thumb(lab, path)
                 lab.setCursor(Qt.PointingHandCursor)
                 if detail_kind:
                     lab.mousePressEvent = lambda _e, k=detail_kind, key=asset_key:                         self._open_clone_asset_detail(k, clone.get(key))
                 else:
                     lab.mousePressEvent = lambda _e, u=str(path): self._view_image_big(u)
             else:
-                lab.setPixmap(QPixmap())
-                lab.setText(tr("none"))
+                self._slot_thumb(lab, None)
+                lab.setToolTip(tip)
         turn = video_clone._resolve_local(clone.get("turnaround_image"))
         _set_thumb(self.mat_turn_lab, turn,
                    tr("人物三视图(角色资产)") if clone.get("turnaround_swapped") is not False
@@ -1907,12 +1974,11 @@ class ClonePage(QWidget):
             slot_col.setContentsMargins(0, 0, 0, 0)
             slot_col.setSpacing(2)
             thumb = QLabel()
-            thumb.setFixedSize(110, 110)
             thumb.setAlignment(Qt.AlignCenter)
             if poster and Path(poster).exists():
-                thumb.setPixmap(W.pixmap_from_media(poster, 110, 110))
+                self._slot_thumb(thumb, str(poster))
             else:
-                thumb.setPixmap(W.pixmap_from_media(mpath, 110, 110))
+                self._slot_thumb(thumb, mpath)
             thumb.setStyleSheet("background:#14161a; border-radius:6px;")
             thumb.setCursor(Qt.PointingHandCursor)
             thumb.setToolTip(tr("点击播放;弹窗内 ↻ 可重播"))
@@ -1923,14 +1989,13 @@ class ClonePage(QWidget):
             btn_row = QHBoxLayout()
             btn_row.setContentsMargins(0, 0, 0, 0)
             btn_row.setSpacing(2)
-            dl_b = QPushButton("↓")
+            dl_b = W.svg_icon_btn("download", tr("下载该成片到本地"), size=20)
             dl_b.setFixedSize(34, 20)
-            dl_b.setToolTip(tr("下载该成片到本地"))
             dl_b.clicked.connect(lambda _=False, u=mpath: self._download_merged(u))
             btn_row.addWidget(dl_b)
-            del_b = QPushButton("🗑")
+            del_b = W.svg_icon_btn("delete", tr("删除该成片(文件与海报一并删除)"),
+                                   size=20)
             del_b.setFixedSize(34, 20)
-            del_b.setToolTip(tr("删除该成片(文件与海报一并删除)"))
             del_b.clicked.connect(lambda _=False, u=mpath: self._delete_merge(u))
             btn_row.addWidget(del_b)
             btn_row.addStretch(1)
@@ -1990,7 +2055,88 @@ class ClonePage(QWidget):
         except Exception:  # noqa: BLE001
             pass
 
-    def _open_clone_asset_detail(self, kind: str, asset_id):
+    def eventFilter(self, obj, ev):
+        """素材条「当前出镜人/当前产品图」缩略图点击 → 资产详情弹窗。"""
+        from PySide6.QtCore import QEvent
+        if ev.type() == QEvent.Type.MouseButtonRelease and getattr(self, "_mat_kinds", None):
+            kind = self._mat_kinds.get(id(obj))
+            if kind:
+                self._open_material_detail(kind)
+                return True
+        return super().eventFilter(obj, ev)
+
+    def _open_material_detail(self, kind: str):
+        """点「当前出镜人 / 当前产品图」→ 资产详情弹窗(大图+改图+替换)。
+
+        show_turnaround=False:这个入口看的是**原料照片**(出镜照/产品图),
+        不是三视图 —— 三视图是分镜参考行入口的预览对准对象。
+        on_upload:只在弹窗里**真正上传了新照片**时才同步业务源
+        (clone["presenter"]/["product"])。绝不能在关弹窗时拿角色行图回写 ——
+        角色行是派生资产(三视图/切格图),抄它会把派生图当成人脸源
+        (实测:出镜照被污染成切格单人图,重建三视图拿它当脸,全盘漂)。
+        """
+        from ..pipeline import video_clone
+        # 按 **id** 找资产:按名字找的话,用户改了角色名/产品名就查不到 →
+        # 弹窗打不开(提示「还没有生成该资产」),用户以为资产丢了。
+        # id 缺失(老项目)才回退按名字找。
+        row = video_clone._clone_asset_row(self.drama_id,
+                                           "presenter" if kind == "presenter" else "product")
+        if not row:
+            warn(tr("还没有生成该资产,请先点「检测参数 · AI 分镜」或「提取场景图」"))
+            return
+
+        def _sync_upload(url: str):
+            from ..pipeline import video_clone as _vc
+            meta = _vc._meta(self.drama_id)
+            clone = meta.get("clone") or {}
+            clone["presenter" if kind == "presenter" else "product"] = url
+            if kind == "presenter":
+                # 换了人:旧三视图还是上一张脸,必须作废重生成(与工具条
+                # 「替换出镜照」同一口径)。
+                clone.pop("turnaround_image", None)
+                clone.pop("turnaround_swapped", None)
+                clone.pop("presenter_desc", None)
+                clone.pop("presenter_styling", None)
+            meta["clone"] = clone
+            _vc._save_meta(self.drama_id, meta)
+            if kind != "presenter":
+                return
+            # 重读样貌(sync_assets 内)+ 重生成最终提示词:纯同步会阻塞 UI,
+            # 丢 worker 跑;完成 toast 指路重建三视图。产品图上传仍走工具条
+            # 「替换产品图」拿全套(描述重读+分镜重写)。
+            from .toast import info
+            info(tr("正在按新出镜照重读样貌…"))
+
+            def job(tid):
+                _cid, _pid, _sid = _vc.sync_assets(self.drama_id)
+                _vc.refresh_clone_prompts(self.drama_id)
+                return True
+
+            def done(tid, result, error):
+                if error:
+                    err(str(error)[:200])
+                    return
+                ok(tr("已按新出镜照重读样貌并重新生成提示词,请重建三视图"))
+                self.reload()
+
+            TASKMGR.submit("clone_desc", job, done, drama_id=self.drama_id,
+                           episode_id=self._clone_episode_id())
+
+        self._open_clone_asset_detail(
+            "character" if kind == "presenter" else "prop", row["id"],
+            show_turnaround=False, on_upload=_sync_upload if kind == "presenter" else None)
+
+    def _replace_material_from_popup(self, kind: str):
+        """详情弹窗里的「替换图片」:先关弹窗再走页面上的替换流程。"""
+        from PySide6.QtWidgets import QApplication
+        m = QApplication.activeModalWidget()
+        if m is not None:
+            m.accept()
+        self._replace_material(kind)
+
+    def _open_clone_asset_detail(self, kind: str, asset_id,
+                                 show_turnaround: bool = True,
+                                 on_upload=None):
         """打开与短剧页**同款**的资产详情弹窗。
 
         用户要求复刻参考行的三格改成类似的详情弹窗,而不只是看图:
@@ -2018,11 +2164,20 @@ class ClonePage(QWidget):
             # 预览对准**三视图整张**:角色资产的 image_url 存的是上传照/单张立绘,
             # 而这个入口叫「人物三视图」—— 用户点开就是要看三视图(实测截图:
             # 弹出来的却是单张站立照)。显示层换成 turnaround;库里 image_url
-            # 不动(它仍是提取/生成的锚点图)。
+            # 不动(它仍是提取/生成的锚点图)。素材条入口(show_turnaround=False)
+            # 看的恰恰是原料出镜照本身,不做这个替换。
             from ..pipeline import video_clone
-            ta = video_clone._resolve_local(clone_meta.get("turnaround_image"))
-            if ta:
-                row["image_url"] = str(ta)
+            if show_turnaround:
+                ta = video_clone._resolve_local(clone_meta.get("turnaround_image"))
+                if ta:
+                    row["image_url"] = str(ta)
+            else:
+                # 素材条「当前出镜人」入口:看的是**原料出镜照**。库 image_url
+                # 存的是三视图切出的单人立绘(旧管线遗留),直接用会又把
+                # 「单人全身」端出来 —— 用户已明确定版不要。
+                pp = video_clone._resolve_local(clone_meta.get("presenter"))
+                if pp:
+                    row["image_url"] = str(pp)
             # 样貌/妆造自愈:角色行空但 clone 文字锚有值(惰性提取成功)→ 回填,
             # 详情字段与「最终提示词 · AI 生成」才有内容可吃(实测出镜人物两栏
             # 全空 —— 提取曾失败,后来补齐只写了 metadata,角色表没跟上)。
@@ -2039,8 +2194,18 @@ class ClonePage(QWidget):
                       tr("把出镜照的脸换到当前三视图上(不消耗生图额度)"),
                       self._swap_turnaround_face)]
         from .asset_dialogs import AssetDetailDialog
+        # 素材条入口(show_turnaround=False)附带「替换图片」:走 replace_material
+        # (自动刷新描述、重写分镜文案 —— 与工具条上两个替换按钮同一条路)。
+        # 弹窗内「上传」则经 on_upload 同步业务源(见 _open_material_detail);
+        # 三视图参考行入口不加 —— 那里的动作是「手动换脸」,替原料会造成误会。
+        if not show_turnaround:
+            extra.append(("🔁 " + tr("替换图片"),
+                          tr("上传新照片替换,自动刷新描述与分镜"),
+                          (lambda k=("presenter" if kind == "character" else "product"):
+                           self._replace_material_from_popup(k))))
         dlg = AssetDetailDialog(self, kind, dict(row), on_changed=self.reload,
-                                drama_id=self.drama_id, extra_actions=extra)
+                                drama_id=self.drama_id, extra_actions=extra,
+                                on_upload=on_upload)
         dlg.exec()
         self.reload()
 
@@ -2208,12 +2373,21 @@ class ClonePage(QWidget):
         self.reload()
 
     def _global_hint(self):
-        """全局重绘要求(存设置表,跨项目、对所有镜生效)。"""
+        """全局重绘要求(存设置表,跨项目、对所有镜生效)。
+
+        从没设置过时**预填默认规则**(video_clone.DEFAULT_CLONE_RULES:单人物/
+        颜色隔离)—— 通用质量规则不写死在管线里,用户可改可清空(清空保存 =
+        不加任何通用规则,比如对戒类项目合法地需要两个人)。
+        """
         from PySide6.QtWidgets import QInputDialog
-        cur = db.get_setting("yihao.clone_redraw_hint") or ""
+        cur = db.get_setting("yihao.clone_redraw_hint", None)   # None=从未设置
+        if cur is None:                       # 从未设置过 → 预填默认规则
+            from ..pipeline import video_clone
+            cur = video_clone.DEFAULT_CLONE_RULES
         text, okd = QInputDialog.getMultiLineText(
             self, tr("通用重绘要求"),
-            tr("对所有分镜重绘生效的硬要求(例:不要出现第二个人的手),跨项目保存"),
+            tr("对所有分镜重绘生效的硬要求(例:不要出现第二个人的手),跨项目保存")
+            + " · " + tr("清空保存表示不加任何通用规则"),
             str(cur))
         if not okd:
             return
@@ -2359,7 +2533,6 @@ class ClonePage(QWidget):
         每镜完成即刷新,完成标签旁的「▶ 播放」当场可用。
         """
         from ..pipeline import video_clone
-        from ..core.taskmgr import on_main
         from PySide6.QtWidgets import QMessageBox
         boards = video_clone._clone_storyboards(self.drama_id)
         if not boards:
@@ -2388,7 +2561,71 @@ class ClonePage(QWidget):
             todo = missing
         else:
             return
+        self._maybe_jev_route_then_start(todo)
 
+    def _maybe_jev_route_then_start(self, todo: list):
+        """批量出视频前问一次 Jev(软建议器契约):有建议弹三选由用户拍板,
+        没配置/不可用/只有一家候选 → 直接开跑,一句话都不打扰。
+
+        只建议不自动切(换供应商=换钱);「改用建议」是把用户点的选择写进
+        yihao.model.video —— 与用户在设置页手选同一条路,不算自动改写。
+        """
+        from ..ai import jev_ask
+        need_parts = []
+        for b in todo[:6]:
+            need_parts.append(str(b.get("prompt") or b.get("shot")
+                                  or b.get("action") or "")[:120])
+        need = " ".join(x for x in need_parts if x).strip()[:600] \
+            or tr("jev_route_need_desc")
+        need = tr("jev_route_need_prefix") + " " + need
+
+        def job(tid):
+            return jev_ask.pick_video_config_advisory(need)
+
+        def done(tid, result, error):
+            if error or not result:
+                self._start_video_batch(todo)     # 没建议 → 原样开跑
+                return
+            cfg_id, dist, low = result
+            cur_id = db.resolve_selected_config_id("video")
+            if cfg_id == cur_id:
+                self._start_video_batch(todo)     # 建议的就是当前,不打扰
+                return
+            sugg = db.q1("SELECT provider, model FROM ai_service_configs WHERE id=?",
+                         (cfg_id,))
+            cur = (db.q1("SELECT provider, model FROM ai_service_configs WHERE id=?",
+                         (cur_id,)) if cur_id else None)
+            parts = []
+            for k, v in sorted((dist or {}).items(),
+                               key=lambda kv: -kv[1] if isinstance(kv[1], (int, float)) else 0):
+                if isinstance(v, (int, float)):
+                    parts.append(f"{k.split(':')[0]} {v:.0%}")
+            s = f"{sugg['provider']} · {sugg['model']}" if sugg else "?"
+            c = f"{cur['provider']} · {cur['model']}" if cur else "-"
+            box = QMessageBox(self)
+            box.setWindowTitle(tr("batch_video"))
+            box.setText(tr("jev_batch_q").format(s, " / ".join(parts), c)
+                        + (("  " + tr("jev_route_low_confidence")) if low else ""))
+            use_sugg = box.addButton(tr("jev_batch_use_suggested"),
+                                     QMessageBox.AcceptRole)
+            use_cur = box.addButton(tr("jev_batch_use_current"),
+                                    QMessageBox.ActionRole)
+            box.addButton(tr("取消"), QMessageBox.RejectRole)
+            box.exec()
+            clicked = box.clickedButton()
+            if clicked is use_sugg:
+                db.set_setting("yihao.model.video", str(int(cfg_id)))
+                self.reload()
+            if clicked in (use_sugg, use_cur):
+                self._start_video_batch(todo)
+            # 取消 → 不开跑,留在原地
+
+        TASKMGR.submit("jev_route", job, done)
+
+    def _start_video_batch(self, todo: list):
+        """串行逐镜出视频(与一键重绘同一条纪律:外部付费接口不并发)。"""
+        from ..core.taskmgr import on_main
+        from ..pipeline import video_clone
         btn = getattr(self, "batch_video_btn", None)
         total = len(todo)
         self._video_batch_running = True
