@@ -620,12 +620,16 @@ class ImageViewerDialog(QDialog):
     def __init__(self, parent, url: str | None, title: str = "",
                  confirm_text: str | None = None,
                  extra_text: str | None = None, on_extra=None,
-                 style_choices=None, style_default: str | None = None):
+                 style_choices=None, style_default: str | None = None,
+                 extra_actions=None):
         super().__init__(parent)
         self.used = False
         self._on_extra = on_extra
         self._img_label = None
         self._style_combo = None
+        # 通用附加按钮:[(label, callback)],callback 接收本弹窗实例 ——
+        # 分镜首帧预览用它挂「下载 / 替换图片」(多按钮,extra_text 只有一个)。
+        self._extra_actions = extra_actions or []
         self.setWindowTitle(title or tr("预览"))
         # 大图窗口按原图比例自适应:三视图这类宽图(1200×800)在固定 700×540 里
         # 会被缩到很小看不清;竖图同理。先量原图,再把窗口放到合适尺寸
@@ -659,6 +663,10 @@ class ImageViewerDialog(QDialog):
         close = W.primary_btn(tr("close"))
         close.clicked.connect(self.reject)
         row = QHBoxLayout()
+        for _label, _cb in self._extra_actions:
+            _b = QPushButton(_label)
+            _b.clicked.connect(lambda _=False, cb=_cb, d=self: cb(d))
+            row.addWidget(_b)
         if extra_text and on_extra:
             ex = QPushButton(extra_text)
             W.set_icon(ex, "magic")

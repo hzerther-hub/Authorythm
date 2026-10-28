@@ -11,7 +11,7 @@ from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog, QFrame,QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
                                QMessageBox, QPushButton, QScrollArea, QStackedWidget,
-                               QVBoxLayout, QWidget)
+                               QTextEdit, QVBoxLayout, QWidget)
 
 from ..core import config, db
 from ..core.i18n import LANGS, on_change, set_language, tr
@@ -1220,6 +1220,17 @@ class ClonePage(QWidget):
             tr("从参考视频挑一帧生成无人空景图,锁定全片背景(不重跑拆解)"))
         self.scene_btn.clicked.connect(self._extract_scene)
         srow.addWidget(self.scene_btn)
+        # 重写镜头脚本:把已有分镜补写成短剧线/小说线同款的三段式
+        # (分镜描述/氛围/视频提示词)。给存量项目用 —— 老分镜只有一行摘要,
+        # 场景与道具没有名字可指,跨镜必然漂;重写一次脚本即可对齐,不必
+        # 重跑拆解(重跑会改分镜切分、丢掉已出的首帧)。
+        self.script_btn = QPushButton(tr("clone_regen_script"))
+        self.script_btn.setObjectName("ffAction")
+        self.script_btn.setCursor(Qt.PointingHandCursor)
+        W.set_icon(self.script_btn, "doc")
+        self.script_btn.setToolTip(tr("clone_regen_script_tip"))
+        self.script_btn.clicked.connect(self._regen_script)
+        srow.addWidget(self.script_btn)
         # 通用重绘要求(全局,跨项目):「画面只允许一只手」这类规则往往整条片
         # 甚至每个项目都要,不该逐镜重抄 —— 存设置表,所有镜重绘时注入
         self.ghint_btn = QPushButton(tr("通用重绘要求"))
@@ -1328,6 +1339,28 @@ class ClonePage(QWidget):
         self._reload_clone_styles()
         self.reload()
 
+    @staticmethod
+    def _script_html(b: dict) -> str:
+        """一镜的三段式脚本 → 富文本(标题加粗 + 分段)。
+
+        字段与短剧线/小说线同名同义:description=分镜描述、atmosphere=氛围、
+        video_prompt=视频提示词。空段直接不显示(老分镜没写氛围时不该显示
+        一个空标题)。
+        """
+        from html import escape
+        parts = []
+        # 四段与小说线/短剧线同名同序:分镜描述 / 氛围 / 视频提示词 / 旁白(视频解说)
+        for title, key in ((tr("sb_desc_label"), "description"),
+                           (tr("sb_atmosphere"), "atmosphere"),
+                           (tr("sb_video_prompt"), "video_prompt"),
+                           (tr("sb_narration"), "narration")):
+            txt = str(b.get(key) or "").strip()
+            if not txt:
+                continue
+            parts.append(f"<b>{escape(title)}</b><br>"
+                         f"{escape(txt).replace(chr(10), '<br>')}")
+        return "<br><br>".join(parts)
+
     def reload(self):
         while self.board_list.count():
             item = self.board_list.takeAt(0)
@@ -1360,7 +1393,10 @@ class ClonePage(QWidget):
             # **行高固定**(缩略图 180 + 上下边距 16):否则卡片高度随描述文字
             # 行数浮动,右侧按钮列被压成小条(用户实测:「让行有固定高度,
             # 可以下拉更多行」)。固定后列表滚动,每行按钮都有完整尺寸。
-            box.setFixedHeight(196)
+            # 高度从 196 抬到 320:多出来的一段放**镜头脚本**(分镜描述/氛围/
+            # 视频提示词),这是小说线的格式 —— 脚本要能整段读,不然「保持场景
+            # 道具一致」这件事在界面上根本看不出来。
+            box.setFixedHeight(320)
             # 首帧缩略图:此前每张卡片只画了文字与按钮,generate_shot_image 写进
             # b["first_frame"] 的图**没有任何渲染分支**(b["video"] 有,首帧没有),
             # 于是首帧生成成功了界面也看不见,用户只能反复点重绘去磁盘里翻。
@@ -1378,7 +1414,9 @@ class ClonePage(QWidget):
                 thumb.setPixmap(W.pixmap_from_media(ff, 320, 180))
                 thumb.setCursor(Qt.PointingHandCursor)
                 full = str(ff)
-                thumb.mousePressEvent = lambda _e, u=full: self._view_image_big(u)
+                _n = int(b.get("number", 0))
+                thumb.mousePressEvent = lambda _e, num=_n, u=full: \
+                    self._view_shot_frame(num, u)
             elif int(b.get("number", 0)) in getattr(self, "_shot_busy", set()):
                 # 正在生成:给明确的等待态,而不是笼统的空态 ——
                 # 批量重绘时用户要能看出「跑到第几镜、这镜还在跑」
@@ -1444,15 +1482,26 @@ class ClonePage(QWidget):
                     refs_row.addWidget(im)
                 refs_row.addStretch(1)
                 info.addLayout(refs_row)
-            steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
-            action_txt = "；".join(f"{i}.{s}" for i, s in enumerate(steps, 1)) if steps else b.get("action", "")
-            head_bits = " · ".join(x for x in (b.get("shot", ""), b.get("camera", "")) if x)
-            desc = QLabel(f"{head_bits}  {action_txt}  {(tr('产品:') + b.get('product_use','')) if b.get('product_use') else ''}")
-            desc.setWordWrap(True)
-            info.addWidget(desc)
+            # ── 镜头脚本三段式(与短剧线/小说线同构)──
+            # 此前这里只有一行「中景·固定 · 1.xxx; 2.xxx 产品:xxx」摘要:
+            # 场景与道具只能靠自然语言暗示,模型每镜自由发挥 → 背景/陈设/道具
+            # 逐镜漂。现在按小说线的格式展示「分镜描述 / 氛围 / 视频提示词」,
+            # 三段都带 @资产名 —— 资产对齐了,跨镜的场景与道具才是同一个。
+            script_html = self._script_html(b)
+            if script_html:
+                script_box = QTextEdit()
+                script_box.setReadOnly(True)
+                script_box.setHtml(script_html)
+                script_box.setFrameShape(QFrame.NoFrame)
+                script_box.setMinimumHeight(120)
+                script_box.setToolTip(tr("clone_script_tip"))
+                info.addWidget(script_box, 1)
             if b.get("line"):
-                line = QLabel(b["line"])
+                # 口播/字幕 = 模型对**原片画面文字**的观察(字幕、水印、推测口播),
+                # 与脚本里的「旁白(视频解说)」是两回事,分开标出来免得混淆。
+                line = QLabel(f"{tr('口播')}: {b['line']}")
                 line.setObjectName("muted")
+                line.setWordWrap(True)
                 info.addWidget(line)
             lay.addLayout(info, 1)
             # 按钮竖排(自上而下):缩略图加高到 320x180 后,右侧 180px 高度
@@ -1486,14 +1535,24 @@ class ClonePage(QWidget):
             line_btn.clicked.connect(
                 lambda _=False, n=int(b.get("number", 0)): self._shot_line(n))
             btns.addWidget(line_btn)
+            # 镜头脚本(分镜描述/氛围/视频提示词):脚本是模型写的,资产名偶尔会跑偏
+            # (写成「女生」而不是「出镜人物」)。改一句比重跑拆解便宜得多 ——
+            # 名字改对了,这一镜喂给模型的参考图才对得上。
+            script_btn = QPushButton(tr("clone_script_label"))
+            W.set_icon(script_btn, "doc")
+            script_btn.setToolTip(tr("clone_script_tip"))
+            script_btn.clicked.connect(
+                lambda _=False, n=int(b.get("number", 0)): self._shot_script(n))
+            btns.addWidget(script_btn)
             btns.addWidget(img_btn)
             vid_btn = W.primary_btn("▷ " + tr("出视频"))
             vid_btn.setToolTip(tr("生成这一镜的视频(图生视频,首帧=本镜已确认的镜头图)"))
             vid_btn.clicked.connect(lambda _=False, n=int(b.get("number", 0)): self._shot_video(n))
             btns.addWidget(vid_btn)
-            # 行高固定后,5 个竖排按钮各自锁高 26px(5×26 + 4×6 间距 = 154px,
-            # 卡内可用 180px 装得下),不再被布局压缩成小条。
-            for _b in (fs_btn if ff else None, hint_btn, line_btn, img_btn, vid_btn):
+            # 行高固定后,竖排按钮各自锁高 26px(6×26 + 5×6 间距 = 186px),
+            # 卡内 320px 装得下,不会被布局压缩成小条。
+            for _b in (fs_btn if ff else None, hint_btn, line_btn, script_btn,
+                       img_btn, vid_btn):
                 if _b is not None:
                     _b.setFixedHeight(26)
             lay.addLayout(btns)
@@ -2046,6 +2105,58 @@ class ClonePage(QWidget):
         TASKMGR.submit("clone_replace_material", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
+    def _view_shot_frame(self, board_number: int, url: str):
+        """首帧大图预览:附「↓ 下载 / 🔁 替换图片」(用户要求)。
+
+        替换 = 选本地图片写回该镜 first_frame(用户在外部修完图回贴的标准路径);
+        下载 = 另存到本地(默认 Downloads,保留镜头号文件名)。
+        """
+        from .asset_dialogs import ImageViewerDialog
+
+        def _download(dlg):
+            from ..core import download as dl_mod
+            try:
+                p = dl_mod.download_media_ask(
+                    dlg, url, f"首帧_{board_number:02d}{Path(url).suffix or '.png'}")
+                if p:
+                    ok(tr("download_ok") + ": " + p.name)
+            except Exception as exc:  # 失败必须可见
+                err(str(exc)[:200])
+
+        def _replace(dlg):
+            from PySide6.QtWidgets import QFileDialog
+            import shutil
+            import uuid
+            from ..pipeline import video_clone
+            p, _ = QFileDialog.getOpenFileName(
+                dlg, tr("替换图片"), "", "Images (*.png *.jpg *.jpeg *.webp)")
+            if not p:
+                return
+            dst = (config.STATIC_DIR / "images" /
+                   f"clone_s{board_number}_manual_{uuid.uuid4().hex[:6]}"
+                   f"{Path(p).suffix or '.png'}")
+            shutil.copy(p, dst)
+            meta = video_clone._meta(self.drama_id)
+            hit = False
+            for x in meta.setdefault("clone", {}).get("storyboards", []):
+                if int(x.get("number", 0)) == board_number:
+                    x["first_frame"] = str(dst)
+                    hit = True
+                    break
+            if not hit:
+                err(tr("还没有分镜,请先运行 AI 分镜"))
+                return
+            video_clone._save_meta(self.drama_id, meta)
+            ok(tr("已替换该镜首帧,重新生成视频后生效"))
+            dlg.accept()
+            self.reload()
+
+        dlg = ImageViewerDialog(
+            self, url, tr("预览"),
+            extra_actions=[("↓ " + tr("download"), _download),
+                           ("🔁 " + tr("替换图片"), _replace)])
+        dlg.exec()
+
     def _view_image_big(self, url: str):
         if not url:
             return
@@ -2281,6 +2392,44 @@ class ClonePage(QWidget):
         TASKMGR.submit("clone_scene", job, done, drama_id=self.drama_id,
                        episode_id=self._clone_episode_id())
 
+    def _regen_script(self):
+        """按短剧线/小说线的格式重写每镜的镜头脚本(分镜描述/氛围/视频提示词)。
+
+        给存量项目用:老分镜只有一行摘要,场景与道具没有名字可指,跨镜必然
+        漂。重跑拆解能解决,但会改分镜切分、丢掉已出的首帧 —— 补写脚本是
+        代价小得多的那条路(一次文本调用,镜号与节奏一律不动)。
+        """
+        from ..pipeline import video_clone
+        from .confirm import ask
+        if not video_clone._clone_storyboards(self.drama_id):
+            err(tr("clone_no_boards"))
+            return
+        if not ask(self, tr("clone_regen_script"),
+                   tr("clone_regen_script_confirm")):
+            return
+        btn = getattr(self, "script_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+
+        def job(tid):
+            return video_clone.regenerate_script(
+                self.drama_id, config_id=self._clone_text_cfg())
+
+        def done(tid, result, error):
+            if btn is not None:
+                btn.setEnabled(True)
+            if error:
+                err(str(error)[:280])
+                return
+            if result:
+                ok(tr("clone_regen_script_ok").format(result))
+            else:
+                err(tr("clone_regen_script_fail"))
+            self.reload()
+
+        TASKMGR.submit("clone_script", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
     def _shot_face_swap(self, n: int):
         """手动换脸兜底:把出镜照的脸换到这一镜**已生成的首帧**上。
 
@@ -2372,6 +2521,119 @@ class ClonePage(QWidget):
         video_clone._save_meta(self.drama_id, c)
         self.reload()
 
+    def _shot_script(self, n: int):
+        """编辑这一镜的镜头脚本(分镜描述 / 氛围 / 视频提示词)。
+
+        与短剧线的检查器同款三段。模型写的资产名偶尔跑偏(写成「女生」而不是
+        「出镜人物」),名字对不上 → 这一镜的参考图就裁错了(实测绑定失锚,
+        人物/场景/产品逐镜漂)。改一句比重跑拆解便宜得多,改完立即生效。
+        """
+        from ..pipeline import video_clone
+        from PySide6.QtWidgets import QDialogButtonBox
+        b = next((x for x in video_clone._clone_storyboards(self.drama_id)
+                  if int(x.get("number", 0)) == n), None)
+        if b is None:
+            return
+        dlg = QDialog(self)
+        dlg.setWindowTitle(f"{tr('clone_script_label')} #{n:02d}")
+        dlg.setMinimumSize(780, 700)
+        lay = QVBoxLayout(dlg)
+        edits = {}
+        for key, title, ph, obj in (
+                ("description", tr("sb_desc_label"), tr("sb_desc_ph"), "inspectorLabel"),
+                ("atmosphere", tr("sb_atmosphere"), tr("sb_atmosphere_ph"), "inspectorLabel"),
+                ("video_prompt", tr("sb_video_prompt"), tr("sb_video_prompt_ph"), "heroLabel"),
+                ("narration", tr("sb_narration"), tr("sb_narration_ph"), "inspectorLabel")):
+            # 标题行与小说线检查器同款:标题 …… 操作键(视频提示词有「AI 生成」,
+            # 旁白有「🔊 合成配音」)。标题与操作键都放进一条横排,间距靠 stretch。
+            head = QHBoxLayout()
+            lab = QLabel(title)
+            lab.setObjectName(obj)
+            head.addWidget(lab)
+            head.addStretch(1)
+            lay.addLayout(head)
+            ed = QTextEdit()
+            ed.setAcceptRichText(False)
+            ed.setPlainText(str(b.get(key) or ""))
+            ed.setPlaceholderText(ph)
+            lay.addWidget(ed, 1)
+            edits[key] = ed
+            if key == "video_prompt":
+                ai_btn = QPushButton(tr("ai_generate"))
+                ai_btn.setToolTip(tr("clone_ai_prompt_tip"))
+                ai_btn.clicked.connect(
+                    lambda _=False, k=key: self._shot_ai_prompt(n, edits[k]))
+                head.insertWidget(head.count() - 1, ai_btn)
+            elif key == "narration":
+                tts_btn = QPushButton(tr("synth_narration"))
+                W.set_icon(tts_btn, "volume")   # 图标一律走 iconfont SVG(emoji 无字形)
+                tts_btn.setToolTip(tr("clone_tts_tip"))
+                tts_btn.clicked.connect(
+                    lambda _=False: self._shot_tts(n))
+                head.insertWidget(head.count() - 1, tts_btn)
+        btns = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        btns.button(QDialogButtonBox.Save).setText(tr("save"))
+        btns.button(QDialogButtonBox.Cancel).setText(tr("cancel"))
+        btns.accepted.connect(dlg.accept)
+        btns.rejected.connect(dlg.reject)
+        lay.addWidget(btns)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        c = video_clone._meta(self.drama_id)
+        for x in c.setdefault("clone", {}).get("storyboards", []):
+            if int(x.get("number", 0)) == n:
+                for key, ed in edits.items():
+                    x[key] = ed.toPlainText().strip()
+        video_clone._save_meta(self.drama_id, c)
+        ok(tr("clone_script_saved"))
+        self.reload()
+
+    def _shot_ai_prompt(self, n: int, editor):
+        """按这一镜的画面描述与氛围重写视频提示词(弹窗里的「AI 生成」)。
+
+        只动这一镜 —— 用户改了一句台词/换了个运镜时,不必重跑整片脚本。
+        产出走与拆解完全同一份格式规格,不然两批提示词格式不一致。
+        """
+        from ..pipeline import video_clone
+
+        def job(tid):
+            return video_clone.regenerate_shot_prompt(
+                self.drama_id, n, config_id=self._clone_text_cfg())
+
+        def done(tid, result, error):
+            if error:
+                err(str(error)[:280])
+                return
+            if not result:
+                err(tr("ai_empty"))
+                return
+            editor.setPlainText(str(result))
+            ok(tr("video_prompt_saved"))
+
+        TASKMGR.submit("clone_prompt", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
+    def _shot_tts(self, n: int):
+        """合成这一镜的旁白配音(弹窗里的「🔊 合成配音」)。
+
+        合成结果按镜号存回分镜条目,合片时混进音轨(见 merge_clone)——
+    与小说线同款:旁白是合片阶段的事,图生视频本身没有配音通道。
+        """
+        from ..pipeline import video_clone
+
+        def job(tid):
+            return str(video_clone.synth_shot_narration(self.drama_id, n))
+
+        def done(tid, result, error):
+            if error:
+                err("♪ " + str(error)[:260])
+                return
+            ok(tr("tts_done"))
+            self.reload()
+
+        TASKMGR.submit("tts", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
     def _global_hint(self):
         """全局重绘要求(存设置表,跨项目、对所有镜生效)。
 
@@ -2413,14 +2675,21 @@ class ClonePage(QWidget):
             return
         todo = [b for b in boards if not (b.get("first_frame") or "").strip()]
         if not todo:
-            # 全都有首帧:换素材或改分镜后它们已经过时,给一个强制重绘的出口
-            if not ask(self, tr("一键重绘"),
-                       tr("所有 {n} 个分镜都已有首帧。\n\n"
-                          "若你刚换了产品/人物素材或重跑了 AI 分镜,旧首帧已过时,"
-                          "是否全部重绘?\n\n(每镜都会消耗一次生图额度)").format(n=len(boards)),
-                       danger=True):
+            # 全都有首帧:规则开了单人物 → 走「自查人数,只重绘不合格的」
+            # (几乎不烧生图额度);没开 → 保持旧的「全部重绘」出口(换素材场景)。
+            if video_clone._people_count_check_enabled():
+                if not ask(self, tr("一键重绘"),
+                           tr("所有 {n} 个分镜都已有首帧。将先自查每张画面的人数,"
+                              "只自动重绘不合格(多人)的镜头,合格的不会重生图。"
+                              "\n\n开始?").format(n=len(boards))):
+                    return
+            elif not ask(self, tr("一键重绘"),
+                         tr("所有 {n} 个分镜都已有首帧。\n\n"
+                            "若你刚换了产品/人物素材或重跑了 AI 分镜,旧首帧已过时,"
+                            "是否全部重绘?\n\n(每镜都会消耗一次生图额度)").format(n=len(boards)),
+                         danger=True):
                 return
-            todo = list(boards)
+            todo = list(boards) if (not video_clone._people_count_check_enabled()) else []
         elif not ask(self, tr("一键重绘"),
                      tr("将为 {n} 个缺少首帧的分镜逐张生成(逐镜消耗生图额度)。\n\n开始?")
                      .format(n=len(todo))):
@@ -2477,7 +2746,34 @@ class ClonePage(QWidget):
             on_main(_patch)
 
         def job(tid):
+            nonlocal total
             done_n = 0
+            # ── 软件自己找坏图(用户要求「要让软件重绘」):通用要求写了单人物
+            # 时,先给**已有首帧**的镜逐张数人头,检出多人的自动纳入重绘名单 ——
+            # 用户点一次「一键重绘首帧」,坏图就被自动替换,不用逐镜找。
+            # (检查在后台线程跑,不冻界面;规则里没写单人物 → 整段跳过,零开销。)
+            if video_clone._people_count_check_enabled():
+                from ..core import taskmgr as TM
+                TM.set_stage(tid, "自查人数中…")
+                from ..core.taskmgr import on_main
+
+                def _ui_stage():
+                    if btn is not None:
+                        btn.setText(tr("自查人数中…"))
+                on_main(_ui_stage)
+                for b in list(boards):
+                    if b in todo:
+                        continue                    # 本来就要重绘的,不用查
+                    ff = video_clone._resolve_local(b.get("first_frame"))
+                    if not ff:
+                        continue
+                    n = video_clone._count_people_in_image(
+                        ff, config_id=video_clone._selected_text_cfg())
+                    if n is not None and n > 1:
+                        print(f"[clone] 分镜#{b.get('number')} 首帧自检={n}人,"
+                              f"纳入自动重绘", flush=True)
+                        todo.append(b)
+                total = len(todo)
             for b in todo:
                 n = int(b.get("number", 0))
                 # 每镜独立 try:单镜失败(额度/超时/内容审核)不该让整批停摆,

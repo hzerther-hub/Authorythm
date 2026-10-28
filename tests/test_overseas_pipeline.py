@@ -771,12 +771,13 @@ def test_text_config_auto_fills_token_budget(tmp_db):
 
     max_tokens 留空会掉到 8192 —— 思考型模型(deepseek-v4-pro / MiniMax-M3)的
     思考与正文共用这份预算,8192 经常思考完就吐空(「点了没反应 / 正文只有
-    标题一行」)。所以新增时直接给 32768 / 1000000,不必用户手填。
+    标题一行」)。默认值按用户定版 = 最大 128000(2026-10-28 起,曾 32768),
+    新增时直接给 128000 / 1000000,不必用户手填。
     """
     from app.ai import registry
     cid = registry.add_config("text", "demo", "https://api.example.com/v1", "demo-model")
     row = db.q1("SELECT ctx_tokens, max_tokens FROM ai_service_configs WHERE id=?", (cid,))
-    assert row["max_tokens"] == registry.TEXT_DEFAULT_MAX_TOKENS == 32768
+    assert row["max_tokens"] == registry.TEXT_DEFAULT_MAX_TOKENS == 128000
     assert row["ctx_tokens"] == registry.TEXT_DEFAULT_CTX_TOKENS == 1000000
 
 

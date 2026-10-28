@@ -15,7 +15,8 @@ SERVICE_TYPES = ["text", "image", "video", "tts", "faceswap", "jev", "stockphoto
 #     思考完就吐空 —— 表现为「点了没反应」「正文只有标题一行」。
 #   · ctx_tokens = 上下文长度,本仓只作提示/校验用。
 # 与用户手工在设置里填的值一致,不会覆盖用户的判断(只在留空时填)。
-TEXT_DEFAULT_MAX_TOKENS = 32768
+# 128000 = 用户定版的最大值(2026-10-28:曾 32768,长文起草仍被截断后抬满)。
+TEXT_DEFAULT_MAX_TOKENS = 128000
 TEXT_DEFAULT_CTX_TOKENS = 1000000
 
 

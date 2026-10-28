@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import base64
 import json
+import re as _re
 import subprocess
 import uuid
 from pathlib import Path
 
 from ..agents import runner
-from ..ai import image_client, text_client, video_client
+from ..ai import image_client, text_client, tts_client, video_client
 from ..core import config, db
 
 # 单镜**内容**字数上限(不含风格前缀与尾部一致性约束)。
@@ -273,6 +274,10 @@ REWRITE_PROMPT = """下面是一条带货视频的**镜头节奏表**,以及用�
 【原片镜头节奏表】{boards}
 【新产品描述】{product_desc}
 【新出镜人物描述】{presenter_desc}
+【已知资产(本片固定,绑定字段与 @引用只能用这些名字)】
+{assets}
+
+{vp_format}
 
 任务:沿用原片的**镜头节奏**,但把每一镜的**画面内容整个换成新产品**。
 
@@ -299,6 +304,18 @@ REWRITE_PROMPT = """下面是一条带货视频的**镜头节奏表**,以及用�
 所以 action_steps 必须由**新产品自身的使用方式**推导,每步都是该产品
 真实存在的动作。步数保持与原片相同(节奏对齐),但内容重新想。
 
+═══ 四段式镜头脚本也要同步改写(与短剧线同构)═══
+原表里的 description / atmosphere / video_prompt / narration 是**照搬原片**
+写成的,里面写的是旧产品 —— 不改就是「动作换了玉镯、文案还在说口红」。
+- description:保留【镜头N】的**子镜头结构与运镜**(切几个子镜头就还是几个,
+  运镜方式照抄),但画面内容改成新产品对应的动作;
+- atmosphere:光线/色调/声音三层**可以沿用**(拍摄环境没变),只把与产品直接
+  相关的措辞(比如"膏体哑光"之类)换成新产品的质感描述;整体氛围层照写;
+- video_prompt:**信息头与 @引用逐字保留**(资产名不许改,这是资产对齐的锚),
+  只把各时间段里的画面内容换成新产品;**结构照【视频提示词的写法】** ——
+  行首重复 @场景名、行内运镜/声音/光线的写法不许改;
+- narration:旁白解说词同样要换成新产品(原片旁白夸的是旧产品),字数相近。
+
 ═══ 铁律 ═══
 1. 输出里**不得出现原片的任何具体产品名、部件名、包装**(如"口红""膏体"
    "纸盒""膏体色号"这类原片特有物)。
@@ -309,9 +326,12 @@ REWRITE_PROMPT = """下面是一条带货视频的**镜头节奏表**,以及用�
    开箱动作,一律不许沿用 —— 除非新产品描述里明确写明有此包装(实测:新产品是
    翡翠手镯,改写却保留"快递盒置于桌面""从纸盒中取出",包装形态原封不动,
    画面仍是旧货)。新产品没有写包装 = 画面里就不该出现任何盒子/管子。
+6. **整条片子的场景名与道具名必须前后一致** —— 不许这一镜写"窗边木桌"、
+   下一镜写"米色沙发"。@引用一律用【已知资产】里的名字,一个字都不许改。
 
 逐镜输出 JSON:{{"storyboards":[...]}},字段:
 number, start, end, shot, camera, action, action_steps, line, product_use, prompt
+description, atmosphere, video_prompt, narration
 characters(本镜出镜人物名数组), props(本镜出现的道具名数组), scene(本镜场景名)
 
 其中 prompt 是该镜的重绘提示词(英文),必须满足:
@@ -322,15 +342,17 @@ characters(本镜出镜人物名数组), props(本镜出现的道具名数组), 
 **characters / props / scene 是资产绑定字段**(与短剧分镜同构):写本镜里
 **实际出现**的人物/道具/场景的名字;没出现就写空数组/空串。这三个字段
 决定本镜把哪些参考图喂给模型、特写镜是否带人物立绘 —— 写错会导致
-画面里的人物与设定图对不上。名称沿用原分镜表里已有的写法,不要新造。"""
+画面里的人物与设定图对不上。名称沿用【已知资产】里的写法,不要新造。"""
 
 
 def rewrite_boards_for_product(boards: list[dict], product_desc: str,
-                               presenter_desc: str = "", config_id: int | None = None) -> list[dict]:
+                               presenter_desc: str = "", config_id: int | None = None,
+                               assets: str = "") -> list[dict]:
     """按新产品改写分镜表 —— 让「换掉原片产品」真正成立的关键一步。
 
     **保留什么**:每镜的 number/start/end/shot/camera/line —— 即「节奏与镜头语言」。
-    **重新设计什么**:action/action_steps/product_use/prompt —— 即「画面内容」。
+    **重新设计什么**:action/action_steps/product_use/prompt 与三段式镜头脚本
+    (description/atmosphere/video_prompt)—— 即「画面内容」。
 
     **为什么动作要整个重设计而不是照搬**(实测踩坑):用户的 新产品 与原片产品
     **品类常常不同**。实测案例:原片是口红带货片(动作链「开盒→取出→涂抹→
@@ -354,7 +376,9 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
             REWRITE_PROMPT.format(
                 boards=_json.dumps(boards, ensure_ascii=False, indent=1),
                 product_desc=product_desc or "用户产品(见产品参考图)",
-                presenter_desc=presenter_desc or "亲和力强的出镜人物"),
+                presenter_desc=presenter_desc or "亲和力强的出镜人物",
+                assets=assets or "(未提供,沿用原表里的资产名)",
+                vp_format=VIDEO_PROMPT_FORMAT),
             # **不传 max_tokens**:让它由 text_client 按「模型配置」取值
             # (见 text_client._build_body:显式值 > cfg.max_tokens > 8192 兜底)。
             # 此前写死 4096 时,推理型模型(minimax-M3 会吐上万字符 <think>)
@@ -386,6 +410,12 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
                 if new.get(k):
                     row[k] = new[k]
                     touched = True
+            # 三段式镜头脚本:同样要跟着新产品重写 —— 不改的话 description /
+            # video_prompt 里还写着旧产品(实测:动作换成玉镯,脚本还在说口红),
+            # 而界面上显示的正是这三段,用户看到的就是「换了产品但没换文案」。
+            for k in ("description", "atmosphere", "video_prompt", "narration"):
+                if new.get(k):
+                    row[k] = new[k]
             # 资产绑定(角色/道具/场景):改写后的画面内容变了,绑定可能也变
             # (原片里只摆手镯的镜,新产品是戒指 → 道具引用要跟着变)。
             # 但模型给的可能是编的名字,所以**只在原表已有绑定时**才采纳,
@@ -401,7 +431,8 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
             merged.append(row)
             if touched:
                 rewritten_only.append({k: new.get(k) for k in
-                                       ("action", "action_steps", "product_use", "prompt")})
+                                       ("action", "action_steps", "product_use", "prompt",
+                                        "description", "video_prompt", "narration")})
         # 原片产品残留检测:**交给模型判断**,不用词表穷举。
         # 词表方案实测连续误杀三次:中文没有词边界,「亮相」「展示真实」
         # 「完成产品-效果闭环」这类描述词怎么列都列不全,而误杀的代价是
@@ -418,6 +449,305 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
     except Exception as exc:  # noqa: BLE001
         print(f"[clone] 分镜表改写异常({exc}),保留原表", flush=True)
         return boards
+
+
+# ── 镜头脚本三段式(与短剧线/小说线分镜同构)────────────────────────────
+#
+# 复刻此前每镜只有一行 action_steps 摘要(「中景·固定 · 1.双手托住玉镯于身前;
+# 2.将玉镯缓缓抬至镜头前; 3.微转手腕…」),场景与道具只能靠自然语言暗示,
+# 模型每镜自由发挥 —— 表现就是背景、陈设、道具、人物服装逐镜漂。
+#
+# 短剧线(与小说线同一套 storyboard_breaker)的分镜是三段式:
+#   description  【镜头1】【镜头2】… 子镜头级描述(运镜 → 画面 → 台词)
+#   atmosphere   光线 + 色调 + 声音 + 整体氛围(四层,禁止关键词罗列)
+#   video_prompt 信息头(出场人物/道具/场景 @名)+ 按 3 秒分段的运镜
+#
+# 三段都带 @资产名 → 资产绑定与参考图按名字对齐 → 跨镜的「场景与道具」
+# 才是真的同一个。复刻改用同款格式后,界面上也与短剧线看齐。
+SCRIPT_FIELDS = ("description", "atmosphere", "video_prompt", "narration")
+
+# ── 视频提示词的**严格写法**(用户 2026-10-28 定版)──────────────────────
+#
+# 第一行信息头;第二行起每个时间段一行,**行首重复一次场景 @名** —— 视频模型
+# 逐段看,必须知道「这一段拍的是哪个场景」,靠上下文推断就会漂。
+#
+#   出场人物：@陈默 @张雯。场景：@云脉科技大厦会议室
+#   [0-3秒] @云脉科技大厦会议室 全景固定微动+呼吸感起伏 @陈默 摘下工牌，指尖停在卡套边缘，空调嗡鸣，玻璃外键盘声如雨，冷白顶灯
+#   [3-6秒] @云脉科技大厦会议室 中景缓推至工牌特写 @陈默 工牌反光里顶灯，@张雯 推离职协议，纸页滑动，张雯说：「N+1，按前十二个月平均工资算。」
+#
+# 四处提示词(抽帧拆解 / 整段直传 / 按产品改写 / 补写脚本)共用这一份规格,
+# 不各写一份 —— 规格散开就会漂(改了一处忘了另一处,模型收到的要求自相矛盾)。
+# 注意:本串里**不能出现花括号**,REWRITE_PROMPT / SCRIPT_PROMPT 要走 .format()。
+VIDEO_PROMPT_FORMAT = """【视频提示词的写法(必须严格照抄这个结构)】
+第一行(信息头):出场人物：@角色名 @角色名。场景：@场景名
+  · **@ 只用来标注本镜「有关系」的资产** —— 即 characters / props / scene
+    三个绑定字段里出现的那些角色、道具、场景。绑定决定本镜把哪些参考图喂给
+    模型,@名就是模型对上那些参考图的抓手;没绑定的资产不要出现在 @ 里。
+  · @名逐字照抄「已知资产」段里的名字,一个字都不许改、不许自造
+  · 本镜绑了主推产品时道具同样点名:出场人物：@A。道具：@主推产品。场景：@主场景
+第二行起:每个时间段一行,格式固定为
+  [起始秒-结束秒] @场景名 运镜 @人物 动作细节,声音,光线/情绪
+示例:
+出场人物：@出镜人物。场景：@主场景
+[0-3秒] @主场景 全景固定微动+呼吸感起伏 @出镜人物 双手自然托住玉镯于身前,空调嗡鸣,侧窗冷白光
+[3-5秒] @主场景 中景缓推至手部特写 @出镜人物 手腕微转,玉面油光扫过,冷调
+  · 运镜 = 景别 + 运动方式 + 速度(如「中景匀速缓推至特写」「全景固定微动+呼吸感起伏」)
+  · 每个时间段行首**必须重复一次 @场景名**,不许省;行内出现的角色也用 @点名
+  · 行尾用逗号补上声音(环境音/音效)与光线/情绪,与「氛围」那一段同源
+  · 各时间段秒数与本镜 start/end 吻合,段数与【镜头N】的子镜头数一致"""
+
+SCRIPT_PROMPT = """下面是一条带货/种草视频的**镜头脚本表**,请为每一镜补写四段式镜头脚本
+(与短剧线/小说线分镜同构)。
+
+【镜头脚本表】{boards}
+【已知资产(本片固定,@引用只能用这些名字)】
+{assets}
+
+【视频提示词信息头模板】{header}
+
+{vp_format}
+
+每一镜都要补写这四段:
+- description(分镜描述):按【镜头1】【镜头2】…分 2-3 个子镜头。每个子镜头
+  **先写运镜**(如"镜头从中景匀速缓推至特写"),再写画面(谁 + 具体动作 +
+  肢体细节 + 表情),台词写成「角色名说：「台词」」。禁止一行一段的流水账。
+- atmosphere(氛围):2-4 句完整短句,四层都要有 ——
+  ① 光线(光源 + 方向 + 冷暖)② 色调(整体色彩倾向与明暗关系)
+  ③ 声音(至少一层持续可听的环境音,写质感比喻)
+  ④ 整体氛围(把情绪落到具体物件或人的状态)。
+  禁止"天气+感受"式短语与四字词串罗列。
+- video_prompt(视频提示词):严格照【视频提示词的写法】写 ——
+  第一行信息头用【视频提示词信息头模板】,随后每个时间段一行,行首重复
+  一次 @场景名,行内写运镜、@人物、动作细节,行尾补声音与光线/情绪。
+- narration(旁白/视频解说):这一镜要念出来的解说词(2-3 句,≤120 字,第三人称
+  叙述这段画面在讲什么;不是角色台词);没有解说就写空字符串。
+
+═══ 铁律 ═══
+1. **不要改动镜号、起止秒数、景别与运镜** —— 那些是原片的节奏,一个字都不许动。
+2. 四段之间必须互相吻合:description 里出现的场景与道具,video_prompt 里要用
+   同一个 @名字指代。
+3. **整条片子的场景名与道具名必须前后一致** —— 不许这一镜写"窗边木桌"、
+   下一镜写"米色沙发"。这正是本次补写的目的:让跨镜的场景与道具是同一个。
+4. 画面内容按镜头脚本表里已有的 action / action_steps 写,不要另起炉灶;
+   口播原文在 line 字段里,台词照抄它。
+
+逐镜输出 JSON:{{"storyboards":[...]}},每镜只含
+number, description, atmosphere, video_prompt, narration 五个字段(其它字段一律不要输出)。"""
+
+
+SHOT_PROMPT_PROMPT = """根据这一镜的**画面描述**与**氛围**,写出它的视频提示词。
+
+【画面描述】
+{description}
+【氛围】
+{atmosphere}
+【本镜绑定资产(只有这些才可以用 @ 点名)】
+{assets}
+【本镜起止秒数】{start}-{end} 秒
+
+{vp_format}
+
+只输出 JSON:{{"video_prompt":"…"}}。"""
+
+
+def regenerate_shot_prompt(drama_id: int, board_number: int,
+                           config_id: int | None = None) -> str:
+    """重写**这一镜**的视频提示词(卡片上「AI 生成」按钮)。
+
+    与整片「重写镜头脚本」的区别:那个一次补全全片,这个只动一镜 ——
+    用户改了一句台词/换了个运镜,只想让这一镜的提示词跟上,不必重跑全片。
+
+    产出走与拆解完全同一份 VIDEO_PROMPT_FORMAT 规格,否则「AI 生成」出来的
+    格式与拆解时的不一样,两批提示词混在一起模型会懵。
+    """
+    boards = _meta(drama_id).get("clone", {}).get("storyboards", []) or []
+    b = next((x for x in boards if int(x.get("number", 0)) == int(board_number)), None)
+    if b is None:
+        raise RuntimeError(f"分镜 #{board_number} 不存在")
+    clone = _meta(drama_id).get("clone", {})
+    try:
+        start, end = float(b.get("start") or 0), float(b.get("end") or 0)
+    except (TypeError, ValueError):
+        start, end = 0.0, 0.0
+    prompt = SHOT_PROMPT_PROMPT.format(
+        description=str(b.get("description") or b.get("action") or "")[:1200],
+        atmosphere=str(b.get("atmosphere") or "")[:600],
+        assets=_asset_names_block(clone),
+        start=f"{start:g}", end=f"{end:g}",
+        vp_format=VIDEO_PROMPT_FORMAT)
+    raw = text_client.chat(prompt, temperature=0.3, json_mode=True, config_id=config_id)
+    data = runner.extract_json(raw) or {}
+    vp = str(data.get("video_prompt") or "").strip() if isinstance(data, dict) else ""
+    if not vp:
+        # 模型没给 JSON(有的厂商 json_mode 不严格)→ 整体当正文用
+        vp = (raw or "").strip()
+        if vp.startswith("```"):
+            vp = vp.strip("`").strip()
+            if vp.lower().startswith("json"):
+                vp = vp[4:].strip()
+    if not vp:
+        raise RuntimeError("模型没有产出视频提示词")
+    for x in boards:
+        if int(x.get("number", 0)) == int(board_number):
+            x["video_prompt"] = vp
+    meta = _meta(drama_id)
+    meta.setdefault("clone", {})["storyboards"] = boards
+    _save_meta(drama_id, meta)
+    return vp
+
+
+def regenerate_script(drama_id: int, config_id: int | None = None,
+                      on_progress=None) -> int:
+    """把已有分镜补写成短剧线同款的三段式镜头脚本;返回补写镜数。
+
+    用途:本改动之前落库的存量项目没有这三个字段(界面上只有一行摘要),
+    而为了升级格式去重跑拆解代价太大(重跑会改分镜切分、丢掉已出的首帧)。
+    这里**一次调用补齐全片** —— 模型能看到整张分镜表,才谈得上「整条片子
+    用同一个场景名与道具名」,这正是用户要的一致性(逐镜各写各的必然漂)。
+
+    只写 description/atmosphere/video_prompt;镜号/起止/景别/运镜/动作一律
+    不动。模型失败返回 0(原表不动)。
+    """
+    boards = _meta(drama_id).get("clone", {}).get("storyboards", []) or []
+    if not boards:
+        raise RuntimeError("还没有分镜表,请先拆解参考视频")
+    clone = _meta(drama_id).get("clone", {})
+    # 只把模型要看的字段喂进去:action_steps 之类的原样带上(模型要照它写
+    # 画面),但 first_frame/video 这类生成物不喂(纯噪声,还白占 token)。
+    slim = [{"number": b.get("number"), "shot": b.get("shot"), "camera": b.get("camera"),
+             "action": b.get("action"), "action_steps": b.get("action_steps"),
+             "line": b.get("line"), "characters": b.get("characters"),
+             "props": b.get("props"), "scene": b.get("scene")} for b in boards]
+    try:
+        raw = text_client.chat(
+            SCRIPT_PROMPT.format(
+                boards=json.dumps(slim, ensure_ascii=False, indent=1),
+                assets=_asset_names_block(clone),
+                header=_header_example(clone),
+                vp_format=VIDEO_PROMPT_FORMAT),
+            temperature=0.3, json_mode=True, config_id=config_id)
+        data = runner.extract_json(raw)
+        out = data.get("storyboards") if isinstance(data, dict) else data
+        if not isinstance(out, list) or not out:
+            print(f"[clone] 镜头脚本补写失败(响应 {len(raw or '')} 字符,解析后类型 "
+                  f"{type(data).__name__}),原表不动", flush=True)
+            print(f"[clone] 响应尾部 200 字: {(raw or '')[-200:]!r}", flush=True)
+            return 0
+        # 逐镜对齐:模型可能漏镜或改号,按**镜号**对上,对不上再退回顺序兜底。
+        by_no = {int(x.get("number") or 0): x for x in out
+                 if isinstance(x, dict) and x.get("number") is not None}
+        done = 0
+        for i, b in enumerate(boards):
+            new = by_no.get(int(b.get("number") or 0))
+            if not isinstance(new, dict) and i < len(out) and isinstance(out[i], dict):
+                new = out[i]
+            if not isinstance(new, dict):
+                continue
+            wrote = False
+            for k in SCRIPT_FIELDS:
+                v = str(new.get(k) or "").strip()
+                if v:
+                    b[k] = v
+                    wrote = True
+            if wrote:
+                done += 1
+            if on_progress:
+                on_progress(int((i + 1) * 100 / len(boards)))
+        if done:
+            meta = _meta(drama_id)
+            meta.setdefault("clone", {})["storyboards"] = boards
+            _save_meta(drama_id, meta)
+        print(f"[clone] 镜头脚本补写 {done}/{len(boards)} 镜", flush=True)
+        return done
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 镜头脚本补写异常({exc}),原表不动", flush=True)
+        return 0
+
+
+# 景别简称 → 全称。实测分镜模型会回**单字简称**(2026-10-28「手复」项目:
+# 模型给了 特/中/近,原样落库),而下方所有守卫与参考图分工表都按全称匹配
+# —— 简称不归一,特写镜的单肢守卫、人物词抑制、产品锚分工就会**静默全部
+# 失效**(实测症状:特写镜出第二个人 + 完整人脸)。归一化放在读写两端:
+# 写侧(_normalize_shot / analyze_reference 落库前)管新项目,读侧
+# (_pick_ref_kind / generate_shot_image / generate_shot_video)管存量项目。
+_SHOT_KIND_ALIAS = {"特": "特写", "大特": "大特写", "微": "微距", "远": "远景",
+                    "全": "全景", "中": "中景", "中近": "中近景", "近": "近景",
+                    "半": "半身"}
+
+# 「这一镜拍到脸/上半身」的判定。生图参考裁剪(特写不带立绘的豁免条件)与
+# 人物词抑制两处共用 —— 口径一旦漂移,就会出现「裁剪判定不拍脸却把人物词
+# 抑制了」之类的自相矛盾。
+_FACE_EN_RE = _re.compile(r"\bfaces?\b", _re.IGNORECASE)
+
+
+def _shot_mentions_face(text: str) -> bool:
+    """文案是否明确拍到脸/上半身。
+
+    英文必须按**词边界**匹配 —— 实测(2026-10-28「手复」#03):改写文案的
+    「sur**face** texture(表面纹理)」被子串匹配误判成 face,特写镜错误地
+    保留了人物立绘参考。中文无词边界,保持子串匹配。
+    """
+    if not text:
+        return False
+    if _FACE_EN_RE.search(text):
+        return True
+    return any(w in text for w in ("脸", "上半身", "半身", "面部"))
+
+
+def _canon_shot_kind(kind) -> str:
+    """景别标签归一成全称;已是全称/未知值原样返回(不猜)。"""
+    k = str(kind or "").strip()
+    if not k:
+        return k
+    if k in _SHOT_KIND_ALIAS:
+        return _SHOT_KIND_ALIAS[k]
+    # 「特写镜头」「近景缓推」这类带后缀的写法按前缀归一;「中近景」必须
+    # 排在「中景」前,否则会被误归一成「中景」
+    for full in ("大特写", "中近景", "微距", "特写", "远景", "全景", "中景",
+                 "近景", "半身"):
+        if k.startswith(full):
+            return full
+    return k
+
+
+def _script_text(b: dict, key: str) -> str:
+    return str((b or {}).get(key) or "").strip()
+
+
+def _synth_description(b: dict) -> str:
+    """老分镜(没有 description)→ 按短剧线格式合成一段【镜头N】描述。
+
+    子镜头数不猜:老分镜只有 action_steps(动作时序,不是切镜点),硬拆成
+    多个【镜头N】等于凭空发明切镜。一段【镜头1】把时序串起来最接近原意。
+    """
+    steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
+    body = "，".join(steps) if steps else str(b.get("action") or "").strip()
+    if not body:
+        return ""
+    head = " ".join(x for x in (str(b.get("shot") or "").strip(),
+                                str(b.get("camera") or "").strip()) if x)
+    return f"【镜头1】{head},{body}" if head else f"【镜头1】{body}"
+
+
+def ensure_script_fields(board: dict) -> dict:
+    """补齐三段式脚本字段(缺则合成),原地返回同一个 dict。
+
+    存量分镜(本改动之前落库的)没有这三个字段 —— 界面直接读会空一大块,
+    视频提示词也退回旧的单行拼装。这里做**读侧兜底**:能合成的合成
+    (description / video_prompt),合成不出来的(atmosphere)留空,
+    由「重写镜头脚本」按钮按模型补齐。
+    """
+    if not isinstance(board, dict):
+        return board
+    if not _script_text(board, "description"):
+        board["description"] = _synth_description(board)
+    if "atmosphere" not in board or board.get("atmosphere") is None:
+        board["atmosphere"] = ""
+    if not _script_text(board, "video_prompt"):
+        board["video_prompt"] = _compose_video_prompt(board)
+    if "narration" not in board or board.get("narration") is None:
+        board["narration"] = ""
+    return board
 
 
 def _normalize_shot(shot: dict, index: int) -> dict:
@@ -446,13 +776,22 @@ def _normalize_shot(shot: dict, index: int) -> dict:
         "start": start,
         "end": start + dur,
         "duration": dur,
-        "shot": str(s.get("shot_type") or s.get("shot") or "中景").strip(),
+        "shot": _canon_shot_kind(s.get("shot_type") or s.get("shot") or "中景"),
         "camera": str(s.get("camera") or "").strip(),
         "action": str(s.get("action") or ("，".join(acts) if acts else "")).strip(),
         "action_steps": acts,
         "line": " / ".join(dlg) or str(s.get("line") or "").strip(),
         "product_use": str(s.get("product_use") or "").strip(),
         "prompt": str(s.get("prompt") or "").strip(),
+        # 四段式镜头脚本(与短剧线/小说线同构):分镜描述/氛围/视频提示词/旁白。
+        # 直传模式(整段视频喂模型)本来就在看连续运动,让它顺手把这四段写出来
+        # 比事后补一次调用更省 —— 这正是「抽帧看不到时序」的解药。
+        "description": str(s.get("description") or "").strip(),
+        "atmosphere": str(s.get("atmosphere") or "").strip(),
+        "video_prompt": str(s.get("video_prompt") or "").strip(),
+        # 旁白/视频解说:与 line(推测字幕+口播备注)分开 —— line 是模型对画面
+        # 文字的观察,narration 是这一镜**要念出来的解说词**(合成配音用)。
+        "narration": str(s.get("narration") or "").strip(),
         # 资产引用(名字数组/单值),与短剧侧同构;模型没给就空,后面按需补
         "characters": [str(x).strip() for x in (s.get("characters") or []) if str(x).strip()],
         "props": [str(x).strip() for x in (s.get("props") or []) if str(x).strip()],
@@ -899,6 +1238,18 @@ def _asset_names_block(clone: dict) -> str:
             f"scene 场景出现时填 \"主场景\";自创名字会被系统忽略。")
 
 
+def _header_example(clone: dict) -> str:
+    """视频提示词的信息头模板 —— 用**本项目真实资产名**拼。
+
+    模型会照抄示例里的字面量:写死「@出镜人物」就会与用户自定义的产品名
+    对不上(@名字对不上 → 出视频时换不成 @图片N → 参考图失锚,场景与道具
+    逐镜漂)。所以示例必须跟着项目走。
+    """
+    pn = clone.get("presenter_name") or CLONE_PRESENTER_NAME
+    pr = clone.get("product_name") or CLONE_PRODUCT_NAME
+    return f"出场人物:@{pn} 道具:@{pr} 场景:@{CLONE_SCENE_NAME}"
+
+
 # 通用词:命中它们不代表画面里出现了新产品(旧分镜里本来就有这些)
 
 
@@ -952,6 +1303,10 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         frame_desc = "\n".join(
             f"第{i}帧(约 {dur * i / (len(frames) + 1):.1f} 秒处)"
             for i, _ in enumerate(frames, 1))
+        # 信息头示例要用**本项目真实资产名**:模型照抄示例里的字面量,写死
+        # 「@出镜人物」就会与用户自定义的产品名对不上(@名字对不上 → 生成视频
+        # 时换不成 @图片N → 参考图失锚,场景与道具逐镜漂)。
+        _hdr = _header_example(clone)
         prompt = f"""下面是一条待复刻的带货/种草类视频,已按时间均匀抽出 {len(frames)} 帧随消息附上(顺序对应):
 总时长: {dur:.1f} 秒
 {frame_desc}
@@ -969,6 +1324,28 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
 - characters(本镜出镜人物名数组), props(本镜出现的道具名数组), scene(本镜场景名)
   —— 资产绑定字段,与短剧分镜同构:决定本镜把哪些参考图喂给模型,
   取值规则见上方「已知资产」,自创名字会被系统忽略。
+
+【镜头脚本四段式(与短剧线/小说线分镜同构,必填)】
+每一镜除了上面的字段,还要写出下面四段 —— 这是「跨镜场景与道具一致」的关键:
+- description(分镜描述):按【镜头1】【镜头2】…分 2-3 个子镜头。每个子镜头
+  **先写运镜**(如"镜头从中景匀速缓推至特写"),再写画面(谁 + 具体动作 +
+  肢体细节 + 表情),台词写成「角色名说：「台词」」。禁止一行一段的流水账。
+- atmosphere(氛围):2-4 句完整短句,四层都要有 ——
+  ① 光线(光源 + 方向 + 冷暖)② 色调(整体色彩倾向与明暗关系)
+  ③ 声音(至少一层持续可听的环境音,写质感比喻)
+  ④ 整体氛围(把情绪落到具体物件或人的状态)。
+  禁止"天气+感受"式短语与四字词串罗列。
+- video_prompt(视频提示词):严格照下面的格式写。
+
+{VIDEO_PROMPT_FORMAT}
+
+- narration(旁白/视频解说):这一镜的**口播解说词**(2-3 句,≤120 字),
+  用第三人称叙述这段画面在讲什么(不是角色台词,角色台词写进 description);
+  本镜没有解说就写空字符串。
+- **四段必须互相吻合**:description 里出现的场景与道具,video_prompt 里要用
+  同一个 @名字指代;整条片子的场景名与道具名**必须前后一致**,不许这一镜
+  写"窗边木桌"下一镜写"米色沙发"。
+
 以 JSON 输出:{{"storyboards":[...]}}"""
         # **不走 storyboard_breaker agent**:它的 system prompt 是给
         # 「剧本 → 分镜」设计的,开篇就要求「从用户消息中读取剧本与可用资产清单」,
@@ -997,6 +1374,12 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
                   or (data if isinstance(data, list) else []))
     if not boards:
         raise RuntimeError("分镜表生成失败:模型未产出任何分镜")
+    # 景别归一必须在落库前做(见 _SHOT_KIND_ALIAS):抽帧模式分镜不走
+    # _normalize_shot,模型回什么存什么;简称落库后特写守卫按全称匹配
+    # 全部失效,且存量数据只能靠读侧补救 —— 两头都堵才通用。
+    for _b in boards:
+        if isinstance(_b, dict) and _b.get("shot"):
+            _b["shot"] = _canon_shot_kind(_b["shot"])
     clone["boards_mode"] = "direct" if direct else "frames"
     clone["storyboards"] = boards
     product = clone.get("product")
@@ -1013,7 +1396,8 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
     if clone.get("product_desc"):
         boards = rewrite_boards_for_product(
             boards, clone["product_desc"],
-            presenter_desc=clone.get("presenter_desc") or "", config_id=config_id)
+            presenter_desc=clone.get("presenter_desc") or "", config_id=config_id,
+            assets=_asset_names_block(clone))
         clone["storyboards"] = boards
     # 产品图/出镜照存成正式资产:跨镜一致性靠资产锚点,不靠提示词措辞(实测
     # 人脸/房间/产品形状逐镜漂,写多少遍「保持一致」都没用)
@@ -1065,7 +1449,17 @@ def prepare_presenter(drama_id: int, style_value: str, config_id: int | None = N
 
 
 def _clone_storyboards(drama_id: int) -> list[dict]:
-    return _meta(drama_id).get("clone", {}).get("storyboards", [])
+    """读本项目的分镜表(读侧补齐三段式脚本字段)。
+
+    存量分镜没有 description/atmosphere/video_prompt 三个字段(本改动之前落库),
+    界面直接读会空一大块。补齐只发生在**读到的副本**上(_meta 每次重新解析
+    JSON,拿到的是新对象),不会被顺手写回库里 —— 合成值只是兜底,真正该由
+    模型写的 atmosphere 留给「重写镜头脚本」按钮。
+    """
+    boards = _meta(drama_id).get("clone", {}).get("storyboards", []) or []
+    for b in boards:
+        ensure_script_fields(b)
+    return boards
 
 
 SCENE_PICK_PROMPT = """下面是同一条视频按时间均匀抽出的 {n} 帧画面(顺序对应,总时长 {dur:.1f} 秒)。
@@ -1075,6 +1469,117 @@ SCENE_PICK_PROMPT = """下面是同一条视频按时间均匀抽出的 {n} 帧�
 - 描述只写环境,一个字都不要提画面里的人。
 只输出 JSON:
 {{"frame": 帧序号(从 1 开始), "location": "地点一句话", "lighting": "光源与色温一句话", "prompt": "给文生图用的场景描述(60字内,不含任何人物)"}}"""
+
+
+def _frame_person_score(path: Path) -> float:
+    """帧的**人物显著度**:最大人脸宽 / 画面宽;无人脸 = 0。
+
+    用 Haar 级联做确定性检测(不依赖视觉模型):带货视频里人物特写帧
+    根本出不了空景(实测:对人物特写帧做去人,生图会脑补回化妆品场景),
+    候选帧必须把这类帧排到最后。检测失败返回 0(不影响排序,退化为原序)。
+    """
+    try:
+        import cv2
+        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            return 0.0
+        h, w = img.shape
+        cascade = cv2.CascadeClassifier(
+            cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
+        faces = cascade.detectMultiScale(
+            img, 1.1, 4, minSize=(max(24, int(w * 0.04)),) * 2)
+        if len(faces) == 0:
+            return 0.0
+        return max(fw for (_x, _y, fw, _h) in faces) / float(w)
+    except Exception:  # noqa: BLE001
+        return 0.0
+
+
+def _order_scene_candidates(pick: Path, frames: list, score_fn) -> list:
+    """候选帧排序:人物显著度升序在前;同分时 LLM 首选保持在前。
+
+    LLM 挑帧只保证「环境代表性」,对「人物占比小」的执行不稳定(实测会挑
+    人物特写帧)。人脸检测是确定性排序;全帧都检测失败(全 0 分)时退化为
+    原顺序、LLM 首选仍在最前 = 旧行为。
+    """
+    scored = [(score_fn(f), 0 if f == pick else 1, i, f)
+              for i, f in enumerate(frames)]
+    scored.sort(key=lambda t: (t[0], t[1], t[2]))
+    return [f for _s, _p, _i, f in scored]
+
+
+def _erase_subjects_from_frame(frame: Path, out: Path,
+                               text_cfg_id: int | None = None) -> bool:
+    """把参考视频代表帧里的**带货主体商品(含包装)与人物/手部**定位并
+    cv2 修复抹掉,产出干净的空景底帧。
+
+    为什么必须软件抹而不靠生图指令:场景锚的生图要求写着「保留家具陈设/
+    props」,原产品混在 props 里被原样保留,再经「参考图2=场景图」进**每一镜**
+    (实测 2026-10-28:手复全片桌上有原片白色软管+包装盒、自检项目桌上留口红
+    —— 文案把产品换成了玉镯,画面里原产品却一直都在)。人物也要一起抹:
+    带货帧几乎全有手,只抹产品会留下一只游离的手(实测),生图模型照抄。
+
+    定位**不参考用户上传的新产品图**(实测踩过:拿玉镯照片去原片帧里找,
+    原片是口红当然找不到,返回空)—— 直接让视觉模型找「作为带货主体的商品
+    及其包装」与「人物及人体部位」,带货帧里两者都是视觉显著物。
+
+    坐标契约:模型回 0-1000 归一化坐标(多实例都要)。任何一步失败返回
+    False 且不写 out,调用方退回原帧 —— 与 extract_scene_anchor 的整体
+    容错策略一致(锚提取失败不阻塞分镜分析),这里退化 = 行为与旧版相同。
+    """
+    try:
+        import cv2
+        img = cv2.imread(str(frame))
+        if img is None:
+            return False
+        h, w = img.shape[:2]
+        raw = text_client.chat(
+            "这是带货视频的一帧。请标注两类区域的每一处可见范围:\n"
+            "1. product:作为带货主体的商品及其包装盒/展示摆件(拿在手里/"
+            "放在桌上/陈列特写都算;明确的室内陈设不算,如台灯、床、窗帘);\n"
+            "2. person:人物及人体部位的每一处(脸/手/手臂/腿/脚,含从画外"
+            "伸入的部分)。\n"
+            '只输出 JSON:{"product": [[x1,y1,x2,y2],...], '
+            '"person": [[x1,y1,x2,y2],...]},坐标为 0-1000 归一化'
+            "(相对画面宽高),找不到的类输出空数组。不要输出其它内容。",
+            system="你是图像标注器,只输出 JSON。",
+            temperature=0.1, json_mode=True, config_id=text_cfg_id,
+            image_urls=[_image_data_url(frame)])
+        data = runner.extract_json(raw) or {}
+        boxes = []
+        if isinstance(data, dict):
+            boxes.extend(data.get("product") or [])
+            boxes.extend(data.get("person") or [])
+        mask = None
+        for bb in (boxes or []):
+            try:
+                x1, y1, x2, y2 = (float(v) for v in bb)
+            except (TypeError, ValueError):
+                continue
+            x1, x2 = sorted((max(0.0, min(1000.0, x1)) / 1000 * w,
+                             max(0.0, min(1000.0, x2)) / 1000 * w))
+            y1, y2 = sorted((max(0.0, min(1000.0, y1)) / 1000 * h,
+                             max(0.0, min(1000.0, y2)) / 1000 * h))
+            # 疯狂框防线:单框 <0.3% 画幅(误标)或 >85%(整帧)都不要
+            if (x2 - x1) * (y2 - y1) < 0.003 * w * h or (x2 - x1) * (y2 - y1) > 0.85 * w * h:
+                continue
+            m = 0.02  # 外扩 2%,盖住阴影/反光边缘
+            x1, x2 = max(0, int(x1 - m * w)), min(w, int(x2 + m * w))
+            y1, y2 = max(0, int(y1 - m * h)), min(h, int(y2 + m * h))
+            if mask is None:
+                import numpy as np
+                mask = np.zeros((h, w), np.uint8)
+            mask[y1:y2, x1:x2] = 255
+        if mask is None:
+            print("[clone] 场景帧未定位到商品/人物区域,保留原帧", flush=True)
+            return False
+        cleaned = cv2.inpaint(img, mask, 6, cv2.INPAINT_TELEA)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(out), cleaned)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 原产品抹除失败({str(exc)[:140]}),保留原帧", flush=True)
+        return False
 
 
 def extract_scene_anchor(drama_id: int, config_id: int | None = None,
@@ -1097,7 +1602,9 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
     if not ref:
         return False
     try:
-        frames = sorted(Path(str(clone["frames_dir"])).glob("f*.jpg")) \
+        import re as _re
+        frames = [f for f in sorted(Path(str(clone["frames_dir"])).glob("f*.jpg"))
+                  if _re.fullmatch(r"f\d+\.jpg", f.name)] \
             if clone.get("frames_dir") else []
         if len(frames) < 2:
             frames = extract_frames(ref, count=8)
@@ -1119,34 +1626,149 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             return False
         _drow = db.q1("SELECT style FROM dramas WHERE id=?", (drama_id,))
         style = db.style_prompt((_drow["style"] if _drow else "") or "")
-        body = ("Remove every person from this photo. Keep the exact same camera "
-                "angle, room structure, furniture, props, walls, windows and "
-                "lighting positions. An empty establishing shot of the same "
-                "location: no people, no silhouettes, no mannequins, "
+        body = ("Remove every person from this photo, including their hands, "
+                "arms, feet and any body parts entering the frame. Also remove "
+                "the featured/advertised product with its packaging, box or "
+                "display stand — the table/surface where it stood must be left "
+                "empty. Keep the exact same camera angle, room structure, "
+                "furniture, walls, windows and lighting positions. An empty "
+                "establishing shot of the same location: no people, no hands, "
+                "no silhouettes, no mannequins, no product, "
                 "no text, no watermark. 场景:" + prompt)
         if style:
             # 空景图与首帧同画风:首帧生成时拿它当参考,不用自己跨风格翻译
             body += f"。渲染风格严格参照:{style}"
-        out = None
+
+        # ── 候选帧循环(2026-10-28 用户定版「场景不要保留参考视频的产品」)──
+        # 每个候选帧走「cv2 抹原产品 → 生图(people=0)→ 内容门(人/商品残留
+        # 复核)」;内容门连败就**换下一帧**再走一遍 —— 实测有些帧人物占比
+        # 太大,生图怎么去都不干净(游离的手/床上的脚),换帧比换提示词可靠。
+        # LLM 首选帧排最前,其余帧按原顺序作备胎,最多试 3 帧。
         # people=0 + 启用守卫(2026-10-27 实测:skip_guard=True 时「去人」指令
         # 只有一句英文,模型照样把参考帧里的人原样保留 —— 场景锚里坐着个人,
         # 后续每镜参考它都会多人)。people=0 会注入「画面不出现任何人物,
         # 也没有手/影子/倒影」强守卫 + 完整禁人负面词;reference_lock=False
         # 是必须的:参考帧里有人,绝不能说「参考图1=人物1的外貌来源」。
-        for attempt in (1, 2):
+        def _scene_dirty(path) -> bool:
+            """内容门:空景图里是否还有人/人体部位或商品残留。
+
+            去人/去产品靠生图模型执行,实测**随机失效**(2026-10-28:游离的
+            手、床上的脚、留下的包装盒各出现过)—— 生成后用视觉模型复核,
+            不干净就重画/换帧。审查调用失败按「干净」处理(与整体容错一致,
+            审查器不可用时退回旧行为,不阻塞)。
+            """
             try:
-                out, _ = image_client.generate_image(
-                    body, out_name=f"clone_scene_{drama_id}.png", config_id=config_id,
-                    reference_images=[str(pick)], people=0,
-                    skip_guard=False, reference_lock=False)
+                raw = text_client.chat(
+                    "这张图里是否出现以下任何一项:1.人物或人体部位(脸/手/脚/"
+                    "手臂/腿/剪影/倒影);2.**被作为主角展示的商品**或其包装盒"
+                    "(手持展示/摆放特写/占据画面焦点的商品;桌上零散的日常"
+                    "用品、洗漱陈设、装饰画不算)。"
+                    '只输出 JSON:{"person": true或false, "product": true或false}。',
+                    system="你是图像审查器,只输出 JSON。",
+                    temperature=0.0, json_mode=True, config_id=text_cfg_id,
+                    image_urls=[_image_data_url(path)])
+                d2 = runner.extract_json(raw) or {}
+                return bool(d2.get("person") or d2.get("product"))
+            except Exception:  # noqa: BLE001
+                # 审查调用失败(网络抖动等)按「脏」处理 → 重试/换帧。曾按「干净」
+                # 放行:一次抖动就让带人的场景图盖章通过,毒化之后每一镜
+                # (2026-10-28 实测:场景图躺着人+断脚,全部首帧跟着出双人)。
+                return True
+
+        candidates = _order_scene_candidates(pick, frames, _frame_person_score)[:3]
+        out = None
+        used = pick
+        clean_any = False
+        _final_name = f"clone_scene_{drama_id}.png"
+        _cand_name = f"clone_scene_{drama_id}_cand.png"
+        for cand in candidates:
+            _ref_frame = cand
+            _nosubj = cand.with_name(cand.stem + "_nosubj.jpg")
+            if _erase_subjects_from_frame(cand, _nosubj,
+                                          text_cfg_id=text_cfg_id):
+                _ref_frame = _nosubj
+                print(f"[clone] 场景帧已抹除商品/人物: {_nosubj.name}", flush=True)
+            clean = False
+            for attempt in (1, 2, 3):
+                try:
+                    # 写**候选文件**,通过内容门才覆盖正式场景图 —— 曾直接写正式名,
+                    # 中间产物(带人+断脚)把上一张干净场景图覆盖掉(2026-10-28 实测)。
+                    out, _ = image_client.generate_image(
+                        body, out_name=_cand_name,
+                        config_id=config_id,
+                        reference_images=[str(_ref_frame)], people=0,
+                        skip_guard=False, reference_lock=False)
+                except Exception as exc:
+                    if attempt == 3:
+                        raise
+                    import time as _t
+                    print(f"[clone] 场景锚生图第{attempt}次失败({str(exc)[:120]}),"
+                          "3 秒后重试", flush=True)
+                    _t.sleep(3)
+                    continue
+                if _scene_dirty(out):
+                    print(f"[clone] 空景图第{attempt}次仍有人体/商品残留",
+                          flush=True)
+                    continue
+                clean = True
                 break
-            except Exception as exc:
-                if attempt == 2:
-                    raise
-                import time as _t
-                print(f"[clone] 场景锚生图第{attempt}次失败({str(exc)[:120]}),3 秒后重试",
+            if clean:
+                used = _ref_frame
+                clean_any = True
+                break
+            print(f"[clone] 帧 {cand.name} 连续 3 次生成不干净,换下一候选帧",
+                  flush=True)
+        if not clean_any:
+            # ── 最终兜底:纯文字空景(2026-10-28 实测补)──
+            # 带货视频可能**没有一帧是干净的**(全片人物+商品在画),参考帧再
+            # 怎么修,生图模型都会从「化妆品视频语境」把原产品脑补回来(实测:
+            # 底帧抹干净了,成图口红照在)。甩掉参考帧纯文字生成:没有参考就
+            # 没有可照抄的内容,原产品必然消失;代价是机位不再严格对齐原片
+            # (干净 > 对齐)。
+            print("[clone] 候选帧全部失败 → 退回纯文字空景(不带参考帧)",
+                  flush=True)
+            _txt_body = ("An empty establishing shot of this location, wide view: "
+                         + prompt + ". No people, no hands, no silhouettes, "
+                         "no products, no packaging, no text, no watermark.")
+            if style:
+                _txt_body += f"。渲染风格严格参照:{style}"
+            for attempt in (1, 2):
+                try:
+                    out, _ = image_client.generate_image(
+                        _txt_body, out_name=_cand_name,
+                        config_id=config_id, reference_images=None, people=0,
+                        skip_guard=False, reference_lock=False)
+                except Exception as exc:
+                    if attempt == 2:
+                        raise
+                    import time as _t
+                    print(f"[clone] 纯文字空景第{attempt}次失败({str(exc)[:120]}),"
+                          "3 秒后重试", flush=True)
+                    _t.sleep(3)
+                    continue
+                if not _scene_dirty(out):
+                    clean_any = True
+                    used = None
+                    break
+                print(f"[clone] 纯文字空景第{attempt}次仍有人体/商品残留",
                       flush=True)
-                _t.sleep(3)
+            if not clean_any:
+                print("[clone] ⚠ 空景图多轮尝试仍有人体/商品残留,保留最后一张",
+                      flush=True)
+        # 转正规则:只有通过内容门的候选才覆盖正式场景图;全失败时**保留上一张
+        # 场景图**(旧图再旧也干净,好过带人的新图毒化每镜)。
+        if clean_any:
+            import shutil as _sh
+            _final = config.STATIC_DIR / "images" / _final_name
+            if Path(out).exists():
+                _sh.copy2(out, _final)
+            out = _final
+        else:
+            _prev = _resolve_local(clone.get("scene_image"))
+            if _prev:
+                out = _prev
+                print(f"[clone] 保留原场景图(候选全不合格): {_prev.name}", flush=True)
+        pick = used
         clone["scene_image"] = str(out)
         clone["scene_location"] = location
         clone["scene_lighting"] = lighting
@@ -1160,7 +1782,9 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
         meta = _meta(drama_id)
         meta["clone"] = clone
         _save_meta(drama_id, meta)
-        print(f"[clone] 场景锚已从原视频提取:第{idx}帧 → 空景图 {out.name}", flush=True)
+        print(f"[clone] 场景锚已从原视频提取:"
+              f"{pick.name if pick else '纯文字兜底'} → 空景图 {out.name}",
+              flush=True)
         return True
     except Exception as exc:  # noqa: BLE001
         print(f"[clone] 场景锚提取失败({exc}),退回纯文字锚", flush=True)
@@ -1176,15 +1800,19 @@ def _resolve_local(p) -> Path | None:
     return path if path.exists() else None
 
 
-def _shot_video_prompt(b: dict) -> str:
-    """重拍视频提示词:显式 prompt 字段优先作主体;缺失时按原版 videoPrompt 口径合成
-    (景别+运镜+动作时序);有台词时追加口型同步标注。"""
+def _compose_video_prompt(b: dict) -> str:
+    """旧口径的重拍视频提示词:显式 prompt 字段优先作主体;缺失时按原版
+    videoPrompt 口径合成(景别+运镜+动作时序);有台词时追加口型同步标注。
+
+    现在只作**兜底**:短剧线同款的三段式字段 video_prompt 存在时优先用它
+    (带 @资产名 与 3 秒分段,模型能据此把画面里的对象对上参考图)。
+    """
     steps = [str(s).strip() for s in (b.get("action_steps") or []) if str(s).strip()]
     cam = str(b.get("camera") or "").strip()
     line = str(b.get("line") or "").strip()
     body = str(b.get("prompt") or "").strip()
     if not body:
-        body = "，".join(filter(None, (str(b.get("shot") or ""), cam,
+        body = "，".join(filter(None, (_canon_shot_kind(b.get("shot")), cam,
                                        "，".join(steps) or str(b.get("action") or ""))))
     elif steps:
         # 改写过的 prompt 已经把动作时序写进去了(rewrite 提示词明确要求),
@@ -1203,6 +1831,19 @@ def _shot_video_prompt(b: dict) -> str:
     except (TypeError, ValueError):
         span = ""
     return f"{span}{body}"
+
+
+def _shot_video_prompt(b: dict) -> str:
+    """本镜的视频提示词:优先用短剧线同款的三段式字段 video_prompt。
+
+    为什么优先它:三段式里的 video_prompt 带「出场人物:@X 场景:@Y 道具:@Z」
+    的信息头与 3 秒分段,视频模型据此把画面里的对象对上参考图 —— 这正是
+    「跨镜场景与道具一致」的执行点。旧口径拼出来的只是一句话,没有名字可指。
+    """
+    vp = _script_text(b, "video_prompt")
+    if vp:
+        return vp
+    return _compose_video_prompt(b)
 
 
 def board_asset_names(drama_id: int, board: dict) -> dict:
@@ -1262,6 +1903,7 @@ def asset_ref_header(names: dict) -> str:
 
 
 def _pick_ref_kind(shot_text: str, shot: str = "") -> str:
+    shot = _canon_shot_kind(shot)   # 存量分镜可能是简称「特/中/近」(见 _SHOT_KIND_ALIAS)
     """这一镜该用哪张参考图:"product"(产品图)或 "presenter"(人物照)。
 
     **每镜只给一张**:同时传人物照+产品照两张,Agnes 会把两张的构图一起对称
@@ -1298,6 +1940,34 @@ def _pick_ref_kind(shot_text: str, shot: str = "") -> str:
     if any(w in t for w in weak_product):
         return "product"
     return "presenter"          # 判断不了 → 以人物为锚(人物图信息量更大)
+
+
+def _people_count_check_enabled() -> bool:
+    """用户在「通用重绘要求」里要求了单人物,才启用出图后的人数自检。
+
+    数据驱动,不写死:对戒/情侣款合法需要多人,规则里没写单人物就绝不查。
+    """
+    rule = str(db.get_setting("yihao.clone_redraw_hint") or "")
+    return any(w in rule for w in ("一个人", "单人物", "第二个人", "多个人物"))
+
+
+def _count_people_in_image(path, config_id: int | None = None) -> int | None:
+    """多模态数一张图里有几个人;模型不支持多模态/解析失败 → None(跳过自检)。"""
+    p = Path(path)
+    if not p.exists():
+        return None
+    mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
+    prompt = ("数一数这张图片里有几个人(只数真人,海报/照片/镜中倒影不算)。"
+              '只输出 JSON:{"people": 数字}')
+    try:
+        raw = text_client.chat(prompt, temperature=0, max_tokens=256, json_mode=True,
+                               config_id=config_id,
+                               image_urls=[_image_data_url(p, mime)])
+        data = runner.extract_json(raw) or {}
+        return int(data.get("people") or 0)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[clone] 人数自检跳过({exc})", flush=True)
+        return None
 
 
 def generate_shot_image(drama_id: int, board_number: int, style_value: str,
@@ -1342,6 +2012,22 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             print(f"[clone] 人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字",
                   flush=True)
         presenter_desc = clone.get("presenter_desc") or presenter_desc
+    # ── 服装文字锚(数据驱动,纯读不补写)──
+    # characters.styling 是短剧同款的妆造字段;复刻项目此前被「出镜照不提供
+    # 服装描述」的旧决策写成空。**不走 character_spec 的文字补写**:那是纯
+    # 文本扩写,看不到出镜照,凭空编出来的服装会跟参考图打架(2026-10-28
+    # 实测定版:服装一致性靠立绘图像锚,文字锚只作已有数据时的加强)。
+    # 用户在资产详情里填了妆造 → 中景/特写提示词都会带上(见 consist 两处)。
+    _presenter_style_text = ""
+    _pa_id = clone.get("presenter_asset_id")
+    if _pa_id:
+        try:
+            _prow0 = db.q1("SELECT styling FROM characters WHERE id=?", (_pa_id,))
+            if _prow0 and (_prow0["styling"] or "").strip():
+                _presenter_style_text = " ".join(_prow0["styling"].split())[:80]
+        except Exception as exc:  # noqa: BLE001
+            print(f"[clone] 服装锚读取失败,本镜无服装文字锚({str(exc)[:120]})",
+                  flush=True)
     # ── 参考图:1 张主图 + 最多 4 张参考图,靠**名字**在提示词里关联 ──
     #
     # 官方能力(agnes-image-25-flash 文档):`image` 是 string[],明确支持
@@ -1382,7 +2068,7 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
 
     _shot_text = " ".join(str(b.get(k) or "") for k in
                           ("action", "action_steps", "product_use", "prompt"))
-    _shot_kind = str(b.get("shot") or "")
+    _shot_kind = _canon_shot_kind(b.get("shot"))
     main_kind = _pick_ref_kind(_shot_text, _shot_kind)
     main_img = _asset_img(main_kind)
 
@@ -1436,6 +2122,12 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             # 漂移都由此来)。此时无视绑定,回到**三张全带**(用户定版:
             # 「只要将三张图喂给模型,不就能保持一致性了」)。
             _want_person = _want_product = _want_scene = True
+    # 注(2026-10-28 五轮实测后的定版):特写镜**照带**人物立绘参考(短剧首帧
+    # 同款做法)。曾试过「特写裁掉立绘防全身入画」:构图是紧了,但人物失去
+    # 图像锚,衣袖/肤色每镜自由发挥(用户实测「服装在变」:#1 米色毛衣 /
+    # #2/#3 蓝袍)。两害相权:服装一致性由用户明确点名,构图瑕疵靠单肢守卫
+    # 文字压(见下方 core 拼装)。第二个人的问题已由景别归一 + 守卫生效根治,
+    # 与立绘无关(第 2 轮实测:带立绘 + 守卫 → 单人 ✓)。
     _extras = ((scene_img, product_img) if main_kind == "presenter"
                else (scene_img, standing_img))
     for extra in _extras:
@@ -1464,7 +2156,7 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                             ("woman's face", "her face", "人物", "女子",
                              "女生", "女性", "出镜", "模特", "人物出镜"))
     # 特写/大特写即便提到人物,主体也是物件;仅当明确拍到脸/上半身才需要人物参照
-    if any(w in _shot_kind for w in ("特写", "微距")) and             not any(w in _shot_text for w in ("face", "脸", "上半身", "半身")):
+    if any(w in _shot_kind for w in ("特写", "微距")) and             not _shot_mentions_face(_shot_text):
         _has_person_words = False
     if _has_person_words and main_kind != "presenter":
         print(f"[clone] ⚠ 分镜#{board_number} 提示词描述了人物,但主图是产品参考图"
@@ -1493,12 +2185,7 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             # 用户换上自己的照片后,衣服就该跟新照走。取角色行妆造要点(≤80字)。
             # 注:这是**数据驱动**的机制(读各项目自己的妆造字段),不是写死的规则;
             # 「单人物/颜色隔离」这类通用规则已移入「通用重绘要求」默认值,用户可改。
-            _person_style = ""
-            _pa = clone.get("presenter_asset_id")
-            if _pa:
-                _prow = db.q1("SELECT styling FROM characters WHERE id=?", (_pa,))
-                if _prow and (_prow["styling"] or "").strip():
-                    _person_style = " ".join(_prow["styling"].split())[:80]
+            _person_style = _presenter_style_text   # 已在生成入口懒补(含空值)
             if _person_style:
                 consist += (f";人物服装文字锚:{_person_style}"
                             "(与参考图1里的人是同一套衣服)")
@@ -1516,6 +2203,13 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                         "不改变大小比例,不凭空增加包装盒或外壳")
             if multi:
                 consist += (";背景环境严格参照**参考图2(场景图)**,同一间房、同一时间")
+            if _presenter_style_text:
+                # 特写镜没有人像参考图,服装/肤色唯一依据就是这条文字锚 ——
+                # 没有它,模型每镜自由发挥衣袖颜色(实测 #1 米色毛衣 / #2/#3 蓝袍)。
+                # 措辞限定「若拍到」,不与单肢守卫「不画全身」打架。
+                consist += (f";人物服装文字锚:{_presenter_style_text}"
+                            "(本镜若拍到出镜者的衣袖或身体,必须与该描述同款同色,"
+                            "肤色一致)")
             if standing_img and standing_img in refs:
                 # 特写镜带立绘只为锚**手部肤质**,必须点名「只参照手,不画全身」,
                 # 否则模型照着设定图把整个人画进腕部特写(实测 #03 的病灶)。
@@ -1559,10 +2253,10 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                      "双手皆可),不得出现第二个人的手或手臂,没有旁人的手臂从画外"
                      "伸入,不出现完整人物面部或身体")
     elif _no_person:
-        core = (f"{b.get('shot','特写')},{action_txt},"
+        core = (f"{_shot_kind or '特写'},{action_txt},"
                 f"画面只有产品与手部特写,{product_desc}:{b.get('product_use','')}")
     else:
-        core = (f"{b.get('shot','中景')},{presenter_desc},{action_txt},"
+        core = (f"{_shot_kind or '中景'},{presenter_desc},{action_txt},"
                 f"画面突出{product_desc}:{b.get('product_use','')}")
     # 场景环境靠**空景图参考**(参考图2)+ consist 点名,不拼场景文字描写
     # (用户要求:环境描写不要出现,用参考图就行 —— 文字陈设清单会跟空景图打架)
@@ -1694,6 +2388,42 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     for x in boards:
         if int(x.get("number", 0)) == int(board_number):
             x["first_frame"] = str(out)
+    # ── 人数自检(数据驱动):通用重绘要求里写了单人物,且文本模型支持多模态
+    # 时,出图后数一遍人头;>1 就自动重绘**一次**(agnes 偶尔在三参考构图里
+    # 无视单人物约束,实测出「第二个黑衣女人戴玉镯」)。只重试一次,不无限烧
+    # 额度;模型不支持多模态/规则没写单人物 → 静默跳过,行为与旧版完全一致。
+    if _people_count_check_enabled():
+        try:
+            # 必须**显式走文本模型**(数人头是多模态视觉调用):config_id 若传成
+            # 生图模型(agnes),请求会打到图片端点,自检静默失败(实测 bug)。
+            _vcfg = _selected_text_cfg()
+            n = _count_people_in_image(out, config_id=_vcfg)
+            if n is not None and n > 1:
+                print(f"[clone] 分镜#{board_number} 人数自检={n},与单人物规则冲突,"
+                      f"自动重绘(最多再试 2 次)", flush=True)
+                # 实测 agnes 对某些镜**连续**出双人(一次重试不够):最多再生成
+                # 2 次,数人头取最优;全不合格保留人数最少的一张,日志如实记录。
+                best, best_n = out, n
+                for _retry in (1, 2):
+                    out2, _ = image_client.generate_image(
+                        prompt, out_name=f"clone_s{board_number}_{uuid.uuid4().hex[:6]}.png",
+                        config_id=config_id, reference_images=refs,
+                        people=1, size=size, reference_lock=False)
+                    n2 = _count_people_in_image(out2, config_id=_vcfg)
+                    if n2 is None:
+                        best, best_n = out2, best_n   # 自检不可用就当重绘改善了
+                        break
+                    if n2 < best_n:
+                        best, best_n = out2, n2
+                    if best_n <= 1:
+                        break
+                out = best
+                if best_n > 1:
+                    print(f"[clone] 分镜#{board_number} 重绘后人数仍={best_n},"
+                          f"已选人数最少的一张;建议改写该镜分镜描述或换生图模型",
+                          flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[clone] 人数自检失败({exc}),跳过", flush=True)
     # 场景锚不再在这里固化:旧实现拿首镜生成图当 scene_image(图里带人,当参考
     # 会抄出第二人)、scene_prompt 硬编码一句与原片无关的描述。现在锚在**分析
     # 阶段**就从原视频提取(见 extract_scene_anchor),首镜同样享受场景参考。
@@ -1729,7 +2459,44 @@ def generate_shot_video(drama_id: int, board_number: int, resolution: str = "720
     _scene = _resolve_local(clone.get("scene_image"))
     _product = _resolve_local(clone.get("product"))
     video_refs = [str(p) for p in (_standing, _scene, _product) if p]
-    _shot_kind_v = str(b.get("shot") or "")
+    # ── @名字 → @图片N(与小说线同款,见 refs.resolve_video_prompt_refs)──
+    #
+    # 复刻此前把 @出镜人物 / @主场景 / @主推产品 原样发给视频模型,模型无从判断
+    # 哪张参考图是谁 —— 三张图(人物立绘/场景空景/产品图)被平均融合,于是
+    # 人物长相与场景陈设**在运动过程中**漂移(首帧对、后面跑偏)。
+    # 小说线早就把这层做了(短剧 video_prompt 里的 @名字 换成 @图片N,序号与
+    # reference_image_urls 严格对齐);复刻这边补上,参考图顺序也照小说线的
+    # 「角色 → 场景 → 道具」排,序号才与首帧提示词里的「参考图N」对得上。
+    if video_refs:
+        _anames = board_asset_names(drama_id, b)
+        _ref_kinds = (("presenter", _standing), ("scene", _scene),
+                      ("product", _product))
+        _idx: dict[str, int] = {}
+        _role_bits: list[str] = []
+        _k = 0
+        for _kind, _p in _ref_kinds:
+            if not _p:
+                continue
+            _k += 1
+            if _kind == "presenter":
+                for _n in _anames.get("characters") or []:
+                    _idx[_n] = _k
+                _role_bits.append(f"@图片{_k}=出镜人物设定图")
+            elif _kind == "scene":
+                if _anames.get("scene"):
+                    _idx[_anames["scene"]] = _k
+                _role_bits.append(f"@图片{_k}=本片场景空景")
+            else:
+                for _n in _anames.get("props") or []:
+                    _idx[_n] = _k
+                _role_bits.append(f"@图片{_k}=主推产品图")
+        # 名字按长度降序替换(长的先替),避免短名误命中前缀
+        for _name in sorted(_idx, key=len, reverse=True):
+            video_prompt = _re.sub(rf"@{_re.escape(_name)}",
+                                   f"@图片{_idx[_name]}", video_prompt)
+        if _role_bits:
+            video_prompt += "。参考图说明:" + ",".join(_role_bits)
+    _shot_kind_v = _canon_shot_kind(b.get("shot"))
     if any(w in _shot_kind_v for w in ("特写", "微距")):
         # 特写守卫与首帧同口径:只许本人的手,不许第二个人的手/全身入画
         video_prompt += ("。画面中只出现出镜者本人的手与手腕(一手或双手皆可),"
@@ -1747,6 +2514,82 @@ def generate_shot_video(drama_id: int, board_number: int, resolution: str = "720
     meta["clone"] = clone
     _save_meta(drama_id, meta)
     return path
+
+
+def synth_shot_narration(drama_id: int, board_number: int) -> Path:
+    """合成这一镜的**旁白**(小说线同款:脚本第四段 → TTS → 混进成片)。
+
+    文本取脚本的 narration 段(没有就退回 line 里的口播)。音频落盘后把
+    URL 写回分镜条目,合片时按镜号顺序混进视频音轨(见 merge_clone)。
+
+    为什么单独存一条音频而不是直接塞进视频:图生视频拿到的只有首帧与
+    参考图,没有配音通道;配音是合片阶段的事,与短剧线同款。
+    """
+    boards = _meta(drama_id).get("clone", {}).get("storyboards", []) or []
+    b = next((x for x in boards if int(x.get("number", 0)) == int(board_number)), None)
+    if b is None:
+        raise RuntimeError(f"分镜 #{board_number} 不存在")
+    text = str(b.get("narration") or "").strip()
+    if not text:
+        # 脚本没写旁白 → 退回「推测口播」里引号内的那段(line 形如
+        # 「无清晰可辨口播;…;推测口播: "看这枚玉镯…"」)
+        raw = str(b.get("line") or "").strip()
+        if "推测口播" in raw:
+            text = raw.split("推测口播", 1)[1].strip().lstrip(":：").strip()
+            text = text.strip('"“”「」')
+        else:
+            text = raw
+    if not text:
+        raise RuntimeError("这一镜没有旁白文本")
+    meta = _meta(drama_id)
+    gender = (meta.get("tts_gender") or "female")
+    dur = 0.0
+    try:
+        dur = float(b.get("end") or 0) - float(b.get("start") or 0)
+    except (TypeError, ValueError):
+        dur = 0.0
+    old_url = str(b.get("narration_audio_url") or "")
+    p = tts_client.synthesize(text, target_duration=dur or None, config_id=None,
+                               gender=gender)
+    audio_url = config.path_to_media_url(p)
+    voice_used = tts_client.last_voice() or tts_client.DEFAULT_VOICE
+    for x in boards:
+        if int(x.get("number", 0)) == int(board_number):
+            x["narration_audio_url"] = audio_url
+            x["narration_voice"] = voice_used
+    meta.setdefault("clone", {})["storyboards"] = boards
+    _save_meta(drama_id, meta)
+    # 覆盖上一次:旧音频 uuid 命名,不删就成了孤儿文件一直堆磁盘。
+    # 必须在新文件写成功、库已更新之后才删旧的。
+    if old_url and old_url != audio_url:
+        try:
+            op = (config.media_url_to_path(old_url)
+                  if old_url.startswith(("/static/", "static/")) else Path(old_url))
+            if op.exists() and op != Path(p):
+                op.unlink()
+        except OSError as exc:  # noqa: BLE001
+            print(f"[clone] 旧旁白音频删除失败({exc})", flush=True)
+    return p
+
+
+def clone_shots_with_narrations(drama_id: int) -> tuple[list[Path], list[Path | None]]:
+    """(镜头视频, 对应旁白) —— 两个列表**严格一一对应**。
+
+    只按「有视频的镜」取:若按全部分镜取,没出视频的镜会让两边错位 ——
+    第 2 镜的旁白混到第 1 镜的画面上(听起来就是串台)。
+    """
+    shots: list[Path] = []
+    narrs: list[Path | None] = []
+    for b in _clone_storyboards(drama_id):
+        v = b.get("video")
+        if not v:
+            continue
+        vp = Path(v)
+        if not vp.exists():
+            continue
+        shots.append(vp)
+        narrs.append(_resolve_local(b.get("narration_audio_url")))
+    return shots, narrs
 
 
 def clone_done_videos(drama_id: int) -> list[Path]:
@@ -1770,7 +2613,7 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
     """
     from . import merge as merge_mod
     from . import intro as _intro
-    shots = [Path(p) for p in clone_done_videos(drama_id) if Path(p).exists()]
+    shots, narrs = clone_shots_with_narrations(drama_id)
     if len(shots) < 2:
         raise RuntimeError("至少完成 2 个镜头视频才能拼接")
     out = out or (config.STATIC_DIR / "merged" / f"clone_{drama_id}_{uuid.uuid4().hex[:8]}.mp4")
@@ -1786,7 +2629,11 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
             print(f"[clone] 片头配置异常({exc}),本次合并不带片头", flush=True)
             intro = None
     # **无条件走统一参数拼接**:音频归一 + 可选片头(标题卡前置/文字叠加)
-    path = merge_mod._merge_filtered(shots, [], Path(out), intro, progress)
+    #
+    # 旁白:每镜合成过的旁白按镜号顺序混进音轨(小说线同款)。此前这里传空
+    # 列表 —— 脚本里的旁白段合成了也进不了成片,等于白做。缺旁白的镜位传
+    # None,_merge_filtered 会按静音处理。
+    path = merge_mod._merge_filtered(shots, narrs, Path(out), intro, progress)
     # ── 合并历史(用户要求「最多生成 8 个合并视频」,新的顶掉最旧的)──
     # 成片要在红框区可见可播;反复合并不能无限堆文件。海报帧顺手抽出
     # (黑底标题卡的成片开头是纯黑,poster 自带黑帧探测),供列表缩略使用。
@@ -1848,14 +2695,27 @@ def delete_clone_merge(drama_id: int, path: str) -> int:
 MAX_DURATION_S = 120
 MAX_SIZE_MB = 38
 
-UNDERSTAND_PROMPT = """这是一条参考短视频。请逐镜头分析并输出分镜表 JSON,要求:
+UNDERSTAND_PROMPT = f"""这是一条参考短视频。请逐镜头分析并输出分镜表 JSON,要求:
 1. 结构照搬原片的镜头切点,覆盖整条视频,不遗漏开头结尾;
 2. 每个镜头输出:index(从1递增)、duration(秒数,按原片节奏估)、title(4-10字镜头名)、
 shot_type(景别:近景/中景/全景/特写)、camera(运镜)、action_steps(连续动作时序数组,每步一句可见的动作描述)、
 dialogue(台词数组,格式"说话人:内容",无则空数组)、sound(环境音/音效描述)。
 2b. 资产绑定字段(与短剧分镜同构):characters(本镜出镜人物名数组)、props(本镜出现的道具名数组)、
 scene(本镜场景名) —— 决定本镜把哪些参考图喂给模型,没出现就写空数组/空串。
-3. 只输出 JSON:{"shots":[…]},不要解释。"""
+2c. 镜头脚本四段式(与短剧线/小说线分镜同构,必填):
+· description:按【镜头1】【镜头2】…分 2-3 个子镜头,每个子镜头先写运镜
+  (如"镜头从中景匀速缓推至特写"),再写画面(谁+具体动作+肢体细节+表情),
+  台词写成「角色名说：「台词」」;
+· atmosphere:2-4 句完整短句,四层齐全 —— 光线(光源+方向+冷暖)/色调/声音
+  (至少一层持续环境音,带质感比喻)/整体氛围(落到具体物件或人的状态),
+  禁止关键词罗列;
+· video_prompt:严格照下面【视频提示词的写法】写;
+· narration:这一镜的旁白/视频解说词(2-3 句,≤120 字,第三人称叙述这段画面
+  在讲什么;不是角色台词,台词写进 description);没有解说就写空字符串。
+  四段之间必须互相吻合,整条片子的场景名与道具名前后一致。
+
+{VIDEO_PROMPT_FORMAT}
+3. 只输出 JSON:{{"shots":[…]}}，不要解释。"""
 
 
 def probe_video(path) -> dict:

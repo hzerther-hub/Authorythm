@@ -219,3 +219,414 @@ def test_board_asset_names_follow_rename(clone_env):
     names = vc.board_asset_names(15, {"characters": ["小雅"]})
     assert names["characters"] == ["小雅"]
     assert vc.asset_ref_header(names).count("@小雅") == 1
+
+
+# ── 2026-10-28:特写镜参考图裁剪(「手复」#02-#04 实测回归)────────────────
+# 无绑定的特写镜若仍带三视图立绘参考,图像参考的引力压过文字守卫,
+# 首帧把主角全身画进背景(原片该镜只有一只手 + 产品)。裁剪与「绑定裁剪」
+# 同一原则:靠文字守卫硬压不如直接不给。中景/近景不受影响(三张全带)。
+
+class _ShotGenDB(_FakeDB):
+    """在 _FakeDB 上补 generate_shot_image 用到的三个 db 侧函数。"""
+
+    def get_setting(self, key, default=None):
+        return default
+
+    def resolve_selected_config_id(self, service, default=None):
+        return default
+
+    def style_prompt(self, style_value):
+        return "真人写实风格"
+
+    def drama_style(self, drama_id):
+        return "live"
+
+
+def _gen_shot_env(tmp_path, monkeypatch, shot: str,
+                  board_extra: dict | None = None,
+                  styling: str = "上装米色圆领针织衫,袖口罗纹收口,下装黑色阔腿裤") -> dict:
+    """搭一个可跑 generate_shot_image 的最小复刻项目;返回捕获容器。"""
+    from app.pipeline import video_clone as vc
+
+    from PIL import Image
+    product = tmp_path / "product.jpg"
+    scene = tmp_path / "scene.png"
+    standing = tmp_path / "standing.jpg"
+    for p in (product, scene, standing):
+        Image.new("RGB", (64, 64), "white").save(p)
+
+    fake = _ShotGenDB({
+        "characters": [{"id": 56, "name": "小雅", "styling": styling,
+                        "appearance": "圆脸短发", "image_url": str(standing)}],
+        "props": [{"id": 14, "name": "翡翠手镯", "image_url": str(product)}],
+        "scenes": [{"id": 18, "name": "暖光卧室", "image_url": str(scene)}],
+        "dramas": [{"id": 15, "aspect_ratio": "16:9"}],
+    })
+    monkeypatch.setattr(vc, "db", fake)
+    row = {"number": 2, "start": 2.5, "end": 4.2, "shot": shot,
+           "camera": "固定", "action": "双手捏住玉镯两侧",
+           "prompt": "特写:双手取下玉镯"}
+    row.update(board_extra or {})
+    boards = [row]
+    meta = {"clone": {
+        "presenter_asset_id": 56, "product_asset_id": 14, "scene_asset_id": 18,
+        "product_desc": "翠绿色宽圆玉镯", "presenter_desc": "年轻女性",
+        "scene_image": str(scene),
+        "turnaround_image": str(standing),
+        "storyboards": boards,
+    }}
+    monkeypatch.setattr(vc, "_meta", lambda drama_id: meta)
+    monkeypatch.setattr(vc, "_save_meta", lambda drama_id, m: None)
+
+    captured = {}
+
+    def _fake_gen(prompt, out_name="", config_id=None, reference_images=None,
+                  people=None, size=None, reference_lock=False, **kw):
+        captured["prompt"] = prompt
+        captured["refs"] = list(reference_images or [])
+        return tmp_path / out_name, "agnes"
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+
+    vc.generate_shot_image(15, 2, "live")
+    return captured
+
+
+def test_closeup_image_refs_keep_all_three(tmp_path, monkeypatch):
+    """2026-10-28 定版(用户反馈「服装在变」后):特写镜**照带**人物立绘
+    (短剧首帧同款做法)—— 裁掉立绘虽让构图变紧,但人物失去图像锚,
+    衣袖/肤色逐镜自由发挥(实测 #1 米色毛衣 / #2 #3 蓝袍)。"""
+    captured = _gen_shot_env(tmp_path, monkeypatch, "特")   # 简称,读侧须归一
+    refs = captured["refs"]
+    names = [str(p) for p in refs]
+    assert any(n.endswith("product.jpg") for n in names), "产品主锚必须带"
+    assert any(n.endswith("scene.png") for n in names), "空景锚保留"
+    assert any(n.endswith("standing.jpg") for n in names), "特写镜必须带立绘锚服装"
+
+
+def test_medium_shot_keeps_all_three_refs(tmp_path, monkeypatch):
+    captured = _gen_shot_env(tmp_path, monkeypatch, "中")
+    names = [str(p) for p in captured["refs"]]
+    assert any(n.endswith("standing.jpg") for n in names)
+    assert any(n.endswith("scene.png") for n in names)
+    assert any(n.endswith("product.jpg") for n in names)
+
+
+def test_bound_closeup_keeps_standing_too(tmp_path, monkeypatch):
+    """绑定与否不影响:特写镜都带立绘(2026-10-28 定版,见上)。"""
+    captured = _gen_shot_env(tmp_path, monkeypatch, "特", board_extra={
+        "characters": ["小雅"], "props": ["翡翠手镯"], "scene": "暖光卧室"})
+    names = [str(p) for p in captured["refs"]]
+    assert any(n.endswith("standing.jpg") for n in names)
+
+
+def test_face_closeup_keeps_standing(tmp_path, monkeypatch):
+    """文案明确拍脸/上半身的特写(如面部特写)仍需要人物参照 —— 不裁。"""
+    captured = _gen_shot_env(tmp_path, monkeypatch, "特", board_extra={
+        "characters": ["小雅"], "props": ["翡翠手镯"], "scene": "暖光卧室",
+        "prompt": "面部特写:女子微笑展示耳环"})
+    names = [str(p) for p in captured["refs"]]
+    assert any(n.endswith("standing.jpg") for n in names)
+
+
+def test_surface_texture_is_not_a_face_shot():
+    """「手复」#03 实测回归:英文改写文案的「sur**face** texture(表面纹理)」
+    被 face 子串匹配误判成拍脸 → 特写镜错误保留人物立绘。英文必须按词边界。"""
+    from app.pipeline import video_clone as vc
+    assert not vc._shot_mentions_face(
+        "Close-up of hands, delicate surface texture, rounded profile")
+    assert vc._shot_mentions_face("her face lights up with a smile")
+    assert vc._shot_mentions_face("面部特写展示妆容")
+    assert vc._shot_mentions_face("她低头,脸庞靠近玉镯")
+
+
+def test_closeup_header_keeps_person_too(clone_env):
+    """2026-10-28 定版:特写镜头行照常@人物(与立绘参考配套,短剧绑定做法)。
+    旧实验「头行去人物防造人」随立绘恢复一并废止。"""
+    from app.pipeline import video_clone as vc
+    names = vc.board_asset_names(15, {"shot": "特", "prompt": "surface texture",
+                                      "characters": ["小雅"], "props": ["翡翠手镯"],
+                                      "scene": "暖光卧室"})
+    assert names["characters"] == ["小雅"]
+    head = vc.asset_ref_header(names)
+    assert "@小雅" in head and "@翡翠手镯" in head
+
+
+def test_face_closeup_header_keeps_person(clone_env):
+    """文案明确拍脸的特写(面部特写)仍要点名人物 —— 头行与参考裁剪同口径。"""
+    from app.pipeline import video_clone as vc
+    names = vc.board_asset_names(15, {"shot": "特", "prompt": "her face closeup",
+                                      "characters": ["小雅"], "props": ["翡翠手镯"],
+                                      "scene": "暖光卧室"})
+    assert names["characters"] == ["小雅"]
+
+
+def test_closeup_prompt_carries_clothing_anchor(tmp_path, monkeypatch):
+    """「服装在变」回归(2026-10-28 用户反馈):特写镜的服装/肤色依据 —
+    立绘图像锚 + 服装文字锚双保险。styling 有数据时,特写提示词必须带上
+    (数据驱动:读各项目自己的妆造字段;为空时不注入,不凭空编造)。"""
+    captured = _gen_shot_env(tmp_path, monkeypatch, "特", board_extra={
+        "characters": ["小雅"], "props": ["翡翠手镯"], "scene": "暖光卧室"})
+    assert "服装文字锚" in captured["prompt"], "特写镜缺服装文字锚"
+    assert "米色圆领针织衫" in captured["prompt"], "锚内容应来自角色行 styling"
+
+
+def test_empty_styling_injects_nothing(tmp_path, monkeypatch):
+    """styling 为空 → 不注入服装锚子句,更不调 LLM 凭空编服装
+    (纯文字编造会跟立绘参考图打架,2026-10-28 定版)。"""
+    captured = _gen_shot_env(tmp_path, monkeypatch, "特", board_extra={
+        "characters": ["小雅"], "props": ["翡翠手镯"], "scene": "暖光卧室"},
+        styling="")
+    assert "服装文字锚" not in captured["prompt"]
+
+
+# ── 2026-10-28:场景锚抹除原产品(用户定版「场景不要保留参考视频的产品」)──
+# 空景图的生图要求保留 props,原产品混在其中被一并保留,再当「参考图2=场景图」
+# 进每一镜(实测:手复桌上的原片白色软管、自检项目的口红)。修法:多模态定位
+# 原产品 bbox → cv2 修复抹掉 → 再喂生图;任何一步失败退回原帧。
+
+def _write_frame(path, product_rect=None):
+    """生成合成帧:白底;可选画一块绿色矩形当「原产品」。"""
+    import cv2
+    import numpy as np
+    img = np.full((300, 400, 3), 255, np.uint8)
+    if product_rect:
+        x1, y1, x2, y2 = product_rect
+        img[y1:y2, x1:x2] = (60, 180, 60)
+    cv2.imwrite(str(path), img)
+
+
+def test_erase_product_inpainted_out_of_frame(tmp_path, monkeypatch):
+    import cv2
+    from app.pipeline import video_clone as vc
+    frame = tmp_path / "f1.jpg"
+    product = tmp_path / "prod.jpg"
+    _write_frame(frame, product_rect=(100, 200, 180, 280))   # x1,y1,x2,y2
+    _write_frame(product)
+
+    # 模型回 0-1000 归一化 bbox(绿矩形: x 100-180/400, y 200-280/300)
+    monkeypatch.setattr(vc.text_client, "chat", lambda *a, **kw:
+                        '{"product": [[250, 666, 450, 933]], "person": []}')
+    out = tmp_path / "f1_noprod.jpg"
+    assert vc._erase_subjects_from_frame(frame, out) is True
+    img = cv2.imread(str(out))
+    assert img is not None
+    region = img[210:270, 110:170]           # 原绿矩形内部
+    assert float(region.mean()) > 180, "产品区域应被修复成接近背景色"
+    corner = img[10:30, 10:30]               # 远角不受影响
+    assert float(corner.mean()) > 240
+
+
+def test_erase_product_no_bbox_is_noop(tmp_path, monkeypatch):
+    from app.pipeline import video_clone as vc
+    frame = tmp_path / "f1.jpg"
+    product = tmp_path / "prod.jpg"
+    _write_frame(frame, product_rect=(100, 200, 180, 280))
+    _write_frame(product)
+    monkeypatch.setattr(vc.text_client, "chat", lambda *a, **kw: '{"product": [], "person": []}')
+    out = tmp_path / "f1_noprod.jpg"
+    assert vc._erase_subjects_from_frame(frame, out) is False
+    assert not out.exists(), "没定位到就不该写输出"
+
+
+def test_erase_product_rejects_fullframe_bbox(tmp_path, monkeypatch):
+    """模型回整幅大框(>85% 画幅)= 误标,直接放弃,不能把整帧抹花。"""
+    import cv2
+    from app.pipeline import video_clone as vc
+    frame = tmp_path / "f1.jpg"
+    product = tmp_path / "prod.jpg"
+    _write_frame(frame, product_rect=(100, 200, 180, 280))
+    _write_frame(product)
+    monkeypatch.setattr(vc.text_client, "chat", lambda *a, **kw:
+                        '{"bboxes": [[0, 0, 1000, 1000]]}')
+    out = tmp_path / "f1_noprod.jpg"
+    assert vc._erase_subjects_from_frame(frame, out) is False
+    assert not out.exists()
+
+
+def test_scene_anchor_uses_erased_frame(tmp_path, monkeypatch):
+    """接线回归:场景锚生图的参考帧必须是「已抹原产品」的那张。"""
+    from app.pipeline import video_clone as vc
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    for i in range(1, 4):
+        _write_frame(frames_dir / f"f{i}.jpg")
+    product = tmp_path / "prod.jpg"
+    _write_frame(product)
+    (tmp_path / "ref.mp4").write_bytes(b"fake")   # 只验存在性,_duration 已打桩
+    meta = {"clone": {
+        "reference": str(tmp_path / "ref.mp4"),
+        "product": str(product),
+        "frames_dir": str(frames_dir),
+        "scene_asset_id": 26,
+    }}
+    monkeypatch.setattr(vc, "_meta", lambda drama_id: meta)
+    monkeypatch.setattr(vc, "_save_meta", lambda drama_id, m: None)
+    monkeypatch.setattr(vc, "_duration", lambda p: 15.0)
+    fake_db = _ShotGenDB({"scenes": [{"id": 26, "name": "主场景"}],
+                          "dramas": [{"id": 15, "style": "live"}]})
+    monkeypatch.setattr(vc, "db", fake_db)
+
+    cap = {}
+
+    def _fake_chat(prompt, **kw):
+        # 第一次调用 = 挑帧;若有第二次 = 定位原产品 → 回一个真实小区域
+        cap["chat_n"] = cap.get("chat_n", 0) + 1
+        if cap["chat_n"] == 1:
+            return '{"frame": 2, "location": "夜间卧室", "lighting": "暖灯", ' \
+                   '"prompt": "夜间卧室木桌与床铺"}'
+        if cap["chat_n"] == 2:
+            return '{"product": [[250, 666, 450, 933]], "person": []}'
+        return '{"person": false, "product": false}'
+
+    monkeypatch.setattr(vc.text_client, "chat", _fake_chat)
+
+    def _fake_gen(body, out_name="", config_id=None, reference_images=None,
+                  people=0, skip_guard=False, reference_lock=False, **kw):
+        cap["refs"] = [str(p) for p in (reference_images or [])]
+        out = tmp_path / out_name
+        _write_frame(out)
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    assert vc.extract_scene_anchor(15) is True
+    assert cap["refs"], "场景锚生图必须带参考帧"
+    assert cap["refs"][0].endswith("_nosubj.jpg"), (
+        "参考帧必须是抹除商品/人物后的那张")
+
+
+def test_scene_anchor_regenerates_when_dirty(tmp_path, monkeypatch):
+    """内容门回归:生成的空景图若审查出人体/商品残留,必须重画,干净才放行
+    (2026-10-28 实测:游离的手、床上的脚、留下的包装盒各随机出现过)。"""
+    from app.pipeline import video_clone as vc
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    for i in range(1, 4):
+        _write_frame(frames_dir / f"f{i}.jpg")
+    product = tmp_path / "prod.jpg"
+    _write_frame(product)
+    (tmp_path / "ref.mp4").write_bytes(b"fake")
+    meta = {"clone": {
+        "reference": str(tmp_path / "ref.mp4"),
+        "product": str(product),
+        "frames_dir": str(frames_dir),
+        "scene_asset_id": 26,
+    }}
+    monkeypatch.setattr(vc, "_meta", lambda drama_id: meta)
+    monkeypatch.setattr(vc, "_save_meta", lambda drama_id, m: None)
+    monkeypatch.setattr(vc, "_duration", lambda p: 15.0)
+    fake_db = _ShotGenDB({"scenes": [{"id": 26, "name": "主场景"}],
+                          "dramas": [{"id": 15, "style": "live"}]})
+    monkeypatch.setattr(vc, "db", fake_db)
+
+    cap = {"chat_n": 0, "gen_n": 0}
+
+    def _fake_chat(prompt, **kw):
+        cap["chat_n"] += 1
+        if cap["chat_n"] == 1:
+            return '{"frame": 2, "location": "L", "lighting": "M", "prompt": "P"}'
+        if cap["chat_n"] == 2:
+            return '{"product": [[250, 666, 450, 933]], "person": []}'
+        if cap["chat_n"] == 3:
+            return '{"person": true, "product": false}'    # 第一次审查:脏
+        return '{"person": false, "product": false}'        # 重画后:干净
+
+    monkeypatch.setattr(vc.text_client, "chat", _fake_chat)
+
+    def _fake_gen(body, out_name="", config_id=None, reference_images=None,
+                  people=0, skip_guard=False, reference_lock=False, **kw):
+        cap["gen_n"] = cap.get("gen_n", 0) + 1
+        out = tmp_path / f"g{cap['gen_n']}_{out_name}"
+        _write_frame(out)
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    assert vc.extract_scene_anchor(15) is True
+    assert cap["gen_n"] == 2, f"审查出残留必须重画,实际生图 {cap['gen_n']} 次"
+
+
+def test_scene_anchor_rotates_frame_when_all_dirty(tmp_path, monkeypatch):
+    """换帧回归:第一个候选帧连画 3 次都有残留 → 必须换下一候选帧重来,
+    直到出干净图(实测:人物占比大的帧怎么去都不干净,换帧最可靠)。"""
+    from app.pipeline import video_clone as vc
+    frames_dir = tmp_path / "frames"
+    frames_dir.mkdir()
+    for i in range(1, 4):
+        _write_frame(frames_dir / f"f{i}.jpg")
+    product = tmp_path / "prod.jpg"
+    _write_frame(product)
+    (tmp_path / "ref.mp4").write_bytes(b"fake")
+    meta = {"clone": {
+        "reference": str(tmp_path / "ref.mp4"),
+        "product": str(product),
+        "frames_dir": str(frames_dir),
+        "scene_asset_id": 26,
+    }}
+    monkeypatch.setattr(vc, "_meta", lambda drama_id: meta)
+    monkeypatch.setattr(vc, "_save_meta", lambda drama_id, m: None)
+    monkeypatch.setattr(vc, "_duration", lambda p: 15.0)
+    fake_db = _ShotGenDB({"scenes": [{"id": 26, "name": "主场景"}],
+                          "dramas": [{"id": 15, "style": "live"}]})
+    monkeypatch.setattr(vc, "db", fake_db)
+
+    cap = {"chat_n": 0, "gen_n": 0, "refs": [], "gate_n": 0}
+
+    def _fake_chat(prompt, **kw):
+        cap["chat_n"] += 1
+        if 'true或false' in prompt:                     # 内容门审查
+            cap["gate_n"] += 1
+            if cap["gate_n"] <= 3:                   # 帧 f1 的 3 次全部有人
+                return '{"person": true, "product": false}'
+            return '{"person": false, "product": false}'   # 帧 f2 干净
+        if "带货主体" in prompt:                      # 商品/人物定位
+            return '{"product": [], "person": []}'
+        return '{"frame": 1, "location": "L", "lighting": "M", "prompt": "P"}'
+
+    monkeypatch.setattr(vc.text_client, "chat", _fake_chat)
+
+    def _fake_gen(body, out_name="", config_id=None, reference_images=None,
+                  people=0, skip_guard=False, reference_lock=False, **kw):
+        cap["gen_n"] += 1
+        cap["refs"].append(str(reference_images[0]))
+        out = tmp_path / f"g{cap['gen_n']}_{out_name}"
+        _write_frame(out)
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.image_client, "generate_image", _fake_gen)
+    assert vc.extract_scene_anchor(15) is True
+    # 帧 f1 连画 3 次(全脏)→ 换 f2,第 4 次生成;候选帧循环里审查器不可用
+    # 会按「干净」处理 —— 本用例审查始终返回「有人」验证的是换帧而不是重画,
+    # 但审查失败即视为干净会让它第 1 帧就通过…… 所以此处审查桩必须一直返回
+    # 有人,用来证明「换帧路径」被走到:第 4 次生成的参考帧应是 f2
+    assert cap["gen_n"] == 4, f"实际生图 {cap['gen_n']} 次"
+    assert cap["refs"][3].endswith("f2_nosubj.jpg") or cap["refs"][3].endswith("f2.jpg")
+
+
+def test_order_scene_candidates_puts_person_free_frames_first():
+    """候选帧确定性排序:人物显著度高的帧(人物特写)沉底 —— 对特写帧做去人,
+    生图会脑补回化妆品场景(实测 f03)。同分保持原序(LLM 首选在前)。"""
+    from app.pipeline import video_clone as vc
+    f1, f2, f3 = "f1.jpg", "f2.jpg", "f3.jpg"
+    scores = {f1: 0.30, f2: 0.0, f3: 0.10}   # f1=人物特写, f2=无人, f3=手部
+    out = vc._order_scene_candidates(f1, [f1, f2, f3], lambda f: scores[f])
+    assert out == [f2, f3, f1], f"人物多的帧应沉底,得到 {out}"
+
+
+def test_erase_person_and_product_regions(tmp_path, monkeypatch):
+    """商品与人物(手部)都要抹:只抹产品会留下一只游离的手(实测)。"""
+    import cv2
+    from app.pipeline import video_clone as vc
+    frame = tmp_path / "f1.jpg"
+    _write_frame(frame, product_rect=(100, 200, 180, 280))   # 绿矩形 = 商品
+    import numpy as np
+    img = cv2.imread(str(frame))
+    img[220:260, 300:380] = (40, 40, 200)                    # 右侧红块 = 手
+    cv2.imwrite(str(frame), img)
+    monkeypatch.setattr(vc.text_client, "chat", lambda *a, **kw:
+                        '{"product": [[250, 666, 450, 933]], '
+                        '"person": [[750, 733, 950, 866]]}')
+    out = tmp_path / "f1_nosubj.jpg"
+    assert vc._erase_subjects_from_frame(frame, out) is True
+    img2 = cv2.imread(str(out))
+    assert float(img2[210:270, 110:170].mean()) > 180, "商品区域应被抹掉"
+    assert float(img2[230:250, 310:370].mean()) > 180, "手部区域也应被抹掉"

@@ -38,3 +38,4 @@ htmlcov/
 vendor/
 # 本地工具链状态(finding-ledger / hook-state / reports 等,纯本机会话数据)
 .mimosa/
+.tmp_vcheck/

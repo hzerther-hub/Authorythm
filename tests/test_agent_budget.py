@@ -55,8 +55,8 @@ def budgets(monkeypatch):
     return seen, script
 
 
-def _run(agent="storyboard_breaker"):
-    return runner.run_agent_json(agent, "拆一下")
+def _run(agent="storyboard_breaker", **kw):
+    return runner.run_agent_json(agent, "拆一下", **kw)
 
 
 # ------------------------------------------------------------------ 信号判定
@@ -92,10 +92,11 @@ def test_timeout_scales_with_budget():
 # ------------------------------------------------------------------ 主路径
 
 def test_escalates_until_success_when_truncated(budgets):
+    """无配置默认已顶满天花板(128000):截断后同档重试一次,脚本两段正好耗尽。"""
     seen, script = budgets
-    script.extend([TRUNC_THINK, TRUNC_THINK, GOOD])
+    script.extend([TRUNC_THINK, GOOD])
     assert _run() == {"storyboards": [{"number": 1}]}
-    assert seen == [8192, 16384, 32768], "被截断应按 2 倍阶梯升预算"
+    assert seen == [128000, 128000], "默认=天花板,截断后同档重试"
 
 
 def test_does_not_escalate_when_not_truncated(budgets):
@@ -103,21 +104,21 @@ def test_does_not_escalate_when_not_truncated(budgets):
     seen, script = budgets
     script.extend([PROSE, '{"a": 1}'])
     assert _run("extractor") == {"a": 1}
-    assert seen == [8192, 8192], "非截断失败不应抬高预算"
+    assert seen == [128000, 128000], "非截断失败不应抬高预算"
 
 
 def test_tool_call_triggers_no_tool_retry_without_escalation(budgets):
     seen, script = budgets
     script.extend([TOOL_CALL, '{"a": 1}'])
     assert _run("extractor") == {"a": 1}
-    assert seen == [8192, 8192], "工具调用同样不该抬预算"
+    assert seen == [128000, 128000], "工具调用同样不该抬预算"
 
 
 def test_success_first_call_makes_no_retry(budgets):
     seen, script = budgets
     script.append(GOOD)
     _run()
-    assert seen == [8192], "一次成功就不该有第二次调用"
+    assert seen == [128000], "一次成功就不该有第二次调用"
 
 
 def test_length_finish_reason_escalates_even_when_braces_balance(budgets):
@@ -130,7 +131,7 @@ def test_length_finish_reason_escalates_even_when_braces_balance(budgets):
     # 括号配平(1 个 { 对应 1 个 }),但供应商说被截断了
     script.extend([('{"storyboards": [{"title": "第一镜', "length"), GOOD])
     assert _run() == {"storyboards": [{"number": 1}]}
-    assert seen == [8192, 16384]
+    assert seen == [128000, 128000]
 
 
 def test_caller_start_budget_rejected_falls_back_to_low_ladder(budgets):
@@ -165,11 +166,15 @@ def test_explicit_max_tokens_is_the_starting_point(budgets):
 # ------------------------------------------------------------------ 供应商上限
 
 def test_provider_rejects_budget_ceiling_is_discovered_from_error(budgets):
-    """天花板由供应商自己告诉我们(400),而不是代码里写死某家的上限。"""
+    """天花板由供应商自己告诉我们(400),而不是代码里写死某家的上限。
+
+    显式 65536(低于天花板):截断升到 128000 被供应商 400 拒 → 回退到上一档
+    65536 继续试 —— 升降都在一次调用里完成。
+    """
     seen, script = budgets
     script.extend([TRUNC_THINK, AIError("400 max_tokens too large"), '{"a": 1}'])
-    assert _run() == {"a": 1}
-    assert seen == [8192, 16384, 8192], "被拒档应回退到上一档继续试"
+    assert _run(max_tokens=65536) == {"a": 1}
+    assert seen == [65536, 128000, 65536], "被拒档应回退到上一档继续试"
 
 
 def test_first_call_ai_error_propagates(budgets):
@@ -230,9 +235,10 @@ def test_explicit_value_wins_over_service_config(monkeypatch):
 
 
 def test_start_budget_falls_back_when_config_blank(monkeypatch):
-    """配置留空才退 8192 —— 与设置页「留空则用默认 8192」的提示一致。"""
+    """配置留空才退默认 32768 —— 与设置页「留空用默认 32768」的提示一致
+    (用户要求:没有配置则 32768;阶梯起点 8192 是另一回事,截断才升档)。"""
     monkeypatch.setattr(registry, "default_config", lambda t, c=None: {"max_tokens": None})
-    assert runner._configured_budget(4, None) == runner.BUDGET_START
+    assert runner._configured_budget(4, None) == registry.TEXT_DEFAULT_MAX_TOKENS
 
 
 def test_start_budget_survives_db_failure(monkeypatch):
@@ -242,7 +248,7 @@ def test_start_budget_survives_db_failure(monkeypatch):
         raise RuntimeError("database is locked")
 
     monkeypatch.setattr(registry, "default_config", _boom)
-    assert runner._configured_budget(None, None) == runner.BUDGET_START
+    assert runner._configured_budget(None, None) == registry.TEXT_DEFAULT_MAX_TOKENS
 
 
 def test_configured_budget_reaches_the_wire(monkeypatch, budgets):

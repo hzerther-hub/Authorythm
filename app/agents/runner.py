@@ -137,8 +137,9 @@ def _looks_like_tool_call(data) -> bool:
 # `{` 与 `}` 数量仍然相等,于是被判成「不是截断」,预算永远不升。
 # 只有命中这些信号才升预算;否则(JSON 写坏 / 模型回了工具调用 / 输出散文)升预算
 # 纯属浪费 token,那种情况走既有的禁工具重试。
-BUDGET_START = 8192        # 与 text_client._build_body 的兜底值保持一致
-BUDGET_CEILING = 65536     # 自适应天花板:到顶还截断就是提示词本身太长,交给人看
+BUDGET_START = 8192        # 阶梯起点(爬升机制:截断才升档,避免小任务烧大预算)
+BUDGET_CEILING = 128000    # 自适应天花板(用户定版「最大的 max_token 128000」):
+                           # 到顶还截断就是提示词本身太长,交给人看
 BUDGET_FACTOR = 2
 
 
@@ -163,7 +164,9 @@ def _configured_budget(config_id: int | None, explicit: int | None) -> int:
             return v
     except Exception:  # noqa: BLE001 —— 读不到就按兜底走,不能因此中断业务
         pass
-    return BUDGET_START
+    # 无配置时的兜底 = 32768,与 text_client._default_max_tokens 同一口径
+    # (用户要求「没有配置则 32768」;曾退 8192,两处口径分裂)。
+    return int(registry.TEXT_DEFAULT_MAX_TOKENS)
 
 
 def _looks_truncated(raw: str | None, finish_reason: str | None = None) -> bool:

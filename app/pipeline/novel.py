@@ -665,6 +665,21 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
             raise RuntimeError(f"第 {start}-{start + cnt - 1} 章生成失败"
                                f"(返回 {len(raw)} 字,疑似被截断)")
         all_ch += batch
+        # 逐批落库(合并,不覆盖):全书 999 章 = 25 批,要跑二三十分钟 ——
+        # 此前只在**全部跑完后一次性** UPDATE,中途断网/关应用/单批重试耗尽
+        # = 已生成批次全丢。实测:UI 显示 520/999、库里 0 章(用户反馈
+        # 「不要一次性生成,要几十章几十章的」)。按卷路径
+        # (generate_chapters_for_volume)一直有 _merge_chapters,全书分批
+        # 这里补齐同款;首批同时把书规模(novel_meta/total_episodes)定下来,
+        # 中途失败留下的也是一致状态(规模 n、已落 k 章),不必从头再来。
+        _merge_chapters(drama_id, all_ch)
+        if bi == 0:
+            nm = db.jload((db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
+                           or {"novel_meta": None})["novel_meta"], {}) or {}
+            nm.pop("chapter_count", None)    # 真源统一为 total_episodes
+            nm["word_count"] = words
+            db.ex("UPDATE dramas SET novel_meta=?, total_episodes=?, updated_at=? WHERE id=?",
+                  (json.dumps(nm, ensure_ascii=False), n, db.now(), drama_id))
         if progress:
             progress(int(len(all_ch) * 100 / n), len(all_ch), n)
         if on_partial:
@@ -2399,7 +2414,8 @@ def check_prev_chapter(drama_id: int, episode_number: int) -> None:
 
 def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = False,
                          config_id: int | None = None, lang: str | None = None,
-                         on_progress=None, model: str | None = None) -> dict:
+                         on_progress=None, model: str | None = None,
+                         task_id: int | None = None) -> dict:
     """批量写章(**强制串行**,顺序按章节号升序,防标题写进A章正文写进B章)。
 
     对齐原版 48f36da:并发度硬编码为 1 —— 第 N 章开写前要读第 N-1 章结尾 +
@@ -2426,13 +2442,21 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
         try:
             # 生成前逐章再校验(双保险):前章失败则后续章自动被拦停,不接力产出垃圾
             check_prev_chapter(drama_id, r["episode_number"])
-            write_chapter_with_review(r["id"], config_id=config_id, lang=lang)
+            # task_id 透传:审校流程把 writing/reviewing/repairing/jev_gate 写进
+            # sys_task.params.stage —— 批量面板据此显示当前在做什么。此前批量任务
+            # 从不写 stage,面板永远卡在「准备中… 正在启动模型」,用户以为死机
+            # (实测截图),其实 MiniMax-M3 正在慢慢写。
+            write_chapter_with_review(r["id"], config_id=config_id, lang=lang,
+                                      task_id=task_id)
             ok += 1
         except Exception:  # noqa: BLE001
             failed += 1
         # 状态台账:每章写完后更新「世界状态」事实层(提取 → 合并 → Jev 门控)。
         # 失败只记不抛 —— 台账是增强项,绝不阻断批量写作主流程。
         try:
+            from ..core import taskmgr as TM
+            if task_id:
+                TM.set_stage(task_id, "ledger")
             from . import state_ledger
             state_ledger.update_state_ledger(drama_id, r["id"], config_id=config_id, model=model)
         except Exception:  # noqa: BLE001

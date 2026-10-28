@@ -22,7 +22,8 @@ from ..core.i18n import tr
 from . import widgets as W
 
 STAGE_CN = {"writing": "写正文", "reviewing": "审校中", "repairing": "修复问题",
-            "compressing": "卷段压缩", "splitting": "拆分分镜"}
+            "compressing": "卷段压缩", "splitting": "拆分分镜",
+            "ledger": "状态台账", "jev_gate": "Jev 门控"}
 
 
 class _SegmentBar(QWidget):

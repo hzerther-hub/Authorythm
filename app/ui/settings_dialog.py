@@ -1669,7 +1669,7 @@ class ServiceDialog(QDialog):
         self.ctx_tokens.setPlaceholderText(tr("如 128000,留空跟随服务默认"))
         form.addRow(tr("上下文长度"), self.ctx_tokens)
         self.max_tokens = QLineEdit()
-        self.max_tokens.setPlaceholderText(tr("如 32768,留空则用默认 8192"))
+        self.max_tokens.setPlaceholderText(tr("最大 128000,留空用默认 128000"))
         form.addRow(tr("最大输出 token"), self.max_tokens)
         # 本地生图扩展设置(JSON):comfyui_workflow / comfyui_negative_prompt / image_base_size /
         # image_steps / image_cfg_scale / image_sampler / image_negative_prompt /

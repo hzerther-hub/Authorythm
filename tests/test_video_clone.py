@@ -675,6 +675,9 @@ def test_scene_anchor_picks_frame_and_builds_empty_scene(tmp_path, monkeypatch):
 
     def _fake_chat(prompt, system=None, temperature=None, json_mode=None,
                    config_id=None, image_urls=None):
+        if "是否出现以下任何一项" in prompt:
+            # 内容门审查:返回干净判定
+            return '{"person": false, "product": false}'
         assert len(image_urls) == 2, "应把抽出的帧都给多模态模型挑"
         return '{"frame": 2, "location": "夜晚书房", "lighting": "暖光台灯", "prompt": "木质书桌与窗外夜景"}'
 
@@ -827,11 +830,14 @@ def test_single_person_guard_and_closeup_ref_trim(tmp_path, monkeypatch):
     # 单人守卫:文案无多人词 → 两镜提示词都必须带(含窗外/倒影条款)
     assert "只有出镜人物一个人" in mid["prompt"], "中景镜缺单人守卫"
     assert "不得出现任何人影或倒影" in close["prompt"], "特写镜缺窗外/倒影条款"
-    # 绑定名全部失锚 → 忽略绑定,三张全带(人物立绘/空景/产品一个不少)
+    # 绑定名全部失锚 → 忽略绑定,中景三张全带(人物立绘/空景/产品一个不少)
     assert presenter in (mid["refs"] or []), "中景镜应带人物立绘锚脸"
-    assert presenter in (close["refs"] or []), "特写镜也带立绘(用户定版三张全带)"
-    assert scene in (close["refs"] or []), "失锚兜底后场景锚必须回来"
-    assert product in (close["refs"] or []), "失锚兜底后产品锚必须回来"
+    # 2026-10-28 定版(用户反馈「服装在变」后):特写镜**照带**立绘 ——
+    # 裁掉立绘服装就逐镜自由发挥;第二个人的问题由景别归一 + 守卫生效根治,
+    # 不靠裁参考图。头像绑定关系(图 N = 角色名)与短剧首帧同款。
+    assert presenter in (close["refs"] or []), "特写镜必须带立绘锚服装/肤色"
+    assert scene in (close["refs"] or []), "特写镜场景锚必须保留"
+    assert product in (close["refs"] or []), "特写镜产品锚必须保留"
 
 
 # ── 分卷分批生成(章数大时必然截断)──────────────────────────────────
@@ -1083,3 +1089,603 @@ def test_clean_chapter_name_rejects_think_markers():
 def test_extract_title_rejects_think_first_line():
     assert vc_novel.extract_title_from_content("# <think>We need answer only chapter\n\n正文") == ""
     assert vc_novel.extract_title_from_content("# 归乡的井\n\n正文") == "归乡的井"
+
+
+# ── 2026-10-28:景别简称归一(「手复」项目实测回归)──────────────────────
+# 分镜模型会回单字简称(特/中/近),原样落库后特写守卫按全称(「特写/微距」)
+# 匹配全部静默失效 → 特写镜出第二个人 + 完整人脸。归一化必须覆盖读写两端。
+
+def test_canon_shot_kind_maps_single_char_abbreviations():
+    assert vc._canon_shot_kind("特") == "特写"
+    assert vc._canon_shot_kind("中") == "中景"
+    assert vc._canon_shot_kind("近") == "近景"
+    assert vc._canon_shot_kind("大特") == "大特写"
+    assert vc._canon_shot_kind("中近") == "中近景"
+    assert vc._canon_shot_kind("远") == "远景"
+    assert vc._canon_shot_kind("全") == "全景"
+
+
+def test_canon_shot_kind_keeps_full_and_unknown_values():
+    """全称原样保留;未知景别(航拍/俯拍)不猜 —— 猜错比不归一更糟。"""
+    assert vc._canon_shot_kind("特写") == "特写"
+    assert vc._canon_shot_kind("特写镜头") == "特写"
+    assert vc._canon_shot_kind("微距") == "微距"
+    assert vc._canon_shot_kind("中近景") == "中近景"   # 不能被「中景」前缀误吞
+    assert vc._canon_shot_kind("航拍") == "航拍"
+    assert vc._canon_shot_kind("") == ""
+    assert vc._canon_shot_kind(None) == ""
+
+
+def test_normalize_shot_canonicalizes_abbreviation():
+    assert vc._normalize_shot({"shot_type": "特", "duration": 4}, 1)["shot"] == "特写"
+    assert vc._normalize_shot({"shot": "中"}, 1)["shot"] == "中景"
+
+
+def test_pick_ref_kind_closeup_by_abbreviation():
+    """存量项目分镜存的是「特」:必须按景别判产品锚,不能掉进文案兜底。"""
+    assert vc._pick_ref_kind("", "特") == "product"
+    # 文案里明明是人物动作,景别是特 → 仍以景别为准(判定看画面主体)
+    assert vc._pick_ref_kind("女子坐在桌前低头看向桌面的手镯", "特") == "product"
+    assert vc._pick_ref_kind("", "中") == "presenter"
+    assert vc._pick_ref_kind("", "近") == "presenter"
+
+
+def test_closeup_guards_read_canonized_kind():
+    """两处特写守卫(生图单肢规则 / 生视频守卫)必须作用在归一化后的景别上,
+    防止以后再引入新的简称漏配(源码契约,照 test_clone_tasks_carry_episode_id 式)。"""
+    import inspect
+    assert "_canon_shot_kind" in inspect.getsource(vc.generate_shot_image)
+    assert "_canon_shot_kind" in inspect.getsource(vc.generate_shot_video)
+
+
+def test_generate_shot_video_closeup_guard_fires_for_abbreviated_shot(monkeypatch):
+    """端到端回归:分镜存简称「特」时,视频提示词必须带上特写单肢守卫
+    (修复前:守卫匹配「特写」不中「特」,成片出第二个人 —— 手复 #02/#03 实测)。"""
+    from pathlib import Path
+
+    captured = {}
+
+    def _fake_generate(prompt, **kw):
+        captured["prompt"] = prompt
+        return Path("x.mp4"), "agnes"
+
+    boards = [{"number": 1, "start": 0.0, "end": 4.0, "shot": "特",
+               "camera": "固定", "action": "双手捏住玉镯两侧",
+               "prompt": "特写:双手取下玉镯", "first_frame": "ff.png"}]
+    monkeypatch.setattr(vc, "_clone_storyboards", lambda drama_id: boards)
+    monkeypatch.setattr(vc, "_meta", lambda drama_id: {"clone": {}})
+    monkeypatch.setattr(vc, "_save_meta", lambda drama_id, meta: None)
+    monkeypatch.setattr(vc.db, "style_prompt", lambda style: "真人写实风格")
+    monkeypatch.setattr(vc.db, "drama_style", lambda drama_id: "live")
+    monkeypatch.setattr(vc.video_client, "generate_video", _fake_generate)
+    vc.generate_shot_video(1, 1)
+    assert "不得出现第二个人的手或手臂" in captured["prompt"], (
+        "景别简称「特」未触发特写守卫")
+
+
+# ── 2026-10-28:全书分批逐批落库(用户实测 520/999、库里 0 章)──────────────
+# generate_chapters_batched 此前只在全部批次跑完后一次性 UPDATE:中途断网/
+# 关应用/单批重试耗尽 = 已生成批次全丢。按卷路径一直有 _merge_chapters,
+# 全书分批补齐同款,并验证「中途失败已落批次不丢」。
+
+class _NovelDB:
+    """够 generate_chapters_batched 用的假 db:记录全部写入。"""
+
+    def __init__(self):
+        self.writes: list[tuple] = []
+
+    def q1(self, sql, args=()):
+        if "novel_chapters" in sql:
+            return {"novel_chapters": None}
+        if "novel_contract" in sql:
+            return {"novel_meta": None, "novel_contract": ""}
+        if "novel_meta" in sql:
+            return {"novel_meta": None}
+        return None
+
+    def q(self, sql, args=()):
+        return []
+
+    def jload(self, raw, default=None):
+        import json as _json
+        try:
+            return _json.loads(raw) if raw else (default if default is not None else {})
+        except Exception:
+            return default if default is not None else {}
+
+    def ex(self, sql, args=()):
+        self.writes.append((sql, args))
+        return 1
+
+    def now(self):
+        return "2026-10-28T00:00:00Z"
+
+
+def _plan_db(monkeypatch) -> _NovelDB:
+    from app.pipeline import novel as nv
+    from app.core import config as _config
+    fake = _NovelDB()
+    monkeypatch.setattr(nv, "db", fake)
+    monkeypatch.setattr(nv, "_plan_scale", lambda drama_id, chapter_count, word_count: (4, 2500))
+    monkeypatch.setattr(nv, "plan_config_id", lambda: None)
+    monkeypatch.setattr(nv, "_plan_budgets", lambda config_id: (4096,))
+    monkeypatch.setattr(nv.config, "resolve_content_language", lambda drama_id: "zh")
+    return fake
+
+
+def _batch_json(start: int, cnt: int) -> str:
+    import json as _json
+    return _json.dumps({"chapters": [
+        {"number": start + i, "title": f"第{start + i}章",
+         "goal": f"目标{start + i}", "events": f"事件{start + i}",
+         "cliffhanger": f"钩子{start + i}"} for i in range(cnt)]}, ensure_ascii=False)
+
+
+def test_chapters_batched_persists_every_batch(tmp_path, monkeypatch):
+    """全书分批必须**每批落库**:999 章 25 批跑二三十分钟,逐批合并写库,
+    任何时刻中断,已生成批次都在库里(用户反馈「不要一次性生成」)。"""
+    from app.pipeline import novel as nv
+    monkeypatch.setattr(nv, "CHAPTER_BATCH", 2)
+    fake = _plan_db(monkeypatch)
+
+    def _fake_agent(name, prompt, **kw):
+        import re as _re
+        m = _re.search(r"第\s*(\d+)\s*章到第\s*(\d+)\s*章", prompt)
+        a, b = int(m.group(1)), int(m.group(2))
+        return _batch_json(a, b - a + 1)
+
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent)
+    out = nv.generate_chapters_batched(801, chapter_count=4, word_count=2500)
+    assert out["count"] == 4
+    plan_writes = [a for sql, a in fake.writes if "novel_chapters=?" in sql]
+    # 2 批逐批落库 + 收尾 1 次 = 至少 3 次写 novel_chapters
+    assert len(plan_writes) >= 3, f"逐批落库缺失,只写了 {len(plan_writes)} 次"
+    import json as _json
+    first_batch = _json.loads(plan_writes[0][0])
+    assert len(first_batch) == 2, "第一批完成时就该落 2 章,而不是等全部跑完"
+
+
+def test_chapters_batched_failure_keeps_finished_batches(tmp_path, monkeypatch):
+    """中途失败(某批重试耗尽)时,前面批次必须已经在库里 —— 修复前
+    all_ch 只在内存,520 章跟着异常一起蒸发(实测)。"""
+    import pytest as _pytest
+    from app.pipeline import novel as nv
+    monkeypatch.setattr(nv, "CHAPTER_BATCH", 2)
+    fake = _plan_db(monkeypatch)
+
+    calls = {"n": 0}
+
+    def _fake_agent(name, prompt, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return _batch_json(1, 2)
+        raise RuntimeError("模拟第二批重试耗尽")
+
+    monkeypatch.setattr(nv.runner, "run_agent", _fake_agent)
+    with _pytest.raises(RuntimeError):
+        nv.generate_chapters_batched(802, chapter_count=4, word_count=2500)
+    plan_writes = [a for sql, a in fake.writes if "novel_chapters=?" in sql]
+    assert plan_writes, "失败时连第一批都没落库"
+    import json as _json
+    assert len(_json.loads(plan_writes[0][0])) == 2, "已成功批次必须保留"
+
+
+# ── 镜头脚本三段式(对齐小说线/短剧线的分镜格式)─────────────────────────
+#
+# 复刻此前每镜只有一行 action_steps 摘要(「中景·固定 · 1.xxx; 2.xxx」),
+# 场景与道具只能靠自然语言暗示,模型每镜自由发挥 → 背景/陈设/道具逐镜漂。
+# 小说线(与短剧线同一套 storyboard_breaker)的分镜是三段式:
+#   description / atmosphere / video_prompt,三段都带 @资产名。
+# 下面这组测试锁住「复刻也产出同样三段」这条不变量。
+
+def test_analysis_prompt_requires_three_script_fields(tmp_path, monkeypatch):
+    """抽帧拆解的提示词必须要求三段式脚本 —— 少了它们,界面就只有一行摘要,
+    场景与道具没有名字可指(@资产名是资产对齐的锚)。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    ref = tmp_path / "ref.mp4"
+    ref.write_bytes(b"fake")
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"reference": str(ref)}}), 801))
+    frames = tmp_path / "frames"
+    frames.mkdir()
+    f1 = frames / "f1.jpg"
+    f1.write_bytes(b"jpg")
+    monkeypatch.setattr(vc, "extract_frames", lambda *a, **k: [f1])
+    monkeypatch.setattr(vc, "_duration", lambda p: 8.0)
+    monkeypatch.setattr(vc, "extract_scene_anchor", lambda *a, **k: False)
+    monkeypatch.setattr(vc, "sync_assets", lambda *a, **k: (None, None, None))
+    seen = {}
+
+    def _chat(prompt, **kw):
+        seen["prompt"] = prompt
+        return json.dumps({"storyboards": [{
+            "number": 1, "start": 0, "end": 8, "shot": "中景", "camera": "固定",
+            "action": "举起产品", "action_steps": ["双手托住玉镯", "缓缓抬至镜头前"],
+            "description": "【镜头1】中景固定,双手托住玉镯;【镜头2】缓推至手部特写",
+            "atmosphere": "侧窗自然光,冷调,室内安静",
+            "video_prompt": "出场人物:@出镜人物 道具:@主推产品 场景:@主场景\n[0-3秒] 固定",
+            "characters": ["出镜人物"], "props": ["主推产品"], "scene": "主场景"}]},
+            ensure_ascii=False)
+
+    monkeypatch.setattr(vc.text_client, "chat", _chat)
+    boards = vc.analyze_reference(801)
+    for key in ("description", "atmosphere", "video_prompt"):
+        assert key in seen["prompt"], f"拆解提示词没要求 {key}"
+    assert "【镜头1】" in boards[0]["description"]
+    assert boards[0]["atmosphere"]
+    assert "@主推产品" in boards[0]["video_prompt"]
+
+
+def test_direct_mode_prompt_requires_three_script_fields():
+    """整段直传模式(UNDERSTAND_PROMPT)也要产出三段式。"""
+    for key in ("description", "atmosphere", "video_prompt"):
+        assert key in vc.UNDERSTAND_PROMPT, f"直传提示词没要求 {key}"
+
+
+def test_normalize_shot_keeps_script_fields():
+    """直传归一化不能把三段式字段丢掉。"""
+    s = vc._normalize_shot({"shot_type": "特", "duration": 4,
+                            "description": "【镜头1】特写手部",
+                            "atmosphere": "冷调侧光",
+                            "video_prompt": "出场人物:@出镜人物"}, 1)
+    assert s["shot"] == "特写"
+    assert s["description"] == "【镜头1】特写手部"
+    assert s["atmosphere"] == "冷调侧光"
+    assert s["video_prompt"] == "出场人物:@出镜人物"
+
+
+def test_rewrite_also_rewrites_script_fields(monkeypatch):
+    """按新产品改写时必须**同步改**三段式 —— 不改的话,动作换成玉镯,
+    脚本里还在说口红(界面显示的正是这三段)。"""
+    import json
+    payload = {"storyboards": [{
+        "number": 1, "action": "举起玉镯", "action_steps": ["托住玉镯"],
+        "product_use": "玉镯呈现", "prompt": "0-4秒:展示玉镯",
+        "description": "【镜头1】举起玉镯至胸前",
+        "atmosphere": "冷调侧光,安静",
+        "video_prompt": "出场人物:@出镜人物 道具:@主推产品 场景:@主场景"}]}
+    monkeypatch.setattr(vc.text_client, "chat",
+                        _fake_chat(json.dumps(payload, ensure_ascii=False)))
+    out = vc.rewrite_boards_for_product(_BOARDS, "玉镯", assets="已知资产")
+    assert out[0]["description"] == "【镜头1】举起玉镯至胸前"
+    assert out[0]["atmosphere"] == "冷调侧光,安静"
+    assert "@主推产品" in out[0]["video_prompt"]
+
+
+def test_rewrite_prompt_keeps_asset_names_verbatim():
+    """改写提示词必须把「已知资产」喂进去,并要求 @引用逐字保留 ——
+    名字一改,这一镜的参考图就对不上。"""
+    assert "{assets}" in vc.REWRITE_PROMPT
+    assert "assets=" in __import__("inspect").getsource(
+        vc.rewrite_boards_for_product)
+
+
+def test_shot_video_prompt_prefers_script_field():
+    """三段式的 video_prompt 优先 —— 它带 @资产名与 3 秒分段,
+    是「跨镜场景与道具一致」的执行点。"""
+    b = {"start": 0, "end": 4, "prompt": "旧拼装句",
+         "video_prompt": "出场人物:@出镜人物 场景:@主场景\n[0-3秒] 缓推"}
+    assert vc._shot_video_prompt(b).startswith("出场人物:")
+
+
+def test_legacy_board_gets_synthesized_script():
+    """存量分镜没有三段式字段 → 读侧兜底合成,界面不至于空一大块。"""
+    b = {"shot": "中景", "camera": "固定",
+         "action_steps": ["托住玉镯", "抬至镜头前"]}
+    vc.ensure_script_fields(b)
+    assert "【镜头1】" in b["description"]
+    assert "托住玉镯" in b["description"]
+    assert b["atmosphere"] == ""     # 合成不出来就留空,交给「重写镜头脚本」
+    assert b["video_prompt"]
+
+
+def test_regenerate_script_writes_fields_and_keeps_pacing(tmp_path, monkeypatch):
+    """「重写镜头脚本」只补三段,镜号/起止/景别/运镜/动作一个都不许动。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    boards = [{"number": 1, "start": 0, "end": 4, "shot": "中景", "camera": "固定",
+               "action": "举起产品", "action_steps": ["托住产品"]},
+              {"number": 2, "start": 4, "end": 9, "shot": "特写", "camera": "推",
+               "action": "产品特写", "action_steps": ["推到镜头前"]}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+    payload = {"storyboards": [
+        {"number": 1, "description": "【镜头1】固定中景,双手托住产品",
+         "atmosphere": "侧窗自然光,冷调",
+         "video_prompt": "出场人物:@出镜人物 场景:@主场景"},
+        {"number": 2, "description": "【镜头1】缓推至产品特写",
+         "atmosphere": "同一场景,冷调延续",
+         "video_prompt": "出场人物:@出镜人物 场景:@主场景"}]}
+    monkeypatch.setattr(vc.text_client, "chat",
+                        _fake_chat(json.dumps(payload, ensure_ascii=False)))
+    assert vc.regenerate_script(801) == 2
+    meta = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"],
+                     {})["clone"]
+    bs = meta["storyboards"]
+    assert bs[0]["description"].startswith("【镜头1】")
+    assert bs[1]["atmosphere"] == "同一场景,冷调延续"
+    assert (bs[0]["start"], bs[0]["end"], bs[0]["shot"], bs[0]["camera"]) == \
+        (0, 4, "中景", "固定")
+    assert (bs[1]["start"], bs[1]["end"], bs[1]["shot"], bs[1]["camera"]) == \
+        (4, 9, "特写", "推")
+    assert bs[0]["action_steps"] == ["托住产品"]
+
+
+def test_regenerate_script_failure_keeps_table(tmp_path, monkeypatch):
+    """补写失败绝不能毁掉已有分镜表(它是增强手段,不是前置依赖)。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    boards = [{"number": 1, "start": 0, "end": 4, "shot": "中景"}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+
+    def _boom(*a, **k):
+        raise RuntimeError("模拟模型故障")
+
+    monkeypatch.setattr(vc.text_client, "chat", _boom)
+    assert vc.regenerate_script(801) == 0
+    meta = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"],
+                     {})["clone"]
+    assert "description" not in meta["storyboards"][0]
+
+
+def test_clone_task_label_for_script_rewrite():
+    """新任务类型要有中文标签,否则任务面板显示英文键名。"""
+    from app.ui.task_panel import TASK_TYPE_LABEL
+    assert TASK_TYPE_LABEL["clone_script"].startswith("克隆")
+
+
+def test_clone_card_shows_three_script_sections(tmp_path, monkeypatch, qapp_stub):
+    """分镜卡片要按小说线的格式展示「分镜描述/氛围/视频提示词」三段 ——
+    界面与脚本格式对齐,用户才能看出「这一镜锁的是哪个场景、哪个道具」。"""
+    import json
+    from PySide6.QtWidgets import QTextEdit
+    from app.ui.main_window import ClonePage
+    _db = _tmp_db(tmp_path, monkeypatch)
+    boards = [{
+        "number": 1, "start": 0, "end": 4, "shot": "中景", "camera": "固定",
+        "action": "举起产品", "action_steps": ["托住产品"],
+        "description": "【镜头1】固定中景,双手托住产品",
+        "atmosphere": "侧窗自然光,冷调",
+        "video_prompt": "出场人物:@出镜人物 场景:@主场景",
+        "narration": "这枚玉镯温润又油光"}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+    page = ClonePage()
+    page.load(801)
+    html = " ".join(b.toHtml() for b in page.findChildren(QTextEdit))
+    for label in ("分镜描述", "氛围", "视频提示词", "旁白"):
+        assert label in html, f"卡片缺少「{label}」段"
+    assert "【镜头1】" in html
+
+
+def test_clone_video_prompt_maps_asset_names_to_reference_index(tmp_path, monkeypatch):
+    """视频提示词里的 @资产名 要换成 @图片N(与小说线同款)——
+
+    复刻此前把 @出镜人物/@主场景/@主推产品 原样发给视频模型,模型无从判断
+    哪张参考图是谁:三张图(人物立绘/场景空景/产品图)被平均融合,人物与场景
+    在运动过程中漂移(首帧对、后面跑偏)。序号与 reference_images 严格对齐。
+    """
+    import json
+    from PIL import Image
+    _db = _tmp_db(tmp_path, monkeypatch, style="realistic")
+    static = tmp_path / "static"
+    static.mkdir()
+    monkeypatch.setattr(_db.config, "STATIC_DIR", static)
+    ta = tmp_path / "ta.png"
+    Image.new("RGB", (64, 64), "white").save(ta)
+    sc = tmp_path / "scene.png"
+    Image.new("RGB", (64, 64), "white").save(sc)
+    pr = tmp_path / "product.png"
+    Image.new("RGB", (64, 64), "white").save(pr)
+    boards = [{"number": 1, "start": 0, "end": 4, "shot": "中景",
+               "first_frame": str(ta),
+               "video_prompt": "出场人物:@出镜人物 道具:@主推产品 场景:@主场景\n"
+                               "[0-3秒] 固定中景"}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards,
+                                  "turnaround_image": str(ta),
+                                  "scene_image": str(sc),
+                                  "product": str(pr)}}, ensure_ascii=False), 801))
+    seen = {}
+
+    def _gen(prompt, **kw):
+        seen["prompt"] = prompt
+        seen["refs"] = kw.get("reference_images")
+        out = tmp_path / "v.mp4"
+        out.write_bytes(b"video")
+        return out, "agnes"
+
+    monkeypatch.setattr(vc.video_client, "generate_video", _gen)
+    vc.generate_shot_video(801, 1)
+    p = seen["prompt"]
+    assert "@出镜人物" not in p and "@主场景" not in p and "@主推产品" not in p
+    assert "@图片1" in p and "@图片2" in p and "@图片3" in p
+    assert "参考图说明" in p
+    # 序号必须与参考图顺序对齐(人物立绘 → 场景空景 → 产品图)
+    assert len(seen["refs"]) == 3
+    assert seen["refs"][0] == str(ta)
+    assert seen["refs"][1] == str(sc)
+    assert seen["refs"][2] == str(pr)
+
+
+def test_header_example_follows_custom_asset_names():
+    """信息头模板必须用本项目真实资产名 —— 模型照抄示例,写死「@出镜人物」
+    就与用户自定义的产品名对不上(@名字对不上 → 换不成 @图片N → 参考图失锚,
+    场景与道具逐镜漂)。"""
+    assert vc._header_example({}) == "出场人物:@出镜人物 道具:@主推产品 场景:@主场景"
+    assert vc._header_example({"presenter_name": "林小姐",
+                               "product_name": "翡翠手镯"}) == \
+        "出场人物:@林小姐 道具:@翡翠手镯 场景:@主场景"
+
+
+# ── 视频提示词的严格格式 + 第四段旁白(用户 2026-10-28 定版)─────────────
+
+def test_video_prompt_format_spec_is_shared_by_all_prompts():
+    """四处提示词(抽帧拆解/整段直传/按产品改写/补写脚本)必须引用**同一份**
+    视频提示词格式规格 —— 规格散开就会漂:改了一处忘了另一处,模型收到的
+    要求自相矛盾。"""
+    assert "出场人物：" in vc.VIDEO_PROMPT_FORMAT
+    assert "。场景：" in vc.VIDEO_PROMPT_FORMAT
+    assert "行首**必须重复一次 @场景名**" in vc.VIDEO_PROMPT_FORMAT
+    assert "{vp_format}" in vc.REWRITE_PROMPT
+    assert "{vp_format}" in vc.SCRIPT_PROMPT
+    # 直传提示词是 f-string,规格已经插进去了(查内容而不是查占位符名)
+    assert "行首**必须重复一次 @场景名**" in vc.UNDERSTAND_PROMPT
+    import inspect
+    assert "VIDEO_PROMPT_FORMAT" in inspect.getsource(vc.analyze_reference)
+
+
+def test_video_prompt_format_marks_only_bound_assets():
+    """@ 只标注**本镜绑定**的资产 —— 绑定决定参考图,@名是模型对上参考图的抓手。"""
+    assert "characters / props / scene" in vc.VIDEO_PROMPT_FORMAT
+    assert "没绑定的资产不要出现在 @ 里" in vc.VIDEO_PROMPT_FORMAT
+
+
+def test_narration_is_part_of_script_fields():
+    """脚本是四段:分镜描述/氛围/视频提示词/旁白(视频解说)。"""
+    assert "narration" in vc.SCRIPT_FIELDS
+    s = vc._normalize_shot({"shot_type": "中景", "narration": "这一段在讲产品"},
+                           1)
+    assert s["narration"] == "这一段在讲产品"
+
+
+def test_rewrite_also_rewrites_narration(monkeypatch):
+    """按新产品改写时旁白也要改 —— 原片旁白夸的是旧产品。"""
+    import json
+    payload = {"storyboards": [{
+        "number": 1, "action": "举起玉镯", "action_steps": ["托住玉镯"],
+        "product_use": "玉镯呈现", "prompt": "0-4秒:展示玉镯",
+        "description": "【镜头1】举起玉镯", "atmosphere": "冷调侧光",
+        "video_prompt": "出场人物：@出镜人物。场景：@主场景",
+        "narration": "这枚玉镯温润又油光"}]}
+    monkeypatch.setattr(vc.text_client, "chat",
+                        _fake_chat(json.dumps(payload, ensure_ascii=False)))
+    out = vc.rewrite_boards_for_product(_BOARDS, "玉镯", assets="已知资产")
+    assert out[0]["narration"] == "这枚玉镯温润又油光"
+
+
+def test_shots_and_narrations_stay_aligned(tmp_path, monkeypatch):
+    """旁白必须与镜头视频**一一对应** —— 只按「有视频的镜」取,
+    否则第 2 镜的旁白会混到第 1 镜的画面上(听起来就是串台)。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    v1 = tmp_path / "v1.mp4"
+    v1.write_bytes(b"v")
+    v2 = tmp_path / "v2.mp4"
+    v2.write_bytes(b"v")
+    a2 = tmp_path / "a2.mp3"
+    a2.write_bytes(b"a")
+    boards = [
+        {"number": 1, "video": str(v1)},                       # 有视频,没旁白
+        {"number": 2, "video": str(v2), "narration_audio_url": str(a2)},
+        {"number": 3, "narration_audio_url": str(a2)},        # 没视频,不参与
+    ]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+    shots, narrs = vc.clone_shots_with_narrations(801)
+    assert len(shots) == len(narrs) == 2
+    assert shots[0] == v1 and narrs[0] is None
+    assert shots[1] == v2 and narrs[1] == a2
+
+
+def test_synth_shot_narration_stores_audio_on_board(tmp_path, monkeypatch):
+    """合成旁白后音频 URL 按镜号存回分镜条目(合片时混音要用)。"""
+    import json
+    _db = _tmp_db(tmp_path, monkeypatch)
+    static = tmp_path / "static"
+    static.mkdir()
+    monkeypatch.setattr(_db.config, "STATIC_DIR", static)
+    boards = [{"number": 1, "start": 0, "end": 4,
+               "narration": "这枚玉镯温润又油光"}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+
+    def _fake_synth(text, **kw):
+        out = tmp_path / "n.mp3"
+        out.write_bytes(b"mp3")
+        _fake_synth.text = text
+        return out
+
+    monkeypatch.setattr(vc.tts_client, "synthesize", _fake_synth)
+    p = vc.synth_shot_narration(801, 1)
+    assert p.exists()
+    assert _fake_synth.text == "这枚玉镯温润又油光"
+    meta = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"],
+                     {})["clone"]
+    b = meta["storyboards"][0]
+    assert b.get("narration_audio_url"), "旁白音频未落库"
+    assert b.get("narration_voice")
+
+
+def test_synth_shot_narration_falls_back_to_line():
+    """脚本没写旁白时,退回 line 里的「推测口播」引号内容。"""
+    import json
+    import tempfile
+    from pathlib import Path as _P
+    tmp = _P(tempfile.mkdtemp())
+    from app.core import db as _db
+    _db.config.DB_PATH = tmp / "n.sqlite3"
+    if getattr(_db._local, "conn", None) is not None:
+        _db._local.conn.close()
+    _db._local.conn = None
+    _db.init_db()
+    ts = _db.now()
+    _db.ex("INSERT INTO dramas(id,title,work_type,style,status,created_at,updated_at)"
+           " VALUES(?,?,?,?,?,?,?)", (899, "T", "video_clone", "", "pending", ts, ts))
+    boards = [{"number": 1, "start": 0, "end": 4,
+               "line": '无清晰可辨口播;推测口播: "看这枚玉镯,圆润又油光。"'}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 899))
+
+    def _fake_synth(text, **kw):
+        out = tmp / "n.mp3"
+        out.write_bytes(b"mp3")
+        _fake_synth.text = text
+        return out
+
+    vc.tts_client.synthesize = _fake_synth
+    try:
+        vc.synth_shot_narration(899, 1)
+    finally:
+        vc.tts_client.synthesize = getattr(vc.tts_client, "synthesize")
+    assert "圆润又油光" in _fake_synth.text
+
+
+def test_clone_script_dialog_has_four_sections_with_actions(tmp_path, monkeypatch,
+                                                             qapp_stub):
+    """「镜头脚本」弹窗要与小说线检查器同款:四段标题 + 视频提示词头的
+    「AI 生成」+ 旁白头的「🔊 合成配音」。"""
+    import json
+    from PySide6.QtWidgets import QDialog, QPushButton, QTextEdit
+    from app.ui.main_window import ClonePage
+    _db = _tmp_db(tmp_path, monkeypatch)
+    boards = [{"number": 1, "start": 0, "end": 4, "shot": "中景",
+               "description": "【镜头1】固定中景",
+               "atmosphere": "冷调",
+               "video_prompt": "出场人物：@出镜人物。场景：@主场景",
+               "narration": "这枚玉镯温润又油光"}]
+    _db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+           (json.dumps({"clone": {"storyboards": boards}}, ensure_ascii=False), 801))
+    page = ClonePage()
+    page.load(801)
+    grabbed = {}
+    orig = QDialog.exec
+
+    def _exec(self_):
+        self_.resize(820, 760)
+        self_.show()
+        qapp_stub.processEvents()
+        grabbed["buttons"] = [b.text() for b in self_.findChildren(QPushButton)]
+        grabbed["edits"] = len(self_.findChildren(QTextEdit))
+        return QDialog.Rejected
+
+    QDialog.exec = _exec
+    try:
+        page._shot_script(1)
+    finally:
+        QDialog.exec = orig
+    assert grabbed["edits"] == 4, f"弹窗应有 4 段文本框,实得 {grabbed['edits']}"
+    assert any("AI" in t for t in grabbed["buttons"]), "视频提示词段缺「AI 生成」"
+    assert any("配音" in t for t in grabbed["buttons"]), "旁白段缺「合成配音」"

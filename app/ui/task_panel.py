@@ -40,6 +40,9 @@ TASK_TYPE_LABEL = {
     "clone_turnaround": "克隆 · 重建三视图",
     "clone_faceswap": "克隆 · 换脸",
     "clone_scene": "克隆 · 提取场景图",
+    "clone_script": "克隆 · 重写镜头脚本",
+    "clone_prompt": "克隆 · AI 生成视频提示词",
+    "tts": "配音 · 合成旁白",
     "clone_redraw_all": "克隆 · 一键重绘",
     "clone_merge": "克隆 · 合并成片",
 }

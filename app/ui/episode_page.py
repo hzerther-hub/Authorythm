@@ -2154,11 +2154,17 @@ class EpisodePage(QWidget):
                 # 工作线程只改共享变量;UI 刷新交给已有的浮窗心跳(_tick_merge_elapsed 类),
                 # 这里不能 QMetaObject 跨线程碰 UI —— 页面被切换/重建后 C++ 对象已删,会炸
                 self._batch_done = done
+            # tid 透传:审校流程把 writing/reviewing/jev_gate/ledger 写进批量任务
+            # 的 sys_task.params.stage。此前批量从不写 stage,进度面板永远卡在
+            # 「准备中… 正在启动模型」,用户以为批量坏了(实测截图),其实在慢慢写。
+            def on_stage(stage: str):
+                TM.set_stage(tid, stage)
             return novel_pipe.batch_write_chapters(
                 self.drama_id, episode_ids, force=force,
                 config_id=self.text_model.currentData(),
                 lang=getattr(self, "_drama_lang", None),
-                on_progress=on_progress)
+                on_progress=on_progress,
+                task_id=tid)
         def done(tid, result, error):
             self._novel_in_flight = False
             if getattr(self, "batch_btn", None):
@@ -2190,10 +2196,19 @@ class EpisodePage(QWidget):
         self._run_batch([e["id"] for e in eps], force=True)
 
     def _chapter_running_stage(self, ep_id: int) -> str:
-        """该集当前生成阶段(来自 sys_task.params.stage)。"""
+        """该集当前生成阶段(来自 sys_task.params.stage)。
+
+        批量写章是**一条** novel_batch 任务写多集,sys_task.episode_id 只记提交时
+        的那一集 —— 批内的其它集查不到,面板会永远显示「准备中」。兜底:该集在
+        批量名单里且有本书的 novel_batch 在跑,就返回批量任务自身的阶段。
+        """
         from ..core import taskmgr as TM
         row = db.q1("""SELECT id FROM sys_task WHERE episode_id=? AND status='processing'
                       ORDER BY id DESC LIMIT 1""", (ep_id,))
+        if not row and ep_id in (getattr(self, "_batch_ids", None) or []):
+            row = db.q1("""SELECT id FROM sys_task WHERE type='novel_batch' AND drama_id=?
+                          AND status='processing' ORDER BY id DESC LIMIT 1""",
+                        (self.drama_id,))
         return TM.get_stage(row["id"]) if row else ""
 
     def _review_issues(self) -> list:
