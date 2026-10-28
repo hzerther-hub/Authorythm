@@ -222,14 +222,15 @@ def read_presenter_desc(presenter_path: str | Path,
     if not p.exists():
         return None
     mime = "image/png" if p.suffix.lower() == ".png" else "image/jpeg"
-    prompt = """这张照片是一个带货视频里要出镜的真人模特。请只描述**这个人的长相**,
+    prompt = """这张照片是一个带货视频里要出镜的真人模特。请只描述**这个人的长相与穿着**,
 **完全忽略背景、灯光、道具、画面氛围**,输出 JSON:
 {
- "appearance": "外观:性别年龄、脸型、五官特征、肤色、发型发色(30字内)"
+ "appearance": "外观:性别年龄、脸型、五官特征、肤色、发型发色(30字内)",
+ "styling": "服装:款式、颜色、材质、配饰(40字内)"
 }
 要求:
-1. 只写照片里**真实可见**的头部与体貌特征,**不要臆造**;
-2. **不要描述服装/配饰/鞋履** —— 复刻的着装跟原片分镜走,与出镜照无关;
+1. 只写照片里**真实可见**的头部、体貌与穿着特征,**不要臆造**;
+2. 服装按照片**如实描述**(款式/颜色/材质)—— 换照后服装一致性靠它锁定;
 3. 不要写背景描述。"""
     try:
         raw = text_client.chat(prompt, temperature=0.3, max_tokens=1024,
@@ -237,9 +238,12 @@ def read_presenter_desc(presenter_path: str | Path,
                                image_urls=[_image_data_url(p, mime)])
         data = runner.extract_json(raw) or {}
         app_ = str(data.get("appearance") or "").strip()
-        # **只回长相**:服装/配饰不取出镜照(用户要求)—— 复刻的着装跟原片
-        # 分镜文案走,锁定到照片衣服反而让成片服装跟原片对不上。
-        return {"appearance": app_} if app_ else None
+        # 服装一并返回(2026-10-28 用户定版反转:着装跟**出镜照**走,不再跟
+        # 原片 —— 服装文字锚靠它锁定三视图与首帧的服装一致性)。
+        sty = " ".join(str(data.get("styling") or "").split())
+        if not app_:
+            return None
+        return {"appearance": app_, "styling": sty}
     except Exception as exc:  # noqa: BLE001
         print(f"[clone] 人物描述提取失败: {exc}", flush=True)
         return None
@@ -1107,15 +1111,18 @@ def sync_assets(drama_id: int,
         desc = read_presenter_desc(presenter, config_id=_selected_text_cfg())
         if desc:
             clone["presenter_desc"] = desc.get("appearance") or ""
-            clone.pop("presenter_styling", None)   # 出镜照不提供服装描述(用户要求)
+            # 服装跟出镜照走(2026-10-28 用户定版,反转旧决策):新照的穿着
+            # 写进 styling,三视图与首帧的服装文字锚都读它。
+            clone["presenter_styling"] = desc.get("styling") or ""
             # 新照片的描述必须写回角色行,否则详情弹窗还显示上一张照的样貌/妆造
             # (实测:换成白毛衣自拍照后,妆造仍写「黑色细肩带上装」,与三视图
             # 服装对不上)。妆造清空(出镜照不提供服装描述);最终提示词一并作废
             # —— 它描述的还是旧照片,由 refresh_clone_prompts 按新字段重生成。
             if cid:
-                db.ex("UPDATE characters SET appearance=?, styling='', "
+                db.ex("UPDATE characters SET appearance=?, styling=?, "
                       "final_prompt='', updated_at=? WHERE id=?",
-                      (clone["presenter_desc"], db.now(), cid))
+                      (clone["presenter_desc"], clone.get("presenter_styling") or "",
+                       db.now(), cid))
     # 角色资产 = **三视图**(正脸特写 + 正面/侧面/背面)+ 生成后立刻换脸 —— 用户定版:
     # 复刻不要全身像。此前「单人全身像当分镜参考」的路线(纯文字底图 + 换脸)实测
     # 两个致命伤,正是用户抱怨的「首帧的人跟三视图不是同一人 / 衣服变了」:
@@ -1583,7 +1590,8 @@ def _erase_subjects_from_frame(frame: Path, out: Path,
 
 
 def extract_scene_anchor(drama_id: int, config_id: int | None = None,
-                         text_cfg_id: int | None = None) -> bool:
+                         text_cfg_id: int | None = None,
+                         on_stage=None) -> bool:
     """从**原视频**提取场景锚:挑代表帧 → 多模态描述环境 → 生成同机位空景图。
 
     为什么必须在分析阶段就锁场景(用户实测痛点:「要拍出原视频的背景,
@@ -1610,6 +1618,8 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             frames = extract_frames(ref, count=8)
             clone["frames_dir"] = str(frames[0].parent)
         dur = _duration(ref)
+        if on_stage:
+            on_stage("挑帧中(把抽帧发给模型选景)…")
         raw = text_client.chat(
             SCENE_PICK_PROMPT.format(n=len(frames), dur=dur),
             system="你是影视美术指导,负责在原片里锁定拍摄环境。只输出 JSON。",
@@ -1636,8 +1646,9 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
                 "no silhouettes, no mannequins, no product, "
                 "no text, no watermark. 场景:" + prompt)
         if style:
-            # 空景图与首帧同画风:首帧生成时拿它当参考,不用自己跨风格翻译
-            body += f"。渲染风格严格参照:{style}"
+            # 空景图与首帧同画风,但**只取镜头/光影类短语** —— 整段角色风格
+            # 照搬会把「皮肤质感/演员形象」喂进来,空景生成出人脸(实测)。
+            body += f"。渲染风格严格参照:{scene_style_phrase(style)}"
 
         # ── 候选帧循环(2026-10-28 用户定版「场景不要保留参考视频的产品」)──
         # 每个候选帧走「cv2 抹原产品 → 生图(people=0)→ 内容门(人/商品残留
@@ -1681,7 +1692,9 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
         clean_any = False
         _final_name = f"clone_scene_{drama_id}.png"
         _cand_name = f"clone_scene_{drama_id}_cand.png"
+        _i2 = 0
         for cand in candidates:
+            _i2 += 1
             _ref_frame = cand
             _nosubj = cand.with_name(cand.stem + "_nosubj.jpg")
             if _erase_subjects_from_frame(cand, _nosubj,
@@ -1689,6 +1702,8 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
                 _ref_frame = _nosubj
                 print(f"[clone] 场景帧已抹除商品/人物: {_nosubj.name}", flush=True)
             clean = False
+            if on_stage:
+                on_stage(f"生成空景(候选帧 {cand.name},{len(candidates)} 选第 {_i2} 组)…")
             for attempt in (1, 2, 3):
                 try:
                     # 写**候选文件**,通过内容门才覆盖正式场景图 —— 曾直接写正式名,
@@ -1727,11 +1742,13 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             # (干净 > 对齐)。
             print("[clone] 候选帧全部失败 → 退回纯文字空景(不带参考帧)",
                   flush=True)
+            if on_stage:
+                on_stage("候选帧全不干净,退回纯文字生成…")
             _txt_body = ("An empty establishing shot of this location, wide view: "
                          + prompt + ". No people, no hands, no silhouettes, "
                          "no products, no packaging, no text, no watermark.")
             if style:
-                _txt_body += f"。渲染风格严格参照:{style}"
+                _txt_body += f"。渲染风格严格参照:{scene_style_phrase(style)}"
             for attempt in (1, 2):
                 try:
                     out, _ = image_client.generate_image(
@@ -1940,6 +1957,26 @@ def _pick_ref_kind(shot_text: str, shot: str = "") -> str:
     if any(w in t for w in weak_product):
         return "product"
     return "presenter"          # 判断不了 → 以人物为锚(人物图信息量更大)
+
+
+def scene_style_phrase(style_prompt: str) -> str:
+    """空景图专用的风格短语:从项目风格里**剔除诱导画人的短句**。
+
+    整段角色风格照搬会把「皮肤质感/演员形象/人体比例/发型」喂给模型 ——
+    实测纯空房生成出一张人脸(用户实测截图)。空景只需要镜头/光影/质感;
+    剔完全空则回退一句通用写实摄影底。
+    """
+    import re as _re
+    t = str(style_prompt or "")
+    if not t.strip():
+        return ""
+    segs = [s.strip(" ,;、。") for s in _re.split(r"[,;、。]", t)]
+    human = _re.compile(r"skin|anatomy|actor|actress|hair|wardrobe|person|people|face|"
+                        r"人体|皮肤|演员|发型|服装|人物|脸|五官", _re.I)
+    keep = [s for s in segs if s and not human.search(s)]
+    return (", ".join(keep) if keep
+            else "ultra-realistic cinematic live-action photography, "
+                 "professional film lighting")
 
 
 def _people_count_check_enabled() -> bool:

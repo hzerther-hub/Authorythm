@@ -2237,6 +2237,99 @@ class ClonePage(QWidget):
             "character" if kind == "presenter" else "prop", row["id"],
             show_turnaround=False, on_upload=_sync_upload if kind == "presenter" else None)
 
+    def _regen_scene_from_detail(self, dlg=None):
+        """场景详情「重新生成场景图」:**纯文字**生成,不挑帧不发 8 图。
+
+        弹窗里的地点/描述/光照就是完整契约(用户可先编辑再生成本)。
+        people=0 强守卫 + 人数自检(>1 人自动重试一次);写候选文件,
+        通过自检才覆盖正式场景图。原「挑帧→抹人→图生图」整链只在
+        「提取场景图/检测参数」时跑。
+        """
+        from ..pipeline import video_clone
+        from ..core import taskmgr as TM
+        import shutil
+        import uuid
+        # 在 UI 线程先快照弹窗字段(worker 线程绝不碰 Qt 控件)
+        loc = dlg.location.text() if dlg is not None and hasattr(dlg, "location") else ""
+        light = dlg.lighting.toPlainText() if dlg is not None and hasattr(dlg, "lighting") else ""
+        desc = dlg.desc.toPlainText() if dlg is not None and hasattr(dlg, "desc") else ""
+        style = db.q1("SELECT style FROM dramas WHERE id=?", (self.drama_id,))
+        style_prompt = db.style_prompt((style["style"] if style else "") or "")
+        cfg_id = self._clone_image_cfg()
+
+        def job(tid):
+            parts = [f"Location: {loc}" if loc else "",
+                     f"Scene: {desc}" if desc else "",
+                     f"Lighting: {light}" if light else ""]
+            scene_cn = "；".join(x for x in (loc, desc, light) if x)
+            # 场景类型**从字段数据推导**(卧室/室内等关键词 → indoor 强化):
+            # 实测 agnes 单次会把卧室抽风成户外庭院,开头定调 + 结尾复述双向钉住。
+            _indoor_kw = ("卧室", "室内", "房间", "公寓", "客厅", "厨房",
+                          "书房", "办公室", "演播室", "咖啡", "店铺")
+            _prefix = ("An empty INDOOR establishing shot of this location"
+                       if any(w in scene_cn for w in _indoor_kw)
+                       else "An empty establishing shot of this location")
+            body = (f"{_prefix}, wide view: "
+                    + "；".join(x for x in parts if x)
+                    + ". No people, no hands, no silhouettes, no products, "
+                    "no packaging, no text, no watermark.")
+            if scene_cn:
+                body += f"。场景元素(必须全部体现):{scene_cn}"
+            if style_prompt:
+                # 空景专用净化短语:整段角色风格含「皮肤质感/演员形象」,
+                # 实测诱导模型在空房里画出人脸(用户实测截图)。
+                body += f"。渲染风格严格参照:{video_clone.scene_style_phrase(style_prompt)}"
+            best, best_n = None, 99
+            for _attempt in (1, 2):
+                out, _ = video_clone.image_client.generate_image(
+                    body, out_name=f"clone_scene_{self.drama_id}_cand.png",
+                    config_id=cfg_id, reference_images=None, people=0,
+                    skip_guard=False, reference_lock=False)
+                n = video_clone._count_people_in_image(out)
+                if n is None or n == 0:
+                    best, best_n = out, (n if n is not None else 0)
+                    break
+                if best is None or n < best_n:
+                    best, best_n = out, n
+            if best is None:
+                raise RuntimeError("场景图生成失败")
+            if best_n > 0:
+                print(f"[clone] 场景重生成人数={best_n},已选人数最少的一张", flush=True)
+            _final = (video_clone.config.STATIC_DIR / "images" /
+                      f"clone_scene_{self.drama_id}.png")
+            _final.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(best, _final)
+            meta = video_clone._meta(self.drama_id)
+            clone = meta.setdefault("clone", {})
+            clone["scene_image"] = str(_final)
+            if loc:
+                clone["scene_location"] = loc
+            if light:
+                clone["scene_lighting"] = light
+            meta["clone"] = clone
+            video_clone._save_meta(self.drama_id, meta)
+            sid = clone.get("scene_asset_id")
+            if sid:
+                TM.set_stage(tid, "scene_row")
+                db.ex("UPDATE scenes SET image_url=?, updated_at=? WHERE id=?",
+                      (video_clone.config.path_to_media_url(_final), db.now(), sid))
+            return {"people": best_n}
+
+        def done(tid, result, error):
+            from PySide6.QtWidgets import QApplication
+            m = QApplication.activeModalWidget()
+            if m is not None:
+                m.accept()
+            if error:
+                err(tr("场景图重新生成失败:") + str(error)[:160])
+                self.reload()
+                return
+            self.reload()
+            ok(tr("场景图已重新生成"))
+
+        TASKMGR.submit("clone_scene", job, done, drama_id=self.drama_id,
+                       episode_id=self._clone_episode_id())
+
     def _replace_material_from_popup(self, kind: str):
         """详情弹窗里的「替换图片」:先关弹窗再走页面上的替换流程。"""
         from PySide6.QtWidgets import QApplication
@@ -2309,6 +2402,11 @@ class ClonePage(QWidget):
         # (自动刷新描述、重写分镜文案 —— 与工具条上两个替换按钮同一条路)。
         # 弹窗内「上传」则经 on_upload 同步业务源(见 _open_material_detail);
         # 三视图参考行入口不加 —— 那里的动作是「手动换脸」,替原料会造成误会。
+        if kind == "scene":
+            # 场景详情:重跑无人空景提取(挑帧→抹人→生成→内容门),带全部防线。
+            extra.append(("♻ " + tr("重新生成场景图"),
+                          tr("重新生成场景图"),
+                          (lambda d=None: self._regen_scene_from_detail(d))))
         if not show_turnaround:
             extra.append(("🔁 " + tr("替换图片"),
                           tr("上传新照片替换,自动刷新描述与分镜"),

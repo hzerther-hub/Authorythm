@@ -477,19 +477,26 @@ def test_turnaround_prompt_follows_project_style():
     assert "标准参考图" in src
 
 
-def test_read_presenter_desc_extracts_look_only():
-    """出镜照提取**只取长相**,不提取服装/配饰/鞋履(用户要求:
-    「出镜照不要有服装形象的描述」「环境描写也不要出现,用参考图就行」)。
+def test_read_presenter_desc_extracts_look_and_outfit(tmp_path, monkeypatch):
+    """出镜照提取**长相 + 服装**(2026-10-28 用户定版反转:着装跟出镜照走)。
 
-    复刻的着装跟原片分镜文案走;把出镜照的衣服写成文字锁,成片服装反而
-    与原片对不上。旧版提取 footwear/styling 字段,已随该决策移除。
+    旧决策「只取长相」让三视图/首帧的服装自由发挥(白毛衣→青蓝套装实测);
+    服装文字锚需要 styling,提取必须一并返回。背景/氛围仍然禁止。
     """
-    import inspect
-    src = inspect.getsource(vc.read_presenter_desc)
-    assert "appearance" in src, "长相提取缺失"
-    # 返回值只有长相;styling/footwear 字段已随决策删除(pop 清理旧键不算)
-    assert 'return {"appearance": app_} if app_ else None' in src
-    assert "不要描述服装" in src, "提示词应显式禁止描述服装"
+    import json
+    presenter = tmp_path / "presenter.jpg"
+    presenter.write_bytes(b"fake-jpeg")
+
+    def _fake_chat(prompt, **kw):
+        assert "styling" in prompt, "提示词应要求服装描述"
+        assert "不要写背景描述" in prompt, "仍要禁止背景描述"
+        return json.dumps({"appearance": "约二十岁女性,鹅蛋脸,棕发低扎",
+                           "styling": "米白色圆领针织短袖,深色长裤"})
+
+    monkeypatch.setattr(vc.text_client, "chat", _fake_chat)
+    desc = vc.read_presenter_desc(presenter)
+    assert desc and desc.get("appearance") == "约二十岁女性,鹅蛋脸,棕发低扎"
+    assert desc.get("styling") == "米白色圆领针织短袖,深色长裤"
 
 
 def _tmp_db(tmp_path, monkeypatch, work_type: str = "video_clone", style: str = ""):

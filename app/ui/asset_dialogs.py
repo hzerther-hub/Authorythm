@@ -910,6 +910,13 @@ class AssetDetailDialog(QDialog):
             self.desc = QPlainTextEdit(row.get("description") or "")
             f.addRow(tr("外貌"), self.desc)
         right.addLayout(f)
+        # 角色:一键「按图片重新描述」—— 换图后样貌/妆造/最终提示词容易过期,
+        # 点一下用**当前展示图**重读全部文字描述(用户要求「点一下重新描述」)。
+        if kind == "character":
+            self._redesc_btn = QPushButton("📷 " + tr("按图片重新描述"))
+            self._redesc_btn.setToolTip(tr("用当前图片重读样貌与服装,并重新生成最终提示词"))
+            self._redesc_btn.clicked.connect(self._redescribe_from_image)
+            right.addWidget(self._redesc_btn)
         right.addStretch(1)
         body.addLayout(right, 1)
         root.addLayout(body, 1)
@@ -1113,6 +1120,63 @@ class AssetDetailDialog(QDialog):
         if self._on_changed:
             self._on_changed()
         self.accept()
+
+    def _redescribe_from_image(self):
+        """按当前展示图重读样貌/妆造,并重新生成最终提示词(一键,用户要求)。
+
+        写回角色行(styling 不再清空 —— 服装跟出镜照走)后同步刷新编辑框与
+        最终提示词面板;换服装/换发型后点这一下,三视图与首帧的描述即对齐。
+        """
+        from ..core.taskmgr import TASKMGR
+        from .toast import err, ok
+        url = (getattr(self, "_cover_url", "") or (self.row.get("image_url") or ""))
+        from ..core import config as _cfg
+        try:
+            p = (_cfg.media_url_to_path(url)
+                 if str(url).startswith(("/static/", "static/"))
+                 else pathlib.Path(url))
+        except Exception:
+            p = None
+        if not p or not pathlib.Path(str(p)).exists():
+            err(tr("source_not_found"))
+            return
+        btn = getattr(self, "_redesc_btn", None)
+        if btn is not None:
+            btn.setEnabled(False)
+            btn.setText(tr("正在按图片重新描述样貌与服装…"))
+
+        def job(tid):
+            from ..pipeline import video_clone
+            from ..pipeline import prompts_gen
+            desc = video_clone.read_presenter_desc(p)
+            if not desc:
+                raise RuntimeError("模型未返回描述")
+            db.ex("UPDATE characters SET appearance=?, styling=?, updated_at=? WHERE id=?",
+                  (desc.get("appearance") or "", desc.get("styling") or "",
+                   db.now(), self.row["id"]))
+            prompts_gen.character_prompt(self.row["id"])
+            d2 = db.q1("SELECT appearance, styling, final_prompt FROM characters WHERE id=?",
+                       (self.row["id"],))
+            return dict(d2)
+
+        def done(tid, result, error):
+            if btn is not None:
+                btn.setEnabled(True)
+                btn.setText("📷 " + tr("按图片重新描述"))
+            if error:
+                err(tr("按图片重新描述") + "失败: " + str(error)[:160])
+                return
+            r = result or {}
+            self.appearance.setPlainText(r.get("appearance") or "")
+            self.styling.setPlainText(r.get("styling") or "")
+            self.row["appearance"], self.row["styling"] = (r.get("appearance") or "",
+                                                           r.get("styling") or "")
+            self.fp.setPlainText(r.get("final_prompt") or "")
+            ok(tr("已按图片重新描述并更新提示词"))
+            if self._on_changed:
+                self._on_changed()
+
+        TASKMGR.submit("prompt", job, done)
 
     def _copy_prompt(self):
         from PySide6.QtWidgets import QApplication

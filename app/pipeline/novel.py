@@ -1843,7 +1843,14 @@ def gen_chapter_title(episode_id: int, config_id: int | None = None,
     parts.append("只输出章节名本身(一行纯文本,不要引号、书名号、前缀和任何解释)。")
     raw = runner.run_agent("novel_writer", "\n".join(parts), lang=lang,
                            config_id=config_id or prose_config_id())
-    name = _clean_chapter_name(raw)
+    # 推理型模型(MiniMax-M3/glm)先吐 <think>…</think> 再给标题。run_agent
+    # 不剥块(剥逻辑在 extract_json 里),_clean_chapter_name 拿到的是整段
+    # 思考,长度规则必然判废 —— 实测报「AI 未返回有效章节名」,而标题
+    # 「B37归我」就躺在 </think> 后面(2026-10-29 EP92 实测)。
+    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
+    if "<think>" in raw:                      # 未闭合的尾巴:取 think 之后的内容
+        raw = raw.rsplit("<think>", 1)[-1]
+    name = _clean_chapter_name(raw.strip())
     if not name:
         raise RuntimeError("AI 未返回有效章节名,请重试")
     _apply_chapter_title(ep, name)

@@ -216,8 +216,12 @@ class _BatchProgressDialog(QDialog):
         ids = getattr(self.page, "_batch_ids", []) or []
         cur = next((i for i in ids if self.page._chapter_running_stage(i)), None)
         if cur:
+            # cur 是**集 id**;要显示的是这一集的当前阶段(如「写正文」),
+            # 之前错把 id 当阶段格式化,面板出现过「当前阶段:93」(实测截图)。
+            stage = self.page._chapter_running_stage(cur) or ""
             self.stage_lab.setText(
-                tr('当前阶段:{}').format(tr(STAGE_CN.get(cur, cur))))
+                tr('当前阶段:{}').format(
+                    f"第 {cur} 集 · " + tr(STAGE_CN.get(stage, stage))))
             return
         # 没有 processing 任务时不留白:给出明确的下一步,否则「空标签」和
         # 「卡住了」在界面上长得一模一样
