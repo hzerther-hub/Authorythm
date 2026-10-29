@@ -1448,6 +1448,21 @@ class EpisodePage(QWidget):
         self.ledger_btn.setToolTip(tr("state_ledger_tip"))
         self.ledger_btn.clicked.connect(self._update_ledger)
         b2.addWidget(self.ledger_btn)
+        # 写作区字体/字号(用户要求「写小说转剧本时加字体及字号设置」):
+        # 只作用于原始内容/转剧本两个编辑器,存设置表跨会话生效。
+        from PySide6.QtWidgets import QFontComboBox
+        self.ed_font_combo = QFontComboBox()
+        self.ed_font_combo.setFixedWidth(150)
+        self.ed_font_combo.setToolTip(tr("写作区字体"))
+        self.ed_size_combo = QComboBox()
+        self.ed_size_combo.setFixedWidth(56)
+        self.ed_size_combo.addItems(["12", "13", "14", "16", "18", "20", "22", "24"])
+        self.ed_size_combo.setToolTip(tr("写作区字号"))
+        self.ed_font_combo.currentFontChanged.connect(self._on_editor_font_changed)
+        self.ed_size_combo.currentTextChanged.connect(self._on_editor_size_changed)
+        b2.addWidget(self.ed_font_combo)
+        b2.addWidget(self.ed_size_combo)
+        self._init_editor_font_controls()
         self.edit_instr = QLineEdit()
         self.edit_instr.setPlaceholderText(tr("edit_instr_ph"))
         edit_btn = QPushButton("✏ " + tr("edit_chapter"))
@@ -1457,6 +1472,50 @@ class EpisodePage(QWidget):
         b2.addWidget(edit_btn)
         lay.addWidget(bar2)
         self._update_raw_count()
+
+    def _init_editor_font_controls(self):
+        """把设置表里保存的字体/字号回填到下拉并应用。"""
+        from ..core import db as _db
+        from PySide6.QtGui import QFont, QFontDatabase
+        fam = _db.get_setting("yihao.editor_font", "")
+        size = _db.get_setting("yihao.editor_font_size", "")
+        try:
+            if fam and fam in QFontDatabase.families():
+                self.ed_font_combo.setCurrentFont(QFont(fam))
+        except Exception:  # noqa: BLE001
+            pass
+        if str(size).strip().isdigit():
+            i = self.ed_size_combo.findText(str(int(size)))
+            if i >= 0:
+                self.ed_size_combo.setCurrentIndex(i)
+        self._apply_editor_font()
+
+    def _on_editor_font_changed(self, font):
+        from ..core import db as _db
+        _db.set_setting("yihao.editor_font", font.family())
+        self._apply_editor_font()
+
+    def _on_editor_size_changed(self, size: str):
+        from ..core import db as _db
+        if str(size).strip().isdigit():
+            _db.set_setting("yihao.editor_font_size", str(int(size)))
+        self._apply_editor_font()
+
+    def _apply_editor_font(self):
+        """字体/字号应用到原始内容与转剧本两个编辑器(仅写作区,不动全局)。"""
+        from ..core import db as _db
+        fam = _db.get_setting("yihao.editor_font", "")
+        size = int(_db.get_setting("yihao.editor_font_size", "0") or 0)
+        for ed in (getattr(self, "raw_edit", None),
+                   getattr(self, "script_edit", None)):
+            if ed is None:
+                continue
+            f = ed.font()
+            if fam:
+                f.setFamily(fam)
+            if size:
+                f.setPointSize(size)
+            ed.setFont(f)
 
     def _step_indicator(self, num: str, name: str) -> QWidget:
         """步骤指示器:方块序号 + 名称(对齐 .step-indicator)。"""
@@ -2038,6 +2097,22 @@ class EpisodePage(QWidget):
                 err(tr("重写 {n} 轮仍未产出正文,请重试或换个模型").format(
                     n=r.get("cycles") or 3))
                 return
+            # 单章生成与批量同待遇:写完自动小说体改造(已是小说体自动跳过)。
+            # 失败保留脚本体并提示,不阻断(与批量同口径)。
+            def _convert_job(tid2):
+                from ..pipeline import novel as _np
+                return _np.convert_chapter_to_prose(
+                    self.episode_id, lang=getattr(self, "_drama_lang", None))
+
+            def _convert_done(tid2, cres, cerr):
+                if cerr or not (cres or {}).get("converted"):
+                    return                      # 已是小说体/失败 → 静默保留
+                self._reload_raw()
+                ok(tr("已自动转换为小说体({}→{} 字)").format(
+                    cres.get("before", 0), cres.get("after", 0)))
+
+            TASKMGR.submit("novel_edit", _convert_job, _convert_done,
+                           episode_id=self.episode_id, drama_id=self.drama_id)
             msg = tr("本章已生成") + (tr(";审校发现问题并已自动修复一轮 ✅") if r.get("fixed") else "")
             QMessageBox.information(self, tr("ai_novel"), msg)
 
@@ -2542,6 +2617,7 @@ class EpisodePage(QWidget):
         lay.addWidget(self.rewrite_loading)
 
         self.script_edit = C.chapter_editor()
+        self._apply_editor_font()
         self.script_edit.setPlaceholderText(tr("script_ph"))
         self.script_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.script_edit.setFillHeight(True)   # 同 raw:撑满,不留上下空带
