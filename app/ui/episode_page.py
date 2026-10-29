@@ -1516,6 +1516,9 @@ class EpisodePage(QWidget):
             if size:
                 f.setPointSize(size)
             ed.setFont(f)
+            # QPlainTextEdit 的正文按 **document 默认字体** 渲染,widget 字体
+            # 只影响行距/边距 —— 不设 document 字体,选了也看不见(实测:楷体 14 不生效)。
+            ed.document().setDefaultFont(f)
 
     def _step_indicator(self, num: str, name: str) -> QWidget:
         """步骤指示器:方块序号 + 名称(对齐 .step-indicator)。"""
