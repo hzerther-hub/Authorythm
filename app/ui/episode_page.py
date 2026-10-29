@@ -765,6 +765,8 @@ class EpisodePage(QWidget):
     # ── 数据加载 ──
     def load(self, drama_id: int, episode_id: int):
         self.drama_id, self.episode_id = drama_id, episode_id
+        # 换集即刷新改造次数标签(旧值是构建时那一集的,不刷新会串集)
+        self._update_prose_label()
         d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
         ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
         self._drama, self._ep = d, ep
@@ -1326,6 +1328,13 @@ class EpisodePage(QWidget):
         self.novel_plan_btn.setToolTip(tr("novel_settings_tip"))
         self.novel_plan_btn.clicked.connect(self._open_plan)
         row.addWidget(self.novel_plan_btn)
+        # 小说体改造:脚本体章节 → 叙述性正文(发布用,平台 AIGC 检测敏感项)
+        self.prose_btn = WaitingButton("📖 " + tr("小说体改造"))
+        W.set_icon(self.prose_btn, "doc")
+        self.prose_btn.setToolTip(tr("把当前章的剧本格式改写成小说叙述正文(事实与对白原样保留)"))
+        self.prose_btn.clicked.connect(self._convert_to_prose)
+        row.addWidget(self.prose_btn)
+        self._update_prose_label()
         self.batch_btn = WaitingButton("📋 " + tr("batch_write"))
         W.set_icon(self.batch_btn, "list")
         self.batch_btn.setToolTip(tr("batch_write_tip"))
@@ -1601,6 +1610,63 @@ class EpisodePage(QWidget):
                 _chapter_name_missing(dict(self._ep) if self._ep else {}))
 
         TASKMGR.submit("novel_title", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
+
+    def _update_prose_label(self):
+        """按钮上标明改造次数(用户要求「改造过 N 次」):从未改造显示普通文案。"""
+        btn = getattr(self, "prose_btn", None)
+        if btn is None:
+            return
+        try:
+            from ..pipeline.novel import prose_convert_times
+            n = prose_convert_times(self.episode_id)
+        except Exception:
+            n = 0
+        base = "📖 " + tr("小说体改造")
+        btn.setText(f"{base}·已改{n}次" if n else base)
+
+    def _convert_to_prose(self):
+        """当前章脚本体 → 小说体(改稿模型,事实/对白保留)。"""
+        from ..core.preflight import ensure_ready
+        from ..core.taskmgr import TASKMGR
+        from ..pipeline import novel as novel_pipe
+        if not ensure_ready("text", None):
+            return
+        if not self._ep:
+            return
+        self._save_raw_silent()
+        # 空章提前拦下(实测:空章点改造,后台才报「本章没有正文可改造」)
+        if len((self._ep["content"] or "").strip()) < 200:
+            warn(tr("本集还没有正文,先生成或粘贴原文再改造"))
+            return
+        btn = getattr(self, "prose_btn", None)
+        if btn is not None:
+            btn.busy(tr("改造中"))
+        cid = getattr(self, "text_model", None)
+        cid = cid.currentData() if cid is not None else None
+
+        def job(tid):
+            return novel_pipe.convert_chapter_to_prose(
+                self.episode_id, config_id=cid, lang=getattr(self, "_drama_lang", None))
+
+        def done(tid, result, error):
+            if btn is not None:
+                btn.idle()
+            if error:
+                err(tr("小说体改造失败:") + str(error)[:180])
+                return
+            r = result or {}
+            if not r.get("converted"):
+                info(tr("本章已是小说体,无需改造"))
+                return
+            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+            self.raw_edit.setPlainText(self._ep["content"] or "")
+            ok(tr("已改写成小说体({}→{} 字),请通读检查后保存").format(
+                r.get("before", 0), r.get("after", 0)))
+            self._update_prose_label()
+            self._reload_raw()
+
+        TASKMGR.submit("novel_edit", job, done,
+                       episode_id=self.episode_id, drama_id=self.drama_id)
 
     def _generate_one(self, sb_id: int):
         """单镜生成视频(任务行右侧操作键 / 主行动键)。"""
@@ -2097,28 +2163,49 @@ class EpisodePage(QWidget):
         if not ensure_ready("text", combo):
             return
         self._save_raw_silent()
-        all_eps = [dict(r) for r in db.q(
-            "SELECT * FROM episodes WHERE drama_id=? AND episode_number>=? ORDER BY episode_number",
-            (self.drama_id, self._ep["episode_number"]))]
-        cur = self._ep
-        # 情形一:本章未写完(空 或 低于目标 80%)→ 确认后只重写本章
-        body_len = len((cur["content"] or "").strip())
-        target = cur["target_words"] or 3000
-        if body_len < int(target * 0.8):
-            if ask(self, tr("batch_write"),
-                   tr('第 {} 章').format(cur['episode_number'])
-                   + (tr('现有 {} 字,未达目标 {} 字').format(body_len, target) if body_len else tr('尚未写作(目标 {} 字)').format(target))
-                   + tr(",将重新生成。已有内容会被覆盖且无法撤销。确定继续?")):
-                self._run_batch([cur["id"]], force=True)
+        # 选集规则(实测:从当前页往后找会跳过中间的空集,后续章全被
+        # 「上一章还没有正文」红线拦成失败):**从第一个空集开始顺写**,
+        # 红线天然满足,还能自愈历史失败的空章。
+        ordered = [dict(r) for r in db.q(
+            "SELECT * FROM episodes WHERE drama_id=? ORDER BY episode_number",
+            (self.drama_id,))]
+        empties = [e for e in ordered if len((e["content"] or "").strip()) < 200]
+        from PySide6.QtWidgets import QInputDialog
+        from ..pipeline import novel as novel_pipe
+        if not empties:
+            # 全部都有正文:问要自动新建几章再连写(章=集,不建集就没得写)
+            n, okd = QInputDialog.getInt(
+                self, tr("batch_write"),
+                tr("后续章节已写完。输入要自动新建并连写的章数(1-50):"),
+                10, 1, 50)
+            if not okd:
+                return
+            words = getattr(self, "words_edit", None)
+            words = words.text() if words is not None else ""
+            created = novel_pipe.bulk_create_episodes(
+                self.drama_id, count=n,
+                target_words=int(words) if str(words).strip().isdigit() else None)
+            empties = created["episodes"]
+            ok(tr('已新建 {n} 集,开始连写').format(n=n))
+        n, okd = QInputDialog.getInt(
+            self, tr("batch_write"),
+            tr("输入要连写的章数(1-50)。当前待写 {} 章(从第 {} 集起顺写)。")
+            .format(len(empties), empties[0]["episode_number"]),
+            10, 1, 50)
+        if not okd:
             return
-        # 情形二:本章已完成 → 取后续中「无正文」的前 10 章
-        pending = [e for e in all_eps if e["episode_number"] > cur["episode_number"]
-                   and len((e["content"] or "").strip()) < 200]
-        if not pending:
-            # 单集项目 / 后续都写完了:给出可操作的下一步,而不是让用户觉得"点了没反应"
-            warn(tr("本章已完成,且没有待写的后续章节(想重写请用「批量」确认框里的重写,或先添加新集)"))
-            return
-        self._run_batch([e["id"] for e in pending[:10]], force=False)
+        batch = empties[:n]
+        if len(batch) < n:
+            # 输入超过现有空集:自动新建差额集数(用户要求「直接写更多」)
+            from ..pipeline import novel as novel_pipe
+            words = getattr(self, "words_edit", None)
+            words = words.text() if words is not None else ""
+            created = novel_pipe.bulk_create_episodes(
+                self.drama_id, count=n - len(batch),
+                target_words=int(words) if str(words).strip().isdigit() else None)
+            batch += created["episodes"]
+            ok(tr('已新建 {n} 集,开始连写').format(n=n - len(batch) + len(created["episodes"])))
+        self._run_batch([e["id"] for e in batch], force=False)
 
     def _run_batch(self, episode_ids: list[int], force: bool):
         """执行批量写章:三段式进度条 + 阶段显示 + 完成后提示。

@@ -23,7 +23,7 @@ from . import widgets as W
 
 STAGE_CN = {"writing": "写正文", "reviewing": "审校中", "repairing": "修复问题",
             "compressing": "卷段压缩", "splitting": "拆分分镜",
-            "ledger": "状态台账", "jev_gate": "Jev 门控"}
+            "ledger": "状态台账", "jev_gate": "Jev 门控", "prose": "小说体改造"}
 
 
 class _SegmentBar(QWidget):
@@ -151,8 +151,25 @@ class _BatchProgressDialog(QDialog):
         if not ids:
             return
         done = int(getattr(self.page, "_batch_done", 0) or 0)
-        # 状态字符串变了才重建,避免每 1s 心跳都把行全删了重加(闪)
-        sig = (tuple(ids), done)
+        # 运行中章的实时阶段/轮次来自批量任务的 params(writing/reviewing/
+        # repairing/jev_gate/ledger + stage_cycle),写章内部会持续更新。
+        cur_stage, cur_cycle = "", 0
+        try:
+            import json as _json
+            from ..core import db as _db2
+            _row = _db2.q1("SELECT params FROM sys_task WHERE type='novel_batch' "
+                           "AND status='processing' ORDER BY id DESC LIMIT 1")
+            if _row:
+                _pr = (_json.loads(_row["params"] or "{}")
+                       if isinstance(_row["params"], str) else (_row["params"] or {}))
+                cur_stage = str(_pr.get("stage") or "")
+                cur_cycle = int(_pr.get("stage_cycle") or 0)
+        except Exception:  # noqa: BLE001
+            pass
+        # 签名含阶段/轮次/节拍(÷3):阶段切换或轮播换词时才重建行,
+        # 既让红框区显示**动态过程文字**,又不至于每秒闪烁。
+        self._run_tick = getattr(self, "_run_tick", 0) + 1
+        sig = (tuple(ids), done, cur_stage, cur_cycle, self._run_tick % 3)
         if getattr(self, "_rows_sig", None) == sig:
             return
         self._rows_sig = sig
@@ -171,11 +188,29 @@ class _BatchProgressDialog(QDialog):
             if i < done:
                 mark, color = "✓ 已完成", "#16a34a"
             elif i == done:
-                stage = self.page._chapter_running_stage(ep_id) or ""
-                mark = "✍️ 进行中"
-                if stage:
-                    mark = mark + "  ·  " + tr(STAGE_CN.get(stage, stage))
                 color = "#f97316"
+                # 红框区动态过程文字:按真实阶段显示(用户要求「显示动态思考
+                # 或生成过程的文字」);写作阶段轮播三连语,其余按阶段+轮次。
+                if cur_stage == "reviewing":
+                    mark = ("🔍 审校中" + (f"(第 {cur_cycle}/3 轮)" if cur_cycle else "")
+                            + " · 连贯性/人设/设定…")
+                elif cur_stage == "repairing":
+                    mark = ("🔧 按审校清单修复问题"
+                            + (f"(第 {cur_cycle} 轮)" if cur_cycle else "") + "…")
+                elif cur_stage == "jev_gate":
+                    mark = "⚖ 一致性门控校验…"
+                elif cur_stage == "prose":
+                    mark = "📖 小说体改造(脚本体→叙述正文)…"
+                elif cur_stage == "ledger":
+                    mark = "📒 更新状态台账(事实层)…"
+                elif cur_stage == "writing":
+                    mark = "✍️ " + ("正在构思情节…", "正在撰写正文…",
+                                     "正在润色语言…")[self._run_tick % 3]
+                else:
+                    stage = self.page._chapter_running_stage(ep_id) or ""
+                    mark = "✍️ 进行中"
+                    if stage:
+                        mark = mark + "  ·  " + tr(STAGE_CN.get(stage, stage))
             else:
                 mark, color = "待写", "#a8b0bb"
             row = QWidget()
@@ -216,12 +251,15 @@ class _BatchProgressDialog(QDialog):
         ids = getattr(self.page, "_batch_ids", []) or []
         cur = next((i for i in ids if self.page._chapter_running_stage(i)), None)
         if cur:
-            # cur 是**集 id**;要显示的是这一集的当前阶段(如「写正文」),
-            # 之前错把 id 当阶段格式化,面板出现过「当前阶段:93」(实测截图)。
+            # cur 是**集 id**;显示集号(id≠集号,EP4 的 id 可能是 94)+
+            # 这一集的当前阶段。之前错把 id 当阶段/集号格式化(实测截图)。
+            from ..core import db as _db
+            num = _db.q1("SELECT episode_number FROM episodes WHERE id=?", (cur,))
+            _num = (num["episode_number"] if num else cur)
             stage = self.page._chapter_running_stage(cur) or ""
             self.stage_lab.setText(
                 tr('当前阶段:{}').format(
-                    f"第 {cur} 集 · " + tr(STAGE_CN.get(stage, stage))))
+                    f"第 {_num} 集 · " + tr(STAGE_CN.get(stage, stage))))
             return
         # 没有 processing 任务时不留白:给出明确的下一步,否则「空标签」和
         # 「卡住了」在界面上长得一模一样

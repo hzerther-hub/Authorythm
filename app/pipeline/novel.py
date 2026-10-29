@@ -1147,8 +1147,9 @@ def chapter_prompt(episode_id: int) -> str:
 
 正文硬约束(违反即不合格):
 - 段落必须是完整自然段:每段 3-6 句,严禁一行一句的流水账写法;
-- 每一段至少包含其一:心理描写(人物的念头/权衡/情绪暗涌)、环境细节(光线/气味/声音/温度/材质/周遭动静)、动作细节(带力度与身体反应);
-- 心理与环境要交织推进叙事,不是独立成段的装饰;
+- **严禁剧本格式**:不得出现「人名:(动作)台词」式的对白行,不得使用括号舞台指示(如「(用鞋尖把烟盒推过去)」)—— 对白必须嵌进叙述段落,括号里的信息写成动作描写(如「他用鞋尖把烟盒往儿子跟前推了推」);
+- **多数段落**(不必每段)包含其一:心理描写(人物的念头/权衡/情绪暗涌)、动作细节(带力度与身体反应)、环境细节;
+- **感官描写禁复读**:全章气味/光影/声音类环境句**不超过 3 处**,不得每段都有,同一意象不得重复两次;多数段落靠动作与对白推进;
 - 对话后要有对方的动作/神态承接,不要只留一行引号;
 - 禁止用「叶尘没有动。」这类一句话一段的记账式写法;
 
@@ -1367,6 +1368,16 @@ def _save_with_title(episode_id: int, content: str) -> str:
             _apply_chapter_title(dict(ep), name, text)
             return db.q1("SELECT content FROM episodes WHERE id=?", (episode_id,))["content"] or ""
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (text, db.now(), episode_id))
+    # 新章节也要自动有标题(用户要求「生成新章节时自动加上标题」):模型没写
+    # 「# 标题」首行时,走 gen_chapter_title 补(章节计划 → 反向提取 → AI 现起),
+    # 它会把 `# 标题` 写进正文首行并更新 episodes.title。失败只记日志不阻断
+    # —— 章节已生成,标题可以之后 Ctrl+T 手动补。
+    try:
+        row = db.q1("SELECT title, episode_number FROM episodes WHERE id=?", (episode_id,))
+        if row and is_placeholder_episode_title(row["title"], row["episode_number"]):
+            gen_chapter_title(episode_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[novel] 章节自动标题失败(可稍后 Ctrl+T 补): {exc}", flush=True)
     return text
 
 
@@ -2404,6 +2415,110 @@ def bulk_create_episodes(drama_id: int, titles: list[str] | None = None, count: 
     return {"created": len(created), "start_number": start, "total": total, "episodes": created}
 
 
+_SENSE_WORDS = re.compile(
+    r"气味|焦味|香味|臭味|腥味|苦味|光影|灯光|光斑|散景|刺眼|余晖|"
+    r"钻进鼻|直往鼻子|嗤的一声|轰鸣|呜咽|冰凉|滚烫|微微发|泛起|贴着手腕|指节发白")
+
+
+def _sensory_overdose(text: str, limit: int = 5) -> bool:
+    """环境感官描写是否复读过量(用户实测指纹:每段都有气味/光影)。
+
+    单人作者的正常密度约 ≤2 处/千字;超过 limit 处即判复读 —— 这是
+    一眼可辨的 AIGC 指纹,发布前必须压下去。
+    """
+    return len(_SENSE_WORDS.findall(text or "")) > limit
+
+
+def convert_chapter_to_prose(episode_id: int, config_id: int | None = None,
+                             lang: str | None = None) -> dict:
+    """把脚本体章节(人名:(动作)台词)改写成**小说体叙述正文**(发布用)。
+
+    为什么需要:写作线沿短剧基因,产出 56-72% 对白行的脚本体 —— 平台审核
+    与读者一眼识别为 AIGC 脚本,无法发布。改写不是重写:人物/情节/事实/
+    对白内容**原样保留**,只换表达形态(对白嵌进叙述段、括号舞台指示变成
+    动作描写、补少量心理/环境衔接,不得新增情节)。
+    已经是小说体(对白行 < 20%)则原样返回,不浪费一次调用。
+    """
+    ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
+    if not ep:
+        raise RuntimeError("章节不存在")
+    text = ep["content"] or ""
+    body_lines = [ln for ln in text.splitlines()
+                  if ln.strip() and not ln.strip().startswith("#")]
+    if not body_lines:
+        raise RuntimeError("本章没有正文可改造")
+    dlg = sum(1 for ln in body_lines
+              if re.match(r"^[^，。：\n]{1,10}：", ln.strip()))
+    if dlg / len(body_lines) < 0.2:
+        return {"converted": False, "reason": "already_prose",
+                "content": text, "dialogue_ratio": dlg * 100 // len(body_lines)}
+    # 标题行剥出(改写后原样接回,不动 episodes.title)
+    title_line = ""
+    body = text.strip()
+    m = re.match(r"^#\s+.*\n+", text)
+    if m:
+        title_line = m.group(0)
+        body = text[m.end():]
+    instr = (
+        "把下面的**剧本格式**改写成**小说体正文**,要求:\n"
+        "1. 对白保留原话,但**嵌入叙述段落**:说话人+动作+对白写在一个自然段里"
+        "(例:他弯腰捡起烟盒,声音压得很低:\"爸,咱家的存折放在哪儿?\");\n"
+        "2. **删掉所有括号舞台指示**,把它们的信息化成动作描写"
+        "(例:(用鞋尖把烟盒推过去) 改成 他用鞋尖把烟盒往儿子跟前推了推);\n"
+        "3. 补少量**心理与环境衔接**(每段一两句,不得超过对白体量),"
+        "不得新增人物、情节、对白内容;\n"
+        "4. 人物、事件顺序、事实细节(数字/物件/称呼)**一个都不能改**;\n"
+        "5. **感官描写禁复读**:气味/光影/声音/触感类环境句**全篇最多 2 处**,"
+        "不得每段都以感官描写开头或收尾,同一意象(嗤的一声/焦味/灯光)"
+        "全篇不得出现两次,其余段落靠动作与对白推进;\n"
+        "6. 篇幅与原文相当(上下 20%),只输出改写后的正文,不要任何解释。\n\n"
+        "【原文】\n" + body)
+    raw = runner.run_agent("novel_editor", instr, lang=lang,
+                           config_id=config_id or prose_config_id())
+    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
+    if "<think>" in raw:
+        raw = raw.rsplit("<think>", 1)[-1]
+    prose = raw.strip()
+    if prose.startswith("```"):                      # 剥可能的围栏
+        prose = re.sub(r"^```(?:markdown|text)?\n?|\n?```$", "", prose).strip()
+    if len(prose) < len(body) * 0.5:
+        raise RuntimeError(
+            f"改写结果过短({len(prose)}/{len(body)} 字),疑似截断,请重试")
+    plines = [ln for ln in prose.splitlines() if ln.strip()]
+    pdlg = sum(1 for ln in plines if re.match(r"^[^，。：\n]{1,10}：", ln.strip()))
+    if plines and pdlg / len(plines) > 0.4:
+        raise RuntimeError("改写结果仍是脚本体,请重试或换文本模型")
+    if _sensory_overdose(prose):
+        raise RuntimeError(
+            "改写结果感官描写复读(每段都有气味/光影),不符合自然文风,请重试")
+    new_text = title_line + prose if title_line else prose
+    # 改造次数计数(用户要求标明「改造过 N 次」):存 episodes.metadata
+    times = _bump_prose_count(episode_id)
+    db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?",
+          (new_text, db.now(), episode_id))
+    return {"converted": True, "content": new_text, "times": times,
+            "before": len(body), "after": len(prose)}
+
+
+def prose_convert_times(episode_id: int) -> int:
+    """该章被小说体改造过的次数(0=从未改过)。
+
+    存 app_settings(通用键值表)而不是 episodes 新列 —— episodes 没有
+    metadata 列,加列要走 schema 迁移;计数用键值表足够
+    (实测:写 episodes.metadata 直接 OperationalError)。
+    """
+    try:
+        return int(db.get_setting(f"yihao.prose_converted.{episode_id}", "0") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bump_prose_count(episode_id: int) -> int:
+    n = prose_convert_times(episode_id) + 1
+    db.set_setting(f"yihao.prose_converted.{episode_id}", str(n))
+    return n
+
+
 def check_prev_chapter(drama_id: int, episode_number: int) -> None:
     """续写红线(对齐原版 48f36da):前章无正文时拒绝续写。
 
@@ -2458,6 +2573,18 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
             ok += 1
         except Exception:  # noqa: BLE001
             failed += 1
+        # 小说体改造:写完→自动标题后把脚本体转成叙述正文(发布用)。
+        # 已是小说体(对白行 <20%)自动跳过;失败不阻断 —— 保留脚本体,
+        # 可之后单章「小说体改造」手动补。批量写出的章**先转体再进台账**,
+        # 台账提取读的是最终形态的文本。
+        try:
+            from ..core import taskmgr as TM
+            if task_id:
+                TM.set_stage(task_id, "prose")
+            convert_chapter_to_prose(r["id"], lang=lang)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[novel] 第 {r['episode_number']} 章小说体改造失败(保留脚本体): {exc}",
+                  flush=True)
         # 状态台账:每章写完后更新「世界状态」事实层(提取 → 合并 → Jev 门控)。
         # 失败只记不抛 —— 台账是增强项,绝不阻断批量写作主流程。
         try:
