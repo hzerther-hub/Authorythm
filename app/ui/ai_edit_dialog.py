@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """文本框 AI 智能修改(对齐原版 Ctrl/Cmd+L):
 
 - 选中若干行 → 改写选中片段(selection)
@@ -8,10 +7,16 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QPlainTextEdit, QPushButton,
-                               QVBoxLayout)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
@@ -142,7 +147,7 @@ class AiEditDialog(QDialog):
         chapter = self.editor.toPlainText()
         mode = "chapter" if self.whole.isChecked() else self.mode
         sel = chapter[self.start:self.end]
-        parts = self._context_parts() + ["以下是小说本章全文:", "【全文开始】", chapter, "【全文结束】"]
+        parts = [*self._context_parts(), "以下是小说本章全文:", "【全文开始】", chapter, "【全文结束】"]
         if mode == "selection":
             parts.append(f"【选中片段】\n{sel}")
         elif mode == "insert":
@@ -367,8 +372,8 @@ class QaDialog(QDialog):
         q = self.q_edit.text().strip()
         if not q:
             return
-        from ..pipeline import novel as novel_pipe
         from ..agents import runner
+        from ..pipeline import novel as novel_pipe
         self.send_btn.setEnabled(False)
         self._last_answer = tr("思考中…")
         self.answer.setPlainText(self._last_answer)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """批量生成面板:三段式进度条 + 阶段显示 + 伏笔台账 + 审校明细。
 
 对齐原版 episode.vue 未提交批次的批量面板:
@@ -10,14 +9,18 @@
 """
 from __future__ import annotations
 
-import json
-
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QCheckBox, QDialog, QHBoxLayout, QLabel,
-                               QListWidget, QProgressBar, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
 
@@ -125,6 +128,10 @@ class _BatchProgressDialog(QDialog):
         self._render_ledger()
         # on_progress 在工作线程里只改共享变量(跨线程碰 UI 会炸),这里用 1s 心跳把
         # page._batch_done 反映到进度条/阶段(对齐成片「拼接中」卡的心跳模式)
+        import time as _time
+        self._t0 = _time.time()          # 批量开始时刻
+        self._chap_t0 = _time.time()     # 当前章开始时刻(done 变化时重置)
+        self._last_done = -1
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._poll_progress)
         self._timer.start(1000)
@@ -132,7 +139,11 @@ class _BatchProgressDialog(QDialog):
     def _poll_progress(self):
         if not self.page:
             return
+        import time as _time
         done = getattr(self.page, "_batch_done", 0)
+        if done != getattr(self, "_last_done", done):
+            self._chap_t0 = _time.time()     # 换章:本章计时重置
+            self._last_done = done
         # 原来只在 done 非 0 时才刷新 → 第 1 章还没写完的那几分钟里
         # 窗内进度条/阶段/章节列表全是初始空值,看着像卡死。
         # 现在无条件刷新,并渲染章节列表(逐章一行:进行中 / 已完成 / 待写)。
@@ -156,6 +167,7 @@ class _BatchProgressDialog(QDialog):
         cur_stage, cur_cycle = "", 0
         try:
             import json as _json
+
             from ..core import db as _db2
             _row = _db2.q1("SELECT params FROM sys_task WHERE type='novel_batch' "
                            "AND status='processing' ORDER BY id DESC LIMIT 1")
@@ -257,9 +269,20 @@ class _BatchProgressDialog(QDialog):
             num = _db.q1("SELECT episode_number FROM episodes WHERE id=?", (cur,))
             _num = (num["episode_number"] if num else cur)
             stage = self.page._chapter_running_stage(cur) or ""
+            import time as _time
+            _now = _time.time()
+            _el = max(1, int((_now - getattr(self, "_t0", _now)) // 60))
+            _cs = max(1, int((_now - getattr(self, "_chap_t0", _now)) // 60))
+            _done = int(getattr(self.page, "_batch_done", 0) or 0)
+            _rest = ""
+            if _done:
+                _avg = (_now - getattr(self, "_t0", _now)) / _done
+                _rest = tr(' · 剩余约 {} 分').format(
+                    max(1, int(_avg * (self.total - _done) // 60)))
             self.stage_lab.setText(
                 tr('当前阶段:{}').format(
-                    f"第 {_num} 集 · " + tr(STAGE_CN.get(stage, stage))))
+                    f"第 {_num} 集 · " + tr(STAGE_CN.get(stage, stage)))
+                + tr(' · 已用时 {} 分 · 本章 {} 分').format(_el, _cs) + _rest)
             return
         # 没有 processing 任务时不留白:给出明确的下一步,否则「空标签」和
         # 「卡住了」在界面上长得一模一样

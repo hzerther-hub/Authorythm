@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Novel 审校循环 — LangGraph StateGraph 版本。
 
 为什么引入(Option B):novel 现有的 `write_review_fix_one_chapter` 用一连串 if/else
@@ -20,7 +19,8 @@
 """
 from __future__ import annotations
 
-from typing import TypedDict, Literal, Optional
+import contextlib
+from typing import Literal, TypedDict, cast
 
 # State schema — TypedDict 让 LangGraph 静态校验节点读写合法
 CritiqueDecision = Literal["ok", "revise", "rewrite", "giveup"]
@@ -36,20 +36,20 @@ class NovelReviewState(TypedDict, total=False):
     max_cycles: int                       # 上限(input 默认 3)
 
     # 当前成品 + 审校
-    draft: Optional[str]                  # writer 产出
-    content: Optional[str]                # 流式路径:已有正文跳过 writer
-    critique: Optional[dict]              # critic 产出{overall, dimensions}
-    decision: Optional[CritiqueDecision]   # 路由决策,由 critic 设置
-    jev_decision: Optional[str]           # JEV 门控输出("pass"|"rewrite"|None 未配)
+    draft: str | None                  # writer 产出
+    content: str | None                # 流式路径:已有正文跳过 writer
+    critique: dict | None              # critic 产出{overall, dimensions}
+    decision: CritiqueDecision | None   # 路由决策,由 critic 设置
+    jev_decision: str | None           # JEV 门控输出("pass"|"rewrite"|None 未配)
 
     # 终态
     final: list[str]                      # 累计通过的章节(目前 demo 只塞 1 章)
 
     # 实际任务参数(透传给 writer/critic/repair 调用)
     episode_id: int
-    config_id: Optional[int]
-    lang: Optional[str]
-    task_id: Optional[int]                # sys_task.id,用于 stage 上报
+    config_id: int | None
+    lang: str | None
+    task_id: int | None                # sys_task.id,用于 stage 上报
 
 
 # ── LangGraph 软导入 ──
@@ -57,7 +57,7 @@ def _try_langgraph():
     """软依赖:LangGraph 没装就返回 (None, None)。不抛错,不警告 log,
     调用方 build_novel_review_flow() 看到 None 就自动走 fallback 路径。"""
     try:
-        from langgraph.graph import StateGraph, END  # type: ignore
+        from langgraph.graph import END, StateGraph
         return StateGraph, END
     except ImportError:
         return None, None
@@ -69,11 +69,9 @@ def _try_langgraph():
 
 def _stage(s: str) -> None:
     """stage 标记占位 — 接到 taskmgr 上报 sys_task.params.stage。"""
-    try:
-        from app.core import taskmgr as TM
-        # 调用方负责传 task_id;我们在 state 拿到
-    except Exception:  # noqa: BLE001
+    with contextlib.suppress(Exception):
         pass
+        # 调用方负责传 task_id;我们在 state 拿到
 
 
 def writer_node(state: NovelReviewState) -> dict:
@@ -82,9 +80,9 @@ def writer_node(state: NovelReviewState) -> dict:
     return dict → LangGraph 把这一 dict merge 回 state.所以我们只更新关心的字段,
     不要 return 全 state(TypedDict 的 partial update 语义)。
     """
-    from .runner import run_agent_json  # 现有的单步调用
-    from ..pipeline.novel import (write_chapter, _strip_think,
-                                   check_chapter_content, _enforce_novel_gate)
+    from ..pipeline.novel import (
+        write_chapter,
+    )
     cycle = state.get("cycle", 0) + 1
     episode_id = state["episode_id"]
     config_id = state.get("config_id")
@@ -108,7 +106,8 @@ def critic_node(state: NovelReviewState) -> dict:
     from ..pipeline.novel import review_chapter
     episode_id = state["episode_id"]
     config_id = state.get("config_id")
-    lang = state.get("lang")
+    # 注:state 里的 lang 不再往下传 —— review_chapter 自己按 drama_id 调
+    # resolve_content_language() 解析内容语言,传进去反而是下面那个 TypeError。
     task_id = state.get("task_id")
     if task_id:
         try:
@@ -117,7 +116,11 @@ def critic_node(state: NovelReviewState) -> dict:
         except Exception:  # noqa: BLE001
             pass
     try:
-        review = review_chapter(episode_id, config_id=config_id, lang=lang)
+        # 注意:review_chapter 的签名是 (episode_id, config_id) —— **没有 lang 参数**
+        # (它自己按 drama_id 解析内容语言)。这里原来多传了 lang=,会抛
+        # TypeError,而本行外层的 `except Exception` 会把它吞掉 → 六维审校
+        # **永远静默降级为 "revise"**,功能形同虚设(实测被 mypy 抓出)。
+        review = review_chapter(episode_id, config_id=config_id)
     except Exception:  # noqa: BLE001
         # 审校炸了不要崩循环 —— 退到 revise 走 repair 让 LLM 自行看一遍
         return {"critique": None, "decision": "revise"}
@@ -150,9 +153,9 @@ def critic_node(state: NovelReviewState) -> dict:
 
 def repair_node(state: NovelReviewState) -> dict:
     """局部修复:基于 critic 给的 issues,调 novel_editor 改稿,落库。"""
-    from .runner import run_agent
-    from ..pipeline.novel import _strip_think, _gate_content, get_novel_pov, pov_rule
     from ..core import db
+    from ..pipeline.novel import _gate_content, _strip_think, get_novel_pov, pov_rule
+    from .runner import run_agent
 
     review = state.get("critique") or {}
     content = state.get("draft") or ""
@@ -177,14 +180,15 @@ def repair_node(state: NovelReviewState) -> dict:
         # 让 routing 自己挑 rewrite 路径就行,这里不动 draft。
         return {"decision": "rewrite"}
 
-    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,)) or {}
+    ep = db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
+    drama_id = int(ep["drama_id"]) if ep else 0
     fix_prompt = (
         "审校发现以下问题,请修复后输出完整修订正文:\n"
         + "\n".join(issues[:8])
-        + f"\n\n本项目叙事人称: {pov_rule(get_novel_pov(ep['drama_id']))}(修复时必须保持不变)"
+        + f"\n\n本项目叙事人称: {pov_rule(get_novel_pov(drama_id))}(修复时必须保持不变)"
         + f"\n\n原正文:\n{content[:14000]}"
     )
-    fixed = _strip_think(run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id))
+    fixed = _strip_think(cast(str, run_agent("novel_editor", fix_prompt, lang=lang, config_id=config_id)))
     fixed = _gate_content(fixed, "审校修复正文")
     db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?", (fixed, db.now(), episode_id))
     return {"draft": fixed}
@@ -211,7 +215,7 @@ def jev_gate_node(state: NovelReviewState) -> dict:
     if state.get("task_id"):
         try:
             from app.core import taskmgr as TM
-            TM.set_stage(state["task_id"], "jev_gate", state.get("cycle", 0))
+            TM.set_stage(int(state["task_id"] or 0), "jev_gate", state.get("cycle", 0))
         except Exception:  # noqa: BLE001
             pass
     try:
@@ -234,6 +238,8 @@ def jev_gate_node(state: NovelReviewState) -> dict:
         if not result or not result.get("answers"):
             return {"jev_decision": None}
         v = (result["answers"].get("continuity") or {}).get("noul")
+        if v is None:
+            return {"jev_decision": None}
         try:
             v_float = float(v)
         except (TypeError, ValueError):
@@ -328,7 +334,6 @@ def run_novel_review_loop(*, episode_id: int, outline: str = "",
 
     if graph is not None:
         # LangGraph 路径
-        from ..core.taskmgr import TASKMGR
         out = graph.invoke({
             "outline": outline,
             "chapters_total": chapters_total,
@@ -357,8 +362,8 @@ def run_novel_review_loop(*, episode_id: int, outline: str = "",
     # 而 writer_node 是**唯一**调用 _enforce_novel_gate 的地方 →
     # 流式路径(界面「写小说」按钮走的就是它)整个绕过了写作红线:
     # 设定没齐也能写,门控形同虚设。
-    from ..pipeline.novel import _enforce_novel_gate, check_chapter_content
     from ..core import db as _db
+    from ..pipeline.novel import _enforce_novel_gate, check_chapter_content
     _ep = _db.q1("SELECT drama_id FROM episodes WHERE id=?", (episode_id,))
     if _ep:
         _enforce_novel_gate(_ep["drama_id"])

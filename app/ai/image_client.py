@@ -1,6 +1,24 @@
-# -*- coding: utf-8 -*-
 """图片生成客户端:openai / gemini / volcengine / agnes / qwen-image 适配(提交+轮询+落盘)。"""
 from __future__ import annotations
+
+import base64
+import re
+import time
+import uuid
+from pathlib import Path
+
+import requests
+from PIL import Image
+
+from ..core import config
+from . import registry
+from .prompt_guards import (  # noqa: F401  (re-export,保持既有调用点可用)
+    IMAGE_NEGATIVE_GUARD,
+    build_image_negative_guard,
+    build_image_quality_guard,
+)
+from .text_client import AIError
+
 
 def _utf8_text(resp, limit: int = 400) -> str:
     """错误文案按 utf-8 显式解码。
@@ -14,18 +32,8 @@ def _utf8_text(resp, limit: int = 400) -> str:
         t = str(getattr(resp, "text", "") or "")
     return t[:limit]
 
-import base64
-import re
-import time
-import uuid
-from pathlib import Path
 
-import requests
-from PIL import Image
 
-from ..core import config
-from . import registry
-from .text_client import AIError
 
 
 def _download(url: str, out: Path, headers: dict | None = None,
@@ -93,9 +101,8 @@ def _strip_negative(body: dict) -> bool:
     if isinstance(eb, dict) and eb.pop("negative_prompt", None) is not None:
         removed = True
     for v in list(body.values()):                      # 深层扫描(网关可能包一层)
-        if isinstance(v, dict):
-            if v.pop("negative_prompt", None) is not None:
-                removed = True
+        if isinstance(v, dict) and v.pop("negative_prompt", None) is not None:
+            removed = True
     return removed
 
 
@@ -148,9 +155,6 @@ def _qwen_image_url(data: dict) -> str:
 # 守卫只有 prompt_guards 一份实现。这里转发而不是复制:之前这里另抄了一份,
 # 且那份的 build_image_negative_guard 没处理 people=0(空镜/道具),
 # people=0 会落回「禁额外人物」那一档,等于完全不禁人。
-from .prompt_guards import (  # noqa: E402,F401  (re-export,保持既有调用点可用)
-    IMAGE_NEGATIVE_GUARD, build_image_negative_guard, build_image_quality_guard)
-
 
 _RATIO_CANDIDATES: list[tuple[int, int]] = [
     (1, 1), (3, 4), (4, 3), (16, 9), (9, 16), (2, 3), (3, 2), (21, 9)]
@@ -256,7 +260,7 @@ def generate_image_with_retry(*args, **kwargs):
     for i, wait in enumerate(_RATE_LIMIT_BACKOFF):
         try:
             return generate_image(*args, **kwargs)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             last = exc
             if not _is_rate_limited(exc) or i == len(_RATE_LIMIT_BACKOFF) - 1:
                 raise
@@ -283,15 +287,14 @@ def generate_image(prompt: str, out_name: str | None = None,
     reference_lock=False 给**自带逐张身份块**的调用方(如复刻:参考图里有场景/产品,
     通用锁「参考图N=人物N」会把场景图也当成要画的人,实测诱导出第二个人/窗外人脸)。
     """
-    from .prompt_guards import (apply_image_quality_guard,
-                               build_image_negative_guard, REFERENCE_LOCK_GUARD)
+    from .prompt_guards import REFERENCE_LOCK_GUARD, apply_image_quality_guard
     prompt = prompt if skip_guard else apply_image_quality_guard(prompt, people)
     # 参考图锁:有 reference 时,显式告诉模型「N 号参考图就是 N 号人物」,
     # 避免模型按 prompt 文本自己脑补外貌(实测 sb 60 绑了陈默参考图,
     # 模型却出了个 POLO 少年 —— 没有这句锁它就不看图)。
     # 幂等(带 marker,二次调用不重复追加);没 reference 就跳过。
     if reference_lock and not skip_guard and reference_images:
-        from .prompt_guards import _append_guard, REFERENCE_LOCK_MARKER
+        from .prompt_guards import REFERENCE_LOCK_MARKER, _append_guard
         prompt = _append_guard(prompt, REFERENCE_LOCK_GUARD, REFERENCE_LOCK_MARKER)
     negative = build_image_negative_guard(people) if not skip_guard else None
     if extra_negative:
@@ -380,8 +383,7 @@ def generate_image(prompt: str, out_name: str | None = None,
             if not img:
                 raise AIError("百炼生图任务轮询超时(10 分钟)")
         if img.startswith("data:"):
-            import base64 as _b64
-            head, _, b = img.partition(",")
+            _head, _, b = img.partition(",")
             _b64_save(b, out)
         else:
             _download(img, out)
@@ -508,7 +510,7 @@ def test_config(cfg: dict | None = None, config_id: int | None = None) -> tuple[
     """设置页「测试」。本地三 provider(comfyui/sdwebui/fooocus)走轻量探针(不真出图),
     云端 provider 真实生成一张测试图。"""
     if cfg is None and config_id is not None:
-        import sqlite3
+
         from ..core import db as _db
         cfg = _db.q1("SELECT * FROM ai_configs WHERE id=?", (config_id,))
     cfg = dict(cfg or {})

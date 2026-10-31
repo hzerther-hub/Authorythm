@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """诊断:录制 write_chapter 实际收到的流帧统计。"""
 from __future__ import annotations
 
@@ -6,7 +5,7 @@ import sys
 
 sys.path.insert(0, "E:/pydrama")
 
-from app.ai import text_stream  # noqa: E402
+from app.ai import text_stream
 
 _orig = text_stream.chat_stream
 ATTEMPT = {"n": 0}
@@ -42,6 +41,6 @@ from app.pipeline import novel as novel_pipe  # noqa: E402
 try:
     out = novel_pipe.write_chapter_with_review(8)
     print("OK content_len:", len(out["content"]), "fixed:", out["fixed"])
-except Exception as e:
+except Exception as e:  # noqa: BLE001
     print("FAIL:", str(e)[:200])
 print("DIAG-DONE")

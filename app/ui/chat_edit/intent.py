@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """聊天修图抽屉的意图解析:纯函数集,不 import Qt。
 
 把 `chat_edit_drawer.py` 第 1-410 行的意图/路由/帮助文案全部抽到这里,
@@ -18,7 +17,6 @@
 from __future__ import annotations
 
 import re
-
 
 # 路由结果常量(对外暴露,业务逻辑判断走这些)
 INTENT_EDIT = "edit"
@@ -155,7 +153,7 @@ def extract_photo_query(text: str) -> str:
     # +「图片」,不能再把「画」剥掉;原话没带复合后缀才处理光杆「图/画」
     # (「美女图」→「美女」;「国画」len≤2 整词保留)
     t = re.sub(r"(的)?(图片|照片|图像|壁纸|素材)$", "", t)
-    if not re.search(r"(图片|照片|图像|壁纸|素材)$", (text or "").strip()):
+    if not re.search(r"(图片|照片|图像|壁纸|素材)$", (text or "").strip()):  # noqa: SIM102  (嵌套 if 各带注释说明,合并成 and 会丢掉可读性)
         if len(t) > 2 and t.endswith(("图", "画")):
             t = t[:-1]
     return t.strip() or "风景"
@@ -394,16 +392,30 @@ HELP_TEXT = """可以用下面这些说法改图(直接发文字即可,回车执
 
 
 __all__ = [
-    "INTENT_EDIT", "INTENT_CHAT", "INTENT_KNOWLEDGE", "INTENT_FIND_PHOTO",
-    "INTENT_WEB_QUERY", "KNOWN_INTENTS",
-    "JEV_INTENT_QUESTIONS", "JEV_SHORTCUTS", "JEV_SHORTCUT_MIN_PROB",
-    "QUESTION_HINTS", "EDIT_VERBS",
-    "KNOWLEDGE_HINTS", "IMAGE_REFERS", "FIND_PHOTO_RE",
-    "WEBQ_NET_WORDS",
-    "parse_jev_intent",
-    "looks_like_analysis", "looks_like_knowledge", "looks_like_find_photo",
-    "looks_like_web_query",
-    "extract_photo_query", "llm_extract_photo_query",
-    "knowledge_query", "web_query_text", "jev_shortcut_match",
+    "EDIT_VERBS",
+    "FIND_PHOTO_RE",
     "HELP_TEXT",
+    "IMAGE_REFERS",
+    "INTENT_CHAT",
+    "INTENT_EDIT",
+    "INTENT_FIND_PHOTO",
+    "INTENT_KNOWLEDGE",
+    "INTENT_WEB_QUERY",
+    "JEV_INTENT_QUESTIONS",
+    "JEV_SHORTCUTS",
+    "JEV_SHORTCUT_MIN_PROB",
+    "KNOWLEDGE_HINTS",
+    "KNOWN_INTENTS",
+    "QUESTION_HINTS",
+    "WEBQ_NET_WORDS",
+    "extract_photo_query",
+    "jev_shortcut_match",
+    "knowledge_query",
+    "llm_extract_photo_query",
+    "looks_like_analysis",
+    "looks_like_find_photo",
+    "looks_like_knowledge",
+    "looks_like_web_query",
+    "parse_jev_intent",
+    "web_query_text",
 ]

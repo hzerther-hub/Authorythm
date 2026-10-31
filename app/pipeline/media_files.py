@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成物文件的删除(分镜 / 漫画两条「重拆」链路共用)。
 
 为什么单独一个模块:`storyboard.py` 反向复用了 `comic.py:_style_for`

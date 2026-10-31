@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """logging_setup 的回归护栏:JSON 序列化 / 密钥脱敏 / 轮转。
 
 注:`setup_logging` 会读 app_settings,但 db.get_setting 会触 db.init_db()。
@@ -8,7 +7,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from pathlib import Path
 
 import pytest

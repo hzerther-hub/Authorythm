@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """建项目自动生成首集内容(对齐参考项目 backend/src/services/auto-generate.ts)。
 
 建项目时按 work_type 后台跑一次对应 Agent,把输出落到对应表:
@@ -16,7 +15,6 @@ from ..agents import runner
 from ..core import db
 from ..core.logging_setup import get_logger
 from ..core.taskmgr import TASKMGR
-
 from . import script_quality
 
 log = get_logger(__name__)
@@ -131,7 +129,7 @@ def auto_generate_first_episode(drama_id: int, episode_id: int, config_id: int |
     def job(tid):
         text = ""
         last = ""
-        for attempt in range(2):          # 重试一次,防网络抖动导致空响应
+        for _attempt in range(2):          # 重试一次,防网络抖动导致空响应
             text = runner.run_agent(agent_type, build_message(dict(d), work_type),
                                     lang=lang, config_id=config_id)
             if text and text.strip():

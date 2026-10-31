@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """i18n 完整度审计(16 语言全覆盖,含 zh-Hant)。
 
 为什么单独写一个:tests/test_i18n_coverage.py 是**回归守卫**(只看「有没有比基线

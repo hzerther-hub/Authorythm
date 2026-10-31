@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI 操作前置检查:任何需要模型的按钮,点击瞬间先校验服务是否就绪。
 
 不通过时立即以 toast 明确告知缺什么、去哪补,而不是让任务静默跑完再报错。
@@ -19,7 +18,6 @@ SVC_HINT = {
 
 def ensure_ready(service_type: str, config_id: int | None = None) -> bool:
     """就绪则返回 True;否则弹明确 toast 并返回 False(调用方应立即中止)。"""
-    from PySide6.QtWidgets import QMessageBox
     try:
         registry.check_ready(service_type, config_id)
         return True

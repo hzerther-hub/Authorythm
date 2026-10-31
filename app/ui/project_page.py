@@ -1,24 +1,34 @@
-# -*- coding: utf-8 -*-
 """项目页:剧集列表(改名/状态/分辨率/增删/进入制作)+ 素材库(筛选/详情编辑/添加)。"""
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
-from PySide6.QtGui import QCursor
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QMenu, QMessageBox, QPushButton, QScrollArea,
-                               QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtGui import QCursor
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .confirm import ask
 from ..core import db
 from ..core.i18n import tr
 from . import widgets as W
-from .toast import err, ok
-from .projects_page import _one_line
+from .confirm import ask
 from .cover_dialog import CoverPanel, EpisodeCoverButton  # noqa: F401  (封面入口后续可能复用)
+from .projects_page import _one_line
+from .toast import err, ok
 
 # 封面右侧"前 N 集"快速视图:N=6 张,3 列;超出 N 的 EP 走下方 tabs 「剧集列表」。
 # 改这里只需一处 —— reload() 与 _ep_cols 列表分隔都会按它走。
@@ -535,7 +545,6 @@ class AssetCard(QFrame):
         lay.addWidget(desc)
 
     def mousePressEvent(self, e):
-        import functools
         # 由外部连接点击
         if getattr(self, "_on_click", None):
             self._on_click()
@@ -830,7 +839,6 @@ class ProjectPage(QWidget):
 
     def _show_imitations(self):
         """原著 → 仿写本列表(可仿 N 本):下拉菜单逐本直达。"""
-        from ..pipeline.book_import import imitations_of
         children = self._imit_children or []
         if not children:
             return
@@ -865,8 +873,9 @@ class ProjectPage(QWidget):
           - "prompts" → storyboards.description/video_prompt/atmosphere/narration
                         (按镜头分节,同分镜下载按钮的格式)
         """
-        from PySide6.QtWidgets import QFileDialog
         from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
         if not self.drama_id:
             err("请先打开一个项目")
             return
@@ -983,8 +992,7 @@ class ProjectPage(QWidget):
 
     def _build_novel_scale_bar(self, drama_id: int) -> QWidget:
         """项目页封面下的规模摘要:每章字数 / 总章数 / 写作文风(小说项目)。"""
-        from ..pipeline.novel import (NOVEL_STYLES, get_novel_pov, get_novel_style,
-                                      pov_rule)
+        from ..pipeline.novel import NOVEL_STYLES, get_novel_pov, get_novel_style, pov_rule
         box = QWidget()
         lay = QHBoxLayout(box)
         lay.setContentsMargins(2, 6, 2, 0)
@@ -1079,7 +1087,7 @@ class ProjectPage(QWidget):
                 i // RECENT_EP_COLS, i % RECENT_EP_COLS)
         cells = list(rows)
         if self.can_add_episode():
-            cells = list(rows) + [None]           # 末尾放「添加第 N 集」占位卡
+            cells = list(rows) + [None]           # 末尾放「添加第 N 集」占位卡  # noqa: RUF005
         cols = self._ep_cols()
         grid = self.ep_grid
         for i, ep in enumerate(cells):

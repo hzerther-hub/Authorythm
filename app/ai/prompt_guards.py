@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """平台级提示词质量守卫(对齐参考项目 backend/src/services/prompt-guards.ts)。
 
 在生成服务层(image_client / video_client)统一追加,不依赖 Agent 是否记得写,

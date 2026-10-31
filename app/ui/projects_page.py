@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """项目启动台:对齐原版 pages/index.vue 的 header / toolbar / 项目卡网格。
 
 视觉重写:Director's Slate —— 把每个项目卡上方加一条拍板条(SlateStrip:黑底 +
@@ -7,25 +6,45 @@
 """
 from __future__ import annotations
 
+import contextlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 from PIL import Image
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, Signal
+from PySide6.QtGui import QCursor, QFont, QPainter, QPolygon
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
-from PySide6.QtGui import QCursor, QPainter, QPolygon, QFont
-from PySide6.QtCore import Qt, Signal, QPoint, QRect, QEvent
-from PySide6.QtWidgets import (QButtonGroup, QDialog, QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QMenu, QPushButton, QScrollArea, QSizePolicy,
-                               QVBoxLayout, QWidget)
-
-from .confirm import ask
-from ..core import db, config
+from ..core import config, db
 from ..core.i18n import tr
-from ..core.theme import (SLATE_BAR, SLATE_BAR_INK, SLATE_BAR_DIM, SLATE_BG, SLATE_PAPER,
-                          SLATE_MUTED, SLATE_HAIR, SLATE_HAIR_HV, SLATE_META, SLATE_STRIPE,
-                          SLATE_TRACK, SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_PEND,
-                          SLATE_ST_FAIL, SLATE_CARD_QSS, MONO_STACK)
+from ..core.theme import (
+    SLATE_BAR,
+    SLATE_BAR_DIM,
+    SLATE_BAR_INK,
+    SLATE_BG,
+    SLATE_CARD_QSS,
+    SLATE_HAIR,
+    SLATE_META,
+    SLATE_ST_DONE,
+    SLATE_ST_FAIL,
+    SLATE_ST_PROG,
+    SLATE_STRIPE,
+)
 from . import widgets as W
+from .confirm import ask
 from .toast import err, ok
 
 # 模块级求值 tr() 会在 import 时定死语言,切语言后不跟着变 → 改成函数按需查
@@ -182,7 +201,6 @@ class SlateStrip(QFrame):
             x += step
         p.restore()
         # 3. 主文字(左侧 meta):跳过斜白条,从 STRIPE_W 起
-        from PySide6.QtGui import QFont
         f = QFont()
         f.setFamilies(["JetBrains Mono", "SFMono-Regular", "Menlo",
                        "Consolas", "Courier New", "monospace"])
@@ -235,10 +253,8 @@ class ProjectCard(QFrame):
         self.setToolTip(tr("click_open_project"))
 
         # 临时尝试把 QSS 局部应用,失败也无所谓 —— paintEvent 才是关键
-        try:
+        with contextlib.suppress(Exception):
             self.setStyleSheet(SLATE_CARD_QSS)
-        except Exception:  # noqa: BLE001
-            pass
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -413,7 +429,7 @@ class ProjectCard(QFrame):
         self._progress = QFrame()
         self._progress.setObjectName("slateFill")
         if take_total:
-            pct = min(100, int(round(100 * take_done / take_total)))
+            pct = min(100, round(100 * take_done / take_total))
         else:
             pct = 0 if status != "completed" else 100
         self._progress.setMinimumWidth(int(pct))
@@ -772,7 +788,7 @@ class ProjectsPage(QWidget):
         # slate mono inline 统计:b 是大数字(粗)+ 后面是单位描述,中间留一个 nbsp
         styles_n = len(db.q("SELECT id FROM style_presets WHERE is_active=1 AND style_type='visual'"))
         self._stat_projects.setText(
-            f"<b>{int(len(rows)):02d}</b>&nbsp; {tr('n_projects', len(rows))}")
+            f"<b>{len(rows):02d}</b>&nbsp; {tr('n_projects', len(rows))}")
         self._stat_running.setText(
             f"<b>{int(running):02d}</b>&nbsp; {tr('n_running', running)}")
         self._stat_styles.setText(
@@ -822,8 +838,9 @@ class ProjectsPage(QWidget):
         每集一节(EP01 / EP02...),集内每个镜头一子节,字段统一:
         分镜描述 / 视频提示词 / 氛围 / 旁白。
         """
-        from PySide6.QtWidgets import QFileDialog
         from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
         # 取当前筛选下的项目(尊重搜索/筛选/排序)
         kw = self.search.text().strip()
         want = FILTER_DB.get(self._filter)
@@ -897,7 +914,6 @@ class ProjectsPage(QWidget):
         self.settings_drama.emit(drama_id)
 
     def _delete(self, drama_id: int, _title: str):
-        from PySide6.QtWidgets import QMessageBox
         d = db.q1("SELECT title FROM dramas WHERE id=?", (drama_id,))
         if not d:
             return

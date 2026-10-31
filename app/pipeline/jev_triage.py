@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """审校问题降噪(Jev score 复核)—— 修复循环只修值得修的。
 
 对齐参考项目 backend/src/services/jev-triage.ts。
@@ -67,7 +66,7 @@ def jev_triage_issues(issues: list[str], context_text: str) -> list[int] | None:
     for i in range(len(capped)):
         try:
             v = float((result["answers"].get(f"sev_{i}") or {}).get("score"))
-            scores.append(max(0, min(2, int(round(v)))))
+            scores.append(max(0, min(2, round(v))))
         except (TypeError, ValueError):
             scores.append(1)
     # 超出评分上限的问题不评分:按 1(应修复)处理,保持保守

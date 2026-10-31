@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """人物面孔文化 → 提示词片段(对齐参考项目 backend/src/services/ethnicity.ts)。
 
 三级解析:**角色覆盖 > 项目设置 > 按内容语言推断**;语言未知时回落 east_asian(UI 默认中文)。

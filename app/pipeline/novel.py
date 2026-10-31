@@ -1,19 +1,18 @@
-# -*- coding: utf-8 -*-
 """小说线:策划(novel_planner)→ 逐章生成(novel_writer)→ 六维审校(novel_reviewer)→ 改稿(novel_editor)。"""
 from __future__ import annotations
 
 import json
 import re
+from typing import cast
 
 from ..agents import prompts, runner
-from ..ai import text_client   # 分卷分批直接调 chat(非流式路径)
-from ..core.i18n import LANG_OUTPUT_NAME, tr  # 分批阶段提示文案(漏导入会让整批 NameError)
-from ..ai import registry
+from ..ai import (
+    registry,
+    text_client,  # 分卷分批直接调 chat(非流式路径)
+)
 from ..core import config, db
-
-from . import character_spec
-from . import script_quality
-
+from ..core.i18n import LANG_OUTPUT_NAME, tr  # 分批阶段提示文案(漏导入会让整批 NameError)
+from . import character_spec, script_quality
 
 # 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
 # 清单本体放在 core.db.NOVEL_STYLE_PRESETS —— 与 style_presets 表里 novel 类的种子
@@ -117,7 +116,7 @@ def plan_novel(drama_id: int, idea: str, config_id: int | None = None) -> dict:
     config_id = config_id or plan_config_id()
     lang = config.resolve_content_language(drama_id)
     prompt = f"新书创意:\n{idea[:6000]}\n\n请给出完整开书规划。"
-    data = runner.run_agent_json("novel_planner", prompt, lang=lang, config_id=config_id)
+    data = cast(dict, runner.run_agent_json("novel_planner", prompt, lang=lang, config_id=config_id))
     chapters = data.get("chapters", [])
     # 保留既有 novel_meta(世界观/合约的结构化字段、叙事人称、导入档案…)
     row = db.q1("SELECT novel_meta FROM dramas WHERE id=?", (drama_id,))
@@ -199,11 +198,11 @@ def outline_to_script(outline: str, episode_id: int,
         + "4. 严格遵循梗概的人物与主线,不要自创新角色或反转\n"
         + "5. 输出**只有 JSON**,无 <think> / 无解释 / 无 markdown 围栏"
     )
-    data = runner.run_agent_json(
+    data = cast(dict, runner.run_agent_json(
         "comic_outline_writer", prompt,
         config_id=config_id,
         lang=content_lang,
-    )
+    ))
     if not isinstance(data, dict):
         raise RuntimeError(f"梗概扩写失败:模型返回非 JSON({type(data).__name__})")
     script = (data.get("script") or "").strip()
@@ -214,8 +213,8 @@ def outline_to_script(outline: str, episode_id: int,
         raise RuntimeError("梗概扩写失败:剧本不含 ## S\\d+\\| 格式头")
     # 可拍性质量门:满篇画外音 / 单人独角戏的剧本打回重写,仍不合格不落库
     def _repair(prompt: str) -> str:
-        d = runner.run_agent_json("comic_outline_writer", prompt,
-                                  config_id=config_id, lang=content_lang)
+        d = cast(dict, runner.run_agent_json("comic_outline_writer", prompt,
+                                  config_id=config_id, lang=content_lang))
         return (d.get("script") or "") if isinstance(d, dict) else ""
 
     script = script_quality.enforce(script, _repair)
@@ -461,9 +460,9 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
     # `main_characters` → 模型听系统提示词时这里恒为空,角色抽取**静默失败**
     # (异常只打到控制台,用户看不到),「主要角色」框就一直空白。
     try:
-        data = runner.run_agent_json(
+        data = cast(dict, runner.run_agent_json(
             "novel_planner", "\n\n".join(parts),
-            lang=config.resolve_content_language(drama_id), config_id=config_id)
+            lang=config.resolve_content_language(drama_id), config_id=config_id))
     except Exception as exc:  # noqa: BLE001
         print(f"[novel] 第 {vol.get('title') or ''} 卷角色抽取调用失败({exc})", flush=True)
         return []
@@ -567,7 +566,7 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
                                           prev_hint=prev_hint),
                     temperature=0.4, lang=config.resolve_content_language(drama_id),
                     config_id=config_id, max_tokens=budget)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if attempt == len(budgets) - 1:
                     raise
                 print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
@@ -647,7 +646,7 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
                                        lang=config.resolve_content_language(drama_id),
                                        config_id=config_id,
                                        max_tokens=budget)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if attempt == len(budgets) - 1:
                     raise
                 print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
@@ -932,10 +931,10 @@ def plan_characters(drama_id: int, config_id: int | None = None) -> dict:
     # 调用版(「调用 save_main_characters」),而本仓 runner 没有工具 —— 用普通
     # run_agent 时模型拿到的指令自相矛盾,输出形状不可控。JSON 模式由网关兜住形状。
     try:
-        data = runner.run_agent_json(
+        data = cast(dict, runner.run_agent_json(
             "novel_planner", "\n\n".join(parts),
-            lang=lang, config_id=config_id)
-    except Exception as exc:  # noqa: BLE001
+            lang=lang, config_id=config_id))
+    except Exception as exc:
         raise RuntimeError(f"角色生成失败:{str(exc)[:160]}") from exc
     chars = _extract_characters_payload(data)
     if not chars:
@@ -1153,6 +1152,11 @@ def chapter_prompt(episode_id: int) -> str:
 - 对话后要有对方的动作/神态承接,不要只留一行引号;
 - 禁止用「叶尘没有动。」这类一句话一段的记账式写法;
 
+事件边界(硬约束):本章只写【本章计划】的目标与事件范围内的内容;
+不得提前引出后续章节才该发生的重大转折(接手生意/大额合作/身份揭穿等
+一律留到对应章节),不得为了让结尾"有爆点"而凭空加戏。本章在计划的
+事件范围内自然收束,钩子用悬念而非新事件。
+
 章节名优先沿用上面【本章计划】里的标题(原样使用,不要改写);
 无计划标题时再自行起一个简短、有钩子的章节名(不超过 12 个汉字,不带「第N集」前缀)。
 把章节名作为独立一行写在正文最前面,格式为 `# 章节名`。"""
@@ -1195,8 +1199,8 @@ def _write_chapter_text(prompt: str, config_id: int | None, lang: str | None,
     content 通道只剩标题一行;流式通道 reasoning/content 分离稳定,空正文时
     还能从思考流里按 </think> 抢救。
     """
-    from ..ai import text_stream
     from ..agents.prompts import load_prompt
+    from ..ai import text_stream
     system = load_prompt("novel_writer", lang or db.get_setting("content_language", "zh"))
     parts: list[str] = []
     rparts: list[str] = []
@@ -1348,6 +1352,7 @@ def _save_with_title(episode_id: int, content: str) -> str:
     反复重抽浪费配额,而且**已经落库的数据不会被自动修回来**。
     """
     import re as _re
+
     from ..core.encoding import MojibakeError, ensure_text
     text = _strip_think(content)
     try:
@@ -1379,6 +1384,23 @@ def _save_with_title(episode_id: int, content: str) -> str:
     except Exception as exc:  # noqa: BLE001
         print(f"[novel] 章节自动标题失败(可稍后 Ctrl+T 补): {exc}", flush=True)
     return text
+
+
+def _looks_like_reasoning_leak(text: str, lang: str | None = None) -> bool:
+    """模型把**思考过程当正文**吐出来的判定(实测 EP35:20884 字英文推理落库)。
+
+    MiniMax-M3 偶发在 content 通道直接输出英文推理(不带 <think> 标签),
+    128k 预算下能连续"想"2 万字。中文项目的正文若 CJK 占比 <30%,
+    基本可断定是推理泄漏而非小说正文。非中文项目无中立特征,不判。
+    """
+    t = (text or "").strip()
+    if len(t) < 200:
+        return False
+    lang = lang or "zh"
+    if not lang.startswith("zh"):
+        return False
+    cjk = len(re.findall(r"[一-鿿]", t))
+    return cjk / max(1, len(t)) < 0.3
 
 
 def write_chapter_with_review(episode_id: int, config_id: int | None = None,
@@ -1415,6 +1437,11 @@ def write_chapter_with_review(episode_id: int, config_id: int | None = None,
     # 用户刷新一下就没了(静默丢数据)。这里补上,只在判 ok 时写 ——
     # giveup 的稿子不该落库。
     text = final or ""
+    if _looks_like_reasoning_leak(text, lang):
+        # 推理泄漏必须判失败:落库的是 2 万字英文思考,不是章节(实测 EP35)。
+        raise RuntimeError(
+            "模型把思考过程当正文输出了(非中文叙述),本章判失败 —— 请重试;"
+            "反复出现请换文本模型")
     if out.get("decision") == "ok" and text:
         cur = db.q1("SELECT content FROM episodes WHERE id=?", (episode_id,))
         if not cur or (cur["content"] or "") != text:
@@ -1549,8 +1576,8 @@ def review_chapter(episode_id: int, config_id: int | None = None) -> dict:
     pov = get_novel_pov(ep["drama_id"])
     prompt = (f"第 {ep['episode_number']} 章正文:\n{(ep['content'] or '')[:15000]}\n\n"
               f"【本项目叙事人称】{pov_rule(pov)}(硬约束,审校时必须核对是否被违反)")
-    data = runner.run_agent_json("novel_reviewer", prompt, lang=lang,
-                                 config_id=config_id)
+    data = cast(dict, runner.run_agent_json("novel_reviewer", prompt, lang=lang,
+                                 config_id=config_id))
     # 规则化人称抽检:模型漏检时兜底,不额外调用模型
     violations = check_pov_violation(ep["content"] or "", pov)
     if violations:
@@ -1649,7 +1676,7 @@ def strip_episode_prefix(title: str, episode_number: int | None = None) -> str:
     # (tr('episode_n') 是「第 {} 集」,历史数据里也有手打成多空格的)。
     # 仍然只认「集」字、集号仍须与本集相等 —— 见上面两条边界说明。
     import re as _re
-    m = _re.match(r"^第\s*%d\s*集[\s　:：、.·\-—]*" % int(episode_number), t)
+    m = _re.match(rf"^第\s*{int(episode_number)}\s*集[\s　:：、.·\-—]*", t)
     return t[m.end():].strip() if m else t
 
 
@@ -1675,7 +1702,7 @@ def _clean_chapter_name(raw: str) -> str:
     import re as _re
     if "<think>" in (raw or "") or "</think>" in (raw or ""):
         return ""
-    lines = [l.strip() for l in (raw or "").splitlines() if l.strip()]
+    lines = [_ln.strip() for _ln in (raw or "").splitlines() if _ln.strip()]
     if not lines:
         return ""
     name = _re.sub(r"^第\s*\d{1,4}\s*[集][:：、\s]*", "", lines[0])
@@ -1722,7 +1749,7 @@ def extract_title_from_content(content: str) -> str:
     清洗书名号/引号/尾部标点;超过 30 字视为正文不当作标题。提取不到返回空串。
     """
     import re as _re
-    first = next((l.strip() for l in (content or "").splitlines() if l.strip()), "")
+    first = next((_ln.strip() for _ln in (content or "").splitlines() if _ln.strip()), "")
     if not first:
         return ""
     # 思考标记混进首行(M3 偶发把指令行吐在正文最前)→ 不是标题,作废回落 AI
@@ -2040,9 +2067,7 @@ def looks_like_meta_talk(text: str) -> bool:
         return True
     if len(t) < 80 and (META_TALK.match(t) or META_TALK_ANY.search(t)):
         return True
-    if META_TALK.match(t):
-        return True
-    return False
+    return bool(META_TALK.match(t))
 
 
 # 分卷分批阈值:计划章数超过它就改成「先出卷骨架、再逐卷展开」,
@@ -2473,24 +2498,39 @@ def convert_chapter_to_prose(episode_id: int, config_id: int | None = None,
         "全篇不得出现两次,其余段落靠动作与对白推进;\n"
         "6. 篇幅与原文相当(上下 20%),只输出改写后的正文,不要任何解释。\n\n"
         "【原文】\n" + body)
-    raw = runner.run_agent("novel_editor", instr, lang=lang,
-                           config_id=config_id or prose_config_id())
-    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
-    if "<think>" in raw:
-        raw = raw.rsplit("<think>", 1)[-1]
-    prose = raw.strip()
-    if prose.startswith("```"):                      # 剥可能的围栏
-        prose = re.sub(r"^```(?:markdown|text)?\n?|\n?```$", "", prose).strip()
-    if len(prose) < len(body) * 0.5:
-        raise RuntimeError(
-            f"改写结果过短({len(prose)}/{len(body)} 字),疑似截断,请重试")
-    plines = [ln for ln in prose.splitlines() if ln.strip()]
-    pdlg = sum(1 for ln in plines if re.match(r"^[^，。：\n]{1,10}：", ln.strip()))
-    if plines and pdlg / len(plines) > 0.4:
-        raise RuntimeError("改写结果仍是脚本体,请重试或换文本模型")
-    if _sensory_overdose(prose):
-        raise RuntimeError(
-            "改写结果感官描写复读(每段都有气味/光影),不符合自然文风,请重试")
+    # 二段改写(实测 MiniMax-M3 对重脚本章节一改扛不住,第二次带反馈强改):
+    # 第 2 次把失败原因喂回提示词,要求逐行融对白;仍不合格才报错。
+    prose, last_err = "", ""
+    for attempt in (1, 2):
+        instr_full = instr
+        if attempt == 2:
+            instr_full += (
+                "\n\n【重要】上一次改写不合格:" + (last_err or "仍是脚本体")
+                + "。这一次**每一行对白都必须融进叙述段落**,改写结果中"
+                "「人名：」开头的独立行不得超过 2 行;感官环境句全篇不超过 2 处。")
+        raw = runner.run_agent("novel_editor", instr_full, lang=lang,
+                               config_id=config_id or prose_config_id())
+        raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S)
+        if "<think>" in raw:
+            raw = raw.rsplit("<think>", 1)[-1]
+        prose = raw.strip()
+        if prose.startswith("```"):                      # 剥可能的围栏
+            prose = re.sub(r"^```(?:markdown|text)?\n?|\n?```$", "", prose).strip()
+        if len(prose) < len(body) * 0.5:
+            last_err = f"改写结果过短({len(prose)}/{len(body)} 字),疑似截断"
+            continue
+        plines = [ln for ln in prose.splitlines() if ln.strip()]
+        pdlg = sum(1 for ln in plines if re.match(r"^[^，。：\n]{1,10}：", ln.strip()))
+        if plines and pdlg / len(plines) > 0.4:
+            last_err = "改写结果仍是脚本体(对白行未融入叙述)"
+            continue
+        if _sensory_overdose(prose):
+            last_err = "感官描写复读(每段都有气味/光影)"
+            continue
+        last_err = ""
+        break
+    if last_err:
+        raise RuntimeError("小说体改写两次均不合格(" + last_err + "),请重试或换文本模型")
     new_text = title_line + prose if title_line else prose
     # 改造次数计数(用户要求标明「改造过 N 次」):存 episodes.metadata
     times = _bump_prose_count(episode_id)
@@ -2545,7 +2585,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
     另有:默认已有正文的章节整批拒绝(force=True 才放行);续写红线(前章无正文拒写)。
     """
     _enforce_novel_gate(drama_id)
-    rows = [r for r in (db.q1(f"SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
+    rows = [r for r in (db.q1("SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
                         for i in episode_ids)]
     rows = [r for r in rows if r]
     if not rows:
@@ -2571,8 +2611,12 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
             write_chapter_with_review(r["id"], config_id=config_id, lang=lang,
                                       task_id=task_id)
             ok += 1
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             failed += 1
+            # 失败原因必须落日志:批量面板只显示「失败 N」,不打印原因的话
+            # 排查只能靠猜(实测 EP28-31 四连失败,原因无从查起)
+            print(f"[novel] 第 {r['episode_number']} 章写作失败: {str(exc)[:200]}",
+                  flush=True)
         # 小说体改造:写完→自动标题后把脚本体转成叙述正文(发布用)。
         # 已是小说体(对白行 <20%)自动跳过;失败不阻断 —— 保留脚本体,
         # 可之后单章「小说体改造」手动补。批量写出的章**先转体再进台账**,
@@ -2789,6 +2833,7 @@ def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
     个预设 voice 中的对应项(无需 API Key 与语言包,云端微软神经)。
     """
     import uuid as _uuid
+
     from ..ai import tts_client
     ep = db.q1("SELECT * FROM episodes WHERE id=?", (episode_id,))
     if not ep:
@@ -2806,7 +2851,7 @@ def read_aloud(episode_id: int, config_id: int | None = None) -> dict:
     out_dir = config.STATIC_DIR / "narration" / "novel-read"
     out_dir.mkdir(parents=True, exist_ok=True)
     parts = []
-    for i, c in enumerate(chunks):
+    for _i, c in enumerate(chunks):
         # 把 voice 选定权下放到 synthesize():tts_client 检测 Edge voice / volc engine 自动降级
         p = tts_client.synthesize(c, config_id=config_id, gender=gender)
         parts.append(p.read_bytes())

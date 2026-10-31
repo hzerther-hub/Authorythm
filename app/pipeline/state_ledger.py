@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """人物状态台账 —— 长篇写作的「世界状态数据库」(对齐参考项目 backend/src/services/state-ledger.ts)。
 
 解决的问题:长篇跨章生成时,人物年纪/功法/性格/财产/关系无交代地跳变。靠前情摘要(叙事层)
@@ -24,7 +23,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 
 from ..agents import runner
 from ..ai.jev_gate import JevBreaker, get_jev_gate
@@ -137,7 +135,8 @@ def merge_ledger(ledger: dict, changes: list, chapter: int) -> bool:
 def jev_gate_state_diff(ledger: dict, changes: list) -> dict:
     """台账+变更是否矛盾。任何失败都返回 skipped —— 门控绝不阻断写作主流程。"""
     at = db.now()
-    skip = lambda reason: {"enabled": True, "verdict": "skipped", "reason": reason, "at": at}
+    def skip(reason):
+        return {"enabled": True, "verdict": "skipped", "reason": reason, "at": at}
     if not changes:
         return {"enabled": True, "verdict": "ok", "reason": "no-changes", "at": at}
     if _breaker.in_cooldown():
@@ -266,8 +265,7 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     # 4) 持久化 + 高置信矛盾写回该集审校 issues
     diffs = meta.get("state_diffs")
     diffs = diffs if isinstance(diffs, list) else []
-    meta["state_diffs"] = (diffs + [{"chapter": chapter, "changes": all_changes,
-                                     "jev": jev}])[-DIFFS_CAP:]
+    meta["state_diffs"] = ([*diffs, {"chapter": chapter, "changes": all_changes, "jev": jev}])[-DIFFS_CAP:]
     _save_meta(drama_id, meta)
     if jev.get("verdict") == "conflict":
         _write_back_conflict(episode_id, all_changes, jev)
@@ -282,10 +280,10 @@ def _write_back_conflict(episode_id: int, changes: list, jev: dict):
         review = {}
     top = changes[0] if changes else {}
     desc = f"{top.get('character', '')}{top.get('dimension', '')}:{top.get('from') or '∅'}→{top.get('to', '')}" if top else ""
-    pct = int(round((jev.get("conflict") or 0) * 100))
+    pct = round((jev.get("conflict") or 0) * 100)
     msg = f"状态台账疑似矛盾(置信度 {pct}%):{desc}"[:160]
     issues = review.get("issues")
     issues = issues if isinstance(issues, list) else []
-    review["issues"] = (issues + [msg])[-12:]
+    review["issues"] = ([*issues, msg])[-12:]
     db.ex("UPDATE episodes SET review_json=?, updated_at=? WHERE id=?",
           (json.dumps(review, ensure_ascii=False), db.now(), episode_id))

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """TTS 多引擎合成 + 语速自适应。
 
 四档引擎(对齐原版 E:\\xiaoshuo adapters/tts.ts 的四通道):
@@ -21,6 +20,9 @@
 from __future__ import annotations
 
 import base64
+
+# 解析 ai_service_configs.models(JSON 字符串)用;单独 import 避免 tts_client → db 的循环依赖
+import json as _json
 import subprocess
 import time
 import uuid
@@ -31,9 +33,6 @@ import requests
 from ..core import config
 from . import registry
 from .text_client import AIError
-# 解析 ai_service_configs.models(JSON 字符串)用;单独 import 避免 tts_client → db 的循环依赖
-import json as _json
-from ..core import db as _db_mod
 
 DEFAULT_RESOURCE_ID = "seed-tts-2.0"
 CLONED_RESOURCE_ID = "seed-icl-2.0"
@@ -369,8 +368,8 @@ def list_local_voices() -> list:
     import sys
     if sys.platform != "win32":
         return []
-    import tempfile
     import shutil
+    import tempfile
     work = Path(tempfile.mkdtemp(prefix="tts-voices-"))
     try:
         script = work / "list.ps1"
@@ -507,8 +506,8 @@ def _synthesize_local(text: str, voice: str | None = None, model_voice: str = ""
     global _LAST_VOICE
     _LAST_VOICE = picked["name"]
 
-    import tempfile
     import shutil
+    import tempfile
     work = Path(tempfile.mkdtemp(prefix="tts-local-"))
     try:
         script = work / "synth.ps1"
@@ -547,6 +546,7 @@ def _synthesize_edge(text: str, voice: str = EDGE_DEFAULT_FEMALE,
     _LAST_VOICE = voice
     import asyncio
     import concurrent.futures
+
     import edge_tts
     rate = f"{'+' if int(speech_rate) >= 0 else ''}{int(speech_rate)}%"
     out = _out_path(ext=fmt)
@@ -590,7 +590,7 @@ def synthesize(text: str, voice: str | None = None, config_id: int | None = None
     key = (cfg.get("api_key") or "").strip() if cfg else ""
     provider = (cfg.get("provider") or "").strip().lower() if cfg else ""
     model_voice = (cfg.get("model") or "").strip() if cfg else ""
-    rate_pct = int(round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100))
+    rate_pct = round((max(0.5, min(2.0, float(speed or 1.0))) - 1) * 100)
     reasons: list[str] = []
 
     # ── 显式选了 Edge(免费):直接走,不降级 ──
@@ -662,23 +662,23 @@ def _synthesize_volc(text: str, voice: str, cfg: dict,
             if engine == AUDIO_MODEL:
                 return _synth_audio10(base, key, text, speech_rate=rate)
             return _synth_tts20(base, key, text, voice, speech_rate=rate)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             if engine != AUDIO_MODEL and _is_resource_not_granted(str(e)):
                 _ENGINE_PREF[0] = AUDIO_MODEL
                 return _synth_audio10(base, key, text, speech_rate=rate)
             raise
 
     ratio = max(0.5, min(2.0, float(speed or 1.0)))
-    out = _once(int(round((ratio - 1) * 100)))
+    out = _once(round((ratio - 1) * 100))
     if not (target_duration and target_duration > 0):
         return out
     for _ in range(2):                        # 最多 2 轮提速重合成
         dur = _probe_duration(out)
         if dur <= 0 or dur <= target_duration + 0.05:
             break
-        prev_rate = int(round((ratio - 1) * 100))
+        prev_rate = round((ratio - 1) * 100)
         ratio = min(2.0, ratio * (dur / float(target_duration)))
-        new_rate = int(round((ratio - 1) * 100))
+        new_rate = round((ratio - 1) * 100)
         if abs(new_rate - prev_rate) < 1:
             break
         try:

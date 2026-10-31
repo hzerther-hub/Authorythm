@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """免费图库检索(Unsplash / Pexels / Pixabay)—— 供「图片处理」「聊天改图」搜参考图。
 
 实现参考 D:/webs/yijing/web/services/stock_photo_service.py 的做法,**按本仓约定重写**:
@@ -18,8 +17,10 @@
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import shutil
+
 import requests
 
 DEFAULT_TIMEOUT_S = 15.0
@@ -205,10 +206,8 @@ def download(url: str, out_path, timeout: int = 30,
                 f.write(chunk)
                 n += len(chunk)
                 if on_progress:
-                    try:
+                    with contextlib.suppress(Exception):
                         on_progress(n)
-                    except Exception:  # noqa: BLE001 —— 进度回调失败不影响下载
-                        pass
         return True
     except Exception:  # noqa: BLE001
         return False

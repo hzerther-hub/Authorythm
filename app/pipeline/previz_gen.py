@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜 → 导演台(DirectorDesk)预演工程生成器。
 
 翻译规则(确定性,不调 LLM —— 预演骨架要的是可复现,精修交给导演台编辑器):
@@ -75,7 +74,7 @@ def _b64_reference(name: str, image_url: str | None) -> ReferenceImage | None:
         data = base64.b64encode(path.read_bytes()).decode("ascii")
         mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         return ReferenceImage(name=name[:60], data=f"data:{mime};base64,{data}")
-    except Exception as exc:  # 参考图是锦上添花,绝不因它失败打断生成
+    except Exception as exc:  # 参考图是锦上添花,绝不因它失败打断生成  # noqa: BLE001
         log.warning("参考图内嵌跳过 %s:%s", image_url, exc)
         return None
 

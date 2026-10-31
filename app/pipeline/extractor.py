@@ -1,12 +1,11 @@
-# -*- coding: utf-8 -*-
 """阶段③:从剧本提取角色/场景/道具并去重(extractor Agent),写库+关联本集。"""
 from __future__ import annotations
 
 import json
+from typing import cast
 
 from ..agents import prompts, runner
 from ..core import config, db
-
 from . import character_spec
 
 ROLE_MAP = {"lead": "lead", "supporting": "supporting", "extra": "extra",
@@ -91,12 +90,12 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
 场景: {', '.join(existing['scenes']) or '无'}
 道具: {', '.join(existing['props']) or '无'}"""
     lang = lang or config.resolve_content_language(drama_id)
-    # 规格由**软件层**统一注入,不依赖 15 份 extractor.<lang>.md 各自维护 
+    # 规格由**软件层**统一注入,不依赖 15 份 extractor.<lang>.md 各自维护
     # 实测其中 13 份根本没有「150 字/五官逐项」这条,靠人维护必然漂移。
     system = (prompts.load_prompt("extractor", lang) + _EXTRACT_JSON_SUFFIX
               + "\n\n" + character_spec.rules_for(lang))
-    data = runner.run_agent_json("extractor", prompt, lang=lang, config_id=config_id,
-                                 system=system, max_tokens=EXTRACT_MAX_TOKENS)
+    data = cast(dict, runner.run_agent_json("extractor", prompt, lang=lang, config_id=config_id,
+                                 system=system, max_tokens=EXTRACT_MAX_TOKENS))
     # 落库前统一校验 + 定向补写:提示词只是软约束,实测 68 字的逗号串照样入库。
     # expand_many 只对不达标角色发一次批量调用,失败原样返回,不阻断提取。
     data["characters"] = character_spec.expand_many(

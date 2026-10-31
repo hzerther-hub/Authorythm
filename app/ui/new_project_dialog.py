@@ -1,11 +1,19 @@
-# -*- coding: utf-8 -*-
 """新建项目对话框:5 种创作目标(含同款复刻)+ 视觉风格 + 画面比例 + 面孔文化(+宣传平台/格式)。"""
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFormLayout,
-                               QHBoxLayout, QLineEdit, QPushButton,
-                               QRadioButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import db
 from ..core.i18n import tr
@@ -238,7 +246,10 @@ class NewProjectDialog(QDialog):
             self.product_name_edit.setPlaceholderText(
                 tr("例如:翠绿色宽圆玉镯(留空 = 主推产品)"))
             # 出镜人照片同行:照片 + 性别 + 名字(名字贯穿 分镜绑定/提示词/资产行)
-            from PySide6.QtWidgets import QComboBox
+            # 注意:不要在这里写 `from PySide6.QtWidgets import QComboBox` ——
+            # 那会让 QComboBox 变成**整个函数**的局部变量,而本函数上面
+            # (第 222/225 行)已经在用它 → 运行时 UnboundLocalError,
+            # 「新建项目 → 创作目标切到宣传」必崩。模块顶部已 import。
             prow = QHBoxLayout()
             prow.setSpacing(6)
             prow.addWidget(self.presenter_btn, 1)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """单实例闸门回归。
 
 背景(2026-10-24 实测):`_acquire_db_lock` 一直存在,但 init_db 拿不到锁只是
@@ -7,7 +6,6 @@ init_db **之前**先 `claim_single_instance()`,拿不到锁提示并退出。
 """
 from __future__ import annotations
 
-import io
 import pathlib
 
 from app.core import db
@@ -40,7 +38,7 @@ def test_claim_on_fresh_db_succeeds(tmp_path, monkeypatch):
 def test_main_guards_before_init_db():
     """main() 必须在 init_db 之前过闸门,且带 PYDRAMA_ALLOW_MULTI 豁免 ——
     防止将来重构把闸门挪到 init_db 之后(那时第二个进程已经摸到库了)。"""
-    src = io.open(pathlib.Path("app/main.py"), encoding="utf-8").read()
+    src = pathlib.Path("app/main.py").read_text(encoding="utf-8")
     guard = src.find("claim_single_instance")
     init = src.find("db.init_db()")
     assert guard != -1 and init != -1 and guard < init

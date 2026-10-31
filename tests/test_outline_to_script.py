@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 r"""Layer 2.3:梗概扩写为剧本(outline_to_script)的回归护栏。
 
 覆盖:
@@ -17,7 +16,6 @@ import pytest
 
 from app.core import db
 from app.pipeline import novel
-
 
 SAMPLE_OUTLINE = (
     "李明是个程序员,周末加班后疲惫不堪,在公司楼下的咖啡馆喝咖啡。"
@@ -77,7 +75,7 @@ def _setup_episode(tmp_path, title="测试剧", script="", content=""):
 
 def test_empty_outline_raises(tmp_db):
     """空梗概 → RuntimeError,无落库。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     with pytest.raises(RuntimeError, match="请先输入故事梗概"):
         novel.outline_to_script("", episode_id=eid)
     row = db.q1("SELECT script_content FROM episodes WHERE id=?", (eid,))
@@ -86,14 +84,14 @@ def test_empty_outline_raises(tmp_db):
 
 def test_short_outline_raises(tmp_db):
     """<30 字的梗概 → RuntimeError。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     with pytest.raises(RuntimeError, match="梗概太短"):
         novel.outline_to_script("太短了", episode_id=eid)
 
 
 def test_valid_outline_writes_script_to_db(tmp_db):
     """正常 LLM 返回 → 落库 + 剧本含 ## S 头。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     with mock.patch("app.pipeline.novel.runner.run_agent_json",
                     return_value=VALID_SCRIPT_JSON):
         script = novel.outline_to_script(SAMPLE_OUTLINE, episode_id=eid)
@@ -109,8 +107,8 @@ def test_valid_outline_writes_script_to_db(tmp_db):
 
 def test_empty_script_field_raises(tmp_db):
     """模型返回 dict 但 script 字段空 → RuntimeError。"""
-    did, eid = _setup_episode(tmp_db)
-    with mock.patch("app.pipeline.novel.runner.run_agent_json",
+    _did, eid = _setup_episode(tmp_db)
+    with mock.patch("app.pipeline.novel.runner.run_agent_json",  # noqa: SIM117  (嵌套 with 的上下文各自有注释,合并会丢可读性)
                     return_value={"script": ""}):
         with pytest.raises(RuntimeError, match="模型未返回 script"):
             novel.outline_to_script(SAMPLE_OUTLINE, episode_id=eid)
@@ -118,18 +116,17 @@ def test_empty_script_field_raises(tmp_db):
 
 def test_non_json_response_raises(tmp_db):
     """模型返回非 dict(裸字符串) → RuntimeError,友好提示。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     with mock.patch("app.pipeline.novel.runner.run_agent_json",
-                    return_value="not a json object"):
-        with pytest.raises(RuntimeError, match="非 JSON"):
-            novel.outline_to_script(SAMPLE_OUTLINE, episode_id=eid)
+                    return_value="not a json object"), pytest.raises(RuntimeError, match="非 JSON"):
+        novel.outline_to_script(SAMPLE_OUTLINE, episode_id=eid)
 
 
 def test_script_without_scene_header_raises(tmp_db):
     """剧本不含 ## S\\d+\\| 头 → RuntimeError,防止下游 split_panels 爆。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     bad_script = "这是一些没有格式头的文字\n继续第二段"
-    with mock.patch("app.pipeline.novel.runner.run_agent_json",
+    with mock.patch("app.pipeline.novel.runner.run_agent_json",  # noqa: SIM117  (嵌套 with 的上下文各自有注释,合并会丢可读性)
                     return_value={"script": bad_script}):
         with pytest.raises(RuntimeError, match="格式头"):
             novel.outline_to_script(SAMPLE_OUTLINE, episode_id=eid)

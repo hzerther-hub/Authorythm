@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """「项目说明」+ 项目设定预设下拉的回归测试。
 
 用户要求(2026-10-21):
@@ -220,6 +219,7 @@ def test_concept_button_disabled_for_video_clone(qt_app, monkeypatch):
 def test_new_project_result_data_carries_concept(qt_app, monkeypatch):
     """项目说明生成的内容要随表单一起提交(简介/题材进 metadata,创意描述单独列)。"""
     import json
+
     from app.ui import new_project_dialog as NPD
     monkeypatch.setattr(NPD, "db", _FakeDB(presets=[
         {"name": "3D 漫剧", "value": "3d", "work_type": "drama,novel,comic"}]))
@@ -333,8 +333,8 @@ def test_settings_save_writes_genre_from_dropdown(qt_app, monkeypatch):
 # ── i18n ───────────────────────────────────────────────────
 def test_new_i18n_keys_have_15_languages():
     """新增文案要 15 语言齐全(补充词典以英文键为 key)。"""
-    from app.core.ui_strings import S, LANGS
     from app.core import i18n
+    from app.core.ui_strings import LANGS, S
     keys = [
         "concept_btn", "concept_btn_tip", "concept_dialog_title", "concept_dialog_desc",
         "concept_idea", "concept_idea_ph", "concept_idea_hint", "concept_add_image",

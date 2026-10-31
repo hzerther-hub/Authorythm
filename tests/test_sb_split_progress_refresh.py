@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜拆分进行中的界面增量刷新回归。
 
 bug 背景:分批拆分(`pipeline/storyboard.split_storyboards`)**逐批落库** ——

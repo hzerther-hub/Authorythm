@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """镜头级工具:首帧图生成 / 字幕烧录 / @角色参考图收集。
 
 字幕/合成通过 ffmpeg 子进程完成(不向用户暴露技术细节)。
@@ -8,7 +7,6 @@ from __future__ import annotations
 import re
 import subprocess
 import uuid
-from pathlib import Path
 
 from ..ai import image_client, video_client
 from ..core import config, db
@@ -322,7 +320,7 @@ def compose_from_image(episode_id: int, storyboard_id: int, resolution: str = "7
         config_id=config_id,
         aspect_ratio=(d_row["aspect_ratio"] if d_row else None) or None,
         last_frame=config.media_url_to_path(last) if last else None,
-        seed=(sb["video_seed"] if "video_seed" in sb.keys() else None) or None,
+        seed=(sb.get("video_seed", None)) or None,
         on_progress=on_progress)
     db.ex("UPDATE storyboards SET video_url=?, status='completed', updated_at=? WHERE id=?",
           (config.path_to_media_url(path), db.now(), storyboard_id))

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """同款复刻(video-clone-lite 逻辑):看懂原片 → 备新料 → 逐镜重拍 → 按原片节奏拼接。
 
 数据落在 dramas.metadata.clone:* 与 sys_task(type=clone_*)。
@@ -6,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import re as _re
 import subprocess
@@ -110,7 +110,7 @@ def replace_material(drama_id: int, kind: str, image_path: str | Path,
     # 换完立刻同步资产:资产图是跨镜一致性锚点,不更新它 = 后面 6 镜还锁着旧脸/旧产品。
     # 资产表优先于 metadata 原图(见 generate_shot_image 取图顺序),这里漏更新过一次,
     # 表现为换完照界面缩略图是新的、生图却还是旧脸。
-    url = config.path_to_media_url(path)
+    config.path_to_media_url(path)
     if kind == "product":
         cid, pid, _sid = sync_assets(drama_id, config_id=config_id)
         if pid:
@@ -863,10 +863,8 @@ def _clone_asset_row(drama_id: int, kind: str) -> dict | None:
             # 顺手把 id 记回 metadata,下次就都走 id 了
             clone[id_key] = row.get("id")
             meta["clone"] = clone
-            try:
+            with contextlib.suppress(Exception):
                 _save_meta(drama_id, meta)
-            except Exception:  # noqa: BLE001 —— 回退写回失败不影响主流程
-                pass
     return row
 
 
@@ -971,7 +969,7 @@ def swap_clone_face(source_path, template_path,
     失败**向上抛**,由调用方降级并标记 turnaround_swapped=False 让界面如实提示;
     不在本函数里吞异常。
     """
-    from ..ai import face_swap   # face_swap 在 app.ai,不是 app.pipeline
+    from ..ai import face_swap  # face_swap 在 app.ai,不是 app.pipeline
     # provider 必须显式传:用户选 remote-faceswap 配置时,不传 provider 会落进
     # 本地兼容路径 swap_one —— 它发请求**不带 X-API-Key**,远程服务直接
     # 401「无效的 API Key」(实测:任务台账 sys_task #1621,配置 face.mei.biz)。
@@ -1490,7 +1488,7 @@ def _frame_person_score(path: Path) -> float:
         img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
         if img is None:
             return 0.0
-        h, w = img.shape
+        _h, w = img.shape
         cascade = cv2.CascadeClassifier(
             cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         faces = cascade.detectMultiScale(
@@ -2604,7 +2602,7 @@ def synth_shot_narration(drama_id: int, board_number: int) -> Path:
                   if old_url.startswith(("/static/", "static/")) else Path(old_url))
             if op.exists() and op != Path(p):
                 op.unlink()
-        except OSError as exc:  # noqa: BLE001
+        except OSError as exc:
             print(f"[clone] 旧旁白音频删除失败({exc})", flush=True)
     return p
 
@@ -2648,8 +2646,8 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
     字段(标题/方式/字体/字号/位置/时长 —— IntroEditorDialog 写入),
     字号时长按多数派真实画幅计算(与 merge_episode 同口径)。
     """
-    from . import merge as merge_mod
     from . import intro as _intro
+    from . import merge as merge_mod
     shots, narrs = clone_shots_with_narrations(drama_id)
     if len(shots) < 2:
         raise RuntimeError("至少完成 2 个镜头视频才能拼接")
@@ -2683,7 +2681,6 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
                       "at": db.now()})
     # 超出 8 个的旧成片:**文件与海报一并删除**(用户要求「旧的要删掉」)——
     # 只从列表移除会留下孤儿大文件,磁盘悄悄被吃满
-    import os as _os
     for dropped in merges[8:]:
         for key in ("path", "poster"):
             f = _resolve_local(dropped.get(key))
@@ -2705,7 +2702,6 @@ def clone_merges(drama_id: int) -> list[dict]:
 
 def delete_clone_merge(drama_id: int, path: str) -> int:
     """删除一条合并成片:从历史移除,文件与海报一并删除。返回剩余条数。"""
-    import os
     meta = _meta(drama_id)
     clone = meta.get("clone") or {}
     kept = [m for m in (clone.get("merges") or []) if m.get("path") != str(path)]
@@ -2790,10 +2786,8 @@ def transcode_if_needed(path, episode_id: int):
     # 原来无条件 return out, True —— 坏文件被当成"已转码"往下传,后面
     # 报的是"看不懂这个视频",根因完全指不到转码这步。
     if r.returncode != 0 or not out.exists() or out.stat().st_size == 0:
-        try:
+        with contextlib.suppress(OSError):
             out.unlink(missing_ok=True)
-        except OSError:
-            pass
         return Path(path), False
     return out, True
 
@@ -2853,7 +2847,7 @@ def replace_storyboards_from_shots(episode_id: int, shots) -> int:
             ("台词(口型同步):" + " / ".join(dialogue)) if dialogue else "",
         ] if x)
         try:
-            dur = int(round(float(shot.get("duration") or 5)))
+            dur = round(float(shot.get("duration") or 5))
         except (TypeError, ValueError):
             dur = 5
         db.ex("""INSERT INTO storyboards(episode_id,storyboard_number,title,shot_type,movement,

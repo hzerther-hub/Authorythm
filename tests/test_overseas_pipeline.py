@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """海外题材改写 · 流水线与落库。
 
 **测试不许碰真实库**:`data/yihao.sqlite3` 是用户数据,落库路径全部走临时库。
@@ -295,7 +294,7 @@ def test_sequential_gate_blocks_when_previous_not_rewritten(tmp_db):
     pid = overseas.save_project(drama_id=900020, episode_id=None,
                                 platform="goodnovel", category="billionaire",
                                 level="B", source_text="x", target_lang="es-ES")
-    with pytest.raises(RuntimeError, match="第1章.*还没有改写"):
+    with pytest.raises(RuntimeError, match="第1章.*还没有改写"):  # noqa: RUF043
         overseas.assert_previous_rewritten(pid, eps[2])
     with pytest.raises(RuntimeError):        # 连 project 都没有 → 同样拒绝
         overseas.assert_previous_rewritten(0, eps[2])
@@ -501,7 +500,7 @@ def _stub_llm(monkeypatch, calls=None):
             calls.append((agent, prompt))
         if agent == "overseas_analyzer":
             return json.dumps({"new_terms": {}}, ensure_ascii=False)
-        if "章名" in prompt or "章节正文" in prompt and "起一个" in prompt:
+        if "章名" in prompt or ("章节正文" in prompt and "起一个" in prompt):
             return "Auto Title"
         m = _re.search(r"第(\d+)章", prompt)
         return f"Rewritten chapter {m.group(1)} body." if m else "Body."
@@ -528,7 +527,7 @@ def test_batch_rewrite_generates_all_chapters_in_order(tmp_db, monkeypatch):
 
 def test_batch_rewrite_resumes_and_skips_done(tmp_db, monkeypatch):
     """断点续跑:已改写的集跳过,再点只补剩余(书名/术语不重置)。"""
-    eps = _mk_book(900051, nums=(1, 2))
+    _mk_book(900051, nums=(1, 2))
     _stub_llm(monkeypatch)
     overseas.batch_rewrite(drama_id=900051, platform="goodnovel",
                            category="billionaire", level="B",
@@ -554,7 +553,7 @@ def test_batch_rewrite_stops_on_failure_and_keeps_done(tmp_db, monkeypatch):
 
     def fake_run(agent, prompt, **kw):
         state["n"] += 1
-        if state["n"] > 4:               # 第 2 章改写调用时炸(1=抽词,2=改写,3=章名,4=第2章抽词→第2章改写=5)
+        if state["n"] > 4:               # 第 2 章改写调用时炸(1=抽词,2=改写,3=章名,4=第2章抽词→第2章改写=5)  # noqa: SIM102  (嵌套 if 各带注释说明,合并成 and 会丢掉可读性)
             if "Rewritten" not in prompt and agent == "overseas_rewriter" and "翻译模式" not in prompt and "改写" not in prompt[:4]:
                 pass
         import re as _re
@@ -577,7 +576,7 @@ def test_batch_rewrite_stops_on_failure_and_keeps_done(tmp_db, monkeypatch):
 def test_batch_rewrite_carries_stored_diag_issues(tmp_db, monkeypatch):
     """已存诊断的「发现」是书级资产:整书生成的每章改写都要带着修(与单章同口径)。"""
     _mk_book(900060)
-    pid = overseas.save_project(
+    overseas.save_project(
         drama_id=900060, episode_id=None, platform="goodnovel",
         category="billionaire", level="B", source_text="",
         diag={"level": "B", "issues": [
@@ -740,7 +739,7 @@ def test_delete_middle_blocks_later_regen_until_refilled(tmp_db, monkeypatch):
 
 def test_regenerate_keeps_mid_chain_number_and_replaces(tmp_db, monkeypatch):
     """重生成中链章:沿用原章号(不排到队尾),旧行替换不并存。"""
-    pid, ids = _mk_chain(900091)
+    pid, _ids = _mk_chain(900091)
     ep2 = db.q1("SELECT id FROM episodes WHERE drama_id=? AND episode_number=2",
                 (900091,))["id"]
     _stub_llm(monkeypatch)
@@ -754,9 +753,9 @@ def test_regenerate_keeps_mid_chain_number_and_replaces(tmp_db, monkeypatch):
 
 
 def test_regenerate_no_source_episode(tmp_db):
-    pid, ids = _mk_chain(900092)
+    pid, _ids = _mk_chain(900092)
     # 没挂原集的章(手动粘贴形态)→ 报可读错误
-    cid = overseas.save_chapter(project_id=pid, episode_id=None, chapter_no=4,
+    overseas.save_chapter(project_id=pid, episode_id=None, chapter_no=4,
                                 title="T4", content="Pasted chapter. " * 20)
     with pytest.raises(RuntimeError, match="正文"):
         overseas.regenerate_chapter(

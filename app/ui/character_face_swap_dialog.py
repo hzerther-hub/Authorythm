@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """资产·角色卡换脸对话框:
 
 角色当前形象 → 选源脸(上传照片 / 从其他角色形象选) → 参数 → 换脸预览
@@ -6,19 +5,25 @@
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
-                               QHBoxLayout, QLabel, QMessageBox,
-                               QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+)
 
-from .confirm import warn
 from ..ai import face_swap
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
+from .confirm import warn
 from .toast import err, ok
 
 
@@ -290,7 +295,7 @@ class CharacterFaceSwapDialog(QDialog):
             return
         self._batch_running = True
         self.batch_btn.setEnabled(False)
-        all_faces, enhance, cfg_id = self.all_faces.isChecked(), self.enhance.isChecked(), self.cfg_id
+        all_faces, enhance, _cfg_id = self.all_faces.isChecked(), self.enhance.isChecked(), self.cfg_id
         eng = self.engine_combo.currentData() or (self.cfg_id, "local-faceswap")
         engine_id, provider = eng[0], eng[1]
         src = self.source_path

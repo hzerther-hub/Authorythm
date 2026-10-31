@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """以后台独立进程启动 GUI(不挂控制台),让应用**脱离调用方 shell 的生命周期**存活。
 
 为什么不用 `python.exe`:
@@ -28,7 +27,6 @@ init_db 会跳过「僵尸任务回收」(见 app/core/db.py:_acquire_db_lock),
 """
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
 

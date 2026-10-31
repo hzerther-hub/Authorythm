@@ -1,17 +1,13 @@
-# -*- coding: utf-8 -*-
 """Agent 执行器:组装 system + user,调用文本模型,解析 JSON 输出。"""
 from __future__ import annotations
 
 import json
-import time
-
-import requests
 import re
+import time
+from typing import cast
 
-from ..ai import text_client
-from ..ai import registry
-from ..ai.text_client import AI_LLM_TIMEOUT_S
-from ..ai.text_client import AIError
+from ..ai import registry, text_client
+from ..ai.text_client import AI_LLM_TIMEOUT_S, AIError
 from ..core import db, zh_convert
 from ..core.logging_setup import get_logger
 from . import prompts
@@ -81,7 +77,7 @@ def run_agent(agent_type: str, user_prompt: str, *, lang: str | None = None,
     """
     if lang is None:
         lang = db.get_setting("content_language", "zh")
-    system = system if system is not None else prompts.load_prompt(agent_type, lang)
+    system = system if system is not None else prompts.load_prompt(agent_type, lang or "")
     kwargs: dict = {}
     if timeout is not None:
         kwargs["timeout"] = timeout
@@ -235,11 +231,11 @@ def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
         log.info("agent.budget.call agent=%s budget=%d attempt=%d/%d timeout=%ds",
                  agent_type, budget, i + 1, len(ladder), _timeout_for(budget))
         try:
-            raw, meta = run_agent(agent_type, prompt, lang=lang, json_output=True,
+            raw, meta = cast(tuple, run_agent(agent_type, prompt, lang=lang, json_output=True,
                                   temperature=0.4, config_id=config_id,
                                   image_urls=image_urls, system=system,
                                   max_tokens=budget, timeout=_timeout_for(budget),
-                                  with_meta=True)
+                                  with_meta=True))
         except AIError as e:
             log.warning("agent.budget.rejected agent=%s budget=%d err=%s",
                         agent_type, budget, str(e)[:200])
@@ -305,7 +301,7 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
         # 必须让下面那句「输出无法解析为 JSON」照常抛出去,否则真正的失败原因
         # 会被一个无关的 ValueError 顶掉,排查时看到的是错的东西。
         try:
-            base_system = system if system is not None else prompts.load_prompt(agent_type, lang)
+            base_system = system if system is not None else prompts.load_prompt(agent_type, lang or "")
             raw2 = run_agent(agent_type, prompt, lang=lang, json_output=True,
                              temperature=0.4, config_id=config_id, image_urls=image_urls,
                              system=base_system + _NO_TOOL_HINT, max_tokens=start,
@@ -317,7 +313,7 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
         except (AIError, ValueError, OSError) as e:
             log.warning("agent.retry.failed agent=%s err=%s", agent_type, str(e)[:200])
             raw2 = None
-        d2 = extract_json(raw2) if raw2 else None
+        d2 = extract_json(cast(str, raw2)) if raw2 else None
         if d2 is not None and not _looks_like_tool_call(d2):
             return d2
         log.warning("agent.parse.failed agent=%s finish_unparsed raw_head=%r raw_tail=%r",

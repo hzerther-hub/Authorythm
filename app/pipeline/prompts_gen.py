@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """阶段③配套:角色/场景/道具最终出图提示词(prompt_generator Agent)。
 
 ⚠️ 关键:这里生成的是**常规资产**的 final_prompt(写进 image_url 走 3D/写实路径),
@@ -13,7 +12,6 @@ from __future__ import annotations
 
 from ..agents import runner
 from ..core import config, db
-
 from . import character_spec
 
 
@@ -52,6 +50,7 @@ def _robust_json(agent: str, prompt: str, lang=None, config_id=None) -> dict:
     再加固:剥 DSML/<tool_call>/<think> 残留,失败重试一次。
     """
     import re as _re
+
     from ..agents import prompts as _prompts
     from ..agents.prompts import DEFAULT_PROMPTS
     from ..core.db import get_setting
@@ -64,7 +63,7 @@ def _robust_json(agent: str, prompt: str, lang=None, config_id=None) -> dict:
         "\n只输出一个 JSON 对象:{\"final_prompt\": \"...\"},不要解释。")
     system = _prompts.with_language_suffix(system, lang)
     last_raw = ""
-    for attempt in (1, 2):
+    for _attempt in (1, 2):
         raw = runner.run_agent(agent, prompt, lang=lang, config_id=config_id,
                                json_output=True, temperature=0.4, system=system)
         last_raw = raw or ""

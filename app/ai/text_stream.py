@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """文本模型流式输出(OpenAI 兼容 SSE)。
 
 与 `text_client.chat` 的区别只在「内容怎么回来」:这里逐块 yield 增量文本,

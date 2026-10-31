@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """视频海报帧:抽首帧当缩略图(对齐参考项目 backend/src/utils/video-poster.ts)。
 
 列表行原来直接把 **视频文件** 丢给 pixmap_from_media,而 Qt 无法把 mp4 渲染成

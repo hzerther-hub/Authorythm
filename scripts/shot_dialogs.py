@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """离屏截图:抓小说策划面板 / 项目设置 / 整书导入对话框。
 
 用法:py -3.13 -X utf8 scripts/shot_dialogs.py <out_dir> [drama_id]
@@ -24,9 +23,9 @@ if not did:
     row = db.q1("SELECT id FROM dramas WHERE work_type='novel' ORDER BY id DESC LIMIT 1")
     did = row["id"]
 
-from app.ui.asset_dialogs import ProjectSettingsDialog      # noqa: E402
-from app.ui.book_import_dialog import BookImportDialog      # noqa: E402
-from app.ui.novel_dialogs import NovelPlanDialog            # noqa: E402
+from app.ui.asset_dialogs import ProjectSettingsDialog  # noqa: E402
+from app.ui.book_import_dialog import BookImportDialog  # noqa: E402
+from app.ui.novel_dialogs import NovelPlanDialog  # noqa: E402
 
 shots = [("settings", ProjectSettingsDialog(None, did), (520, 780)),
          ("novel_plan", NovelPlanDialog(None, did), (860, 720)),

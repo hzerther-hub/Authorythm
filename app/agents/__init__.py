@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Agents 入口:单步 LLM 调用 + 多步 state machine 编排。
 
 两个层次并存 —— 老 caller 走单步,新 caller 可选 state machine:
@@ -18,38 +17,38 @@
 """
 from __future__ import annotations
 
-# ── prompt_runner 风格(单步)──
-from .runner import run_agent_json, run_agent  # noqa: F401
-
 # ── state machine 风格(多步)──
-from .novel_review_flow import (  # noqa: F401
+from .novel_review_flow import (
     NovelReviewState,
     build_novel_review_flow,
-    run_novel_review_loop,
-    writer_node,
-    critic_node,
-    repair_node,
-    jev_gate_node,
     compressor_node,
+    critic_node,
+    interrupt_demo_one_step,
+    jev_gate_node,
+    repair_node,
     route_after_criticique,
     route_after_jev,
-    interrupt_demo_one_step,
+    run_novel_review_loop,
+    writer_node,
 )
 
+# ── prompt_runner 风格(单步)──
+from .runner import run_agent, run_agent_json
+
 __all__ = [
-    # 单步
-    "run_agent_json",
-    "run_agent",
     # 多步 state machine
     "NovelReviewState",
     "build_novel_review_flow",
-    "run_novel_review_loop",
-    "writer_node",
-    "critic_node",
-    "repair_node",
-    "jev_gate_node",
     "compressor_node",
+    "critic_node",
+    "interrupt_demo_one_step",
+    "jev_gate_node",
+    "repair_node",
     "route_after_criticique",
     "route_after_jev",
-    "interrupt_demo_one_step",
+    "run_agent",
+    # 单步
+    "run_agent_json",
+    "run_novel_review_loop",
+    "writer_node",
 ]

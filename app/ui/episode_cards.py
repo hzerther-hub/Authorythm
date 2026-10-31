@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """制作面板的卡片与小组件(对齐原版 episode.vue 的 .asset-* / .video-* / .comic-*)。
 
 只放「画出来」的可复用件,不含业务逻辑;回调由调用方(EpisodePage)以闭包传入。
@@ -8,13 +7,24 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal, QSize
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QPolygonF
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
-from . import widgets as W
 from ..core.i18n import tr
+from . import widgets as W
+
 
 # ── 通用小件 ──
 def section_title(text: str, add_label: str = "", on_add=None) -> QWidget:
@@ -478,6 +488,7 @@ def apply_asset_busy(card, cover, gen_btns: list, busy: bool):
             card._busy_timer = None
         return
     from PySide6.QtCore import QTimer
+
     from .braille import BRAILLE_FRAMES
     for b, _orig in full_btns:
         b.setEnabled(False)
@@ -866,10 +877,7 @@ class ComicAssetRow(QFrame):
             redo.clicked.connect(lambda _=False: on_redo())
             lay.addWidget(redo)
         if on_gen:
-            if ready:
-                label = tr("redraw")
-            else:
-                label = tr("gen_comic")
+            label = tr("redraw") if ready else tr("gen_comic")
             gen_btn = QPushButton(label)
             gen_btn.setToolTip(button_tip)
             gen_btn.setCursor(Qt.PointingHandCursor)
@@ -1392,7 +1400,7 @@ class ComicPanelCard(QFrame):
                 wr = QHBoxLayout()
                 wr.setSpacing(4)
                 wr.setContentsMargins(0, 0, 0, 0)
-                warn = QLabel(f"⚠ 与 #{int(s['other_number']):02d} 描述相似度 {int(round(float(s['score']) * 100))}%")
+                warn = QLabel(f"⚠ 与 #{int(s['other_number']):02d} 描述相似度 {round(float(s['score']) * 100)}%")
                 warn.setObjectName("dupWarn")
                 warn.setStyleSheet(
                     "color:#b45309; background:#fef3c7; border:1px solid #fcd34d;"

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """微软系 TTS 通道(Edge 免费 / 本机离线)的对齐回归测试。
 
 对齐基准:原版 E:\\xiaoshuo fffd6bf(Edge 通道 + 主通道自动降级)与
@@ -20,8 +19,8 @@ import json
 
 import pytest
 
-from app.ai import registry, tts_client as tc
-
+from app.ai import registry
+from app.ai import tts_client as tc
 
 VOICES = [
     {"id": "winrt:Microsoft Huihui", "name": "Microsoft Huihui",

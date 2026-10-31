@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """统一后台任务管理:QThreadPool 执行,状态落 sys_task 表。
 
 生命周期(对齐原版 generation.ts):
@@ -6,11 +5,13 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import traceback
 from collections.abc import Callable
+from typing import ClassVar
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Qt, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 
 from . import db
 
@@ -66,18 +67,14 @@ def set_task_progress(task_id: int, percent: int) -> None:
         pct = max(0, min(100, int(percent)))
     except (TypeError, ValueError):
         return
-    try:
+    with contextlib.suppress(Exception):
         db.ex("UPDATE sys_task SET progress=?, updated_at=? WHERE id=?",
-              (pct, db_now(), task_id))
-    except Exception:  # noqa: BLE001
-        pass
-    try:
+        (pct, db_now(), task_id))
+    with contextlib.suppress(Exception):
         _signals().progress.emit(task_id, pct)
-    except Exception:  # noqa: BLE001
-        pass
 
 
-def _signals() -> "TaskSignals":
+def _signals() -> TaskSignals:
     """取全局 TaskSignals 单例(延迟导入避免与 QApplication 初始化顺序耦合)。"""
     global _SIGNALS
     if _SIGNALS is None:
@@ -85,7 +82,7 @@ def _signals() -> "TaskSignals":
     return _SIGNALS
 
 
-_SIGNALS: "TaskSignals | None" = None
+_SIGNALS: TaskSignals | None = None
 
 
 def jload_safe(raw):
@@ -119,10 +116,8 @@ def delete_video_task(task_id: int) -> str | None:
     if not t:
         return None
     if t["local_path"]:
-        try:
+        with contextlib.suppress(OSError):
             Path(t["local_path"]).unlink(missing_ok=True)
-        except OSError:
-            pass
     db.ex("DELETE FROM sys_task WHERE id=?", (task_id,))
     sb_id = t["storyboard_id"]
     if not sb_id:
@@ -200,10 +195,8 @@ def on_main(fn):
     from PySide6.QtWidgets import QApplication
     if QApplication.instance() is None:
         return
-    try:
+    with contextlib.suppress(RuntimeError):
         _DISPATCHER._sig.emit(fn)
-    except RuntimeError:  # noqa: BLE001 —— 进程退出中,C++ 端已删
-        pass
 
 
 class _FnTask(QRunnable):
@@ -215,7 +208,7 @@ class _FnTask(QRunnable):
         self.task_type = task_type       # 任务类型(用于 metrics 埋点)
         self.setAutoDelete(True)
 
-    def run(self):  # noqa: D102
+    def run(self):
         import time as _t
         t0 = _t.perf_counter()
         try:
@@ -261,16 +254,12 @@ class _FnTask(QRunnable):
             pass
 
     def _emit_done(self, cb, result, error):
-        try:
+        with contextlib.suppress(RuntimeError):
             self.signals.done_cb.emit(self.task_id, cb, result, error)
-        except RuntimeError:  # noqa: BLE001 —— 进程退出中,C++ 端已删;任务状态已落库,无需回调
-            pass
 
     def _emit(self, sig, *args):
-        try:
+        with contextlib.suppress(RuntimeError):
             sig.emit(*args)
-        except RuntimeError:  # noqa: BLE001
-            pass
 
 
 class TaskManager(QObject):
@@ -315,7 +304,7 @@ class TaskManager(QObject):
 
     # 按服务类型的活动任务数:按钮状态同步用(video 忙 → 单镜生成/批量按钮全禁)。
     # 计数在主线程的 submit 与 type_finished(queued 回主线程)两处增减,天然串行。
-    TYPE_BUSY: dict[str, int] = {}
+    TYPE_BUSY: ClassVar[: dict[str, int]] = {}
 
     @staticmethod
     def is_busy(service_type: str) -> bool:
@@ -344,13 +333,11 @@ class TaskManager(QObject):
         w = TaskManager._host or TaskManager._host_window()
         if w is None:
             return
-        try:
+        with contextlib.suppress(Exception):
             w.set_busy(on, msg)
-        except Exception:  # noqa: BLE001
-            pass
 
     # 任务类型 → 中文动作名(等待态文案)
-    LABEL = {
+    LABEL: ClassVar[dict[str, object]] = {
         "image": "生成图片", "video": "生成视频", "tts": "合成配音", "cover": "生成封面",
         "script": "改写剧本", "novel": "写小说", "novel_batch": "批量写章节",
         "novel_edit": "改稿", "novel_title": "起章节名", "review": "审校",
@@ -365,7 +352,7 @@ class TaskManager(QObject):
     }
 
     # 任务类型 → 所需 AI 服务(未就绪时在提交前拦下,不留"跑了没结果"的空任务)
-    TYPE_SERVICE = {
+    TYPE_SERVICE: ClassVar[dict[str, object]] = {
         "script": "text", "novel": "text", "novel_batch": "text", "novel_edit": "text",
         "novel_title": "text", "review": "text", "extract": "text", "storyboard": "text",
         "prompt": "text", "comic": "text", "promo": "text", "sb_repair": "text",

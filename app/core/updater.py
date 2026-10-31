@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """自动更新:检查 GitHub Releases → 下载新版本 → 替换文件 → 重启。
 
 发布源(可覆盖,环境变量 PYDRAMA_UPDATE_FEED 或设置页):

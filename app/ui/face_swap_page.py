@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """换脸工具页 —— ① 源人脸 → ② 角色模板图 → ③ 结果 三段式向导。
 
 对齐参考项目 views/tools/face-swap.vue + components/FaceSwapPanel.vue:
@@ -19,9 +18,22 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFileDialog, QFrame, QGridLayout,
-                               QHBoxLayout, QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QProgressBar, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..ai import face_swap, registry
 from ..core import config, db
@@ -385,7 +397,7 @@ class FaceSwapPage(QWidget):
         if not url:
             return
         try:
-            from ..ai.image_client import _download as fetch_image   # 复用既有下载器
+            from ..ai.image_client import _download as fetch_image  # 复用既有下载器
             out = fetch_image(url)
         except Exception as exc:  # noqa: BLE001
             err(tr("source_url_failed") + str(exc)[:120])
@@ -586,7 +598,7 @@ class FaceSwapPage(QWidget):
         card = self.targets[idx]
         cfg_id = self._cfg_id()
         card.set_busy()
-        extra = "，".join(x for x in (self._style_suffix(),
+        "，".join(x for x in (self._style_suffix(),
                                       self.prompt_edit.toPlainText().strip()) if x)
 
         def job(tid):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """聊天改图抽屉的子包(从 chat_edit_drawer.py 拆分)。
 
 各子模块:

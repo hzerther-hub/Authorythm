@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """iconfont 扁平线性图标加载器。
 
 来源:阿里 iconfont(uid=261251),30 枚线性(line)风格图标,源码在
@@ -20,7 +19,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 
 ICON_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"

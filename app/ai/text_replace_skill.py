@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """文字编辑技能:替换图中指定文字 / 抹掉所有文字。
 
 设计原则
@@ -38,13 +37,11 @@
 """
 from __future__ import annotations
 
-import io
 import re
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 from .photocraft_bridge import (
     PhotocraftCLI,
@@ -53,7 +50,6 @@ from .photocraft_bridge import (
     locate_text_regions,
     remove_text_by_inpaint,
 )
-
 
 # ── 意图识别 ──
 
@@ -278,8 +274,9 @@ def parse_intent(text: str) -> tuple[str, str, str] | None:
         find = m.group(1).strip()
         replace = m.group(2).strip()
         # 去掉残留引号(像 '把"X"改成"Y"' 误匹配时)
-        find = find.strip("「」'\"『』""''")
-        replace = replace.strip("「」'\"『』""''")
+        # 这里要剥的是**引号字符集合**(误匹配残留的 「」'"『』 等),不是某个字面串
+        find = find.strip("「」'\"『』""''")  # noqa: B005
+        replace = replace.strip("「」'\"『』""''")  # noqa: B005
         if find and replace and find != replace:
             return ("replace", find, replace)
     # 2. 抹除意图(去掉所有文字)
@@ -494,7 +491,7 @@ class TextReplaceSkill:
         原图** —— 传抹字后的图会采到"区域中心的背景色"(深蓝底 → 字渲染成近黑,
         看着像没替换成功)。调用方 _replace_one_region 负责把原图路径传进来。
         """
-        from PIL import Image, ImageDraw, ImageFont
+        from PIL import Image, ImageDraw
         try:
             import cv2
             import numpy as np
@@ -549,10 +546,7 @@ class TextReplaceSkill:
                     # 采到的可能是背景 → 用黑色兜底更安全
                     ring = arr[max(0, ya - 4):min(h, ya + 4),
                                max(0, xa - 4):min(w, xa + 4)]
-                    if ring.size:
-                        bg_lum = float(ring.mean())
-                    else:
-                        bg_lum = 0.0
+                    bg_lum = float(ring.mean()) if ring.size else 0.0
                     if float(gray[py, px]) - bg_lum > 25:
                         text_color = cand
         # 描边:用比字色更深的同色系,而不是死黑(浅底深字时死黑很扎眼)

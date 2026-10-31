@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """简体→繁体转换(app/core/zh_convert.py)+ runner 出口挂钩。
 
 这里的用例刻意挑**逐字替换会做错**的字:

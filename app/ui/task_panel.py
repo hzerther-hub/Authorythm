@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成任务抽屉:从右侧滑出的任务队列(对齐原版 episode.vue 的 .task-drawer)。
 
 头部「生成任务列表 / 按创建时间倒序 · N 个任务」+ 刷新/关闭,
@@ -7,20 +6,32 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
-from PySide6.QtWidgets import (QApplication, QDialog, QFrame, QHBoxLayout, QLabel,
-                               QPushButton, QScrollArea, QSlider, QTextEdit,
-                               QVBoxLayout, QWidget)
-
 from datetime import datetime
 
-from ..core.i18n import tr
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
 from ..core import db
+from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
-from ..core.theme import (SLATE_ASSET_QSS, SLATE_BAR, SLATE_HAIR, SLATE_MUTED,
-                          SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_FAIL,
-                          SLATE_BG, SLATE_PAPER, MONO_STACK)
+from ..core.theme import (
+    SLATE_ASSET_QSS,
+    SLATE_MUTED,
+    SLATE_ST_DONE,
+    SLATE_ST_FAIL,
+    SLATE_ST_PROG,
+)
 from . import episode_cards as C
 from . import widgets as W
 
@@ -442,7 +453,6 @@ class BigPlayerDialog(QDialog):
         ctl.addWidget(self._lab)
         lay.addLayout(ctl)
         # 按视频实际比例给个合适的初始窗口尺寸
-        from pathlib import Path as _P
         import subprocess as _sp
         try:
             from ..core import config as _cfg
@@ -452,7 +462,7 @@ class BigPlayerDialog(QDialog):
                 r = _sp.run([exe, "-v", "quiet", "-print_format", "json", "-show_streams",
                              "-select_streams", "v:0", str(path)], capture_output=True, text=True)
                 st = _json.loads(r.stdout)["streams"][0]
-                w, h = int(st["width"]), int(st["height"])
+                w, _h = int(st["width"]), int(st["height"])
                 hgt = min(900, max(480, int(w * 0.62) + 120))
                 self.resize(min(1400, w + 60), hgt)
         except Exception:  # noqa: BLE001

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """「重新拆分 = 彻底清空重来」的回归测试。
 
 用户要求(2026-10-20):
@@ -184,7 +183,7 @@ def test_resplit_has_confirmation_dialog():
 
 def test_resplit_confirm_text_covers_all_languages():
     """确认文案要 15 语言齐全(补充词典以中文基准句为 key)。"""
-    from app.core.ui_strings import S, LANGS
+    from app.core.ui_strings import LANGS, S
     key = ("本集已有 {n} 个分镜(含 {v} 个已出视频、{f} 个生成文件,共约 {size})。\n\n"
            "重新拆分将删除全部旧分镜与已生成的视频文件(不可恢复),并从零重新拆分。\n\n确定继续?")
     assert key in S, "重拆确认文案没进补充词典"
@@ -202,6 +201,7 @@ def test_resplit_confirm_reports_real_counts_and_cancel_does_not_split(monkeypat
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication, QComboBox
+
     from app.core import preflight
     from app.ui import episode_page as EP
 
@@ -221,7 +221,7 @@ def test_resplit_confirm_reports_real_counts_and_cancel_does_not_split(monkeypat
 
     monkeypatch.setattr(EP, "ask", fake_ask)
     monkeypatch.setattr(preflight, "ensure_ready", lambda *a, **k: True)
-    monkeypatch.setattr(EP.EpisodePage, "_gen_blocked", lambda self, s, l: False)
+    monkeypatch.setattr(EP.EpisodePage, "_gen_blocked", lambda self, s, _ln: False)
     monkeypatch.setattr(EP.EpisodePage, "_cfg_for", lambda self, k: None)
     monkeypatch.setattr(EP.sb_pipe, "split_storyboards_bg",
                         lambda *a, **k: (started.append(1), 1)[1])

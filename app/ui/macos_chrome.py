@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """macOS 风格窗口 chrome —— 替代 OS 原生 titlebar，启用 FramelessWindowHint 时使用。
 
 视觉:26px 浅色渐变 + 左 78px 红绿灯 + 中央 mono 文件名 + 鼠标拖拽支持。
@@ -17,10 +16,11 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, Signal, QPoint
-from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QMouseEvent
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel
+import contextlib
 
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QMouseEvent, QPainter, QPen
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 # --- 共享常量:与 theme.py 里的 token 同步 ---
 CHROME_H = 26                  # 整条高度
@@ -72,7 +72,7 @@ class MacOSChrome(QWidget):
         self.setStyleSheet(
             "background: qlineargradient(x1:0, y1:0, x2:0, y2:1,"
             "  stop:0 #fbfbf8, stop:1 #f1ede5);"
-            f"border-bottom: 1px solid #DCDAD3;"
+            "border-bottom: 1px solid #DCDAD3;"
         )
 
         self._title = title
@@ -168,16 +168,14 @@ class MacOSChrome(QWidget):
                 win.startSystemMove()
                 self._drag_press = None
                 return
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
         # fallback: 手动算 delta 并 move
         if self._drag_origin is not None:
             delta = ev.globalPosition() - self._drag_press
-            try:
+            with contextlib.suppress(Exception):
                 win.setPosition(self._drag_origin.x() + int(delta.x()),
                                 self._drag_origin.y() + int(delta.y()))
-            except Exception:
-                pass
         self._drag_press = None  # 单次事件结束后清理,避免拖动期间一直触发 move
 
     def mouseReleaseEvent(self, _ev):

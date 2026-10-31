@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """翻译服务:三级引擎依次降级,供 i18n 自动补翻与将来的运行时翻译使用。
 
     1. baidu-forward —— fortuneteller.top 转发(百度翻译),主力;需本机配 API Key
@@ -159,9 +158,13 @@ def translate(text: str, target: str, source: str = "zh") -> str:
     raise TranslateError(f"全部翻译引擎失败 —— {last}")
 
 
-def translate_batch(items: list[tuple[str, str]], target: str, source: str = "zh",
+def translate_batch(items: list[str], target: str, source: str = "zh",
                     interval: float = 0.15) -> list[str]:
-    """批量翻译;保持顺序。单条内部已在 translate 里做三级降级。"""
+    """批量翻译;保持顺序。单条内部已在 translate 里做三级降级。
+
+    注:原注解写成 list[tuple[str, str]],但函数体是 `for text in items`
+    直接当字符串用 —— 注解与实现矛盾。已按实现改正(目前全仓无调用方)。
+    """
     out = []
     for text in items:
         out.append(translate(text, target, source))

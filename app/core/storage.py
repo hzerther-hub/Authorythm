@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """存储用量统计(对齐参考项目 backend/src/routes/storage.ts + utils/dirsize.ts)。
 
 分桶统计 static/ 下的 db / images / videos / merged / uploads / comics / temp / other,
@@ -7,6 +6,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -24,10 +24,8 @@ def _db_files_bytes() -> int:
     total = 0
     for suffix in ("", "-wal", "-shm"):
         p = config.DB_PATH.with_name(config.DB_PATH.name + suffix) if suffix else config.DB_PATH
-        try:
+        with contextlib.suppress(OSError):
             total += p.stat().st_size
-        except OSError:
-            pass
     return total
 
 

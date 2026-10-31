@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """联网搜索(Bing → DuckDuckGo → 百度 三引擎自动回退),零第三方依赖。
 
 移植自参考项目 D:\\drama\\tools.py 的 web_search 工具(实测可用),供聊天改图的

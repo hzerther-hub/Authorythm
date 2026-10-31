@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """复刻线的「资产命名 + @名字 绑定」回归护栏。
 
 三个真实缺陷(2026-10-27 用户提出「我们要能自定义角色名/场景名/道具名」后
@@ -26,7 +25,6 @@
 from __future__ import annotations
 
 import pytest
-
 
 # ── 打桩:一个够用的假 db ────────────────────────────────────────────────
 
@@ -113,7 +111,7 @@ def clone_env(monkeypatch):
 
 def test_asset_row_found_by_id_after_rename(clone_env):
     """改名后按 id 仍要能查到资产行 —— 这是整条链的地基。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     row = vc._clone_asset_row(15, "presenter")
     assert row is not None
     assert row["name"] == "小雅", "改名后应读到新名字"
@@ -137,13 +135,13 @@ def test_upsert_does_not_duplicate_after_rename(clone_env):
     资产页两个「出镜人物」,三视图写进旧行、新行永远空壳,
     而且每次 sync_assets 都再复制一份。
     """
-    vc, fake, meta = clone_env
+    vc, fake, _meta = clone_env
     # 资产行已被用户改名(id 56);_upsert 走 id 分支
     calls = {}
 
     def _fake_upsert_probe():
         # 直接验 _upsert 的行为:按 id 找到行 → UPDATE,不 INSERT
-        table, name = "characters", vc.CLONE_PRESENTER_NAME
+        table, _name = "characters", vc.CLONE_PRESENTER_NAME
         row = fake.q1(f"SELECT id, name FROM {table} WHERE id=?", (56,))
         assert row is not None
         calls["found_id"] = row["id"]
@@ -155,7 +153,7 @@ def test_upsert_does_not_duplicate_after_rename(clone_env):
 
 def test_turnaround_writeback_targets_id_not_name(clone_env):
     """三视图写回角色行要按 id —— 按名字写的话,改名后静默写不进去。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     row = vc._clone_asset_row(15, "presenter")
     assert row["id"] == 56
 
@@ -184,7 +182,7 @@ def test_normalize_shot_without_binding_gives_empty_fields():
 
 def test_asset_ref_header_uses_at_names(clone_env):
     """头行写法与短剧侧对齐:出场人物:@名 道具:@名 场景:@名。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     names = vc.board_asset_names(15, {"characters": ["小雅"],
                                        "props": ["翡翠手镯"],
                                        "scene": "暖光卧室"})
@@ -196,7 +194,7 @@ def test_asset_ref_header_uses_at_names(clone_env):
 
 def test_board_asset_names_default_to_known_assets(clone_env):
     """分镜没声明绑定时,回落到已知资产(保持既有行为)。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     names = vc.board_asset_names(15, {})
     assert names["characters"] == ["小雅"]
     assert names["props"] == ["翡翠手镯"]
@@ -205,7 +203,7 @@ def test_board_asset_names_default_to_known_assets(clone_env):
 
 def test_board_asset_names_drop_invented_names(clone_env):
     """模型编的名字(对不上任何已知资产)要丢弃 —— 编的名字进提示词比没有更糟。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     names = vc.board_asset_names(15, {"characters": ["不存在的模特"],
                                        "props": ["青铜戒"]})
     # 认不出 → 回落默认资产(而不是把编的名字塞进提示词)
@@ -215,7 +213,7 @@ def test_board_asset_names_drop_invented_names(clone_env):
 
 def test_board_asset_names_follow_rename(clone_env):
     """改名后,绑定用新名字(提示词里的名字跟着改)。"""
-    vc, fake, _meta = clone_env
+    vc, _fake, _meta = clone_env
     names = vc.board_asset_names(15, {"characters": ["小雅"]})
     assert names["characters"] == ["小雅"]
     assert vc.asset_ref_header(names).count("@小雅") == 1
@@ -246,9 +244,9 @@ def _gen_shot_env(tmp_path, monkeypatch, shot: str,
                   board_extra: dict | None = None,
                   styling: str = "上装米色圆领针织衫,袖口罗纹收口,下装黑色阔腿裤") -> dict:
     """搭一个可跑 generate_shot_image 的最小复刻项目;返回捕获容器。"""
-    from app.pipeline import video_clone as vc
-
     from PIL import Image
+
+    from app.pipeline import video_clone as vc
     product = tmp_path / "product.jpg"
     scene = tmp_path / "scene.png"
     standing = tmp_path / "standing.jpg"
@@ -398,6 +396,7 @@ def _write_frame(path, product_rect=None):
 
 def test_erase_product_inpainted_out_of_frame(tmp_path, monkeypatch):
     import cv2
+
     from app.pipeline import video_clone as vc
     frame = tmp_path / "f1.jpg"
     product = tmp_path / "prod.jpg"
@@ -431,7 +430,6 @@ def test_erase_product_no_bbox_is_noop(tmp_path, monkeypatch):
 
 def test_erase_product_rejects_fullframe_bbox(tmp_path, monkeypatch):
     """模型回整幅大框(>85% 画幅)= 误标,直接放弃,不能把整帧抹花。"""
-    import cv2
     from app.pipeline import video_clone as vc
     frame = tmp_path / "f1.jpg"
     product = tmp_path / "prod.jpg"
@@ -615,10 +613,10 @@ def test_order_scene_candidates_puts_person_free_frames_first():
 def test_erase_person_and_product_regions(tmp_path, monkeypatch):
     """商品与人物(手部)都要抹:只抹产品会留下一只游离的手(实测)。"""
     import cv2
+
     from app.pipeline import video_clone as vc
     frame = tmp_path / "f1.jpg"
     _write_frame(frame, product_rect=(100, 200, 180, 280))   # 绿矩形 = 商品
-    import numpy as np
     img = cv2.imread(str(frame))
     img[220:260, 300:380] = (40, 40, 200)                    # 右侧红块 = 手
     cv2.imwrite(str(frame), img)

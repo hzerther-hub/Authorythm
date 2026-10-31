@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把存量 api_key 密文从「含用户名」的旧指纹迁移到「主机名+MAC」新指纹。
 
 背景(2026-10-27 实测):`secrets._machine_fingerprint` 原来含
@@ -79,7 +78,7 @@ def main() -> int:
             continue                       # 已是新格式(或本机指纹本就匹配)
         except InvalidToken:
             pass
-        except Exception:
+        except Exception:  # noqa: BLE001
             failed += 1
             continue
         plain = None
@@ -90,7 +89,7 @@ def main() -> int:
                 break
             except InvalidToken:
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001
                 continue
         if plain is None:
             failed += 1

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """一次性脚本:补齐第二波 i18n 键(新增后未走首轮清扫,所有非英语语言都显示英文)。
 
 用项目默认文本模型把 193 个键翻成 13 种语言,增量写 docs/_i18n_wave2_raw.json(可断点重跑)。
@@ -11,9 +10,9 @@ import sys
 import time
 
 sys.path.insert(0, "E:/pydrama")
-from app.core import i18n          # noqa: E402
-from app.ai import text_client     # noqa: E402
-from app.core.ui_strings import S  # noqa: E402
+from app.ai import text_client
+from app.core import i18n
+from app.core.ui_strings import S
 
 zh = i18n.Z
 lang_idx = {code: i for i, (code, _) in enumerate(i18n.LANGS)}
@@ -45,7 +44,7 @@ def shows_english(lang: str, key: str) -> bool:
     return bool(en) and val == en and en != zh_base
 
 
-langs = [l for l in i18n.T if l not in ("zh", "en")]
+langs = [_ln for _ln in i18n.T if _ln not in ("zh", "en")]
 keys, seen = [], set()
 for lang in langs:
     for key in list(zh.keys()) + [k for k in S if k not in zh]:
@@ -56,7 +55,7 @@ print("keys to translate:", len(keys), flush=True)
 
 try:
     results = json.load(open(OUT, encoding="utf-8"))
-except Exception:
+except Exception:  # noqa: BLE001
     results = {}
 
 CHUNK = 40

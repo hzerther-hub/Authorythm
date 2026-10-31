@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜↔场景绑定的回归护栏。
 
 三个真实缺陷(2026-10-27 实测):
@@ -60,7 +59,6 @@ def test_storyboard_scenes_table_has_no_panel_id_column(sb_db):
 
 def test_scene_binding_writes_scene_id_column(sb_db):
     """场景绑定必须写 storyboards.scene_id(参考图列表的真相源)。"""
-    from app.pipeline import refs as refs_mod
     sb_id, scene_id = _seed(sb_db)
     # 模拟 UI 的绑定动作:写 scene_id 列 + 同步关联表
     sb_db.ex("UPDATE storyboards SET scene_id=? WHERE id=?", (scene_id, sb_id))

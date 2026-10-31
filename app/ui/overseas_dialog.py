@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """「海外题材改写」弹窗。
 
 把中文原文改成目标平台(GoodNovel / Dreame / Webnovel)的英文短篇网文,
@@ -14,12 +13,26 @@
 """
 from __future__ import annotations
 
+import contextlib
+
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-                               QSplitter, QTabWidget, QTableWidget,
-                               QTableWidgetItem, QTextEdit, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import db
 from ..core.i18n import tr
@@ -311,8 +324,7 @@ class OverseasDialog(QDialog):
             return
         import time as _time
         secs = int(_time.monotonic() - self._elapsed_start)
-        self.status_lab.setText("{}({}分{:02d}秒)".format(
-            self._stage_base, secs // 60, secs % 60))
+        self.status_lab.setText(f"{self._stage_base}({secs // 60}分{secs % 60:02d}秒)")
 
     def _stop_elapsed(self) -> None:
         self._elapsed_timer.stop()
@@ -329,10 +341,8 @@ class OverseasDialog(QDialog):
             self._drama_id, *self._platform_category_lang()))
         if not pid:
             return
-        try:
+        with contextlib.suppress(Exception):
             overseas.cleanup_empty_chapters(pid)
-        except Exception:  # noqa: BLE001 —— 自愈失败不挡展示
-            pass
         self._saved_pid = pid
         for ch in overseas.list_chapters(pid):
             r = self.saved_table.rowCount()

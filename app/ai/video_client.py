@@ -1,8 +1,19 @@
-# -*- coding: utf-8 -*-
 """视频生成客户端:volcengine(Seedance) / minimax / aliyun(Wan) / agnes / runninghub / xiaoyunque(小云雀),提交+轮询+下载。"""
 from __future__ import annotations
 
 import base64
+import re
+import threading
+import time
+import uuid
+from pathlib import Path
+
+import requests
+
+from ..core import config
+from . import registry
+from .text_client import AIError
+
 
 def _utf8_text(resp, limit: int = 400) -> str:
     """错误文案按 utf-8 显式解码。
@@ -52,18 +63,8 @@ def _extract_task_id(resp, keys=("task_id", "id")) -> str:
                     return str(v)
     return ""
 
-import re
-import time
-import uuid
-from pathlib import Path
 
-import threading
 
-import requests
-
-from ..core import config
-from . import registry
-from .text_client import AIError
 
 RESOLUTION_TIERS: dict[str, list[str]] = {
     # 对齐原版 RESOLUTION_TIERS(按厂商分档)
@@ -156,6 +157,7 @@ def _upload_bytes(path: Path, mime: str,
         return path.read_bytes()
     try:
         import io
+
         from PIL import Image, ImageOps
         with Image.open(path) as im:
             im.load()
@@ -822,6 +824,7 @@ def _generate_with_retry(fn, *, max_attempts: int = 20,
     - **失败上报整条尝试链**:抛 VideoRetryExhausted,不再只报最后一次。
     """
     import time as _t
+
     from .video_contract import is_permanent_error, retry_at_wait_seconds
     gate = threading.Lock()
     last_err = None

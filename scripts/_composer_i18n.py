@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """一次性脚本:给 E:/comPySide 的 i18n_data.json 补 29 个缺失键 × 13 语言。
 
 用 pydrama 配置的文本模型机翻;输出 docs/_composer_i18n_raw.json 供合并。
@@ -10,7 +9,7 @@ import sys
 import time
 
 sys.path.insert(0, "E:/pydrama")
-from app.ai import text_client  # noqa: E402
+from app.ai import text_client
 
 OUT = "docs/_composer_i18n_raw.json"
 DATA = "E:/comPySide/src/compositor/i18n_data.json"
@@ -44,7 +43,7 @@ SYS = ("You are a localizer for a desktop image-editor app (Photoshop-like). "
 
 try:
     results = json.load(open(OUT, encoding="utf-8"))
-except Exception:
+except Exception:  # noqa: BLE001
     results = {}
 
 for lang, tname in LANGS.items():

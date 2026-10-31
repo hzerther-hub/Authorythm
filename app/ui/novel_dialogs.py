@@ -1,22 +1,32 @@
-# -*- coding: utf-8 -*-
 """小说线 UI:策划与设定面板 / 六维审校结果。"""
 from __future__ import annotations
 
 import json
-import threading
 import time
+from typing import ClassVar
 
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QSizePolicy, QSpinBox, QTabWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QSizePolicy,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..core import config, db
+from ..core import db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR, short_error
 from . import widgets as W
 from .braille import WaitingButton
 from .toast import err, ok, warn
-
 
 # 策划板块的生成顺序与前置依赖
 # 顺序同参考项目向导:项目设定 → 总纲 → 世界观 → 故事合约 → 分卷战略 → 章节计划 → 主要角色
@@ -163,6 +173,7 @@ class NovelPlanDialog(QDialog):
             if key == "contract":
                 # 叙事人称(对齐参考项目故事合约向导的 pov 四选项)
                 from PySide6.QtWidgets import QComboBox
+
                 from ..pipeline.novel import POV_LABELS
                 pov_row = QHBoxLayout()
                 pov_row.addWidget(W.muted(tr("叙事人称")))
@@ -273,7 +284,7 @@ class NovelPlanDialog(QDialog):
         lay.addWidget(self.chapters_edit, 3)
 
         lay.addWidget(W.h2(tr("主要角色")))
-        nm = db.jload(d["novel_meta"], {}) or {}
+        db.jload(d["novel_meta"], {}) or {}
         # 「✨ AI 生成主要角色」按钮。
         # 之前**没有这个入口**:角色只能靠「开书策划」顺带产出,或者用户手写 JSON
         # 贴进文本框再点保存。截图里的现象正是这个 —— 章节计划生成了 50 章,
@@ -312,7 +323,7 @@ class NovelPlanDialog(QDialog):
         cfg = registry.default_config("text", None) or {}
         pairs = (("plan", self.plan_model_combo, novel_pipe.plan_config_id()),
                  ("prose", self.prose_model_combo, novel_pipe.prose_config_id()))
-        for kind, combo, cur in pairs:
+        for _kind, combo, cur in pairs:
             combo.blockSignals(True)
             combo.clear()
             for r in registry.list_configs("text"):
@@ -532,7 +543,7 @@ class NovelPlanDialog(QDialog):
     def _sync_busy_buttons(self) -> None:
         """生成中禁用其余生成入口,避免并发。"""
         busy = getattr(self, "_busy", False)
-        for b in list(getattr(self, "_draft_btns", {}).values()) +                 [getattr(self, "chapters_btn", None), getattr(self, "chars_btn", None)]:
+        for b in [*list(getattr(self, "_draft_btns", {}).values()), getattr(self, "chapters_btn", None), getattr(self, "chars_btn", None)]:
             if b is not None and not busy:
                 b.setEnabled(True)
 
@@ -803,8 +814,8 @@ class NovelPlanDialog(QDialog):
         self.close()
 
     # ── AI 起草(对齐原版 draftNovelSection)──
-    SECTION_CN = {"outline": tr("总纲"), "world": tr("世界观"), "contract": tr("故事合约"), "volume": tr("分卷战略")}
-    SECTION_MAP = {"outline": ("novel_outline", "outline"),
+    SECTION_CN: ClassVar[dict[str, object]] = {"outline": tr("总纲"), "world": tr("世界观"), "contract": tr("故事合约"), "volume": tr("分卷战略")}
+    SECTION_MAP: ClassVar[dict[str, object]] = {"outline": ("novel_outline", "outline"),
                    "world": ("novel_world", "world"),
                    "contract": ("novel_contract", "contract"),
                    "volume": ("novel_volume", "volume")}
@@ -1154,8 +1165,6 @@ class NovelPlanDialog(QDialog):
         TASKMGR.submit("image", job, done, drama_id=self.drama_id)
 
 
-from PySide6.QtCore import QObject, QTimer, Qt, Signal  # noqa: E402
-from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
 
 class _PlanPartial(QObject):
@@ -1254,7 +1263,7 @@ class _PlanProgress(QObject):
 class ReviewDialog(QDialog):
     """六维审校结果:连贯性/人设/设定/物件状态/文风/节奏,pass/fail + 问题清单。"""
 
-    DIM_CN = {"coherence": "连贯性", "character": "人设", "setting": "设定",
+    DIM_CN: ClassVar[dict[str, object]] = {"coherence": "连贯性", "character": "人设", "setting": "设定",
               "props": "物件状态", "style": "文风", "pacing": "节奏"}
 
     def __init__(self, parent, review: dict, episode_number: int = 0):

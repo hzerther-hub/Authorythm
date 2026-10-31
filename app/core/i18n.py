@@ -1,10 +1,11 @@
-# -*- coding: utf-8 -*-
 """i18n:15 种界面语言 + 15 种 AI 内容语言(补全,原版仅 4 种)。
 
 UI 语言与 AI 内容语言统一为一个开关(对齐原版 useUnifiedLanguage),
 tr(key) 查当前语言,缺失回退英文,再回退中文。
 """
 from __future__ import annotations
+
+import contextlib
 
 LANGS: list[tuple[str, str]] = [
     ("zh", "中文"), ("zh-Hant", "繁體中文"), ("en", "English"), ("ja", "日本語"), ("ko", "한국어"),
@@ -26,7 +27,7 @@ LANG_OUTPUT_NAME = {
 _current = "zh"
 
 Z = {  # 中文(基准)
- "app_title": "易好短剧", "nav_dashboard": "仪表盘", "nav_projects": "项目", "nav_settings": "设置", "nav_merger": "合并工具", "nav_faceswap": "换脸", "lang_short": "语言",
+ "app_title": "易好短剧", "nav_dashboard": "仪表盘", "nav_projects": "项目", "nav_settings": "设置", "nav_faceswap": "换脸", "lang_short": "语言",
  "projects": "项目启动台", "tagline": "从一个创意到一部短剧,AI 全流程为你代工",
  "stat_projects": "{} 个项目", "stat_running": "{} 进行中", "stat_styles": "{} 种视觉风格",
  "filter_all": "全部", "filter_pending": "待开始", "filter_running": "进行中", "filter_done": "已完成",
@@ -266,7 +267,7 @@ Z = {  # 中文(基准)
  "intro_card_mode": "片头标题卡", "intro_overlay_mode": "叠加文字", "edit_intro": "编辑片头", "intro_title_ph": "片头名(默认剧名)",
  "intro_add": "加入片头", "intro_drag_hint": "拖拽标题可调整位置", "intro_reset": "恢复默认",
  "intro_mode": "片头方式", "intro_font_size": "字号", "intro_pos": "位置", "intro_duration": "时长",
- "merging": "拼接中…", "merge_done": "拼接完成", "merge_failed": "拼接失败", "merge_preview_title": "成片预览",
+ "merge_failed": "拼接失败", "merge_preview_title": "成片预览",
  "merge_needs_two": "请至少勾选 2 个已有视频的镜头", "download_ok": "已下载",
  # 任务抽屉
  "gen_task_list": "生成任务列表", "gen_task_meta": "按创建时间倒序 · {0} 个任务",
@@ -340,7 +341,6 @@ Z = {  # 中文(基准)
  "确认删除这一合并成片?文件与海报会一并删除。继续?": '确认删除这一合并成片?文件与海报会一并删除。继续?',
  "给合并成片加片头标题;点击先配置标题/字体/位置": '给合并成片加片头标题;点击先配置标题/字体/位置',
  "maximize": '最大化',
- "口播": '口播',
  "编辑这一镜的推测口播/字幕,改完随视频与配音使用": '编辑这一镜的推测口播/字幕,改完随视频与配音使用',
  "这一镜的口播/字幕,改完随视频合成与配音使用(留空 = 删除口播)": '这一镜的口播/字幕,改完随视频合成与配音使用(留空 = 删除口播)',
  "comic_redraw_tip": "重新生成漫画版镜像图",
@@ -408,7 +408,6 @@ Z = {  # 中文(基准)
  "fab_storyboard": "分镜",
  "fab_comic": "漫画",
  "fab_export": "拼接",
- "ai_edit_shortcut_hint": "AI 修改:选中文字按 Ctrl+L · Ctrl+R 查找替换 · Ctrl+Q AI 提问",
  "kbd_help_title": "键盘快捷键",
  "kbd_l_title": "AI 修改 (Ctrl+L)", "kbd_l_desc": "选中一段文字 → AI 改写选区;不选中 → 在光标处插入新内容;不改正文,改写完询问是否替换",
  "kbd_r_title": "查找替换 (Ctrl+R)", "kbd_r_desc": "确定性字面替换,不走 AI。批量把\"他\"改\"她\"、\"师父\"改\"师尊\"这种机械工作",
@@ -498,7 +497,6 @@ Z = {  # 中文(基准)
  'AI 未返回内容,请重试': 'AI 未返回内容,请重试',
  '已填入简介与题材,确认无误后点保存': '已填入简介与题材,确认无误后点保存',
  '未命名': '未命名',
- '预览': '预览',
  '点击查看大图': '点击查看大图',
  '↓ 下载原图': '↓ 下载原图',
  '下载原图到本地,文件名自动使用资产名': '下载原图到本地,文件名自动使用资产名',
@@ -775,7 +773,6 @@ Z = {  # 中文(基准)
  '未配置图库 API Key — 到「设置 → AI 服务」添加(类型选「图库」)': '未配置图库 API Key — 到「设置 → AI 服务」添加(类型选「图库」)',
  '点击任意一张即下载到本地并使用。图库是真实照片,适合找参考图/氛围图。': '点击任意一张即下载到本地并使用。图库是真实照片,适合找参考图/氛围图。',
  'stockphoto_svc': '图库',
- '目标画风': '目标画风',
  '换画风需要支持参考图的图像模型(agnes/local/comfyui/sdwebui/fooocus),当前是「{p}」——请到顶栏切换图像模型': '换画风需要支持参考图的图像模型(agnes/local/comfyui/sdwebui/fooocus),当前是「{p}」——请到顶栏切换图像模型',
  '图库': '图库',
  'stockphoto_general_desc': '免费图库检索:供「图片处理」「聊天改图」搜参考图。与「AI 服务 → 图库」是同一份配置。',
@@ -973,6 +970,8 @@ Z = {  # 中文(基准)
  '{}%  ·  进行中 {}  ·  成功 {}  ·  失败 {}': '{}%  ·  进行中 {}  ·  成功 {}  ·  失败 {}',
  '100%  ·  成功 {}  ·  失败 {}': '100%  ·  成功 {}  ·  失败 {}',
  '当前阶段:{}': '当前阶段:{}',
+ ' · 剩余约 {} 分': ' · 剩余约 {} 分',
+ ' · 已用时 {} 分 · 本章 {} 分': ' · 已用时 {} 分 · 本章 {} 分',
  '{} 章有问题 · 共 {} 项': '{} 章有问题 · 共 {} 项',
  '第 {} 章 · {}': '第 {} 章 · {}',
  '第 {} 章': '第 {} 章',
@@ -1168,7 +1167,6 @@ Z = {  # 中文(基准)
  '去背景完成,已载入编辑器': '去背景完成,已载入编辑器',
  '正在检测去背景服务…': '正在检测去背景服务…',
  '下载': '下载',
- '首帧待确认': '首帧待确认',
  '首帧生成中': '首帧生成中',
  '重新生成首帧': '重新生成首帧',
  '确认出视频': '确认出视频',
@@ -1502,7 +1500,10 @@ Z = {  # 中文(基准)
 }
 
 def _t(src: dict, **over) -> dict:
-    d = dict(src); d.update(over); return d
+    d = dict(src)
+    d.update(over)
+    return d
+
 
 T: dict[str, dict] = {"zh": Z}
 
@@ -2025,10 +2026,8 @@ def set_language(lang: str) -> None:
     _current = lang
     if changed:
         for fn in list(_LISTENERS):
-            try:
+            with contextlib.suppress(Exception):
                 fn(lang)
-            except Exception:  # noqa: BLE001 —— 单个监听器出错不阻断其它
-                pass
 
 
 def current_language() -> str:

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """导入整本书 → 分析 → 仿写 三段式流水线(对齐原版 2df744b)。
 
 导入:仅 TXT(支持 UTF-8/UTF-16/GBK/GB18030/Big5),三级切章,软删旧章节后批量插入。
@@ -16,7 +15,6 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..agents import runner
 from ..core import config, db
-
 from . import character_spec
 
 MIN_CHARS = 1000
@@ -88,8 +86,8 @@ def split_book_into_chapters(text: str) -> list:
     """三级切章:章标题正则 → 分隔线+启发式 → 2 万字窗口兜底。"""
     lines = text.split("\n")
     # 1) 章标题正则(行长≤48 且命中≥3,原版同阈值)
-    hits = [i for i, l in enumerate(lines)
-            if len(l.strip()) <= 48 and CHAPTER_HEADING_RE.match(l)]
+    hits = [i for i, _ln in enumerate(lines)
+            if len(_ln.strip()) <= 48 and CHAPTER_HEADING_RE.match(_ln)]
     if len(hits) >= MIN_HEADING_HITS:
         chapters = _chapters_from_marks(lines, hits, min_body=1)
         if chapters:
@@ -100,15 +98,15 @@ def split_book_into_chapters(text: str) -> list:
     #    连续分隔线只认一次(向下跳过),避免重复定位到同一标题行。
     for below in (True, False):
         marks = []
-        for i, l in enumerate(lines):
-            if not SEPARATOR_RE.match(l.strip()):
+        for i, _ln in enumerate(lines):
+            if not SEPARATOR_RE.match(_ln.strip()):
                 continue
             if below:
                 # 向下跳过空行与连续分隔线,找第一个非空行
                 j = i + 1
                 while j < len(lines) and (SEPARATOR_RE.match(lines[j].strip()) or not lines[j].strip()):
                     j += 1
-                if j < len(lines) and _looks_like_title(lines[j]):
+                if j < len(lines) and _looks_like_title(lines[j]):  # noqa: SIM102  (嵌套 if 各带注释说明,合并成 and 会丢掉可读性)
                     if not marks or marks[-1] != j:
                         marks.append(j)
             else:
@@ -128,7 +126,7 @@ def split_book_into_chapters(text: str) -> list:
     return chapters
 
 
-def import_book(drama_id: int, data: bytes = None, text: str = "",
+def import_book(drama_id: int, data: bytes | None = None, text: str = "",
                 encoding: str = "") -> dict:
     """导入整本书并切章入库(软删旧章节 + 每批 100 行插入,避开 SQLite 变量上限)。"""
     if data is not None:
@@ -307,7 +305,7 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None, resume: bool 
             time.sleep(worker_id * stagger_s)
         while True:
             with lock:
-                if state["aborted"] or stop_check and stop_check():
+                if state["aborted"] or (stop_check and stop_check()):
                     return
                 idx = cursor["i"]
                 cursor["i"] += 1
@@ -320,7 +318,7 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None, resume: bool 
                 continue
             seg = groups[idx]
             try:
-                data = _with_retry(lambda: runner.extract_json(
+                data = _with_retry(lambda seg=seg: runner.extract_json(
                     runner.run_agent("novel_reviewer",
                                      f"{_segment_digest(seg)}\n\n{MAP_PROMPT}",
                                      temperature=0.2, lang=lang)) or {})

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """盲文式等待指示器(全项目统一):以点字方块(⠿ Braille pattern)循环变化表示忙碌。
 
 用法:
@@ -18,7 +17,8 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QSizePolicy, QWidget
+
 from ..core.i18n import tr
 
 # 盲文点字(Unicode Braille Patterns)——8 点一格,循环即"变化"的等待感

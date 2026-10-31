@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """风格预设三分类(visual / comic / novel)回归测试。
 
 对应契约「风格预设三分类 —— TypeScript / pydrama 双端统一契约」:

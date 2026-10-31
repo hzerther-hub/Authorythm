@@ -1,21 +1,34 @@
-# -*- coding: utf-8 -*-
 """项目设置 + 素材详情编辑弹窗(对齐原版 detail.vue 的项目设置 / 素材详情对话框)。"""
 from __future__ import annotations
 
 import json
 import pathlib
+from typing import ClassVar
 
 from PySide6.QtCore import Qt, QThread, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout, QFrame,
-                               QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QScrollArea, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .confirm import ask
 from ..core import config, db
 from ..core.i18n import LANGS, tr
 from . import widgets as W
 from .braille import WaitingButton
+from .confirm import ask
 from .toast import err, ok
 
 ASPECTS = [("16:9", "u_ratio_16_9"), ("9:16", "u_ratio_9_16"),
@@ -703,7 +716,6 @@ class ImageViewerDialog(QDialog):
         src = self._img_label.pixmap()
         if src is None or src.isNull():
             return
-        from PySide6.QtGui import QPixmap
         from PySide6.QtCore import Qt as _Qt
         dpr = src.devicePixelRatio() or 1.0
         scaled = src.scaled(int(w * dpr), int(h * dpr), _Qt.KeepAspectRatio,
@@ -812,7 +824,7 @@ class AssetDetailDialog(QDialog):
     + 造型变体面板(角色)+ 最终提示词面板(生成/编辑/复制)+ footer(删除/关闭/上传/生成/保存)
     """
 
-    KINDS = {"character": ("characters", tr("chars")), "scene": ("scenes", tr("scenes")), "prop": ("props", tr("props"))}
+    KINDS: ClassVar[dict[str, object]] = {"character": ("characters", tr("chars")), "scene": ("scenes", tr("scenes")), "prop": ("props", tr("props"))}
 
     def __init__(self, parent, kind: str, row: dict, on_changed=None,
                  drama_id: int | None = None,
@@ -1017,10 +1029,10 @@ class AssetDetailDialog(QDialog):
 
     def _open_style_convert(self):
         """打开换画风弹窗。accepted 才写回 image_url —— 用户点「取消」原图不动。"""
-        from .style_convert_dialog import StyleConvertDialog
-        from .toast import err as _err
         from ..ai import image_client
         from ..pipeline import style_convert as SC
+        from .style_convert_dialog import StyleConvertDialog
+        from .toast import err as _err
 
         # 提前拦一道:不支持参考图的 provider 会凭空生成一张无关的图,
         # 与其跑完才发现,不如现在就说清楚(省一次 API 和一次误导)。
@@ -1050,8 +1062,8 @@ class AssetDetailDialog(QDialog):
                         on_saved=self._reload_after_edit)
 
     def _bg_available(self) -> bool:
-        from ..pipeline import erase as ER
         from ..ai import registry
+        from ..pipeline import erase as ER
         try:
             cfg = registry.check_ready("faceswap", None)
         except Exception:  # noqa: BLE001 —— 换脸服务未配置,去背景不可用
@@ -1135,7 +1147,7 @@ class AssetDetailDialog(QDialog):
             p = (_cfg.media_url_to_path(url)
                  if str(url).startswith(("/static/", "static/"))
                  else pathlib.Path(url))
-        except Exception:
+        except Exception:  # noqa: BLE001
             p = None
         if not p or not pathlib.Path(str(p)).exists():
             err(tr("source_not_found"))
@@ -1146,8 +1158,7 @@ class AssetDetailDialog(QDialog):
             btn.setText(tr("正在按图片重新描述样貌与服装…"))
 
         def job(tid):
-            from ..pipeline import video_clone
-            from ..pipeline import prompts_gen
+            from ..pipeline import prompts_gen, video_clone
             desc = video_clone.read_presenter_desc(p)
             if not desc:
                 raise RuntimeError("模型未返回描述")
@@ -1190,7 +1201,7 @@ class AssetDetailDialog(QDialog):
             b.setEnabled(False)
             b.setText(b.text() if "…" in b.text() else b.text() + "…")
         d = db.q1(f"SELECT * FROM {self.table} WHERE id=?", (self.row["id"],))
-        merged = {**dict(d), **self._collect()}
+        {**dict(d), **self._collect()}
         from ..pipeline import prompts_gen
         fn = {"character": prompts_gen.character_prompt, "scene": prompts_gen.scene_prompt,
               "prop": prompts_gen.prop_prompt}[self.kind]
@@ -1209,9 +1220,9 @@ class AssetDetailDialog(QDialog):
         TASKMGR.submit("prompt", job, done)
 
     def _gen_image(self):
+        from ..ai import image_client
         from ..core.taskmgr import TASKMGR
         from .toast import err, ok
-        from ..ai import image_client
         # 忙碌反馈:生成要几十秒,按钮不变化用户会连点/以为死了(用户实测)
         btn = getattr(self, "gen_img_btn", None)
         if btn is not None:
@@ -1227,8 +1238,7 @@ class AssetDetailDialog(QDialog):
                 raise RuntimeError(tr("请先生成最终提示词"))
             # 角色形象图统一白底(共享守卫,见 prompt_guards 白底注释):
             # 风格前缀的 creamy bokeh 会把纯白背景画成彩色虚化、挤掉脸部特写
-            from ..ai.prompt_guards import (CHARACTER_SHEET_NEGATIVE,
-                                            CHARACTER_SHEET_PROMPT_SUFFIX)
+            from ..ai.prompt_guards import CHARACTER_SHEET_NEGATIVE, CHARACTER_SHEET_PROMPT_SUFFIX
             extra_neg = None
             # 存量脏提示词就地清洗(不用重新 AI 生成):①风格前缀被 LLM 复读
             # 多份(实测 4 份);②旧版兜底块的矛盾短语(no close-up / only
@@ -1278,6 +1288,7 @@ class AssetDetailDialog(QDialog):
     def _upload(self):
         import shutil
         import uuid
+
         from PySide6.QtWidgets import QFileDialog
         p, _ = QFileDialog.getOpenFileName(self, tr("upload"), "", "Images (*.png *.jpg *.jpeg *.webp)")
         if not p:
@@ -1332,7 +1343,7 @@ class AssetDetailDialog(QDialog):
         styles = [(r["value"], db.style_display_name(r["value"], r["name"])) for r in
                   db.q("SELECT value, name FROM style_presets "
                        "WHERE is_active=1 AND style_type='visual' ORDER BY sort_order, id")]
-        d_row = db.q1("SELECT drama_id FROM {} WHERE id=?".format(self.table),
+        d_row = db.q1(f"SELECT drama_id FROM {self.table} WHERE id=?",
                       (self.row["id"],))
         default_style = "3d"
         if d_row and d_row.get("drama_id"):
@@ -1352,7 +1363,8 @@ class AssetDetailDialog(QDialog):
         from ..ai import image_client
         from ..core.taskmgr import TASKMGR
         from ..pipeline import style_convert as SC
-        from .toast import err as _err, ok as _ok
+        from .toast import err as _err
+        from .toast import ok as _ok
         style = (viewer.selected_style() or "3d")
         src = viewer.remote_url_hint or ""
         src_path = config.media_url_to_path(src) if src else None
@@ -1512,13 +1524,13 @@ class ComicPanelBindDialog(QDialog):
             "SELECT id, name, description, image_url, comic_image_url "
             "FROM props WHERE drama_id=? ORDER BY id", (drama_id,))]
         # 当前已绑
-        bound_chars = {r["character_id"] for r in db.q(
+        {r["character_id"] for r in db.q(
             "SELECT character_id FROM comic_panel_characters WHERE panel_id=?",
             (panel_id,))}
         bound_scenes = {r["scene_id"] for r in db.q(
             "SELECT scene_id FROM comic_panel_scenes WHERE panel_id=?",
             (panel_id,))}
-        bound_props = {r["prop_id"] for r in db.q(
+        {r["prop_id"] for r in db.q(
             "SELECT prop_id FROM comic_panel_props WHERE panel_id=?",
             (panel_id,))}
         # **默认全部自动勾选**(已绑的不动 + 未绑的全选上),用户想减再手调。

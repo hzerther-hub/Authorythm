@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """端到端漫画生成编排(Layer 1)的回归护栏。
 
 覆盖:
@@ -17,7 +16,6 @@ import pytest
 
 from app.core import db
 from app.pipeline import comic_pipeline
-
 
 SCRIPT_VALID = (
     "## S01|内景·咖啡馆|白天\n"
@@ -63,7 +61,7 @@ def _setup_episode(tmp_path, script=SCRIPT_VALID):
 
 def test_empty_script_raises_without_creating_panels(tmp_db):
     """空剧本 → RuntimeError,且不留任何 panel 记录。"""
-    did, eid = _setup_episode(tmp_db, script="")
+    _did, eid = _setup_episode(tmp_db, script="")
     with pytest.raises(RuntimeError, match="剧本为空"):
         comic_pipeline.generate_full_comic(eid)
     n = db.q1("SELECT COUNT(*) c FROM comic_panels WHERE episode_id=?", (eid,))["c"]
@@ -72,7 +70,7 @@ def test_empty_script_raises_without_creating_panels(tmp_db):
 
 def test_end_to_end_runs_split_then_image_then_stitch(tmp_db):
     """拆格 → 出图 → 拼长图,三步按顺序执行。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     calls = {"split": 0, "image": 0, "stitch": 0}
 
     with mock.patch("app.pipeline.comic.split_panels",
@@ -83,9 +81,9 @@ def test_end_to_end_runs_split_then_image_then_stitch(tmp_db):
 
     with mock.patch("app.pipeline.comic.split_panels") as m_split, \
          mock.patch("app.pipeline.comic.panel_image_prompt",
-                    return_value="<test prompt>") as m_prompt, \
+                    return_value="<test prompt>"), \
          mock.patch("app.pipeline.comic.panel_reference_images",
-                    return_value=[]) as m_refs, \
+                    return_value=[]), \
          mock.patch("app.pipeline.comic_pipeline.image_client.generate_image",
                     return_value=("data/static/comics/panel_1.png", "test")) as m_img, \
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels") as m_stitch:
@@ -127,13 +125,13 @@ def test_end_to_end_runs_split_then_image_then_stitch(tmp_db):
 
 def test_per_panel_image_failure_does_not_abort(tmp_db):
     """第 1 格失败 → 标 panel.status / 不落图,第 2 格继续。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
 
     with mock.patch("app.pipeline.comic.split_panels") as m_split, \
          mock.patch("app.pipeline.comic.panel_image_prompt",
-                    return_value="<test>") as m_prompt, \
+                    return_value="<test>"), \
          mock.patch("app.pipeline.comic.panel_reference_images",
-                    return_value=[]) as m_refs, \
+                    return_value=[]), \
          mock.patch("app.pipeline.comic_pipeline.image_client.generate_image") as m_img, \
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels"):
 
@@ -150,7 +148,6 @@ def test_per_panel_image_failure_does_not_abort(tmp_db):
         # 第一次抛,第二次成功
         m_img.side_effect = [RuntimeError("provider down"), ("ok", "fake")]
         # 第二次出图需真实路径
-        orig_generate = m_img
         def second_ok(*a, **kw):
             out = str(tmp_db / "static" / "comics" / "p_2.png")
             Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -167,7 +164,7 @@ def test_per_panel_image_failure_does_not_abort(tmp_db):
 
 def test_skip_already_generated_panels(tmp_db):
     """默认不重出已有 image_url 的格;force=True 才全部重出。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     # 预置 2 个 panel,panel 1 已有图
     db.ex("INSERT INTO comic_panels(episode_id,panel_number,description,image_url,created_at,updated_at)"
           " VALUES(?,?,?,?,?,?)",
@@ -178,9 +175,9 @@ def test_skip_already_generated_panels(tmp_db):
 
     with mock.patch("app.pipeline.comic.split_panels") as m_split, \
          mock.patch("app.pipeline.comic.panel_image_prompt",
-                    return_value="<test>") as m_prompt, \
+                    return_value="<test>"), \
          mock.patch("app.pipeline.comic.panel_reference_images",
-                    return_value=[]) as m_refs, \
+                    return_value=[]), \
          mock.patch("app.pipeline.comic_pipeline.image_client.generate_image") as m_img, \
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels"):
 
@@ -197,16 +194,16 @@ def test_skip_already_generated_panels(tmp_db):
 
 def test_force_regenerates_existing_panels(tmp_db):
     """force=True 时已出图格也重出。"""
-    did, eid = _setup_episode(tmp_db)
+    _did, eid = _setup_episode(tmp_db)
     db.ex("INSERT INTO comic_panels(episode_id,panel_number,description,image_url,created_at,updated_at)"
           " VALUES(?,?,?,?,?,?)",
           (eid, 1, "p1", "/static/comics/old.png", db.now(), db.now()))
 
     with mock.patch("app.pipeline.comic.split_panels") as m_split, \
          mock.patch("app.pipeline.comic.panel_image_prompt",
-                    return_value="<test>") as m_prompt, \
+                    return_value="<test>"), \
          mock.patch("app.pipeline.comic.panel_reference_images",
-                    return_value=[]) as m_refs, \
+                    return_value=[]), \
          mock.patch("app.pipeline.comic_pipeline.image_client.generate_image") as m_img, \
          mock.patch("app.pipeline.comic_pipeline.stitch.stitch_panels"):
 

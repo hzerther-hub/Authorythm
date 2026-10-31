@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """小说写作红线门控 + 正文内容体检。
 
 用户反馈的原始描述:「你把 AI 生成的总纲的过程写到第一章了」
@@ -274,6 +273,7 @@ def test_wizard_has_ai_generate_characters_button():
     也是这个路子 —— 构造 QWidget 需要 QApplication,单测里起一个会拖慢全量。
     """
     import inspect
+
     from app.ui import novel_dialogs
     src = inspect.getsource(novel_dialogs)
     assert "chars_btn" in src, "向导里没有 chars_btn"
@@ -433,6 +433,7 @@ def test_chain_characters_skips_when_library_already_has_characters():
     (实测 drama 4:库里 10 个角色、meta 是空的)→ 判成「没有」→ 白白再生成一批。
     """
     import inspect
+
     from app.ui import novel_dialogs
     src = inspect.getsource(novel_dialogs)
     assert "load_main_characters" in src, "串联角色没按资产库+meta 一起判"

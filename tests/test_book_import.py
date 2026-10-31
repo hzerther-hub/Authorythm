@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """整书导入 → 分析 → 仿写 三段式的对齐回归测试。
 
 对齐基准:原版 E:\\xiaoshuo backend/src/routes/novel.ts(2df744b,此后上游未改)。

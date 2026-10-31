@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """主页 Dashboard —— 进入 app 后的概览页(QStackedWidget index 0)。
 
 设计目标:
@@ -10,14 +9,17 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFrame, QGridLayout, QHBoxLayout, QLabel,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..core import config
-from ..core import db
+from ..core import config, db
 from ..core.i18n import tr
-from . import widgets as W
 
 
 def _utc_offset_label() -> str:
@@ -182,7 +184,7 @@ class DashboardWidget(QWidget):
             "font-size:11px; letter-spacing:4px; color:#6B727A; font-weight:700;"
         )
         hero.addWidget(eye)
-        h1 = QLabel()
+        QLabel()
         # 使用 tr("dash_greet", user) 之类留作后续;现在直接拼
         # Director's Slate:demo 数据回退 — 用户空数据库启动也能看到
         # 接近设计稿的丰富 layout(否则只是「暂无项目」空白);只要 db 真的有 >3 个
@@ -258,7 +260,7 @@ class DashboardWidget(QWidget):
             p_tasks._body.addWidget(_MiniRow(
                 tr("dash_total_n").format(tasks_total),
                 tr("dash_meta_by_created"),
-                f"TOTAL"))
+                "TOTAL"))
             p_tasks._body.addWidget(_MiniRow(
                 tr("dash_running_n").format(cnt_prog),
                 tr("dash_meta_taskmgr"),
@@ -307,7 +309,7 @@ class DashboardWidget(QWidget):
                 ("faceswap", "换脸 · InsightFace", "type=faceswap · GPU 38%", "READY"),
                 ("stockphoto", "图库 · Unsplash / Pexels / Pixabay", "type=stockphoto · 3 key", "PEND"),
             ]
-            for tag, name, meta, state in _DEMO_SVCS:
+            for _tag, name, meta, state in _DEMO_SVCS:
                 p_svc._body.addWidget(_MiniRow(name, meta, state))
         grid.addWidget(p_svc, 0, 2)
 

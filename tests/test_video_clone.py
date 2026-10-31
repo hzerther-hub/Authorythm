@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """复刻(video-clone)链路的提示词契约测试。
 
 背景:用户反馈「换了产品图,画面里还是原片的产品」。根因不是参数没调对,而是
@@ -14,9 +13,8 @@ from __future__ import annotations
 import pytest
 
 from app.ai.prompt_guards import VIDEO_MARKER, apply_video_guards
-from app.pipeline import video_clone as vc
 from app.pipeline import novel as vc_novel
-
+from app.pipeline import video_clone as vc
 
 # ── 时间锚点 ───────────────────────────────────────────────────────────
 
@@ -117,7 +115,7 @@ def test_rewrite_preserves_shot_structure(monkeypatch):
                         _fake_chat(json.dumps(same, ensure_ascii=False)))
     out = vc.rewrite_boards_for_product(_BOARDS, "玉镯")
     assert len(out) == len(_BOARDS)
-    for orig, new in zip(_BOARDS, out):
+    for orig, new in zip(_BOARDS, out, strict=False):
         assert new["start"] == orig["start"]
         assert new["end"] == orig["end"]
         assert new["shot"] == orig["shot"]
@@ -338,16 +336,17 @@ def test_clone_tasks_carry_episode_id():
     episode_id 为 None → 复刻项目的生成任务在任务列表里一条都看不到。
     """
     import inspect
+
     from app.ui import main_window
     src = inspect.getsource(main_window.ClonePage)
-    submits = [l for l in src.splitlines() if "TASKMGR.submit(\"clone" in l]
+    submits = [_ln for _ln in src.splitlines() if "TASKMGR.submit(\"clone" in _ln]
     assert submits, "未找到 clone 任务提交点"
     # 逐个检查后续若干行里是否带 episode_id
     lines = src.splitlines()
-    for i, l in enumerate(lines):
-        if "TASKMGR.submit(\"clone" in l:
+    for i, _ln in enumerate(lines):
+        if "TASKMGR.submit(\"clone" in _ln:
             window = "\n".join(lines[i:i + 3])
-            assert "episode_id=" in window, f"缺 episode_id: {l.strip()}"
+            assert "episode_id=" in window, f"缺 episode_id: {_ln.strip()}"
 
 
 def test_clone_task_types_have_chinese_labels():
@@ -374,7 +373,7 @@ def test_playable_video_converts_av1(tmp_path):
     if not ff:
         return                                   # 环境没 ffmpeg,跳过
     src = tmp_path / "av1.mp4"
-    r = subprocess.run([ff, "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
+    subprocess.run([ff, "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=64x64:rate=10",
                         "-c:v", "libaom-av1", "-crf", "50", "-b:v", "0", str(src)],
                        capture_output=True, timeout=180)
     if not src.exists():
@@ -388,7 +387,6 @@ def test_playable_video_converts_av1(tmp_path):
 def test_playable_video_passes_through_non_av1(tmp_path):
     """非 AV1 不该白转一次码(转码要花几秒)。"""
     import subprocess
-    from pathlib import Path
 
     from app.core import config
     from app.ui.main_window import _playable_video
@@ -523,6 +521,7 @@ def test_sync_assets_builds_turnaround_and_swaps_face(tmp_path, monkeypatch):
     (服装/体型同源)+ 换脸钉死五官,分镜参考用切格立绘(standing_ref_of)。
     """
     import json
+
     from PIL import Image
     _db = _tmp_db(tmp_path, monkeypatch, style="realistic")
     static = tmp_path / "static"
@@ -555,7 +554,7 @@ def test_sync_assets_builds_turnaround_and_swaps_face(tmp_path, monkeypatch):
                                                    "styling": "测试服装",
                                                    "footwear": ""})
 
-    cid, pid, sid = vc.sync_assets(801)
+    cid, _pid, _sid = vc.sync_assets(801)
 
     assert cid, "出镜人物资产未创建"
     clone = _db.jload(_db.q1("SELECT metadata FROM dramas WHERE id=?", (801,))["metadata"], {})["clone"]
@@ -572,6 +571,7 @@ def test_sync_assets_marks_swap_failure_visibly(tmp_path, monkeypatch):
     """换脸失败**不得静默**:保留生成底图但必须标记 turnaround_swapped=False,
     让界面提示「未换脸」—— 此前静默降级,用户拿路人脸当参考图而不自知。"""
     import json
+
     from PIL import Image
     _db = _tmp_db(tmp_path, monkeypatch)
     monkeypatch.setattr(_db.config, "STATIC_DIR", tmp_path / "static")
@@ -634,6 +634,7 @@ def test_toolbar_orders_steps_by_execution_order():
     直传开关是**模式切换**不是步骤,固定最左,不参与编号。
     """
     import inspect
+
     from app.ui import main_window
     src = inspect.getsource(main_window.ClonePage)
     order = ["bar.addWidget(direct_btn)", "bar.addWidget(analyze_btn)",
@@ -641,7 +642,7 @@ def test_toolbar_orders_steps_by_execution_order():
              "bar.addWidget(presenter_img_btn)", "bar.addWidget(redraw_all_btn)",
              "bar.addWidget(merge_btn)"]
     pos = [src.index(s) for s in order]
-    assert pos == sorted(pos), f"工具条按钮顺序乱了:{list(zip(order, pos))}"
+    assert pos == sorted(pos), f"工具条按钮顺序乱了:{list(zip(order, pos, strict=False))}"
     # 全身像路线已移除(用户定版);换脸入口(三视图手动换脸 + 首帧换脸)必须在
     assert "clone_fs_btn" not in src, "「重建人物全身像」按钮应已移除"
     assert "clone_swap_btn" in src and "_swap_turnaround_face" in src, "缺三视图手动换脸入口"
@@ -790,6 +791,7 @@ def test_single_person_guard_and_closeup_ref_trim(tmp_path, monkeypatch):
       (用户定版:「只要将三张图喂给模型,不就能保持一致性了」)。
     """
     import json
+
     from PIL import Image
     _db = _tmp_db(tmp_path, monkeypatch)
     static = tmp_path / "static"
@@ -874,9 +876,10 @@ def test_volume_batch_threshold_and_plan_size():
 
 def test_volume_in_batches_rejects_small_books():
     """章数未过阈值不该走分批(白白多几次模型调用)。"""
-    from app.pipeline import novel as nv
     import pytest
+
     from app.core import db
+    from app.pipeline import novel as nv
     small = db.q1("SELECT id FROM dramas WHERE total_episodes < 60 LIMIT 1")
     if not small:
         pytest.skip("库里没有小体量项目可验证")
@@ -930,9 +933,9 @@ def test_novel_plan_dialog_constructs(qapp_stub):
     except ImportError:                                  # pragma: no cover
         import pytest
         pytest.skip("无 PySide6")
-    app = QApplication.instance() or QApplication([])
-    from app.ui.novel_dialogs import NovelPlanDialog
+    QApplication.instance() or QApplication([])
     from app.core import db
+    from app.ui.novel_dialogs import NovelPlanDialog
 
     did = db.q1("SELECT id FROM dramas WHERE work_type='novel' LIMIT 1")
     if not did:
@@ -952,8 +955,9 @@ def test_chapter_count_not_overwritten_by_generated_count(tmp_path, monkeypatch)
     于是用户设 999 → 生成 60 章 → 下次打开对话框只剩 60,设定永久丢失。
     章数必须存在 novel_meta.chapter_count,与集数字段分开。
     """
-    from app.core import db as _db
     import json as _json
+
+    from app.core import db as _db
 
     # 隔离必须改 `config.DB_PATH`,不能只设 YIHAO_DATA_DIR 环境变量 ——
     # config 在**导入时**就把 DATA_DIR 算成 DB_PATH 了,之后再改环境变量完全无效;
@@ -981,6 +985,7 @@ def test_chapter_count_not_overwritten_by_generated_count(tmp_path, monkeypatch)
 def test_chapter_count_written_to_meta_not_total_episodes():
     """保存规模时只写 novel_meta,不得再覆盖 total_episodes(那是集数)。"""
     import inspect
+
     from app.ui import novel_dialogs as nd
     src = inspect.getsource(nd.NovelPlanDialog._on_size_changed)
     assert "chapter_count" in src, "规模保存未写 chapter_count"
@@ -1009,8 +1014,8 @@ def test_service_dialog_opens_for_existing_config(qapp_stub):
 
 def test_custom_provider_index_is_valid(qapp_stub):
     """_custom_idx 必须是有效整数 —— addItem 的返回值是 None,不能直接赋值。"""
-    from app.ui.settings_dialog import ServiceDialog
     from app.core import db
+    from app.ui.settings_dialog import ServiceDialog
     row = db.q1("SELECT * FROM ai_service_configs WHERE service_type='text' LIMIT 1")
     if not row:
         import pytest
@@ -1197,7 +1202,7 @@ class _NovelDB:
         import json as _json
         try:
             return _json.loads(raw) if raw else (default if default is not None else {})
-        except Exception:
+        except Exception:  # noqa: BLE001
             return default if default is not None else {}
 
     def ex(self, sql, args=()):
@@ -1210,7 +1215,6 @@ class _NovelDB:
 
 def _plan_db(monkeypatch) -> _NovelDB:
     from app.pipeline import novel as nv
-    from app.core import config as _config
     fake = _NovelDB()
     monkeypatch.setattr(nv, "db", fake)
     monkeypatch.setattr(nv, "_plan_scale", lambda drama_id, chapter_count, word_count: (4, 2500))
@@ -1256,6 +1260,7 @@ def test_chapters_batched_failure_keeps_finished_batches(tmp_path, monkeypatch):
     """中途失败(某批重试耗尽)时,前面批次必须已经在库里 —— 修复前
     all_ch 只在内存,520 章跟着异常一起蒸发(实测)。"""
     import pytest as _pytest
+
     from app.pipeline import novel as nv
     monkeypatch.setattr(nv, "CHAPTER_BATCH", 2)
     fake = _plan_db(monkeypatch)
@@ -1447,7 +1452,9 @@ def test_clone_card_shows_three_script_sections(tmp_path, monkeypatch, qapp_stub
     """分镜卡片要按小说线的格式展示「分镜描述/氛围/视频提示词」三段 ——
     界面与脚本格式对齐,用户才能看出「这一镜锁的是哪个场景、哪个道具」。"""
     import json
+
     from PySide6.QtWidgets import QTextEdit
+
     from app.ui.main_window import ClonePage
     _db = _tmp_db(tmp_path, monkeypatch)
     boards = [{
@@ -1475,6 +1482,7 @@ def test_clone_video_prompt_maps_asset_names_to_reference_index(tmp_path, monkey
     在运动过程中漂移(首帧对、后面跑偏)。序号与 reference_images 严格对齐。
     """
     import json
+
     from PIL import Image
     _db = _tmp_db(tmp_path, monkeypatch, style="realistic")
     static = tmp_path / "static"
@@ -1656,7 +1664,7 @@ def test_synth_shot_narration_falls_back_to_line():
     try:
         vc.synth_shot_narration(899, 1)
     finally:
-        vc.tts_client.synthesize = getattr(vc.tts_client, "synthesize")
+        vc.tts_client.synthesize = vc.tts_client.synthesize
     assert "圆润又油光" in _fake_synth.text
 
 
@@ -1665,7 +1673,9 @@ def test_clone_script_dialog_has_four_sections_with_actions(tmp_path, monkeypatc
     """「镜头脚本」弹窗要与小说线检查器同款:四段标题 + 视频提示词头的
     「AI 生成」+ 旁白头的「🔊 合成配音」。"""
     import json
+
     from PySide6.QtWidgets import QDialog, QPushButton, QTextEdit
+
     from app.ui.main_window import ClonePage
     _db = _tmp_db(tmp_path, monkeypatch)
     boards = [{"number": 1, "start": 0, "end": 4, "shot": "中景",

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """i18n 覆盖度守卫:新增的界面文案不许露键名、不许漏中文、不许丢占位符。
 
 起因是实测踩到的两个 bug:
@@ -304,7 +303,7 @@ def _assert_no_new_gaps(kind, current, base, hint):
     else:
         new = [k for k in current if k not in set(base)]
     if not new:
-        remaining = len(current) if not isinstance(current, dict) else len(current)
+        remaining = len(current)
         print(f"[i18n] {kind}:无新增(存量 {remaining})")
         return
     detail = "\n".join(f"    {k}: {v}" if isinstance(v, list) else f"    {k!r}"

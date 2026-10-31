@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """调色预览的后台计算线程。
 
 为什么必须在后台:11 参全开一次要一两百毫秒(降采样预览)到一秒
@@ -11,9 +10,7 @@ QThread + Signal 由 Qt 自动跨线程投递回 GUI 线程,worker 里不碰任�
 """
 from __future__ import annotations
 
-import time
-
-from PySide6.QtCore import QObject, QThread, Signal
+from PySide6.QtCore import QThread, Signal
 from PySide6.QtWidgets import QWidget
 
 
@@ -42,7 +39,7 @@ class AdjustWorker(QThread):
         if not self._lock_q:
             self._running = False
             return
-        params = self._lock_q.pop(0)
+        self._lock_q.pop(0)
         self._running = True
         self.start()
 
@@ -76,6 +73,7 @@ class BusyOverlay(QWidget):
         super().__init__(parent)
         from PySide6.QtCore import Qt
         from PySide6.QtWidgets import QHBoxLayout, QLabel
+
         from .braille import BrailleSpinner
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setStyleSheet("background:rgba(20,20,20,90);")

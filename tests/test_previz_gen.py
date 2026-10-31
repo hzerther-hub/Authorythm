@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜 → 预演工程生成器:全程打桩,绝不碰真实数据库(用户数据是红线)。"""
 from __future__ import annotations
 

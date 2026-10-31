@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """片头模拟器弹窗(对齐原版 IntroEditorDialog.vue)。
 
 预览项目画幅 → 拖拽定位文字中心点 → 真字体 WYSIWYG → 播放预览模拟淡入淡出 → 改动即存。
@@ -7,16 +6,25 @@ from __future__ import annotations
 
 from PySide6.QtCore import QRect, QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QFontDatabase, QPainter, QPen
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFormLayout,
-                               QGraphicsOpacityEffect, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QSlider, QSpinBox,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QGraphicsOpacityEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
+from ..core import db
 from ..core.i18n import tr
-from ..core import config, db
 from ..pipeline import intro as INTRO
 from . import widgets as W
-from .braille import WaitingButton
 
 
 class IntroPreview(QWidget):

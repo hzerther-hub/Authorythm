@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """资产下载:把生成的图片/视频/成片复制到用户下载目录,文件名用资产名。
 
 对齐原版(72736af)文件名规则:
@@ -91,7 +90,7 @@ def download_asset_image(row: dict, kind: str, variant_label: str = "") -> Path:
     """资产图下载(角色/场景/道具)。"""
     url = row.get("image_url") or row.get("comic_image_url")
     name = row.get("name") or row.get("location") or "asset"
-    ext = _ext_from(url)
+    ext = _ext_from(url or "")
     fn = f"{name}{('_' + variant_label) if variant_label else ''}{ext}"
     return download_media(url, fn)
 
@@ -106,7 +105,7 @@ def download_asset_image_ask(parent, row: dict, kind: str,
     """
     url = row.get("image_url") or row.get("comic_image_url")
     name = row.get("name") or row.get("location") or "asset"
-    ext = _ext_from(url)
+    ext = _ext_from(url or "")
     fn = f"{name}{('_' + variant_label) if variant_label else ''}{ext}"
     return download_media_ask(parent, url, fn)
 

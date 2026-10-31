@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Agent 调用契约守卫:全仓 run_agent_json 调用点只允许传真实签名里的参数。
 
 背景(实测 2026-10-27):storyboard_repair.repair_storyboards 给

@@ -3,13 +3,14 @@
 跑法:PYTHONPATH=. python scripts/regen_char25.py
 """
 import sys
+
+from app.ai import image_client
+from app.core import config, db
+from app.pipeline import prompts_gen
+
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, ".")
 
-from app.core import db
-from app.pipeline import prompts_gen
-from app.ai import image_client
-from app.core import config
 
 db.init_db()
 
@@ -42,7 +43,7 @@ try:
     print(f"  OK: provider={provider}")
     print(f"  新 URL: {url}")
     print("Done.")
-except Exception as e:
+except Exception as e:  # noqa: BLE001
     import traceback
     traceback.print_exc()
     print(f"  FAIL: {e}")

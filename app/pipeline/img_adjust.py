@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """图片精调引擎:11 参调色 + 画布变换,纯 Pillow + numpy,进程内直接跑。
 
 **不引入任何外部服务**(不需要 FastAPI / 数据库 / 后台进程):
@@ -13,12 +12,11 @@ alpha 通道全程独立处理并原样带回 —— 调色不该把透明区弄
 """
 from __future__ import annotations
 
-import io
 import math
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageChops, ImageEnhance, ImageFilter
+from PIL import Image, ImageEnhance, ImageFilter
 
 # 各参数的「安全步长」:0.1 一格,UI 滑杆按这个换算成 -1..1
 STEP = 0.1
@@ -247,7 +245,7 @@ def corner_matte(src: str | Path, dst: str | Path | None = None,
     与 rembg 的区别要跟用户说清:rembg 认得出复杂主体边缘,这里只认"四角颜色
     相同且处处一致"的纯色背景。产品图/白底图适用,街景背景会抠坏。
     """
-    rgb, alpha = _open(src)
+    rgb, _alpha = _open(src)
     arr = np.asarray(rgb, dtype=np.int16)
     w, h = arr.shape[1], arr.shape[0]
     corners = np.stack([arr[0, 0], arr[0, w - 1], arr[h - 1, 0], arr[h - 1, w - 1]])
@@ -327,14 +325,13 @@ def letterbox(src: str | Path, dst: str, width: int, height: int,
     """
     img, _alpha = _open(src)
     img = img.convert("RGB")
-    mode = "pad"
     if width <= 0 or height <= 0:
         raise ValueError("目标尺寸必须大于 0")
     if img.size == (width, height):
         return _save(img.convert("RGBA"), dst, dst, "")
 
     scale = min(width / img.width, height / img.height)
-    size = (max(1, int(round(img.width * scale))), max(1, int(round(img.height * scale))))
+    size = (max(1, round(img.width * scale)), max(1, round(img.height * scale)))
     placed = img.resize(size, Image.LANCZOS)
 
     canvas = Image.new("RGB", (width, height), fill)
@@ -358,7 +355,7 @@ def export_delivery(src: str | Path, out_dir: str | Path,
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(src).stem
-    img, alpha = _open(src)
+    img, _alpha = _open(src)
     img = img.convert("RGB")
 
     outs: list[str] = []
@@ -390,7 +387,7 @@ def export_delivery(src: str | Path, out_dir: str | Path,
             bg.save(dst)
         else:
             sc = min(w / img.width, h / img.height)
-            size = (max(1, int(round(img.width * sc))), max(1, int(round(img.height * sc))))
+            size = (max(1, round(img.width * sc)), max(1, round(img.height * sc)))
             placed = img.resize(size, Image.LANCZOS)
             canvas = Image.new("RGB", (w, h), (255, 255, 255))
             canvas.paste(placed, ((w - size[0]) // 2, (h - size[1]) // 2))

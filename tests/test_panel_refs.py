@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Layer 2.2:多角度参考图注入出图端的回归护栏。
 
 覆盖:
@@ -11,8 +10,6 @@
 """
 from __future__ import annotations
 
-import shutil
-import sqlite3
 from pathlib import Path
 
 import pytest

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """批量改图工作台(原「图片处理」页的内容,现内嵌在聊天改图面板里)。
 
 为什么搬到聊天改图:两件事本来就是同一件事的两面 —— 都是「对一张图下指令改它」。
@@ -15,19 +14,30 @@ ChatEditPanel 的「批量处理」折叠区,单张图的精修继续走聊天�
 """
 from __future__ import annotations
 
+import contextlib
 import time
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QPlainTextEdit, QPushButton,
-                               QScrollArea, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..ai import image_client
-from ..ai import registry
+from ..ai import image_client, registry
 from ..core import config, db
-from ..core.i18n import tr
 from ..core import taskmgr as _TM
+from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
 from .braille import WaitingButton
@@ -403,7 +413,7 @@ class BatchImagePanel(QWidget):
         if not self._sources:
             self.src_lay.addWidget(W.muted(tr("no_source")))
             return
-        for i, s in enumerate(self._sources[:200]):
+        for _i, s in enumerate(self._sources[:200]):
             row = QFrame()
             rl = QHBoxLayout(row)
             rl.setContentsMargins(0, 0, 0, 0)
@@ -617,7 +627,9 @@ class BatchImagePanel(QWidget):
             im.setAlignment(Qt.AlignCenter)
             im.setPixmap(W.pixmap_from_media(url, 520, 520))
             col.addWidget(im, 1)
-            holder = QWidget(); holder.setLayout(col)
+            holder = QWidget()
+            holder.setLayout(col)
+
             row.addWidget(holder, 1)
         lay.addLayout(row, 1)
         close = W.primary_btn(tr("close"))
@@ -632,7 +644,7 @@ class BatchImagePanel(QWidget):
         import os
         d = self.out_edit.text().strip()
         if d and Path(d).is_dir():
-            os.startfile(d)  # noqa: Windows 默认资源管理器
+            os.startfile(d)  # Windows 默认资源管理器
 
     # ── 执行 ──
     def _on_image_model_changed(self):
@@ -821,10 +833,8 @@ class BatchImagePanel(QWidget):
     def _set_source_enabled(self, on: bool):
         """处理中锁住来源控件:边跑边改来源会让结果对不上。"""
         for w in self._src_widgets:
-            try:
+            with contextlib.suppress(RuntimeError):
                 w.setEnabled(on)
-            except RuntimeError:
-                pass
 
     @staticmethod
     def _process_one(src: str, instr: str, out_dir: Path, cfg_id, people: int = 1) -> str:
@@ -834,6 +844,7 @@ class BatchImagePanel(QWidget):
         tmp = None
         if str(src).startswith(("http://", "https://")):
             import tempfile
+
             import requests
             resp = requests.get(src, timeout=60)
             resp.raise_for_status()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """回归:聊天改图的意图路由 —— 问图内容必须进问答,不是进改图引擎。
 
 实测 bug(用户报告「为什么系统认为我们要处理图片」):
@@ -37,7 +36,7 @@ def test_parse_jev_intent_reads_choice_field_from_real_shape():
 
 
 def test_parse_jev_intent_edit_and_fallbacks():
-    from app.ui.chat_edit_drawer import _INTENT_EDIT, _INTENT_CHAT, _parse_jev_intent
+    from app.ui.chat_edit_drawer import _INTENT_CHAT, _INTENT_EDIT, _parse_jev_intent
 
     edit_res = {"answers": {"intent": {"type": "choice", "choice": "edit",
                                        "confidence": 0.9}}}
@@ -155,21 +154,24 @@ def test_jev_shortcut_match_rejects_low_confidence_and_none(monkeypatch):
 
 def test_shortcut_replay_hits_whitelist():
     """正典命令必须能被白名单确定性命中 —— Jev 挑完重放才算数。"""
-    from app.ai.photocraft_bridge import ChatEditEngine, Step
+    from app.ai.photocraft_bridge import ChatEditEngine
     from app.ui.chat_edit_drawer import _JEV_SHORTCUTS
 
     eng = ChatEditEngine()
     for canon in list(_JEV_SHORTCUTS)[:6]:
-        steps, label, note = eng.interpret(canon, image_url="", mode="whitelist",
+        steps, _label, note = eng.interpret(canon, image_url="", mode="whitelist",
                                            llm_config_id=None)
         assert steps, f"正典命令「{canon}」白名单没命中,Jev 挑了也白挑(note={note})"
 
 
 def test_knowledge_and_find_photo_routing():
     """知识问句 → web 搜索;找图 → 弹图库。两者都不得误伤原有路由。"""
-    from app.ui.chat_edit_drawer import (_extract_photo_query, _knowledge_query,
-                                         _looks_like_find_photo,
-                                         _looks_like_knowledge)
+    from app.ui.chat_edit_drawer import (
+        _extract_photo_query,
+        _knowledge_query,
+        _looks_like_find_photo,
+        _looks_like_knowledge,
+    )
 
     # 知识:问概念/参数,与当前图无关;指着当前图问的不算
     for t in ("什么是高斯模糊?", "锐化和磨皮有什么区别", "推荐一个磨皮参数",
@@ -195,8 +197,7 @@ def test_knowledge_and_find_photo_routing():
 
 def test_jev_intent_parses_four_ways(monkeypatch):
     """Jev 四选一:knowledge / find_photo 也要能从 choice 字段解析出来。"""
-    from app.ui.chat_edit_drawer import (_INTENT_FIND_PHOTO, _INTENT_KNOWLEDGE,
-                                         _parse_jev_intent)
+    from app.ui.chat_edit_drawer import _INTENT_FIND_PHOTO, _INTENT_KNOWLEDGE, _parse_jev_intent
 
     def res(choice):
         return {"answers": {"intent": {"type": "choice", "choice": choice,
@@ -304,8 +305,11 @@ def test_find_photo_query_variants():
 
 def test_web_query_routing_and_extraction():
     """显式联网查询(查火车/打开web查询XX)→ web_search 意图,搜索词剥掉外壳。"""
-    from app.ui.chat_edit_drawer import (_looks_like_web_query, _web_query_text,
-                                         _looks_like_find_photo)
+    from app.ui.chat_edit_drawer import (
+        _looks_like_find_photo,
+        _looks_like_web_query,
+        _web_query_text,
+    )
 
     for t in ("打开web查询宁波到淄博的火车表", "查宁波到淄博的火车",
               "帮我查一下天气", "联网查一下最新模型", "搜索一下锐化教程"):

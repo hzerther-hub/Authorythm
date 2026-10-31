@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """测试:流式写章(按钮路径)——真实 StreamWorker,离屏 Qt。"""
 from __future__ import annotations
 
@@ -9,14 +8,14 @@ import time
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 sys.path.insert(0, "E:/pydrama")
 
-from PySide6.QtWidgets import QApplication  # noqa: E402
+from PySide6.QtWidgets import QApplication
 
 app = QApplication([])
 
-from app.ui.streaming import StreamWorker  # noqa: E402
 from app.agents.prompts import load_prompt  # noqa: E402
 from app.core import db  # noqa: E402
 from app.pipeline import novel as novel_pipe  # noqa: E402
+from app.ui.streaming import StreamWorker  # noqa: E402
 
 EP = 8
 prompt = novel_pipe.chapter_prompt(EP)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """程序化擦除的填充核心(两级流水线)—— 对齐参考项目 utils/inpaint.ts(ecda917)。
 
 1) 补丁式结构填充(主体):把图与蒙版降到低分辨率(洞 ≤96px),从洞边缘向内逐层
@@ -19,7 +18,6 @@ import io
 from pathlib import Path
 
 from PIL import Image, ImageFilter
-
 
 # ── Push-Pull 金字塔 ─────────────────────────────────────────────
 
@@ -252,7 +250,7 @@ def inpaint_masked(orig: bytes | str | Path, mask_png: bytes,
     inv = ImageOps.invert(m)
     try:
         mean = ImageStat.Stat(small, mask=inv).mean
-        avg = tuple(int(round(v)) for v in mean[:3])
+        avg = tuple(round(v) for v in mean[:3])
     except Exception:  # noqa: BLE001
         avg = (127, 127, 127)
     work = small.copy()

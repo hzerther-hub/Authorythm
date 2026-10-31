@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """状态台账的解析韧性回归。
 
 背景(实测 2026-10-27):update_state_ledger 里 `extract_json(raw) or {}` 只挡

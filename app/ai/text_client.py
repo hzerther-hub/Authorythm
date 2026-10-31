@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
 """文本模型客户端:OpenAI 兼容 chat completions(覆盖 OpenAI/MiniMax/DeepSeek/Gemini-OpenAI 端点)。"""
 from __future__ import annotations
 
+import contextlib
 import os
 
 import requests
@@ -65,10 +65,8 @@ def _build_body(cfg: dict, prompt: str, system: str | None, temperature: float,
     # 配置级 Temperature(对齐原版:留空跟随服务默认;填写则强制覆盖,应对强制温度模型)
     cfg_temp = cfg.get("temperature")
     if cfg_temp is not None and cfg_temp != "":
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             body["temperature"] = float(cfg_temp)
-        except (TypeError, ValueError):
-            pass
     if json_mode:
         body["response_format"] = {"type": "json_object"}
     return body
@@ -117,16 +115,14 @@ def _post_with_retry(url: str, body: dict, headers: dict, timeout: int):
             last = e
             if i >= NET_RETRY_ATTEMPTS - 1:
                 break
-            from ..core.logging_setup import get_logger
             from ..core import metrics
+            from ..core.logging_setup import get_logger
             log = get_logger("ai.text")
             delay = NET_RETRY_BACKOFF_S[min(i, len(NET_RETRY_BACKOFF_S) - 1)]
             log.warning("text.net_retry attempt=%d/%d in %ds err=%s",
                         i + 1, NET_RETRY_ATTEMPTS, delay, type(e).__name__)
-            try:
+            with contextlib.suppress(Exception):
                 metrics.incr("ai.text.net_retry")
-            except Exception:  # noqa: BLE001
-                pass
             _t.sleep(delay)
     assert last is not None
     raise last

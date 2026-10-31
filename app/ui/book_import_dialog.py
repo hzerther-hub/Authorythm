@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """整书导入 → 分析 → 仿写 对话框(三段式流水线,依赖先行 + 后台执行)。
 
 段①导入:TXT 选文件 → 三级切章入库(替换本项目既有章节)
@@ -11,16 +10,23 @@ from __future__ import annotations
 
 import json
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QFileDialog, QFormLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QPlainTextEdit, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPlainTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import db
+from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
 from .braille import BrailleBar, WaitingButton
 from .toast import err, ok
-from ..core.i18n import tr
 
 
 class BookImportDialog(QDialog):

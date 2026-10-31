@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """端到端漫画生成:剧本 → 拆格 → 出图 → 拼长图(Layer 1)。
 
 把现有的 4 个手动步骤(`comic.split_panels` / `panel_image_prompt` /

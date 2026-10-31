@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PhotoCraft 聊天修图侧栏:右侧抽屉 + 气泡 + 双引擎(白名单 + LLM)。
 
 打开抽屉 → 加载图(本地图/远程 URL) → 输入中文 → 引擎命中 → 渲染产物。
@@ -10,38 +9,66 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
-import re
 import shutil
 from pathlib import Path
-from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QColorDialog, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel,
-    QLayout, QLineEdit,
-    QPlainTextEdit, QPushButton, QScrollArea, QSizePolicy, QSpinBox,
-    QVBoxLayout, QWidget,
+    QColorDialog,
+    QComboBox,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
 )
 
-from ..ai.photocraft_bridge import ChatEditEngine, Step
-from ..ai.photocraft_bridge import PHOTOCRAFT_URL
+from ..ai.photocraft_bridge import PHOTOCRAFT_URL, ChatEditEngine, Step
 from ..core import db
-from ..core.i18n import tr
 from ..core import taskmgr as _TM
+from ..core.i18n import tr
 from . import widgets as W
 
 # 意图路由 / 帮助文案 / 正典命令 → 全部抽到 chat_edit.intent(纯函数,不依赖 Qt)
 # 老的下划线命名作为私有别名保留,文件内已有 ~5 处调用无需改名。
 from .chat_edit.intent import (
-    INTENT_EDIT, INTENT_CHAT, INTENT_KNOWLEDGE, INTENT_FIND_PHOTO, INTENT_WEB_QUERY,
-    KNOWN_INTENTS, JEV_INTENT_QUESTIONS, JEV_SHORTCUTS, JEV_SHORTCUT_MIN_PROB,
-    QUESTION_HINTS, EDIT_VERBS, KNOWLEDGE_HINTS, IMAGE_REFERS, FIND_PHOTO_RE,
-    WEBQ_NET_WORDS, HELP_TEXT,
-    parse_jev_intent, looks_like_analysis, looks_like_knowledge, looks_like_find_photo,
-    looks_like_web_query, extract_photo_query, llm_extract_photo_query,
-    knowledge_query, web_query_text, jev_shortcut_match,
+    EDIT_VERBS,
+    FIND_PHOTO_RE,
+    HELP_TEXT,
+    IMAGE_REFERS,
+    INTENT_CHAT,
+    INTENT_EDIT,
+    INTENT_FIND_PHOTO,
+    INTENT_KNOWLEDGE,
+    INTENT_WEB_QUERY,
+    JEV_INTENT_QUESTIONS,
+    JEV_SHORTCUT_MIN_PROB,
+    JEV_SHORTCUTS,
+    KNOWLEDGE_HINTS,
+    KNOWN_INTENTS,
+    QUESTION_HINTS,
+    WEBQ_NET_WORDS,
+    extract_photo_query,
+    jev_shortcut_match,
+    knowledge_query,
+    llm_extract_photo_query,
+    looks_like_analysis,
+    looks_like_find_photo,
+    looks_like_knowledge,
+    looks_like_web_query,
+    parse_jev_intent,
+    web_query_text,
 )
 
 _INTENT_EDIT = INTENT_EDIT
@@ -78,7 +105,7 @@ class ChatEditMessage(QFrame):
     """单条消息气泡 —— 用户/助手两种风格。"""
 
     def __init__(self, role: str, content: str, steps: list[Step] | None = None,
-                 result_image: Optional[str] = None, parent=None,
+                 result_image: str | None = None, parent=None,
                  on_image_edit=None, on_resend=None):
         super().__init__(parent)
         self.role = role
@@ -191,14 +218,13 @@ class ChatEditMessage(QFrame):
         # 注意:不要用 QLayout.SetMinAndMaxSize —— 它把气泡锁死在 QLabel 的
         # minimumWidth 上,中文逐字折行(「去掉图片」/「上的文字」各一行)。
         # 这里只给 MinimumSize,让 sizeHint(= 文本单行自然宽度)决定实际宽度。
-        from PySide6.QtWidgets import QSizePolicy
         bl.setSizeConstraint(QLayout.SetMinimumSize)
         body.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
         self._body = body
         # (label, 原始文本) —— _apply_bubble_width 要用文本内容重新量自然宽
         pairs = [(text, content or "")]
         if not is_user and self._steps:
-            for lab, step in zip(_step_labels, self._steps):
+            for lab, step in zip(_step_labels, self._steps, strict=False):
                 pairs.append((lab, f"• `{step.cmd}`"
                                    + (f"  {step.params}" if step.params else "")
                                    + (f"  — {step.reason}" if step.reason else "")))
@@ -271,8 +297,8 @@ class ChatEditMessage(QFrame):
 
     def _copy_content(self, btn):
         """一键复制本条消息全文(长答案没法用鼠标拖选全,用户实测)。"""
-        from PySide6.QtGui import QGuiApplication
         from PySide6.QtCore import QTimer
+        from PySide6.QtGui import QGuiApplication
         QGuiApplication.clipboard().setText(self._raw_content)
         btn.setText("已复制 ✓")
         QTimer.singleShot(1500, lambda: btn.setText("▤ 复制"))
@@ -324,7 +350,7 @@ class ChatEditMessage(QFrame):
         """编辑器里回车 = 完成;**用户消息**回车还会重新提问;Shift+Enter 换行。"""
         from PySide6.QtCore import QEvent
         from PySide6.QtGui import QKeyEvent
-        if obj is getattr(self, "_editor", None) and event.type() == QEvent.Type.KeyPress:
+        if obj is getattr(self, "_editor", None) and event.type() == QEvent.Type.KeyPress:  # noqa: SIM102  (嵌套 if 各带注释说明,合并成 and 会丢掉可读性)
             if isinstance(event, QKeyEvent) and event.key() in (Qt.Key_Return, Qt.Key_Enter):
                 if event.modifiers() & Qt.ShiftModifier:
                     return super().eventFilter(obj, event)
@@ -485,8 +511,8 @@ class ChatEditPanel(QWidget):
         cc_dir_row = QHBoxLayout()
         cc_dir_row.setSpacing(4)
         self.cc_dir_edit = QLineEdit()
-        from ..core import db as _db
         from ..core import config as _cfg
+        from ..core import db as _db
         self.cc_dir_edit.setText(_db.get_setting("photocraft_install_dir", "") or _cfg.DEFAULT_PHOTOCRAFT_DIR)
         self.cc_dir_edit.setPlaceholderText("例如 E:\\photocraft\\photocraft-0.7.0-windows-x64-portable")
         cc_dir_row.addWidget(self.cc_dir_edit, 1)
@@ -608,8 +634,8 @@ class ChatEditPanel(QWidget):
         self.wm_mode.currentIndexChanged.connect(self._on_wm_mode_changed)
         wm_row.addWidget(self.wm_mode)
         # 文字模式输入 + 图片模式输入(QStackedWidget 互斥显示)
-        from PySide6.QtWidgets import QStackedWidget, QColorDialog
         from PySide6.QtGui import QColor
+        from PySide6.QtWidgets import QStackedWidget
         self.wm_stack = QStackedWidget()
         # 文字页(双行:输入行 + 样式行[预设/描边宽/描边色/主色])
         text_page = QWidget()
@@ -1054,6 +1080,7 @@ class ChatEditPanel(QWidget):
         local = path
         if str(path).startswith(("http://", "https://")):
             import uuid
+
             from ..ai import stock_photo as _sp
             from ..core import config as _cfg
             _d = _cfg.STATIC_DIR / "uploads"
@@ -1186,7 +1213,7 @@ class ChatEditPanel(QWidget):
 
     def _append_message_widget(self, role: str, content: str,
                               steps: list[Step] | None,
-                              result_image: Optional[str],
+                              result_image: str | None,
                               scroll: bool = True):
         # 去掉底部 stretch 再插,插完再加回
         stretch = self.hist_lay.takeAt(self.hist_lay.count() - 1).widget()
@@ -1437,8 +1464,11 @@ class ChatEditPanel(QWidget):
 
         def job(tid):
             # ── 意图路由:找图/知识(规则直判)→ 批分析 → 问当前图 → Jev → edit ──
-            from ..ai.photocraft_bridge import (_wants_batch_analysis,
-                                                _wants_batch_n, analyze_and_plan)
+            from ..ai.photocraft_bridge import (
+                _wants_batch_analysis,
+                _wants_batch_n,
+                analyze_and_plan,
+            )
             # ① 找图/知识问句:确定性规则直判,不过 Jev,也不要求已选图
             #    (问「什么是高斯模糊」不需要先放一张图进来)
             if _looks_like_find_photo(text):
@@ -1647,6 +1677,7 @@ class ChatEditPanel(QWidget):
         if intent is not None:
             action, arg1, arg2 = intent
             import time as _t3
+
             from ..core import config as _cfg
             od = _cfg.STATIC_DIR / "photocraft_sessions" / f"s{sess_id or 0}"
             od.mkdir(parents=True, exist_ok=True)
@@ -1694,6 +1725,7 @@ class ChatEditPanel(QWidget):
             return {"empty": True, "note": note, "user_text": prompt}
         # 应用
         import time as _t2
+
         from ..core import config
         out_dir = config.STATIC_DIR / "photocraft_sessions" / f"s{sess_id or 0}"
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -1702,12 +1734,10 @@ class ChatEditPanel(QWidget):
         src_copied = out_dir / f"src_{ts}.png"
         try:
             shutil.copy2(in_path, src_copied)
-            result = self._engine.apply(str(src_copied), steps, str(out_path))
+            self._engine.apply(str(src_copied), steps, str(out_path))
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 src_copied.unlink(missing_ok=True)
-            except Exception:  # noqa: BLE001
-                pass
         return {
             "user_text": prompt,
             "steps": [s.to_dict() for s in steps],
@@ -1778,10 +1808,8 @@ class ChatEditPanel(QWidget):
         step_objs: list[Step] = []
         for s in steps:
             if isinstance(s, dict) and s.get("cmd"):
-                try:
+                with contextlib.suppress(Exception):
                     step_objs.append(Step(**s))
-                except Exception:  # noqa: BLE001
-                    pass
         self._append_message_widget("assistant", content, step_objs, result_image)
         if self._session_id:
             db.add_chat_message(self._session_id, "assistant", content,
@@ -1823,7 +1851,7 @@ class ChatEditPanel(QWidget):
             return
         try:
             im = Image.open(self._current_image).convert("RGB")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.status_lab.setText(str(exc)[:160])
             return
         Wd, Hd = im.size
@@ -1926,8 +1954,9 @@ class ChatEditPanel(QWidget):
             d.text((x, y), text, font=font, fill=main)
 
         # 合成 → 保存到 static/processed/wm_<uuid>.png → 写库 current_image
-        from ..core import config as _cfg
         import uuid
+
+        from ..core import config as _cfg
         out_dir = _cfg.STATIC_DIR / "processed"
         out_dir.mkdir(parents=True, exist_ok=True)
         out = out_dir / f"wm_{uuid.uuid4().hex[:8]}.png"
@@ -2013,12 +2042,13 @@ class ChatEditPanel(QWidget):
         self.imageSaved.emit(self._current_image)
 
     def _open_desktop(self):
-        from ..ai.photocraft_bridge import resolve_app_path
         import os
+
+        from ..ai.photocraft_bridge import resolve_app_path
         path = resolve_app_path()
         if path:
             try:
-                os.startfile(path)  # noqa: Windows
+                os.startfile(path)  # Windows
             except Exception as exc:  # noqa: BLE001
                 self.status_lab.setText(str(exc)[:200])
         else:
@@ -2039,7 +2069,7 @@ class ChatEditPanel(QWidget):
         d = self.cc_dir_edit.text().strip()
         if d and os.path.isdir(d):
             try:
-                os.startfile(d)  # noqa: Windows
+                os.startfile(d)  # Windows
             except Exception as exc:  # noqa: BLE001
                 self.cc_status.setText(str(exc)[:160])
 
@@ -2087,11 +2117,11 @@ class ChatEditPanel(QWidget):
             return
         # 写一条"接力"消息,让对话流清楚
         self._append_message_widget("assistant",
-                           f"🖐 接力给手动模式 —— PhotoCraft 已打开当前图。你保存后会同步回来。",
+                           "🖐 接力给手动模式 —— PhotoCraft 已打开当前图。你保存后会同步回来。",
                            None, target)
         if self._session_id:
             db.add_chat_message(self._session_id, "assistant",
-                                f"🖐 接力给手动模式",
+                                "🖐 接力给手动模式",
                                 command_json=None,
                                 result_image=target,
                                 engine_label="manual")

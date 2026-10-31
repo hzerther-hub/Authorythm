@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """新建项目时的「项目说明」:从一句想法生成 项目名称 / 简介 / 创意描述 / 题材。
 
 对齐 Web 版(xiaoshuo)的 `POST /novel/generate-project-concept`:

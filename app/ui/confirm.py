@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """统一确认/警告对话框。
 
 原来是 14 处散落的 QMessageBox.question / warning,问题有三:
@@ -13,8 +12,13 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
-from PySide6.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ..core.i18n import tr
 
@@ -58,7 +62,9 @@ class ConfirmDialog(QDialog):
         m = QLabel(message)
         m.setObjectName("confirmMsg")
         m.setWordWrap(True)
-        m.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        # PySide6 6.11 运行时仍支持 Qt.TextSelectableByMouse 平铺访问,
+        # 但类型 stub 只暴露 Qt.TextInteractionFlag.TextSelectableByMouse → 显式忽略。
+        m.setTextInteractionFlags(Qt.TextSelectableByMouse)  # type: ignore[attr-defined]
         m.setStyleSheet(
             f"QLabel#confirmMsg{{background:{DANGER_BG if danger else NORMAL_BG};"
             f"border:1px solid {DANGER_BORDER if danger else NORMAL_BORDER};"
@@ -84,8 +90,8 @@ class ConfirmDialog(QDialog):
         row.addWidget(ok)
         root.addLayout(row)
 
-    def keyPressEvent(self, e: QKeyEvent) -> None:      # noqa: N802 (Qt 命名)
-        if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+    def keyPressEvent(self, e: QKeyEvent) -> None:
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter):  # type: ignore[attr-defined]
             self.accept()
         else:
             super().keyPressEvent(e)
@@ -95,7 +101,7 @@ def ask(parent, title: str, message: str, *, danger: bool = False,
         ok_text: str = "") -> bool:
     """确认框;True 表示用户点了确认。"""
     dlg = ConfirmDialog(parent, title, message, danger=danger, ok_text=ok_text)
-    return dlg.exec() == QDialog.Accepted
+    return dlg.exec() == QDialog.Accepted  # type: ignore[attr-defined]
 
 
 def warn(parent, title: str, message: str) -> None:

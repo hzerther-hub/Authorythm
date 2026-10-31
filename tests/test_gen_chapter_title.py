@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """章节名生成 gen_chapter_title —— 此前**零测试覆盖**,且它直接写 episodes.title。
 
 为什么必须补:

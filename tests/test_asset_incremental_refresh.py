@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """批量生图「生成一张显示一张」的回归测试。
 
 用户实测反馈:批量生图时,图要等**整批跑完**才一次性出现,期间界面一动不动,
@@ -24,10 +23,10 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton
 
-from app.ui import episode_cards as C  # noqa: E402
-from app.ui import episode_page as EP  # noqa: E402
+from app.ui import episode_cards as C
+from app.ui import episode_page as EP
 
 
 @pytest.fixture(scope="module")

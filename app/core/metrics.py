@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """进程内 metrics 极简实现:Counter / Timer / 注册表 / JSONL 持久化。
 
 设计取舍:
@@ -18,6 +17,7 @@
 from __future__ import annotations
 
 import atexit
+import contextlib
 import json
 import os
 import threading
@@ -25,7 +25,6 @@ import time
 from collections import deque
 from pathlib import Path
 from typing import Any
-
 
 _LOCK = threading.Lock()
 _COUNTERS: dict[str, int] = {}
@@ -91,7 +90,7 @@ def _percentile(arr: list[float], p: float) -> float:
     if not arr:
         return 0.0
     s = sorted(arr)
-    k = max(0, min(len(s) - 1, int(round((p / 100.0) * (len(s) - 1)))))
+    k = max(0, min(len(s) - 1, round((p / 100.0) * (len(s) - 1))))
     return s[k]
 
 
@@ -180,17 +179,15 @@ def setup_periodic_flush(interval_sec: float = _FLUSH_INTERVAL) -> None:
     atexit.register(flush_now)
 
     # 进程退出信号
-    def _signal_handler(signum, frame):  # noqa: ARG001
+    def _signal_handler(signum, frame):
         flush_now()
         os._exit(0)
 
     try:
         import signal
         for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+            with contextlib.suppress(ValueError, OSError):
                 signal.signal(sig, _signal_handler)
-            except (ValueError, OSError):
-                pass
     except Exception:  # noqa: BLE001
         pass
 

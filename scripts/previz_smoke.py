@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """QtWebEngine 内嵌导演台渲染冒烟验证。
 
 验证的事:上游 web 构建产物(fetch_directordesk.py 解包到

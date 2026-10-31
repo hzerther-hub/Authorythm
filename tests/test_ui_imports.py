@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """回归:app/ui 每个模块必须可导入,改图弹窗必须能构造出来。
 
 实测踩过:整包合入的「十一参精调」代码里,`_AdjustApplyWorker` 用了没导入的
@@ -43,6 +42,7 @@ def test_image_edit_dialog_constructs(qapp, tmp_path):
     """改图弹窗必须能构造 —— 它是角色卡「改图」/聊天缩略图/批量区共用的
     唯一编辑器,炸了 = 所有编辑入口静默失效。"""
     from PIL import Image
+
     from app.ui.image_edit_dialog import ImageEditDialog
 
     img = tmp_path / "t.png"

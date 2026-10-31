@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """一次性批量修复历史角色的 appearance / styling(按 character_spec 的规格)。
 
 为什么需要:规格此前只写在 2/15 份提示词里,且落库前没有校验,实测整库角色
@@ -22,18 +21,19 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import sys
 import time
 from pathlib import Path
 
-try:                       # pytest 的 capture 对象没有 reconfigure,导入本模块时不能炸
-    sys.stdout.reconfigure(encoding="utf-8")
-except Exception:          # noqa: BLE001
-    pass
+with contextlib.suppress(Exception):
+        sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.core import config, db                      # noqa: E402
-from app.pipeline import character_spec as cs        # noqa: E402
+import contextlib
+
+from app.core import config, db
+from app.pipeline import character_spec as cs
 
 _COLS = "id, drama_id, name, role_type, appearance, styling"
 

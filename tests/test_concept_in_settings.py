@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """项目设置里的「项目说明」入口 → 回填「简介 / 创意描述 / 题材」。
 
 用户诉求(2026-10-21):新建项目时那个「项目说明」弹窗,产出的**简介**和
@@ -20,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from typing import ClassVar
 
 import pytest
 
@@ -115,7 +115,7 @@ class _FakeConceptDialog:
     """替换 ProjectConceptDialog:exec 直接返回 Accepted。"""
     Accepted = 1          # == QDialog.Accepted
     REJECTED = 0
-    last: dict = {}
+    last: ClassVar[: dict] = {}
 
     def __init__(self, parent=None, **kw):
         self._kw = kw

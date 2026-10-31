@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Jev 通用调用面 —— 客户端解析 + 按作用域熔断。
 
 对齐参考项目 backend/src/services/jev-gate.ts。所有 Jev 业务调用(状态台账门控、

@@ -14,16 +14,17 @@
 """
 from __future__ import annotations
 
+import argparse
 import sys
+
+from app.ai import image_client
+from app.core import config, db
+from app.pipeline import prompts_gen
+
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, ".")
 
-import argparse
 
-from app.core import db
-from app.pipeline import prompts_gen
-from app.ai import image_client
-from app.core import config
 
 
 def regen_one(kind: str, table: str, row_id: int, image_cfg: int) -> tuple[bool, str]:
@@ -62,7 +63,7 @@ def main() -> None:
 
     db.init_db()
     print(f"=== drama {args.drama_id} 批量重画 image_url,config_id={args.image_cfg} ===")
-    print(f"(确保 app 已关闭,避免 SQLite 锁冲突)\n")
+    print("(确保 app 已关闭,避免 SQLite 锁冲突)\n")
 
     ok = fail = 0
     for kind, table in (("character", "characters"),

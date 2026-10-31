@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """快捷键帮助对话框:列出 5 个文本编辑快捷键 + 详细说明。
 
 被原始内容 / AI改写工具条尾部的「?」按钮调用。两个面板共用同一个 dialog。
@@ -6,11 +5,18 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QDialogButtonBox, QFrame, QHBoxLayout,
-                               QLabel, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core.i18n import tr
-from ..core.theme import SLATE_FORM_QSS, MONO_STACK
+from ..core.theme import MONO_STACK, SLATE_FORM_QSS
 
 
 class ShortcutHelpDialog(QDialog):

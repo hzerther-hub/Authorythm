@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """API Key 加密:基于 Fernet,机器指纹派生密钥,salt 存 data/.secret_salt。
 
 设计要点:
@@ -30,6 +29,8 @@ API:
 from __future__ import annotations
 
 import base64
+import binascii
+import contextlib
 import os
 import platform
 import threading
@@ -41,7 +42,6 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 from . import config  # 用于 DATA_DIR 派生;测试 monkeypatch 改 config.DATA_DIR
-
 
 PREFIX = "enc:"
 _PBKDF2_ITERS = 200_000
@@ -113,10 +113,8 @@ def _load_or_create_salt() -> bytes:
     except OSError:
         pass
     # 读不到(权限/空文件)→ 退回到写自己的,并明确记录
-    try:
+    with contextlib.suppress(OSError):
         p.write_bytes(salt)
-    except OSError:
-        pass
     return salt
 
 
@@ -199,7 +197,7 @@ def decrypt(cipher: str) -> str:
     f = _get_fernet()
     try:
         return f.decrypt(cipher[len(PREFIX):].encode("ascii")).decode("utf-8")
-    except (InvalidToken, ValueError, TypeError, base64.binascii.Error) as e:
+    except (InvalidToken, ValueError, TypeError, binascii.Error) as e:
         raise SecretError(f"API Key 解密失败(可能换了机器或 salt 损坏): {e}") from e
 
 
@@ -229,7 +227,7 @@ def migrate_unencrypted_keys() -> dict[str, int]:
     out = {"scanned": 0, "migrated": 0, "failed": 0}
     try:
         rows = db.q("SELECT id, api_key FROM ai_service_configs WHERE api_key IS NOT NULL AND api_key<>''")
-    except Exception:
+    except Exception:  # noqa: BLE001
         return out
     for r in rows:
         out["scanned"] += 1
@@ -241,6 +239,6 @@ def migrate_unencrypted_keys() -> dict[str, int]:
             db.ex("UPDATE ai_service_configs SET api_key=?, updated_at=? WHERE id=?",
                   (new, db.now(), int(r["id"])))
             out["migrated"] += 1
-        except Exception:
+        except Exception:  # noqa: BLE001
             out["failed"] += 1
     return out

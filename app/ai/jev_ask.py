@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Jev 的两个业务用途:生图供应商参考图能力判定 + 视频供应商路由。
 
 **软建议器契约(两条用途都遵守,缺一不可)**:
@@ -171,7 +170,7 @@ def pick_video_config_advisory(visual_need: str) -> tuple[int, dict, bool] | Non
     不同的需求都压倒性偏向同一个,区分度不足。分布接近(前二名差距 <0.15)
     时一律标记低置信,调用方应如实告诉用户「它也不确定」,别包装成明确建议。
     """
-    from . import registry, video_client as vc
+    from . import registry
     got = pick_video_provider(visual_need)
     if not got:
         return None

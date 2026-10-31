@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """集制作工作台:六阶段流水线(原始内容 → AI 改写 → 视漫制作 → 分镜 → 漫画 → 拼接导出)。
 
 顶栏:文本/图片/视频模型 + 分辨率 + 任务入口(对齐原版 episode.vue)。
@@ -6,43 +5,67 @@
 """
 from __future__ import annotations
 
+import contextlib
 import json
-import re
 import time
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
+from typing import ClassVar
 
-from PySide6.QtCore import Qt, QPoint, QRect, QRunnable, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QPainter, QPolygon, QFont, QColor, QPixmap
-from PySide6.QtWidgets import (QLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFrame,
-                               QRadioButton,
-                               QGridLayout, QHBoxLayout, QMenu, QSizePolicy,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QScrollArea, QSlider, QSpinBox, QSplitter,
-                               QStackedWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QPoint, QRect, QRunnable, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap, QPolygon
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QSizePolicy,
+    QSlider,
+    QSpinBox,
+    QSplitter,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .confirm import ask
-from ..ai import face_swap, image_client, registry, tts_client, video_client
 from ..agents import runner
+from ..ai import image_client, registry, tts_client, video_client
 from ..ai.jev_gate import JevBreaker
 from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
-from ..core.theme import (SLATE_PIPE_QSS, SLATE_ASSET_QSS, SLATE_PAPER, SLATE_BAR,
-                          SLATE_BAR_INK, SLATE_BAR_DIM, SLATE_BG, SLATE_HAIR,
-                          SLATE_MUTED, SLATE_META, SLATE_TRACK, MONO_STACK)
+from ..core.theme import (
+    SLATE_ASSET_QSS,
+    SLATE_BAR,
+    SLATE_BAR_DIM,
+    SLATE_BAR_INK,
+    SLATE_PIPE_QSS,
+)
 from ..pipeline import comic as comic_pipe
 from ..pipeline import extractor as extract_pipe
 from ..pipeline import merge as merge_pipe
-from ..pipeline.novel import strip_episode_prefix
-from ..pipeline import prompts_gen
-from ..pipeline import rewriter
-from ..pipeline import storyboard as sb_pipe
+from ..pipeline import prompts_gen, rewriter
 from ..pipeline import stitch as stitch_pipe
+from ..pipeline import storyboard as sb_pipe
+from ..pipeline.novel import strip_episode_prefix
 from . import widgets as W
-from .toast import err, info, ok, warn
 from .braille import WaitingButton
+from .confirm import ask
 from .project_page import _chapter_name_missing
+from .toast import err, info, ok, warn
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -148,7 +171,7 @@ def _sb_costume_context(sb_id: int, drama_id: int) -> str:
                         continue
                     if n >= th:
                         lines.append(
-                            tr('{} → 剧情推进,本镜着装应已不同于基础形象(置信度 {}%):按剧本语境描写当前服装,不要直接套用参考图妆造').format(name, int(round(n * 100))))
+                            tr('{} → 剧情推进,本镜着装应已不同于基础形象(置信度 {}%):按剧本语境描写当前服装,不要直接套用参考图妆造').format(name, round(n * 100)))
             else:
                 _costume_breaker.note_fail()
     if not lines:
@@ -303,14 +326,12 @@ class SlateProductionHeader(QFrame):
         self.update()
 
     def paintEvent(self, ev):
-        from PySide6.QtGui import QColor, QFont
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         w, h = self.width(), self.height()
         p.fillRect(0, 0, w, h, QColor(SLATE_BAR))
         # 最左侧场记板斜条(同样画法,宽度小一档)
         stripe_w = 28
-        step = 8
         sw = 8
         gap = 6
         p.save()
@@ -355,7 +376,7 @@ class SlateProductionHeader(QFrame):
         p.drawText(QRect(0, 0, w - 18, h),
                    Qt.AlignVCenter | Qt.AlignRight, scene_text)
         # 状态点:最右端
-        from ..core.theme import SLATE_ST_DONE, SLATE_ST_PROG, SLATE_ST_FAIL
+        from ..core.theme import SLATE_ST_DONE, SLATE_ST_FAIL, SLATE_ST_PROG
         color = {"completed": SLATE_ST_DONE, "active": SLATE_ST_PROG,
                  "failed": SLATE_ST_FAIL}.get(self._status, SLATE_BAR_DIM)
         p.setBrush(QColor(color))
@@ -577,7 +598,7 @@ class StepNav(QWidget):
         """四段跑马灯:当前段高亮 + 已完成段填色。"""
         order = [k for k, _ in PROGRESS_STEPS]
         idx = order.index(current_key) if current_key in order else 0
-        for i, (key, label_key) in enumerate(PROGRESS_STEPS):
+        for i, (key, _label_key) in enumerate(PROGRESS_STEPS):
             seg = self._segs[key]
             seg.setProperty("state", "done" if key in done_keys else ("current" if i == idx else ""))
             seg.style().unpolish(seg)
@@ -596,7 +617,7 @@ class StepNav(QWidget):
             states = [self._states.get(k, "pending") for k in keys]
             usable = any(s != "locked" for s in states)
             self._section_hidden[sid] = not usable
-            for k, s in zip(keys, states):
+            for k, s in zip(keys, states, strict=False):
                 # 单个 locked 的按钮直接隐藏,不只是 disabled —— 复刻项目没有
                 # 正文,「原始内容 / AI 改写 / 漫画」点了必然是空页或无结果,
                 # 摆在那里只会让人以为还有没做完的环节(实测用户被这个绕住)。
@@ -777,7 +798,7 @@ class EpisodePage(QWidget):
         from ..core.config import resolve_content_language
         self._drama_lang = resolve_content_language(drama_id)
         # 项目画幅:视频生成必须显式下发(不传 seedance 默认 1:1,竖屏项目全变方图)
-        self._drama_aspect_ratio = (d["aspect_ratio"] if "aspect_ratio" in d.keys() else "") or "9:16"
+        self._drama_aspect_ratio = (d.get("aspect_ratio", "")) or "9:16"
         nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (episode_id,))["c"]
         nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (episode_id,))["c"]
         self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
@@ -790,7 +811,7 @@ class EpisodePage(QWidget):
             sb_total = nb
         except Exception:  # noqa: BLE001
             sb_done, sb_total = 0, 0
-        ep_status = (ep["status"] if "status" in ep.keys() else "pending") or "pending"
+        ep_status = (ep.get("status", "pending")) or "pending"
         # scene 文案随当前 step 走 —— _step 在 _goto_step 内变化,这里用初值 raw
         try:
             scene_label = tr(STEP_LABELS.get(self._step, "raw_content")).upper()
@@ -1160,9 +1181,7 @@ class EpisodePage(QWidget):
             return st
         st = {}
         for k in STEPS:
-            if k in ("assets", "storyboard", "export") and work == "novel" and not novel_open:
-                st[k] = "locked"
-            elif k == "comic" and work in ("promotion", "video_clone"):
+            if (k in ("assets", "storyboard", "export") and work == "novel" and not novel_open) or (k == "comic" and work in ("promotion", "video_clone")):
                 st[k] = "locked"
             elif k == "export":
                 st[k] = "done" if ("comic" in done_keys or "storyboard" in done_keys) else "pending"
@@ -1216,7 +1235,7 @@ class EpisodePage(QWidget):
             nb = db.q1("SELECT COUNT(*) c FROM storyboards WHERE episode_id=?", (self.episode_id,))["c"]
             nc = db.q1("SELECT COUNT(*) c FROM episode_characters WHERE episode_id=?", (self.episode_id,))["c"]
             self.subtitle.setText(f"{tr('characters_n', nc)} · {tr('segments', nb)}")
-            stats = TASKMGR.ep_video_stats(self.episode_id)
+            TASKMGR.ep_video_stats(self.episode_id)
             self._update_metric_pills(TASKMGR.ep_video_stats(self.episode_id))
             active = TASKMGR.active_count()
             # 纯图标按钮(用户要求去掉文字):运行中的任务数以按钮后的徽标显示
@@ -1359,7 +1378,6 @@ class EpisodePage(QWidget):
         self.review_badge.setVisible(False)
         row.addWidget(self.review_badge)
         # ? 帮助按钮:放在「保存」按钮前面 —— raw + rewrite 同款
-        from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
         help_btn.setFixedSize(32, 32)
@@ -1460,6 +1478,16 @@ class EpisodePage(QWidget):
         self.ed_size_combo.setToolTip(tr("写作区字号"))
         self.ed_font_combo.currentFontChanged.connect(self._on_editor_font_changed)
         self.ed_size_combo.currentTextChanged.connect(self._on_editor_size_changed)
+        # 主题默认把 QComboBox 渲染成无边框透明(像纯文本),用户认不出是下拉 ——
+        # 这两个控件单独加可视样式(白底+边框+悬停高亮),一眼可知可点。
+        _cbss = ("QComboBox { border: 1px solid #d0d3d9; border-radius: 6px; "
+                 "padding: 3px 8px; background: #ffffff; color: #1f2329; }"
+                 "QComboBox:hover { border-color: #f97316; }"
+                 "QComboBox::drop-down { border-left: 1px solid #d0d3d9; width: 16px; }")
+        self.ed_font_combo.setStyleSheet(_cbss)
+        self.ed_size_combo.setStyleSheet(_cbss)
+        self.ed_font_combo.setFixedWidth(170)
+        self.ed_size_combo.setFixedWidth(60)
         b2.addWidget(self.ed_font_combo)
         b2.addWidget(self.ed_size_combo)
         self._init_editor_font_controls()
@@ -1475,8 +1503,9 @@ class EpisodePage(QWidget):
 
     def _init_editor_font_controls(self):
         """把设置表里保存的字体/字号回填到下拉并应用。"""
+        from PySide6.QtGui import QFontDatabase
+
         from ..core import db as _db
-        from PySide6.QtGui import QFont, QFontDatabase
         fam = _db.get_setting("yihao.editor_font", "")
         size = _db.get_setting("yihao.editor_font_size", "")
         try:
@@ -1518,7 +1547,13 @@ class EpisodePage(QWidget):
             ed.setFont(f)
             # QPlainTextEdit 的正文按 **document 默认字体** 渲染,widget 字体
             # 只影响行距/边距 —— 不设 document 字体,选了也看不见(实测:楷体 14 不生效)。
-            ed.document().setDefaultFont(f)
+            doc = ed.document()
+            df = doc.defaultFont()
+            if fam and df.family() != fam:
+                df.setFamily(fam)
+            if size and df.pointSize() != size:
+                df.setPointSize(size)
+            doc.setDefaultFont(df)
 
     def _step_indicator(self, num: str, name: str) -> QWidget:
         """步骤指示器:方块序号 + 名称(对齐 .step-indicator)。"""
@@ -1549,6 +1584,9 @@ class EpisodePage(QWidget):
         n = len(self.raw_edit.toPlainText()) if hasattr(self, "raw_edit") else 0
         target = self.words_spin.value() if hasattr(self, "words_spin") else 0
         self.raw_count.setText(tr("raw_count", n, target if target else "∞"))
+        # 写作区字体守卫:流式写入/重载内容会重置 document 默认字体,
+        # 在这里按设置补齐(与目标一致时零操作,代价可忽略)
+        self._apply_editor_font()
 
     def _reload_raw(self):
         from ..pipeline import novel as novel_pipe
@@ -1681,7 +1719,7 @@ class EpisodePage(QWidget):
         try:
             from ..pipeline.novel import prose_convert_times
             n = prose_convert_times(self.episode_id)
-        except Exception:
+        except Exception:  # noqa: BLE001
             n = 0
         base = "📖 " + tr("小说体改造")
         btn.setText(f"{base}·已改{n}次" if n else base)
@@ -1767,7 +1805,7 @@ class EpisodePage(QWidget):
             verdict = jev.get("verdict")
             n = (result or {}).get("changes", 0)
             if verdict == "conflict":
-                warn(f"{tr('ledger_conflict')}{int(round((jev.get('conflict') or 0) * 100))}% · {tr('see_review')}")
+                warn(f"{tr('ledger_conflict')}{round((jev.get('conflict') or 0) * 100)}% · {tr('see_review')}")
             elif verdict == "skipped":
                 info(f"{tr('ledger_ok')} {n} · Jev {tr('skipped')}({jev.get('reason', '')})")
             else:
@@ -1897,9 +1935,8 @@ class EpisodePage(QWidget):
         主线程快照 text_model.currentData():worker 线程读 QComboBox 与之前 _gen_one_video
         是同一种 Internal C++ 报错模式(语言切换 / 页面重建时 C++ 析构),必须 snap。
         """
-        from ..pipeline import novel as novel_pipe
         from ..agents.prompts import load_prompt
-        from ..core.db import get_setting
+        from ..pipeline import novel as novel_pipe
         from .streaming import StreamWorker
         hint = self._novel_redline_hint()
         if hint:
@@ -2016,7 +2053,7 @@ class EpisodePage(QWidget):
     # 审校阶段 → 红框状态栏文案。stage 写在 sys_task.params.stage(review flow
     # 各节点上报),cycle 写在 params.stage_cycle。轮次上限与
     # novel.write_chapter_with_review 的 max_cycles=3 保持一致。
-    _REVIEW_STAGE_CN = {
+    _REVIEW_STAGE_CN: ClassVar[dict[str, object]] = {
         "writing":     "✍️ 第{n}轮 · 重写正文中…",
         "reviewing":   "🔍 第{n}轮 · 六维审校中…",
         "repairing":   "🛠 第{n}轮 · 审校发现问题,修复中…",
@@ -2139,10 +2176,11 @@ class EpisodePage(QWidget):
         端到端(走 taskmgr 后台)。两阶段合并跑在同一个 job 里,任何阶段失败都报 toast,
         剧本已落库的部分不会回滚(用户可手动调整后重出图)。
         """
-        from ..pipeline import novel, comic_pipeline
-        from .toast import info, warn, ok, err
+        from PySide6.QtWidgets import QInputDialog
+
         from ..core.taskmgr import TASKMGR
-        from PySide6.QtWidgets import QInputDialog, QMessageBox
+        from ..pipeline import comic_pipeline, novel
+        from .toast import err, info, ok, warn
 
         if not self.episode_id:
             warn("请先进入项目并选中一集")
@@ -2249,6 +2287,7 @@ class EpisodePage(QWidget):
             (self.drama_id,))]
         empties = [e for e in ordered if len((e["content"] or "").strip()) < 200]
         from PySide6.QtWidgets import QInputDialog
+
         from ..pipeline import novel as novel_pipe
         if not empties:
             # 全部都有正文:问要自动新建几章再连写(章=集,不建集就没得写)
@@ -2312,7 +2351,6 @@ class EpisodePage(QWidget):
         self._batch_dialog.show()
         self._batch_start_ts = 0
         def job(tid):
-            import threading
             from ..core import taskmgr as TM
             self._batch_start_ts = 1
             def on_progress(done, total, num):
@@ -2416,10 +2454,10 @@ class EpisodePage(QWidget):
         last_url = getattr(self, "_last_read_aloud_url", None)
         last_chunks = getattr(self, "_last_read_aloud_chunks", 0)
         if last_url:
-            from .confirm import ask
+
             from PySide6.QtWidgets import QMessageBox
+
             from ..core import config
-            from pathlib import Path
             existing = config.media_url_to_path(last_url)
             if existing.exists():
                 mb = QMessageBox(self)
@@ -2428,16 +2466,14 @@ class EpisodePage(QWidget):
                 mb.setText(tr("read_aloud_done_q").format(last_chunks))
                 replay = mb.addButton(tr("read_aloud_replay"), QMessageBox.YesRole)
                 regen = mb.addButton(tr("read_aloud_regen"), QMessageBox.NoRole)
-                cancel = mb.addButton(tr("cancel"), QMessageBox.RejectRole)
+                mb.addButton(tr("cancel"), QMessageBox.RejectRole)
                 mb.setDefaultButton(replay)
                 mb.exec()
                 chosen = mb.clickedButton()
                 if chosen is regen:
                     # 删旧文件,走完整合成路径
-                    try:
+                    with contextlib.suppress(Exception):
                         existing.unlink(missing_ok=True)
-                    except Exception:                # noqa: BLE001
-                        pass
                     # 立刻进合成分支(下面)
                 elif chosen is replay:
                     self._open_audio_preview(
@@ -2465,7 +2501,9 @@ class EpisodePage(QWidget):
             if hasattr(self, "_set_raw_status"):
                 self._set_raw_status("")          # 工具行清掉进度提示
             if error:
-                err(error); return
+                err(error)
+                return
+
             # 缓存 + 内嵌播放,不再调起系统播放器
             self._last_read_aloud_url = result["audio_url"]
             self._last_read_aloud_chunks = result["chunks"]
@@ -2510,8 +2548,8 @@ class EpisodePage(QWidget):
         if hasattr(self, "review_btn"):
             self.review_btn.setEnabled(False)
         self._save_raw_silent()
-        from .novel_dialogs import ReviewDialog
         from ..pipeline import novel as novel_pipe
+        from .novel_dialogs import ReviewDialog
         def job(tid):
             return novel_pipe.review_chapter(self.episode_id, config_id=self.text_model.currentData())
         def done(tid, result, error):
@@ -2583,7 +2621,6 @@ class EpisodePage(QWidget):
         rewrite_again = QPushButton("↻ " + tr("rewrite"))
         rewrite_again.clicked.connect(self._rewrite)
         row.addWidget(rewrite_again)
-        from PySide6.QtGui import QFont
         help_btn = QPushButton("?")
         help_btn.setObjectName("slateIconBtn")
         help_btn.setFixedSize(32, 32)
@@ -2698,10 +2735,8 @@ class EpisodePage(QWidget):
 
     def _rewrite(self):
         """AI 转剧本:**流式**执行 —— 等待文案随思考/输出实时变化,并显示已生成字数。"""
-        from ..pipeline import novel as novel_pipe
-        from ..agents import runner
         from ..agents.prompts import load_prompt
-        from ..core.db import get_setting
+        from ..pipeline import novel as novel_pipe
         from .streaming import StreamWorker
         if getattr(self, "_rewrite_running", False):
             return
@@ -2724,7 +2759,6 @@ class EpisodePage(QWidget):
                               config_id=self.text_model.currentData(),
                               temperature=0.6, max_tokens=None, parent=self)
         self._rewrite_stream = worker
-        stat = {"n": 0}
 
         def _tick():
             """等待文案持续变化,直到任务结束(此前是静态一行字,看着像卡死)。"""
@@ -2758,10 +2792,8 @@ class EpisodePage(QWidget):
             self._reload_rewrite()
             # 小说项目改写成功后自动展开制作流程(对齐参考项目 doRewrite 的 onDone:
             # 避免「看不到下面的剧视/漫画入口」)
-            try:
+            with contextlib.suppress(Exception):
                 self.maybe_auto_expand_pipeline()
-            except Exception:  # noqa: BLE001
-                pass
 
         def on_failed(msg):
             self._rewrite_running = False
@@ -2809,10 +2841,8 @@ class EpisodePage(QWidget):
             self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
             self._reload_rewrite()
             ok(tr("剧本已重写并通过可拍性检查"))
-            try:
+            with contextlib.suppress(Exception):
                 self.maybe_auto_expand_pipeline()
-            except Exception:  # noqa: BLE001
-                pass
 
         TASKMGR.submit("script_repair", job, done,
                        episode_id=self.episode_id, drama_id=self.drama_id)
@@ -3151,7 +3181,7 @@ class EpisodePage(QWidget):
         from ..pipeline import comic as comic_pipe
         if force:
             # 把所有资产行的 comic_image_url 一次性置空,让下一轮批量重画
-            for kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
+            for _kind, table in (("character", "characters"), ("scene", "scenes"), ("prop", "props")):
                 db.ex(f"UPDATE {table} SET comic_image_url=NULL, updated_at=? WHERE drama_id=?",
                       (db.now(), self.drama_id))
             self._reload_comic_assets()
@@ -3533,9 +3563,9 @@ class EpisodePage(QWidget):
         """资产生图统一跟随顶栏的图片模型(资产页重复下拉已移除)。"""
         return self.image_model.currentData()
 
-    _VAR_TABLES = {"character": "character_variants", "scene": "scene_variants",
+    _VAR_TABLES: ClassVar[dict[str, object]] = {"character": "character_variants", "scene": "scene_variants",
                    "prop": "prop_variants"}
-    _VAR_REF_COL = {"character": "character_id", "scene": "scene_id", "prop": "prop_id"}
+    _VAR_REF_COL: ClassVar[dict[str, object]] = {"character": "character_id", "scene": "scene_id", "prop": "prop_id"}
 
     def _has_variants(self, ref_id: int, kind: str) -> bool:
         """该角色/场景/道具 是否已经有变体。
@@ -3667,7 +3697,7 @@ class EpisodePage(QWidget):
                 try:
                     fp = {"character": prompts_gen.character_prompt, "scene": prompts_gen.scene_prompt,
                           "prop": prompts_gen.prop_prompt}[kind](row_id, config_id=self.text_model.currentData())
-                except Exception as exc:  # noqa: BLE001
+                except Exception:  # noqa: BLE001
                     # AI 生成最终提示词失败(模型输出异常/超时)→ 本地拼一条兜底,
                     # 风格用项目选中的视觉风格预设(如 3D 漫剧),保证批量不被打断
                     import re as _re
@@ -4168,7 +4198,7 @@ class EpisodePage(QWidget):
         tl.setContentsMargins(0, 0, 0, 0)
         tl.setSpacing(0)
         self.sb_task_lay = tl
-        self.sb_task_rows: dict[int, "object"] = {}   # sb_id → VideoTaskRow(批量心跳原地换态)
+        self.sb_task_rows: dict[int, object] = {}   # sb_id → VideoTaskRow(批量心跳原地换态)
         tl.addStretch(1)
         ll.addWidget(self.sb_task_scroll, 1)
         wb.addWidget(left)
@@ -4730,12 +4760,10 @@ class EpisodePage(QWidget):
         self.sb_empty.setVisible(not rows)
         self.sb_workbench.setVisible(bool(rows))
         self.sb_locked.setText(tr("locked_video_model", self._video_model_name()) if rows else "")
-        prev_id = self._sb_id
         self._render_task_list(rows)
         # 滚动条复位到顶:删除重建后旧滚动位置会保留,看起来像首个分镜排在最后
         bar = getattr(self, "sb_task_scroll", None)
         if bar is not None:
-            from PySide6.QtWidgets import QScrollBar
             v = bar.verticalScrollBar()
             if v:
                 v.setValue(0)
@@ -4886,9 +4914,10 @@ class EpisodePage(QWidget):
                 self.setAutoDelete(True)
 
             def run(self):
-                from ..pipeline import video_poster
-                from ..core import config as _cfg
                 from pathlib import Path as _Path
+
+                from ..core import config as _cfg
+                from ..pipeline import video_poster
                 try:
                     src = _cfg.media_url_to_path(self.vid) if str(self.vid).startswith(
                         ("/static/", "static/")) else _Path(self.vid)
@@ -5212,6 +5241,7 @@ class EpisodePage(QWidget):
     def _apply_player_poster(self, url: str):
         """播放器未起播时显示海报帧;缺海报就后台补抽,抽好再贴上去。"""
         from PySide6.QtMultimedia import QMediaPlayer
+
         from ..pipeline import video_poster
         poster = video_poster.poster_url(url)
         if not poster:
@@ -5441,7 +5471,7 @@ class EpisodePage(QWidget):
         self._render_bound_refs(r)
 
     # 占位大字取当前语言种类名首字(zh→角/景/具,en→C/S/P,ja→役/景/道)
-    REF_KIND_KEY = {"character": "角色", "scene": "场景", "prop": "道具"}
+    REF_KIND_KEY: ClassVar[dict[str, object]] = {"character": "角色", "scene": "场景", "prop": "道具"}
 
     def _ref_placeholder(self, kind: str) -> str:
         return tr(self.REF_KIND_KEY.get(kind, kind))[:1]
@@ -5451,7 +5481,7 @@ class EpisodePage(QWidget):
         tables = {"character": ("episode_characters", "characters", "name"),
                   "scene": ("episode_scenes", "scenes", "location"),
                   "prop": ("episode_props", "props", "name")}
-        link, table, namecol = tables[kind]
+        link, table, _namecol = tables[kind]
         return [dict(r) for r in db.q(
             f"SELECT t.* FROM {link} l JOIN {table} t ON t.id = l."
             + {"episode_characters": "character_id", "episode_scenes": "scene_id",
@@ -5493,7 +5523,8 @@ class EpisodePage(QWidget):
             on_view = None
             if row.get("image_url"):
                 url = row["image_url"]
-                on_view = (lambda u=url: self._view_ref_large(u))
+                def on_view(u=url):
+                    return (self._view_ref_large(u))
             card = C.RefCard(row.get("image_url"), self._ref_placeholder(kind), name,
                              tr(REF_TAB_KEYS[kind]), state,
                              on_click=on_view,
@@ -5587,7 +5618,6 @@ class EpisodePage(QWidget):
             lay.addStretch(1)
             self._sync_bound_refs_height(empty_only=True)
             return
-        has_picker = False
         for row, kind in cells:
             host = QWidget()
             host.setStyleSheet("border:none;")
@@ -5620,7 +5650,6 @@ class EpisodePage(QWidget):
                 picker = self._variant_picker(row["id"], kind)
             if picker is not None:
                 hl.addWidget(picker)
-                has_picker = True
             else:
                 hl.addStretch(1)
             lay.addWidget(host)
@@ -5634,7 +5663,7 @@ class EpisodePage(QWidget):
         22」满配时的高度。没有素材时也是同样 122px 的一片空白,只有一张资产、
         不显示变体下拉时也仍然撑着 122px(用户反馈「白色的区域要跟文字一样高」)。
         """
-        if empty_only:
+        if empty_only:  # noqa: SIM108  (三元会把这段算式压成一行,反而难读)
             h = 32                       # 只够一行「暂无绑定素材」文字
         else:
             h = 60 + 2 + 14 + 2 + (22 if has_picker else 0) + 8
@@ -6046,10 +6075,9 @@ class EpisodePage(QWidget):
 
     def _regen_first_frame(self, sb_id: int, skip_confirm: bool = False):
         """重生首帧(对齐参考 regen-first-frame):完成后翻 pending_review 等用户确认。"""
-        if not skip_confirm:
-            if not ask(self, tr("重新生成首帧"),
-                       tr("将重新生成首帧图,已确认的首帧会回到待审状态。是否继续?")):
-                return
+        if not skip_confirm and not ask(self, tr("重新生成首帧"),
+                   tr("将重新生成首帧图,已确认的首帧会回到待审状态。是否继续?")):
+            return
         btn = getattr(self, "sb_ff_gen_btn", None)
         if btn is not None and hasattr(btn, "busy"):
             btn.busy(tr("in_progress"))
@@ -6198,8 +6226,9 @@ class EpisodePage(QWidget):
 
         用户场景:把整套提示词存到 Notion / Obsidian / 喂给其它 AI / 复刻到别的项目。
         """
-        from PySide6.QtWidgets import QFileDialog
         from pathlib import Path
+
+        from PySide6.QtWidgets import QFileDialog
         rows = db.q("SELECT * FROM storyboards WHERE episode_id=? "
                     "AND deleted_at IS NULL ORDER BY storyboard_number",
                     (self.episode_id,))
@@ -6277,7 +6306,7 @@ class EpisodePage(QWidget):
                       (self.episode_id,))["c"]
         urls: set[str] = set()
         for r in rows:
-            for k in r.keys():
+            for k in r:
                 v = str(r[k] or "").strip()
                 if v:
                     urls.add(v)
@@ -6322,7 +6351,9 @@ class EpisodePage(QWidget):
                 config_id=self.text_model.currentData(),
                 lang=getattr(self, "_drama_lang", None))
         except Exception as e:  # noqa: BLE001
-            err(e); return
+            err(e)
+            return
+
         self._sb_split_running = True
         self._sb_split_task = tid
         # 记下起始分镜数,轮询时只在「变多了」才重建列表(分批落库,逐批刷)
@@ -6346,7 +6377,6 @@ class EpisodePage(QWidget):
 
     def _after_split_chain(self):
         """拆分完成后的自动链:修复轮 → 批量补齐提示词(均串行,不并发)。"""
-        import time as _time
         # 必须在本函数内导入:R 只在别的函数里**局部**导入过,这里直接用会
         # NameError: name 'R' is not defined(实测「重新拆分」跑完就炸在这里)。
         from ..pipeline import storyboard_repair as R
@@ -6409,7 +6439,9 @@ class EpisodePage(QWidget):
             sb = getattr(self, "split_btn", None)
             if sb:
                 sb.idle()
-            warn(tr("分镜拆分超时,请到任务面板查看")); return
+            warn(tr("分镜拆分超时,请到任务面板查看"))
+            return
+
         def tick():
             row = db.q1("SELECT status, local_path, error_msg FROM sys_task WHERE id=?", (tid,))
             st = row["status"] if row else "failed"
@@ -6555,7 +6587,7 @@ class EpisodePage(QWidget):
                                           + ("…" if len(todo_default) > 12 else "")))
         rb_missing.setChecked(True)
         v.addWidget(rb_missing)
-        rb_all = QRadioButton(tr("全部 {} 镜(已完成的也重新生成)".format(len(all_ids))))
+        rb_all = QRadioButton(tr(f"全部 {len(all_ids)} 镜(已完成的也重新生成)"))
         v.addWidget(rb_all)
         info = QLabel(tr("将消耗视频额度 · 模型:{} · 分辨率:{}")
                       .format(self.video_model.currentText(), self.res_combo.currentText()))
@@ -6597,6 +6629,7 @@ class EpisodePage(QWidget):
 
         # 串行:单任务内逐镜生成,每个间隔 3 秒(并发会撞上游限流/队列满)
         import time as _time
+
         from ..core import taskmgr as _TM
 
         self._batch_video_total = len(rows)
@@ -6765,7 +6798,7 @@ class EpisodePage(QWidget):
                 config_id=config_id if config_id is not None else self.video_model.currentData(),
                 aspect_ratio=self._drama_aspect(),
                 last_frame=last_frame,
-                seed=(sb["video_seed"] if "video_seed" in sb.keys() else None) or None)
+                seed=(sb.get("video_seed", None)) or None)
             # 用户在跑的过程中点了「停止生成」→ 丢弃这次结果,别把已归位的状态再写回去
             if sb_id in self._cancelled_sb:
                 self._cancelled_sb.discard(sb_id)
@@ -6856,7 +6889,7 @@ class EpisodePage(QWidget):
         # 合成完成时把 tts_client.last_voice() 真实使用的 voice 写回 storyboards.narration_voice,
         # 后续试听/导出能复现同一音色。
         snap_old_url = db.q1("SELECT narration_audio_url FROM storyboards WHERE id=?", (sb_id,)) or {}
-        old_url = (snap_old_url or {}).get("narration_audio_url") or ""  # noqa
+        old_url = (snap_old_url or {}).get("narration_audio_url") or ""
         snap_gender = "female"
         d = db.q1("SELECT metadata FROM dramas WHERE id=?", (self.drama_id,))
         if d:
@@ -6890,7 +6923,7 @@ class EpisodePage(QWidget):
                 err("♪ 合成失败:" + str(error)[:280])
             else:
                 self._reload_storyboard()
-                ok("♪ 合成完成(Edge TTS · {})".format(tts_client.last_voice()))
+                ok(f"♪ 合成完成(Edge TTS · {tts_client.last_voice()})")
         TASKMGR.submit("tts", job, done, episode_id=self.episode_id, storyboard_id=sb_id)
 
     def _toggle_narration_audio(self):
@@ -6971,10 +7004,9 @@ class EpisodePage(QWidget):
         if not url:
             return
         import os
-        import subprocess
         p = config.media_url_to_path(url)
         if p.exists():
-            os.startfile(str(p))  # noqa  Windows 默认播放器
+            os.startfile(str(p))
 
     # ── 阶段⑤ 漫画 ──
     def _panel_comic(self, lay):
@@ -7079,7 +7111,9 @@ class EpisodePage(QWidget):
                     f"JOIN {table} t ON t.id = pc.{id_col} "
                     f"WHERE pc.panel_id IN ({ph}) ORDER BY t.id", ids):
                     # db.q 返回 sqlite3.Row 不可写 —— 先转 dict 再补 kind 字段
-                    x = dict(r); x["kind"] = kind
+                    x = dict(r)
+                    x["kind"] = kind
+
                     bound_by_panel.setdefault(x["pid"], []).append(x)
             # 描述雷同检测:纯算 description+composition 的字符级相似度,
             # 命中阈值就在后出现的格上挂警告(避免和前序雷同 → 出图撞)
@@ -7142,7 +7176,7 @@ class EpisodePage(QWidget):
         row = db.q1("SELECT merged_url FROM video_merges WHERE episode_id=? AND model='comic_stitch' "
                     "ORDER BY id DESC LIMIT 1", (self.episode_id,))
         if row and row["merged_url"]:
-            os.startfile(str(config.media_url_to_path(row["merged_url"])))  # noqa
+            os.startfile(str(config.media_url_to_path(row["merged_url"])))
 
     def _open_image(self, url: str):
         from .asset_dialogs import ImageViewerDialog
@@ -7384,11 +7418,11 @@ class EpisodePage(QWidget):
         force=False 时已有 image_url 的格跳过(只补齐未出的);force=True 全部重出。
         单格失败不中断(由 comic_pipeline 内部 try/except 兜底)。
         """
-        from ..pipeline import comic_pipeline
-        from .toast import info, warn
-        from .confirm import ask
-        from ..core.taskmgr import TASKMGR
         from ..core.logging_setup import get_logger
+        from ..core.taskmgr import TASKMGR
+        from ..pipeline import comic_pipeline
+        from .confirm import ask
+        from .toast import info, warn
         get_logger("ui.comic").info(
             "comic.full_start episode=%s", self.episode_id)
 
@@ -7425,7 +7459,7 @@ class EpisodePage(QWidget):
             )
 
         def done(tid, result, error):
-            from .toast import ok, err
+            from .toast import err, ok
             # 按钮退出等待态:以前这里不 idle,生成中按钮也一直可点(会重复
             # 提交整话链路);即使任务结束按钮也只是靠整页重建才恢复
             btn = getattr(self, "comic_full_btn", None)
@@ -7440,7 +7474,7 @@ class EpisodePage(QWidget):
             try:
                 r = result or {}
                 ok(f"出整话:共 {r.get('panels', 0)} 格,出 {r.get('generated', 0)} / 跳过 {r.get('skipped', 0)} / 失败 {r.get('failed', 0)}")
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             self._reload_comic()
             self._reload_stitch_box()
@@ -7646,7 +7680,6 @@ class EpisodePage(QWidget):
         """成片页刷新:成片卡带 + 镜头素材网格 + 片头状态。"""
         if not getattr(self, "export_body", None):
             return
-        from . import episode_cards as C
         rows = [dict(r) for r in db.q(
             "SELECT * FROM video_merges WHERE episode_id=? AND model='comic_stitch' "
             "ORDER BY id DESC LIMIT 1", (self.episode_id,))]
@@ -7660,7 +7693,7 @@ class EpisodePage(QWidget):
         self.export_body.setVisible(ready > 0)
         self.export_count.setText(tr("items_n", len(rows)) if rows else "")
         ep = db.q1("SELECT status FROM episodes WHERE id=?", (self.episode_id,))
-        self.export_done_btn.setText((tr("done") if ep["status"] == "done" else tr("mark_done")))
+        self.export_done_btn.setText(tr("done") if ep["status"] == "done" else tr("mark_done"))
         while self.merge_strip.count():
             it = self.merge_strip.takeAt(0)
             w = it.widget()
@@ -7679,7 +7712,7 @@ class EpisodePage(QWidget):
 
     def _merge_card(self, m: dict) -> QWidget:
         """成片卡:16:9 缩略 + 时间/时长 + 下载(对齐 .merge-card)。"""
-        from . import episode_cards as C      # mono_tag 等小组件(方法内导入,防并行重构丢引用)
+        from . import episode_cards as C  # mono_tag 等小组件(方法内导入,防并行重构丢引用)
         card = W.make_card()
         card.setFixedWidth(260)
         lay = QVBoxLayout(card)
@@ -7782,12 +7815,10 @@ class EpisodePage(QWidget):
     def _shot_card(self, r: dict) -> QWidget:
         """镜头卡:16:9 缩略 + #NN + 时长 + 勾选框 + 预览键 + 排序输入 + 描述 + 状态点
         (对齐 .exp-card:选中后缩略上冒出序号框,输 N 与第 N 位互换)。"""
-        from .braille import BrailleSpinner
         card = W.make_card()
         card.setMinimumWidth(200)
         sid = r["id"]
         vid = r["video_url"] or r["composed_video_url"]
-        is_processing = (r.get("status") == "processing")
         lay = QVBoxLayout(card)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
@@ -8013,7 +8044,7 @@ class EpisodePage(QWidget):
             t0 = datetime.fromisoformat((m.get("created_at") or "").replace("Z", "+00:00"))
         except Exception:  # noqa: BLE001
             return "0s"
-        return f"{max(0, int((time.time() - t0.timestamp())))}s"
+        return f"{max(0, int(time.time() - t0.timestamp()))}s"
 
     def _tick_merge_waiting(self):
         """心跳:1s 刷耗时秒数 + 0.65s 交替「拼接中」文字的呼吸明暗。"""
@@ -8075,7 +8106,7 @@ class EpisodePage(QWidget):
         # 差别在于「勾选且已生成视频」的才进片 —— 没生成的镜头被静默跳过。
         all_shots = self._all_shots()
         total_shots = len(all_shots)
-        no_video = [r for r in all_shots
+        [r for r in all_shots
                     if not (r["video_url"] or r["composed_video_url"])]
         if len(ids) < total_shots:
             QMessageBox.information(
@@ -8168,7 +8199,7 @@ class EpisodePage(QWidget):
             import os
             p = config.media_url_to_path(url)
             if p.exists():
-                os.startfile(str(p))  # noqa
+                os.startfile(str(p))
 
 
 def QInputDialog_getInt(parent, title, label, value=1, lo=1, hi=99):

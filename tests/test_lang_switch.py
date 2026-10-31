@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """回归:语言切换必须重建**所有**页面,不是只有 projects/project/episode。
 
 实测踩过两个坑叠在一起,表现为「切语言大部分无效」:
@@ -69,7 +68,9 @@ def test_language_switch_replaces_tool_pages(win, qapp):
     _pump(qapp, 1)
     old_dash = win.dashboard
     set_language("en")
-    _pump(qapp); _pump(qapp)
+    _pump(qapp)
+    _pump(qapp)
+
     assert win.dashboard is not old_dash, "当前页(仪表盘)没随语言切换立即重建"
 
     # 聊天改图不是当前页 → 进入时懒重建
@@ -81,10 +82,13 @@ def test_language_switch_replaces_tool_pages(win, qapp):
 
 def test_chat_session_survives_language_switch(win, qapp):
     """切语言重建聊天改图页,当前会话视图必须还在(会话本体在 SQLite)。"""
+    import os
+    import tempfile
+
+    from PIL import Image
+
     from app.core import db
     from app.core.i18n import set_language
-    import tempfile, os
-    from PIL import Image
 
     img = os.path.join(tempfile.mkdtemp(), "s.png")
     Image.new("RGB", (16, 16)).save(img)
@@ -93,7 +97,9 @@ def test_chat_session_survives_language_switch(win, qapp):
     assert sid, "前置失败:没建出会话"
 
     set_language("en")
-    _pump(qapp); _pump(qapp)
+    _pump(qapp)
+    _pump(qapp)
+
     win._goto("chatedit")     # 懒重建在这里发生
     _pump(qapp, 1)
 
@@ -103,7 +109,7 @@ def test_chat_session_survives_language_switch(win, qapp):
 
 def test_i18n_dashboard_keys_render_per_language():
     """仪表盘新键在主词典缺失时必须能从补充词典拿到各语言译文。"""
-    from app.core.i18n import tr, set_language
+    from app.core.i18n import set_language, tr
     try:
         set_language("ja")
         assert "タスク" in tr("dash_tasks_panel")

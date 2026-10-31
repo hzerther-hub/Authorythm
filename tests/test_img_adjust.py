@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """图片精调引擎(11 参调色 + 画布变换 + 抠图)。
 
 核心不变量:**预览与落盘必须一致**。预览走降采样、落盘走全分辨率,
@@ -183,7 +182,6 @@ def test_upscale_preserves_alpha(tmp_path):
 
 def test_upscale_scale_one_is_noop(sample, tmp_path):
     """scale=1 且不要细节增强 → 原样输出。"""
-    import pathlib
     out = IA.upscale(sample, str(tmp_path / "u.png"), scale=1.0, detail=0)
     assert Image.open(out).size == Image.open(sample).size
 

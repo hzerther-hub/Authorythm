@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """手动换画风弹窗:选画风 → 生成 → **先看结果,满意才替换原图**。
 
 刻意分两步而不是「一键换」:实测图生图会持续往画面里加元素(真人转漫画
@@ -8,13 +7,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QComboBox, QDialog, QHBoxLayout, QLabel,
-                               QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import QComboBox, QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
 
 from ..core.i18n import tr
 from ..pipeline import style_convert
 from . import widgets as W
-from .toast import err, info, warn
 
 
 class StyleConvertDialog(QDialog):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """测试:非流式写章 + 审校 + 修复(批量写章节的构建块),真实落库。"""
 from __future__ import annotations
 
@@ -7,7 +6,7 @@ import time
 
 sys.path.insert(0, "E:/pydrama")
 
-from app.pipeline import novel as novel_pipe  # noqa: E402
+from app.pipeline import novel as novel_pipe
 
 t0 = time.time()
 out = novel_pipe.write_chapter_with_review(8)

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """浏览器 Agent 实时查询(jev-ultrafast):网页搜索拿不到的**实时数据**走这里。
 
 分工对齐 jev-ultrafast 的设计(参考 Browser Use 官方文章):Jev 决策「点哪里/
@@ -16,6 +15,7 @@ api_key(用户确认就是 TypeSafe 官方申请的那把);TEXT_MODEL_* = 默认
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import threading
 import time
@@ -137,8 +137,8 @@ def _ensure_cdp() -> None:
 
 
 def _run_once(goal: str, url: str, max_seconds: int) -> dict | None:
-    from jev_ultrafast import Agent
     import jev_ultrafast.agent as _ja
+    from jev_ultrafast import Agent
     # 官方 demo 预算 60 步,对 12306 这类重站不够(关弹窗/填两城/选日期就要
     # 几十步)。agent.py 是 `from .questions import MAX_STEPS` 拿的**值**,要改
     # 它自己命名空间里的那份才生效。
@@ -154,10 +154,8 @@ def _run_once(goal: str, url: str, max_seconds: int) -> dict | None:
                 print(f"[browser_query] 超时({max_seconds}s),取半程结果", flush=True)
                 break
         final_url = ""
-        try:
+        with contextlib.suppress(Exception):
             final_url = agent.browser.evaluate("location.href") or ""
-        except Exception:  # noqa: BLE001
-            pass
         try:
             page_text = agent.browser.evaluate(
                 "document.body ? document.body.innerText : ''") or ""

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Agnes AI 视频生成(https://apihub.agnes-ai.com,OpenAI 兼容网关)。
 
 对照参考项目 xiaoshuo backend/src/services/adapters/agnes-video.ts 一比一对齐
@@ -17,6 +16,18 @@
 """
 
 from __future__ import annotations
+
+import contextlib
+import json
+import re
+from pathlib import Path
+from urllib.parse import urlencode, urlparse
+
+import requests
+
+from .text_client import AIError
+
+
 def _utf8_text(resp, limit: int = 400) -> str:
     """错误文案按 utf-8 显式解码。
 
@@ -27,14 +38,8 @@ def _utf8_text(resp, limit: int = 400) -> str:
         return resp.content.decode("utf-8", errors="replace")[:limit]
     except Exception:  # noqa: BLE001
         return str(getattr(resp, "text", "") or "")[:limit]
-import json
-import re
-from pathlib import Path
-from urllib.parse import urlencode, urlparse, urlunparse
 
-import requests
 
-from .text_client import AIError
 
 MODEL_PREFIX = "agnes-video"
 DEFAULT_MODEL = "agnes-video-2.5-flash"
@@ -282,10 +287,8 @@ def build_generate_body(cfg: dict, *, prompt: str, resolution: str, duration,
         "n": 1,
     }
     if seed is not None and seed != "":
-        try:
+        with contextlib.suppress(TypeError, ValueError):
             body["seed"] = float(seed) if not float(seed).is_integer() else int(seed)
-        except (TypeError, ValueError):
-            pass
     body["mode"] = final_mode
 
     if final_mode == "ti2vid":
@@ -400,8 +403,8 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
 
     本地路径转 data URL 在这里统一做(与参考版 normalizeVideoReferenceUrl 同位)。
     """
-    from .video_client import _fetch_remote_as_data_url, _local_to_data_url
     from ..core import config
+    from .video_client import _fetch_remote_as_data_url, _local_to_data_url
 
     def _inline(u: str) -> str:
         """本地图片 → data URL;公网 http(s) 先下载再压缩(对齐参考项目
@@ -478,10 +481,8 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
         # 只在百分比真的变了才回调:进度条重绘有成本,而多数轮次上游根本不推进
         if on_progress and pct is not None and pct != last_pct:
             last_pct = pct
-            try:
+            with contextlib.suppress(Exception):
                 on_progress(pct)
-            except Exception:  # noqa: BLE001
-                pass          # UI 回调出问题不该带崩正在跑的任务
         if url_v:
             return url_v
         if status == "failed":

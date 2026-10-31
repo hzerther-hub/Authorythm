@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """图像处理对话框(改图)—— 对齐参考项目 9272acf 的 ImageEditModal/ImageEditPanel。
 
 参考版用 Filerobot Image Editor(Web JS),pydrama 用 PyQt 等价实现,能力对齐:
@@ -14,6 +13,7 @@ comic_image_url(不覆盖原图)。
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import os
 import subprocess
@@ -22,10 +22,19 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QFileDialog,
-                               QGridLayout, QGroupBox, QHBoxLayout, QLabel,
-                               QMessageBox, QPushButton, QSlider, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import config, db
 from ..core.i18n import tr
@@ -33,9 +42,9 @@ from . import widgets as W
 from .toast import err, ok
 
 try:
-    from PIL import (Image, ImageEnhance, ImageFilter, ImageDraw, ImageFont)
+    from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
     _PIL_OK = True
-except ImportError:  # noqa: BLE001
+except ImportError:
     _PIL_OK = False
 
 # 裁剪预设(对齐参考:内置常用 + 本项目竖屏成片/竖版海报)
@@ -72,8 +81,9 @@ class _AdjustApplyWorker(QThread):
         self.start()
 
     def run(self):
-        from ..pipeline import img_adjust as IA
         import tempfile
+
+        from ..pipeline import img_adjust as IA
         base = self._dlg._adjust_base.convert("RGBA")
         with tempfile.TemporaryDirectory() as td:
             src = Path(td) / "in.png"
@@ -92,9 +102,15 @@ class _AdjustApplyWorker(QThread):
         dlg._render()
         dlg._adjust_base = dlg.current.copy()
         for s_ in (dlg.brightness, dlg.contrast, dlg.saturation):
-            s_.blockSignals(True); s_.setValue(100); s_.blockSignals(False)
+            s_.blockSignals(True)
+            s_.setValue(100)
+            s_.blockSignals(False)
+
         for s_ in dlg._adv.values():
-            s_.blockSignals(True); s_.setValue(0); s_.blockSignals(False)
+            s_.blockSignals(True)
+            s_.setValue(0)
+            s_.blockSignals(False)
+
 
 # 水印预设(用户点一下即填好文字 + 颜色 + 字号 + 位置)
 # 只给「文字水印」用;图片水印不涉及字体/文字,预设下拉对图片类型无意义。
@@ -1051,8 +1067,11 @@ class ImageEditDialog(QDialog):
     def _open_patch(self):
         """在当前画面上开修补窗口,完成后把结果载回编辑器(可继续调色/裁剪)。"""
         import tempfile
+
         from .patch_dialog import PatchDialog
-        buf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+        # NamedTemporaryFile(delete=False):文件要交给 PatchDialog 按路径读,
+        # 用 with 会提前删掉 → 只能手动 close(见下方 finally)
+        buf = tempfile.NamedTemporaryFile(suffix=".png", delete=False)  # noqa: SIM115
         try:
             self.current.convert("RGB").save(buf.name, "PNG")
             buf.flush()
@@ -1061,6 +1080,7 @@ class ImageEditDialog(QDialog):
             res = getattr(dlg, "_result", None)
             if res:
                 import io as _io
+
                 from PIL import Image
                 self._push_history()
                 self.current = Image.open(_io.BytesIO(res)).convert("RGB")
@@ -1138,9 +1158,10 @@ class ImageEditDialog(QDialog):
         复用 PhotoCraftWatcher(三路监听 + mtime+size 双检),与 chat-edit 的
         「✋ 我手动改」同套机制 —— 监听当前 self.current 的 PNG 副本,保存即更新。
         """
-        from .photocraft_watcher import PhotoCraftWatcher
+        import tempfile
+
         from ..ai import photocraft_bridge as _pcb
-        import os, tempfile, shutil
+        from .photocraft_watcher import PhotoCraftWatcher
 
         app_path = _pcb.resolve_app_path()
         if not app_path:
@@ -1168,7 +1189,7 @@ class ImageEditDialog(QDialog):
         # 启动 PhotoCraft
         try:
             subprocess.Popen([app_path, str(tmpfile.resolve())], close_fds=True)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             from .toast import err as _err
             _err(str(exc)[:200])
             return
@@ -1196,7 +1217,7 @@ class ImageEditDialog(QDialog):
             self._open_ext_btn.setText(tr("外部打开"))
             from .toast import ok
             ok(f"已同步 PhotoCraft 修改:{Path(new_path).name}")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             from .toast import err
             err(str(exc)[:200])
 
@@ -1244,10 +1265,8 @@ class ImageEditDialog(QDialog):
         # 水印实时预览:有待生效水印(文字或图片)就叠加显示(未提交),拖动位置/换色/换字体即时可见。
         # preview_scale = 缩略图高 / 实际高,把字号比例换算到缩略图坐标系。
         if self._has_pending_wm() or self.wm_items:
-            try:
+            with contextlib.suppress(Exception):
                 im = self._draw_wm(im).convert("RGB")
-            except Exception:  # noqa: BLE001 —— 预览叠加失败不拖垮正常渲染
-                pass
         data = im.tobytes("raw", "RGB")
         qimg = QImage(data, im.size[0], im.size[1], im.size[0] * 3, QImage.Format_RGB888)
         self.preview.setPixmap(QPixmap.fromImage(qimg))

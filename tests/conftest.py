@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """全局测试夹具。"""
 import pytest
 

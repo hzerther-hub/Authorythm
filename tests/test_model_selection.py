@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """回归:模型下拉的两份数据不能抢同一个 Qt 角色。
 
 背景(实测):`W.add_item(combo, label, config_id, user_data=model)` 里,
@@ -33,6 +32,7 @@ def qapp():
 def test_add_item_keeps_data_and_user_data_in_separate_roles(qapp):
     """config_id 留在 UserRole(currentData 读它),型号名去 USER_DATA_ROLE。"""
     from PySide6.QtWidgets import QComboBox
+
     from app.ui import widgets as W
 
     combo = QComboBox()
@@ -47,8 +47,8 @@ def test_add_item_keeps_data_and_user_data_in_separate_roles(qapp):
 
 def test_model_combo_current_data_is_int(qapp, monkeypatch):
     """剧集页模型下拉:currentData() 是 int,不是型号名。"""
-    from app.ui.episode_page import EpisodePage
     from app.ui import widgets as W
+    from app.ui.episode_page import EpisodePage
 
     page = EpisodePage.__new__(EpisodePage)      # 不跑 __init__,只测填下拉那段
     page._sync_res_tiers = lambda: None

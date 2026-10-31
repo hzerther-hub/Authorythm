@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """扫出 app/ui/*.py 里没走 tr() 的中文字面量。
 
 背景:ui_strings.S 的语言包本身已经 15 语言全了,但这些文案压根没被 tr() 包过 ——
@@ -258,7 +257,7 @@ def _rewrite_fstrings(path: pathlib.Path) -> tuple[int, list[str]]:
         q = "'" if "'" not in template and '"' not in template else ("'" if "'" not in template else '"')
         if q in template:
             continue
-        repl = f"tr({q}{template}{q}).format({', '.join(args)})".encode("utf-8")
+        repl = f"tr({q}{template}{q}).format({', '.join(args)})".encode()
         edits.append((s, e, repl))
         templates.append(template)
 
@@ -314,8 +313,8 @@ def seed(keys: dict[str, str]) -> int:
 
     中文原文直接做键:自解释、天然去重,而且译文缺失时 tr() 会回退到中文而不是显示键名。
     """
-    from app.core import ui_strings as U
     from app.core import i18n as I
+    from app.core import ui_strings as U
     old_z, old_s = set(I.Z), set(U.S)
     new = [k for k in keys if k not in old_s]
     for k in new:
@@ -358,8 +357,8 @@ def main() -> int:
                 total += n
         # 模板键落库:Z(中文基准) + S(先只填中文,其余留给机翻)
         if all_tpl:
-            from app.core import ui_strings as U
             from app.core import i18n as I
+            from app.core import ui_strings as U
             new = [t for t in dict.fromkeys(all_tpl) if t not in U.S]
             for t in new:
                 U.S[t] = [t] + [""] * (len(U.LANGS) - 1)
@@ -384,14 +383,14 @@ def main() -> int:
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
         total = prompts = 0
         for f, hits in data.items():
-            rows = [(l, v, _is_prompt(v)) for l, v in hits]
+            rows = [(_ln, v, _is_prompt(v)) for _ln, v in hits]
             ui = [r for r in rows if not r[2]]
             pm = len([r for r in rows if r[2]])
             total += len(ui)
             prompts += pm
             print(f"\n=== {f.name}  界面 {len(ui)} / 提示词跳过 {pm}")
-            for l, v, _ in ui:
-                print(f"  {l:5} {v}")
+            for _ln, v, _ in ui:
+                print(f"  {_ln:5} {v}")
         print(f"\n合计界面文案 {total} 条,跳过提示词 {prompts} 条")
         return 0
 

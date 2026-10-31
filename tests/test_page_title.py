@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """集页顶部标题 _page_title 的回归测试。
 
 曾经的真实缺陷:标题渲染成「项目 · 第 1 集 · 第 1 集」。去重逻辑拿集标题去
@@ -13,7 +12,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from app.ui.episode_page import _page_title  # noqa: E402
+from app.ui.episode_page import _page_title
 
 
 @pytest.mark.parametrize("title", ["第 1 集", "第1集", "第  1  集", "第1集　夜谈"])

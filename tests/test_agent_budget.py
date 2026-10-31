@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """输出预算自适应(agent runner)的回归测试。
 
 背景见 docs/分镜拆分失败-根因与修复交接.md:
@@ -144,7 +143,7 @@ def test_caller_start_budget_rejected_falls_back_to_low_ladder(budgets):
 
 def test_auth_error_at_callers_budget_still_raises(budgets):
     """鉴权/配置错误不能当成「预算太高」吞掉。"""
-    seen, script = budgets
+    _seen, script = budgets
     script.append(AIError("401 unauthorized"))
     with pytest.raises(AIError):
         runner.run_agent_json("storyboard_breaker", "x", max_tokens=65536)
@@ -179,7 +178,7 @@ def test_provider_rejects_budget_ceiling_is_discovered_from_error(budgets):
 
 def test_first_call_ai_error_propagates(budgets):
     """起始档就 400 = 鉴权/配置这类硬错误,照常抛出,不能被兜底吞掉。"""
-    seen, script = budgets
+    _seen, script = budgets
     script.append(AIError("401 unauthorized"))
     with pytest.raises(AIError):
         _run()
@@ -195,7 +194,7 @@ def test_gives_up_at_ceiling_instead_of_looping_forever(budgets):
 
 def test_real_failure_reason_is_not_masked_by_prompt_loading_error(budgets):
     """阶梯失败后的禁工具兜底里,load_prompt 抛错不能顶掉真正的诊断信息。"""
-    seen, script = budgets
+    _seen, script = budgets
     script.extend([TRUNC_JSON] * 10)
     # agent 名不存在 → prompts.load_prompt 抛 ValueError
     with pytest.raises(RuntimeError, match="无法解析为 JSON"):

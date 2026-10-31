@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """抓取**正在运行**的易好短剧窗口(Win32 GDI 截屏),并可把它拉回屏幕可见位置。
 
 为什么不用 scripts/shot_*.py 那一套:
@@ -16,6 +15,7 @@
 """
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import sys
 from ctypes import wintypes
@@ -23,10 +23,8 @@ from pathlib import Path
 
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
-try:
-    user32.SetProcessDPIAware()
-except Exception:  # noqa: BLE001
-    pass
+with contextlib.suppress(Exception):
+        user32.SetProcessDPIAware()
 
 DEFAULT_TITLE = "易好短剧"
 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)

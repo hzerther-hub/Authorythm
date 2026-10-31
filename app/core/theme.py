@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """浅色 / 深色 QSS 主题。
 
 字体策略对齐原版 drama(frontend/app/assets/studio.css):
@@ -317,6 +316,7 @@ UI_FONT_CANDIDATES = [
 def load_bundled_fonts(app) -> list[str]:
     """注册 assets/fonts/ 下的打包字体(片头标题卡用);返回已注册 family。"""
     from pathlib import Path
+
     from PySide6.QtGui import QFontDatabase
     fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
     families: list[str] = []
@@ -936,18 +936,18 @@ def apply_theme(app, mode: str = "light", preferred: str = "") -> None:
     from PySide6.QtGui import QColor, QPalette
     dark = mode == "dark"
     pal = QPalette()
-    pal.setColor(QPalette.Window, QColor("#17181c" if dark else "#f5f6f8"))
-    pal.setColor(QPalette.WindowText, QColor("#e8eaed" if dark else "#1f2329"))
-    pal.setColor(QPalette.Base, QColor("#1d1f24" if dark else "#ffffff"))
-    pal.setColor(QPalette.AlternateBase, QColor("#202126" if dark else "#f7f8fa"))
-    pal.setColor(QPalette.Text, QColor("#e8eaed" if dark else "#1f2329"))
-    pal.setColor(QPalette.Button, QColor("#26282e" if dark else "#ffffff"))
-    pal.setColor(QPalette.ButtonText, QColor("#e8eaed" if dark else "#1f2329"))
-    pal.setColor(QPalette.ToolTipBase, QColor("#26282e" if dark else "#ffffff"))
-    pal.setColor(QPalette.ToolTipText, QColor("#e8eaed" if dark else "#1f2329"))
-    pal.setColor(QPalette.Highlight, QColor("#f97316"))
-    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-    pal.setColor(QPalette.Link, QColor("#fdba74" if dark else "#f97316"))
+    pal.setColor(QPalette.Window, QColor("#17181c" if dark else "#f5f6f8"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.WindowText, QColor("#e8eaed" if dark else "#1f2329"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.Base, QColor("#1d1f24" if dark else "#ffffff"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.AlternateBase, QColor("#202126" if dark else "#f7f8fa"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.Text, QColor("#e8eaed" if dark else "#1f2329"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.Button, QColor("#26282e" if dark else "#ffffff"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.ButtonText, QColor("#e8eaed" if dark else "#1f2329"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.ToolTipBase, QColor("#26282e" if dark else "#ffffff"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.ToolTipText, QColor("#e8eaed" if dark else "#1f2329"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.Highlight, QColor("#f97316"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))  # type: ignore[attr-defined]
+    pal.setColor(QPalette.Link, QColor("#fdba74" if dark else "#f97316"))  # type: ignore[attr-defined]
     app.setPalette(pal)
     qss = DARK_QSS if mode == "dark" else LIGHT_QSS
     family = resolve_ui_family(preferred or db_get_setting("ui_font", ""))

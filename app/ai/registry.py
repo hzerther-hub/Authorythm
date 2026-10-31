@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI 服务配置注册表:六类服务(text/image/video/tts/faceswap/jev)多供应商 CRUD + 默认项 + 连通测试。"""
 from __future__ import annotations
 
@@ -361,7 +360,9 @@ def update_config(cid: int, **fields) -> None:
             # api_key 入库前加密(明文 → enc:...)
             if k == "api_key":
                 v = ensure_encrypted(v or "")
-            sets.append(f"{k}=?"); vals.append(v)
+            sets.append(f"{k}=?")
+            vals.append(v)
+
     if "settings" in fields:                     # 本地生图扩展设置(JSON 字符串;空串存 NULL)
         sets.append("settings=?")
         vals.append(fields["settings"] or None)
@@ -380,14 +381,18 @@ def update_config(cid: int, **fields) -> None:
         sets.append("temperature=?")
         vals.append(fields["temperature"])
     if "priority" in fields and fields["priority"] is not None:
-        sets.append("priority=?"); vals.append(int(fields["priority"]))
+        sets.append("priority=?")
+        vals.append(int(fields["priority"]))
+
     if fields.get("is_default"):
         row = db.q1("SELECT service_type FROM ai_service_configs WHERE id=?", (cid,))
         if row:
             db.ex("UPDATE ai_service_configs SET is_default=0 WHERE service_type=?", (row["service_type"],))
         sets.append("is_default=1")
     if "is_active" in fields:
-        sets.append("is_active=?"); vals.append(1 if fields["is_active"] else 0)
+        sets.append("is_active=?")
+        vals.append(1 if fields["is_active"] else 0)
+
     if sets:
         vals += [db.now(), cid]
         db.ex(f"UPDATE ai_service_configs SET {','.join(sets)}, updated_at=? WHERE id=?", tuple(vals))
@@ -437,14 +442,14 @@ def apply_yihao_key(api_key: str) -> list[str]:
 
 
 def seed_tts_default() -> None:
-    if not (q_tts := db.q1("SELECT id FROM ai_service_configs WHERE service_type='tts'")):
+    if not db.q1("SELECT id FROM ai_service_configs WHERE service_type='tts'"):
         add_config("tts", "volcengine", "https://openspeech.bytedance.com",
                    "zh_female_shuangkuaisisi_uranus_bigtts", remark="豆包语音")
 
 
 def seed_faceswap_default() -> None:
     """首次启动种子:本地 InsightFace 换脸服务(可再自行添加远程配置)。"""
-    if not (row := db.q1("SELECT id FROM ai_service_configs WHERE service_type='faceswap'")):
+    if not db.q1("SELECT id FROM ai_service_configs WHERE service_type='faceswap'"):
         add_config("faceswap", "local-faceswap", "http://127.0.0.1:5678",
                    "face-swap", remark="本地换脸服务", priority=0)
 
@@ -492,7 +497,7 @@ def check_ready(service_type: str, config_id: int | None = None) -> dict:
 
     覆盖四种情况:未配置 / 全部停用 / 缺 API Key / 缺模型名或 Base URL。
     """
-    rows = registry_list = list_configs(service_type)
+    rows = list_configs(service_type)
     if not rows:
         raise NotConfigured(service_type, f"尚未配置{SVC_CN_LABEL.get(service_type, service_type)}服务,请到「设置 → AI 服务」添加")
     if config_id:

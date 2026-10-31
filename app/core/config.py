@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """路径与环境配置:数据目录 / SQLite / 媒体目录 / ffmpeg 定位。"""
 from __future__ import annotations
 
@@ -84,7 +83,6 @@ def resolve_content_language(drama_id: int | None = None) -> str:
     对齐原版 a6a47dc:dramas.language='auto' 表示跟随全局,其他值固定该语言,
     各项目互不干扰。返回 15 语种之一。
     """
-    import re as _re
     from .i18n import LANGS
     valid = {c for c, _ in LANGS}
     if drama_id:

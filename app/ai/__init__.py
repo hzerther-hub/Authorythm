@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """AI 客户端包。
 
 导入即启用 IPv4 优先:本机 IPv6 出口不可用,Cloudflare 域名(Agnes)会

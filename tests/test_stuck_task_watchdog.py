@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """僵尸任务看门狗的回归护栏(对应 docs/孤儿生成任务自愈-任务书.md §五)。
 
 任务书建议补一个 pytest「锁住巡检间隔 ≥30 分钟」。**那条断言是无效的** ——
@@ -53,7 +52,7 @@ def _read_fresh(path) -> sqlite3.Connection:
 def test_reap_interval_exceeds_real_generation_ceiling():
     """巡检间隔必须高于真实生成上界。"""
     ceiling = video_client.max_task_processing_s()
-    assert db.REAP_INTERVAL_S > ceiling, (
+    assert ceiling < db.REAP_INTERVAL_S, (
         f"REAP_INTERVAL_S={db.REAP_INTERVAL_S}s 低于单任务最坏耗时 {ceiling:.0f}s "
         f"({ceiling / 60:.0f}min):会把正在正常生成的任务判成僵尸。"
         f"改之前先看 video_client.max_task_processing_s() 的推导。"
@@ -65,7 +64,7 @@ def test_reap_interval_has_margin_not_just_clears():
 
     tick 只要落在任务寿命末尾的窗口内就会误杀,余量至少给到 1.5 倍让边界不敏感。
     """
-    assert db.REAP_INTERVAL_S >= video_client.max_task_processing_s() * 1.5
+    assert video_client.max_task_processing_s() * 1.5 <= db.REAP_INTERVAL_S
 
 
 def test_poll_ceiling_matches_actual_poll_sites():

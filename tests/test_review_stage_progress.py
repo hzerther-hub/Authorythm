@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """审校过程上报到界面红框状态栏的回归。
 
 背景:写章完成后的审校是多轮循环(critic → repair → JEV 门控,最多 3 轮),
@@ -18,7 +17,6 @@ import json
 import pytest
 
 from app.ui import episode_page as EP
-
 
 # ------------------------------------------------------------------ 文案映射
 
@@ -51,7 +49,8 @@ def test_stage_text_survives_bad_json():
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     """按本仓约定隔离:改 config.DB_PATH(导 config 时环境变量已失效,别用它)。"""
-    from app.core import config as cfg, db as db_mod
+    from app.core import config as cfg
+    from app.core import db as db_mod
     monkeypatch.setattr(cfg, "DB_PATH", tmp_path / "t.sqlite3")
     db_mod.init_db()
     return db_mod
@@ -102,8 +101,8 @@ def test_critic_node_reports_reviewing_with_cycle(monkeypatch):
 def test_repair_node_reports_repairing_with_cycle(monkeypatch):
     from app.agents import novel_review_flow as nrf
     from app.agents import runner as runner_mod
-    from app.pipeline import novel as novel_pipe
     from app.core import db as db_mod
+    from app.pipeline import novel as novel_pipe
     seen = _capture_stages(monkeypatch)
     monkeypatch.setattr(runner_mod, "run_agent", lambda *a, **k: "修复后的正文")
     monkeypatch.setattr(novel_pipe, "_gate_content", lambda t, w: t)

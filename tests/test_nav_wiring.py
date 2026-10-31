@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """回归:每个导航按钮都必须在 _goto 的页面表里登记。
 
 实测踩过:dashboard 加进顶栏导航胶囊(`_nav_defs`)和 `_PAGE_KINDS`,唯独漏了

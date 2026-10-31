@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """获取导演台(DirectorDesk)web 构建产物到 data/vendor/directordesk/。
 
 为什么这么做:预演模块(app/pipeline/previz.py + app/ui/previz_page.py)的渲染/

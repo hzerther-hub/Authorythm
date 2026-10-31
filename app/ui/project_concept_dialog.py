@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """「项目说明」弹窗:写一句想法 → AI 生成 项目名称/简介/创意描述/题材 → 确认后写回新建表单。
 
 对齐 Web 版(xiaoshuo)新建项目里的「项目说明」那一层:
@@ -15,9 +14,18 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import (QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout,
-                               QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR

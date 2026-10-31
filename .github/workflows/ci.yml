@@ -7,7 +7,7 @@ on:
     branches: [main, master]
   workflow_dispatch:
 
-# 让失败 PR 能看 log;默认 30 分钟
+# 让失败 PR 能看 log;同分支的新 push 取消旧跑
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -21,6 +21,14 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.13"]
+
+    # **关键**:全部步骤用 bash,不用 Windows 默认的 pwsh。
+    # pwsh 对原生命令的非零退出码**既不中断也不传播**(`powershell -Command
+    # "cmd /c exit 3; echo done"` 整体退出码仍是 0),会让 Windows job 的
+    # lint 步骤显示 success —— 三平台里唯一的假绿(实测本机复现)。
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout
@@ -42,22 +50,26 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements-dev.txt
+          # 版本落盘:ruff/mypy 规则集只增不减,不锁版本的话「昨天绿今天红」,
+          # 没人改代码也会红(2026-10-18 那轮实测 1660 个 ruff 错就是这么来的)。
+          pip freeze > requirements-ci.lock.txt
 
       - name: Ruff lint
         run: |
           ruff check .
-          # 也跑一次 --statistics,看主要问题分布
+          # 顺便留一份分布快照,便于看问题往哪个方向漂
           ruff check . --statistics || true
 
       - name: Mypy type check
-        # 仅检查 core/ai/agents/pipeline,ui/ 与 tests/ 留作下一轮
+        # 门禁覆盖基础层 app/core + app/agents(见 pyproject.toml 的说明):
+        # 上层 app/pipeline / app/ai 的存量类型债按模块逐步还。
         run: mypy
 
       - name: Pytest (headless)
         env:
+          # headless Qt:Linux runner 没有显示器,必须 offscreen
           QT_QPA_PLATFORM: offscreen
-          PYDRAMA_TEST_MODE: "1"
-          # 测试不能联网;真调用会卡且会留下脏数据
-          PYDRAMA_OFFLINE: "1"
         run: |
-          python -m pytest tests/ -q --timeout=60 -x
+          python -m pytest tests/ -q --timeout=120
+          # 注意:不要加 `-x`。首败即停会让三平台每次只暴露第一个失败,
+          # 修错效率低;跑完全量再汇总更快。

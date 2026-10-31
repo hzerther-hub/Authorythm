@@ -1908,3 +1908,90 @@ equirements.txt 改成 PySide6>=6.6.0,<6.10 把上限钉死。
 
 **测试**:新增 `tests/test_clone_asset_binding.py`(10)+ `tests/test_sb_scene_binding.py`(4),
 更新 `tests/test_storyboard_bind_assets.py`(道具判据反转,角色判据不变)。
+
+## 2026-10-18(第 29 轮续:CI 门禁从「上线即失守」到真正生效)
+
+> 起因:项目分析发现 **CI 自 2026-10-18 上线起 66 次运行 0 次成功**,ruff 1660 错、
+> mypy 328 错,门禁完全失效却占着「已工程化」的心理账户。
+> 本轮把三道门禁全部修绿,并顺手挖出 3 个真实 bug。
+
+### 一、ruff:1660 → 0
+
+**根因不是代码脏,是配置在骗自己**:
+- `select` 里有 12 类规则却**没启用 `BLE`**,而全仓 391 处 `# noqa: BLE001`
+  因此全被 RUF100 判成「无用 noqa」(444 个错,占总量 27%)。
+- `UP038` 这条规则 ruff 已删除,ignore 列表里留着它。
+- pep8-naming 的 N812/N814/N806/N815 全量触发(184 个),其中 **N815 是 Qt 的
+  Property/Signal 名,改名会静默失效** —— 必须全局豁免而不是改代码。
+
+**做法**:
+1. `select` 加 `BLE`;删 `UP038`;全局豁免 N812/N814/N806/N815(逐条写明理由)。
+2. 修 5 处非法 `# noqa`(写成 `# noqa: Windows 默认资源管理器`,ruff 把中文说明
+   当规则码解析 → 改回普通注释)。
+3. `ruff --fix` 自动修 **758 处**(I001 导入排序 / UP009 编码声明 / F401 未用导入 /
+   RUF100 / F841 / RUF046 …),全程用 896 个 pytest 用例做回归护栏,零回归。
+4. 手工收尾:14 处 F601 **重复字典键**(i18n 语言表里 14 个活体 bug,后者静默覆盖前者)
+   —— 用 AST 精确切除「被覆盖的首次出现」,并**逐字典比对验证取值完全等价**。
+5. `E402`(import 写在函数之后)5 个文件:用 AST 把 import 块搬回顶部。
+6. `SIM105` try/except/pass → `contextlib.suppress`(29 处)。
+7. 其余按「站点 noqa + 理由」或「per-file-ignores + 理由」处理,**不静默关规则**。
+
+### 二、mypy:328 → 0(基础层门禁)
+
+- `app/core` 46 → 0:`STYLE_PRESETS` 注解写的是 `list[dict]` 实为 tuple 列表(21 个错,
+  **注解本身就是 bug**);`q/q1/ex` 的 `args: tuple` 收窄成 `Sequence`;
+  `db.execute` 要 tuple → 显式 `tuple(args)`;PySide6 的 `QPalette.Window` /
+  `Qt.Key_Return` 等 flat 枚举运行时可用但 stub 只暴露作用域枚举 → `# type: ignore`。
+- `app/agents` 12 → 0:`run_agent(with_meta=True)` 返回 `str | tuple` 用 `cast` 窄化。
+- **上层 `app/pipeline` / `app/ai` 约 250 条存量**:`pyproject.toml` 的 `files`
+  收敛到 `app/core + app/agents`,并给上层加 `follow_imports = "silent"`
+  (否则上层存量会通过 import 链混进基础层门禁)。**债务记录在 AGENTS.md
+  「mypy 的分层」节**,按模块逐步还。
+
+### 三、CI 配置三处硬伤
+
+1. **Windows job 的 lint 是假绿**:没设 `defaults.run.shell: bash`,pwsh 对原生命令的
+   非零退出码既不中断也不传播(本机复现:`powershell -Command "cmd /c exit 3; echo done"`
+   退出码仍为 0)。→ 加 `defaults.run.shell: bash`。
+2. **版本漂移**:ruff/mypy 只写下界 → CI 每次装当时最新版 → 规则集只增不减。
+   → `requirements-dev.txt` 钉死 `ruff>=0.17,<0.18` / `mypy>=2.4,<3.0`。
+3. **死配置**:CI 里的 `PYDRAMA_TEST_MODE` / `PYDRAMA_OFFLINE` 全仓无代码读取
+   (「不联网」纯靠桩写得好,没有代码背书)→ 删除;同时去掉 `-x`(首败即停会让
+   三平台每次只暴露第一个失败)。
+
+### 四、PySide6 版本约束统一(原本两份真相源互相矛盾)
+
+- `requirements.txt` 写着 `PySide6>=6.6.0,<6.10` 并注明「上限写死是有意的:
+  pip 只认下界,迟早有人装到 6.11 然后起不来」;
+- `pyproject.toml` 却写 `PySide6>=6.6.0` **无上限** —— 按它装正好踩进被警告过的坑。
+- → `pyproject.toml` 补上 `<6.10` 与同样注释。
+
+### 五、顺手挖出的 3 个真实 bug
+
+| # | 位置 | bug | 影响 |
+|---|---|---|---|
+| 1 | `app/ui/new_project_dialog.py:249` | `_rebuild_dynamic()` 里有一行局部 `from PySide6.QtWidgets import QComboBox`,使 `QComboBox` 成为**整个函数**的局部变量,而同函数第 222/225 行先用它 | **UnboundLocalError** —— 「新建项目 → 创作目标切到宣传」必崩。局部 import 已删(模块顶部本来就 import 了) |
+| 2 | `app/agents/novel_review_flow.py:118` | `review_chapter(episode_id, config_id=..., lang=lang)` —— 但 `review_chapter` 签名里**没有 `lang` 参数** | TypeError 被外层 `except Exception` 吞掉 → **六维审校永远静默降级为 "revise"**,功能形同虚设。已去掉多余参数 |
+| 3 | `app/core/translate.py:161` | `translate_batch(items: list[tuple[str,str]], ...)` 注解说是 tuple 列表,函数体却 `for text in items` 当字符串用 | 注解与实现矛盾(该函数目前无调用方)。已按实现改正 |
+
+另修 `app/ui/episode_page.py` 一处 `is_processing = (...)` 被 ruff unsafe-fix 删掉赋值
+目标后残留的无意义表达式。
+
+### 六、验证
+
+- `ruff check .` → **All checks passed**(1660 → 0)
+- `mypy` → **Success: no issues found in 23 source files**(328 → 0)
+- `pytest tests/ -q` → **896 passed / 4 skipped / 0 failed**
+- 三道门禁首次同时为绿。
+
+### 七、过程中的教训(写给下一个人)
+
+1. **批量脚本改完必须立刻跑测试** —— 我用 AST 批量改 i18n 时连续三次把文件改坏
+   (字节偏移当字符偏移 / 同源行多处删除互相错位 / 加了 `cast(` 却忘了 import),
+   全靠 pytest 当场抓住。**没有测试护栏的批量重构 = 批量破坏。**
+2. **ast 的 `col_offset` 是 UTF-8 字节偏移**,不是字符偏移 —— 中文字符 3 字节/个,
+   直接当字符用会整段错位(我在 i18n.py 上踩了三次)。
+3. **`str.splitlines()` 会把 `\u2028` / `\x85` 也当换行**,与 Python 分词器只认 `\n`
+   不一致 → 自己算行偏移表时必须用 `split("\n")`。
+4. **ruff 的 `--fix --unsafe-fixes` 会删掉 F841 的赋值目标**(而不是改名),
+   可能留下无意义表达式 —— 改完要人眼看一眼 diff。

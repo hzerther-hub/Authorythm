@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """海外题材改写 · 领域规则库。
 
 规则库外置在 `data/overseas/`(用户可编辑),测试一律用临时目录,
@@ -235,15 +234,15 @@ def test_all_language_packs_load_and_validate(rule_dir):
     """每个语言包都要能被加载并通过 schema —— 否则用户选到它才在 UI 层炸。"""
     assert overseas_rules.validate() == []
     langs = overseas_rules.list_languages()
-    assert len(langs) >= 14, f"语言包太少: {[l['id'] for l in langs]}"
-    ids = {l["id"] for l in langs}
+    assert len(langs) >= 14, f"语言包太少: {[x['id'] for x in langs]}"
+    ids = {_ln["id"] for _ln in langs}
     assert "en-US" in ids and "fr-FR" in ids and "zh-Hant" not in ids, \
         "zh-Hant 走简繁转换,不该作为海外目标语言包出现"
-    for l in langs:
-        data = overseas_rules.get_language(l["id"])
-        assert data.get("name"), f"{l['id']} 缺 name"
+    for _ln in langs:
+        data = overseas_rules.get_language(_ln["id"])
+        assert data.get("name"), f"{_ln['id']} 缺 name"
         assert data.get("punctuation", {}).get("forbid_fullwidth"), \
-            f"{l['id']} 缺 forbid_fullwidth"
+            f"{_ln['id']} 缺 forbid_fullwidth"
 
 
 def test_skeleton_packs_are_labelled_not_silent(rule_dir):
@@ -251,7 +250,7 @@ def test_skeleton_packs_are_labelled_not_silent(rule_dir):
 
     否则用户看到「质检全过」,其实只跑了语言无关的几条规则。
     """
-    langs = {l["id"]: l for l in overseas_rules.list_languages()}
+    langs = {_ln["id"]: _ln for _ln in overseas_rules.list_languages()}
     full = [k for k, v in langs.items() if v["depth"] == "full"]
     skel = [k for k, v in langs.items() if v["depth"] == "skeleton"]
     assert set(full) == {"en-US", "fr-FR", "es-ES", "pt-BR", "id-ID"}, full

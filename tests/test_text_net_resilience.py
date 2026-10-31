@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """文本模型调用的网络韧性 + 分批拆分的失败隔离回归。
 
 背景(实测 2026-10-19,episodes#79 分镜拆分):
@@ -117,7 +116,7 @@ def test_network_error_triggers_scene_split_retry(monkeypatch):
     seen = []
 
     def fake_run(*a, **k):
-        label = k.get("label") or ""
+        k.get("label") or ""
         seen.append(len(k.get("part", "")))
         if len(seen) == 1:
             raise requests.exceptions.ReadTimeout("timed out")

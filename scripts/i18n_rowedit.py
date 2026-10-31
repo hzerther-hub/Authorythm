@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """按**槽位下标**改写 ui_strings.S 里的整行 —— i18n 修补专用。
 
 ## 为什么不能用 `line.replace(旧值, 新值)`

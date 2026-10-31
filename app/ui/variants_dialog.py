@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """造型变体管理(对齐原版 character_variants / scene_variants / prop_variants):
 
 列表(标签/形象图/默认)→ 新增变体(标签+描述 → AI 提示词)→ 变体出图
@@ -14,8 +13,16 @@ from __future__ import annotations
 import json
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QLineEdit,
-                               QMessageBox, QPushButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..agents import runner
 from ..ai import image_client
@@ -23,8 +30,7 @@ from ..core import config, db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
-from .toast import err, ok
-
+from .toast import err
 
 # 三个 kind 的表名 / 资产字段名 / 资产名 / 描述字段集中映射。
 # 加新 kind(建筑 / 服饰 …)只需在此处加一行 + 加 i18n 文案。
@@ -217,8 +223,7 @@ class VariantsDialog(QDialog):
             if not fp:
                 raise RuntimeError(tr("该变体还没有提示词,请稍后重试或补充描述后重新打开"))
             # 角色变体复用三视图白底守卫;场景/道具不需要该守卫。
-            from ..ai.prompt_guards import (CHARACTER_SHEET_NEGATIVE,
-                                            CHARACTER_SHEET_PROMPT_SUFFIX)
+            from ..ai.prompt_guards import CHARACTER_SHEET_NEGATIVE, CHARACTER_SHEET_PROMPT_SUFFIX
             is_sheet = any(k in fp for k in ("三视图", "turnaround", "character sheet"))
             if self.kind == "character":
                 if "white background" not in fp.lower():

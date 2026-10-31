@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """资产/参考图区的变体入口与高度回归。
 
 三件事,都是用户实测反馈:
@@ -18,11 +17,11 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+from PySide6.QtWidgets import QApplication, QPushButton
 
-from app.core import db  # noqa: E402
-from app.ui import episode_cards as C  # noqa: E402
-from app.ui import episode_page as EP  # noqa: E402
+from app.core import db
+from app.ui import episode_cards as C
+from app.ui import episode_page as EP
 
 
 @pytest.fixture(scope="module")
@@ -204,6 +203,7 @@ def test_all_panel_draw_paths_use_the_guard():
     全部「同一角色出现 3-4 次」。这里用源码检查锁死三处。
     """
     import inspect
+
     from app.pipeline import comic_pipeline
     full_src = inspect.getsource(comic_pipeline.generate_full_comic)
     assert "PANEL_NEGATIVE_GUARD" in full_src, "整话 pipeline 必须带鬼影守卫"
@@ -218,8 +218,9 @@ def test_all_panel_draw_paths_use_the_guard():
 
 def test_sheet_view_boxes_detects_multi_figure_sheet(tmp_path):
     """白底 + 3 个深色立绘 → 检测出 ≥2 簇;单姿势竖图 → 返回空。"""
-    from PIL import Image
     import numpy as np
+    from PIL import Image
+
     from app.pipeline import comic as comic_pipe
 
     sheet = Image.new("L", (1024, 1024), 235)          # 近白背景
@@ -241,8 +242,9 @@ def test_sheet_view_boxes_detects_multi_figure_sheet(tmp_path):
 
 def test_single_pose_ref_crops_second_view(tmp_path):
     """四格设定图([特写|正面|侧面|背面])裁第 2 簇;裁剪结果落缓存文件。"""
-    from PIL import Image
     import numpy as np
+    from PIL import Image
+
     from app.pipeline import comic as comic_pipe
 
     im = Image.new("RGB", (1024, 1024), (235, 235, 235))
@@ -253,13 +255,14 @@ def test_single_pose_ref_crops_second_view(tmp_path):
     Image.fromarray(d).save(p)
     out = comic_pipe._single_pose_ref(str(p))
     assert out != str(p), "四格设定图必须被裁"
-    w, h = Image.open(out).size
+    w, _h = Image.open(out).size
     assert w < 1024 // 2, f"裁出的应只有一格宽,得到 {w}"
     assert comic_pipe._single_pose_ref(str(p)) == out, "二次调用走缓存"
 
 
 def test_single_pose_ref_passes_portrait_through(tmp_path):
     from PIL import Image
+
     from app.pipeline import comic as comic_pipe
     p = tmp_path / "portrait.png"
     Image.new("RGB", (700, 1000), (120, 120, 120)).save(p)
@@ -268,7 +271,6 @@ def test_single_pose_ref_passes_portrait_through(tmp_path):
 
 def test_character_refs_dedupes_styles(monkeypatch, tmp_path):
     """同一角色的漫画版与写实版只取其一(两版长相差异大,一起喂=两个角色)。"""
-    from pathlib import Path
     from app.pipeline import comic as comic_pipe
 
     # media_url_to_path 按 URL 生成真实存在的临时文件,文件名保留 comic/real

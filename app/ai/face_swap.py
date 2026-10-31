@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """本地 InsightFace 换脸服务客户端(127.0.0.1:5678)。
 
 对齐原版 face-swap-service/app.py 接口:
@@ -122,6 +121,7 @@ NO_RETRY_STATUS = {400, 401, 413, 422, 502}
 def _inline_image(url: str) -> str:
     """把图转 data URL(远程 URL 也下载后内联,避免远程拉不到我们给的地址触发 502)。"""
     import mimetypes
+
     from ..core import config as _cfg
     if str(url).startswith("data:"):
         return url
@@ -163,7 +163,7 @@ def swap_remote(source_path: str | Path, template_path: str | Path,
     try:
         src_in = _inline_image(str(source_path))
         tpl_in = _inline_image(str(template_path))
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise RuntimeError(f"读取换脸图片失败:{e}") from e
     payload = {"source_url": src_in, "template_url": tpl_in,
                 "source_index": 0, "template_index": 0,
@@ -174,7 +174,7 @@ def swap_remote(source_path: str | Path, template_path: str | Path,
         try:
             r = requests.post(f"{base}/swap", json=payload, headers=headers,
                               timeout=REMOTE_TIMEOUT_S)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             raise RuntimeError(f"远程换脸调用失败:{e}") from e
         data = r.json() if r.content else {}
         if r.status_code == 200 and data.get("ok"):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """`variant_detector.ensure_variants_for_storyboard` 的关联表兜底路径回归。
 
 bug 背景:`storyboard_characters` / `storyboard_scenes` / `storyboard_props` 这三张

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """无损视频合并工具页(独立菜单,对齐 easymerger 主界面):
 
 导入文件/文件夹 → 检测参数(分辨率/编码/帧率/Profile/采样率) → 结论
@@ -9,16 +8,25 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QFileDialog, QHeaderView, QHBoxLayout, QLabel,
-                               QMessageBox, QPushButton, QTableWidget,
-                               QTableWidgetItem, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import config
-from . import widgets as W
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
-from .toast import err
 from ..pipeline import merge as M
+from . import widgets as W
+from .toast import err
 
 PARAM_COLS = ["name", "resolution", "codec", "profile", "fps", "sample_rate"]
 
@@ -170,7 +178,7 @@ class MergerToolPage(QWidget):
             else:
                 import os
                 self.verdict.setText("✅ " + tr("merge_done", str(result)))
-                os.startfile(str(out.parent))  # noqa 打开输出目录
+                os.startfile(str(out.parent))
         TASKMGR.submit("merge", job, done)
 
 

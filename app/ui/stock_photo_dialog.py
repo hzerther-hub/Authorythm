@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """图库搜图弹窗 —— 「图片处理」「聊天改图」共用。
 
 选中的图**下载到本地**再交给调用方:下游逻辑(prompt 拼装、图像 API、
@@ -9,15 +8,23 @@
 """
 from __future__ import annotations
 
-import uuid
 import pathlib
+import uuid
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
 import requests
-
-from PySide6.QtWidgets import (QComboBox, QDialog, QFrame, QHBoxLayout, QLabel,
-                               QLineEdit, QPushButton, QScrollArea,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import Qt, QThread, QTimer, Signal
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..ai import stock_photo as sp
 from ..core import config
@@ -392,7 +399,7 @@ class StockPhotoDialog(QDialog):
                                 style_default=self._default_style())
         dlg.remote_url_hint = url
         dlg.remote_preview = getattr(self, "_last_preview_url", "")
-        if not dlg.exec() == ImageViewerDialog.Accepted or not dlg.used:
+        if dlg.exec() != ImageViewerDialog.Accepted or not dlg.used:
             return                                  # 关闭:回到搜索结果,弹窗继续开着
         # 用了换过画风的版本就用它,否则下原图
         self._download(getattr(dlg, "transformed_url", None) or url,
@@ -419,8 +426,8 @@ class StockPhotoDialog(QDialog):
         先看效果),所以这里不会动任何资产表。
         """
         from ..ai import image_client
-        from ..pipeline import style_convert as SC
         from ..core.taskmgr import TASKMGR
+        from ..pipeline import style_convert as SC
         style = (viewer.selected_style() if hasattr(viewer, "selected_style")
                  else None) or self._default_style()
         try:

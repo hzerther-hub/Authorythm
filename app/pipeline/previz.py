@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """导演台(DirectorDesk)白模预演工程:数据模型 + 校验 + 文件读写。
 
 对齐上游 mangfufu/director-desk 的 `src/model.ts`(JSON 工程格式 `format='director-desk'`)。

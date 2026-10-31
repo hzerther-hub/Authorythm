@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """metrics 极简实现的回归护栏。
 
 覆盖:
@@ -11,12 +10,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
 from app.core import metrics
-from app.core import db
 
 
 @pytest.fixture(autouse=True)

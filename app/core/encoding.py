@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成文本的乱码检测与修复(mojibake guard)。
 
 现象:章节正文整段变成 ``æ□®e□³□`` 这种鬼样子。成因是**UTF-8 字节被按别的编码
@@ -19,9 +18,7 @@
 """
 from __future__ import annotations
 
-import re
-
-__all__ = ["looks_mojibake", "repair", "ensure_text", "MojibakeError"]
+__all__ = ["MojibakeError", "ensure_text", "looks_mojibake", "repair"]
 
 # 候选误读编码,按还原成功率排序:latin-1 无损(能映射全部 256 字节)排最前
 _CANDIDATES = ("latin-1", "cp1252", "gbk", "gb18030", "big5")

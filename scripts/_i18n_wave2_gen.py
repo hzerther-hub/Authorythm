@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把 scripts/_i18n_translate.py 的机翻结果(docs/_i18n_wave2_raw.json)生成 i18n_wave2.py。"""
 from __future__ import annotations
 

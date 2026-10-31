@@ -1,12 +1,8 @@
-# -*- coding: utf-8 -*-
 """一次性为 comic_outline_writer Agent 生成 16 语言 prompt 文件。
 
 执行:python -m scripts.seed_comic_outline_prompts
 """
-import os
-import sys
 from pathlib import Path
-
 
 PROMPTS = {
     "zh": """你是漫画剧本扩写师。给定一段故事梗概(100-1000 字口语描述),

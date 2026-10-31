@@ -1,30 +1,41 @@
-# -*- coding: utf-8 -*-
 """主窗口:顶栏(Logo/导航/主题/语言)+ QStackedWidget(启动台/项目页/工作台/复刻页/合并工具)。"""
 from __future__ import annotations
 
-import json
-
+import contextlib
 from pathlib import Path
+from typing import ClassVar
 
-from PySide6.QtCore import Qt, QTimer, Signal, QUrl
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QFrame,QComboBox, QFileDialog, QHBoxLayout, QLabel, QMainWindow,
-                               QMessageBox, QPushButton, QScrollArea, QStackedWidget,
-                               QTextEdit, QVBoxLayout, QWidget)
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import config, db
 from ..core.i18n import LANGS, on_change, set_language, tr
-from .toast import err, ok, warn
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
+from . import widgets as W
+from .dashboard_widget import DashboardWidget
 from .episode_page import EpisodePage
 from .new_project_dialog import NewProjectDialog
 from .project_page import ProjectPage
 from .projects_page import ProjectsPage
 from .settings_dialog import SettingsDialog
-from .dashboard_widget import DashboardWidget
-from . import widgets as W
+from .toast import err, ok, warn
 
 
 class MainWindow(QMainWindow):
@@ -134,7 +145,7 @@ class MainWindow(QMainWindow):
         for b in (theme_btn, settings_btn, lang_btn, help_btn):
             nav_lay.addWidget(b)
         tlay.addWidget(nav_wrap)
-        from .braille import BrailleSpinner, BrailleBar
+        from .braille import BrailleBar, BrailleSpinner
         self.busy_spin = BrailleSpinner(color="#8b909a", size=16)
         tlay.addWidget(self.busy_spin)
         self.busy_bar = BrailleBar(cells=14, parent=top)
@@ -262,7 +273,6 @@ class MainWindow(QMainWindow):
 
     def set_busy(self, on: bool, message: str = ""):
         """全局盲文等待态(D 类):任何 AI 任务在跑时顶栏显示点字变化,避免"点了没反应"。"""
-        from .braille import BrailleSpinner
         if on:
             self.busy_spin.start(message or tr("处理中…"))
             self.busy_bar.start()
@@ -285,7 +295,7 @@ class MainWindow(QMainWindow):
     # dashboard 必须在首位:它是栈里的第 0 页,漏了会让全表右移一位,
     # 切语言时把首页当成 projects 重建,直接把用户从 dashboard 弹到项目页。
     # _make_page("dashboard") 返回 None,_rebuild_ui 走「原地刷顶栏」分支,符合预期。
-    _PAGE_KINDS = ["dashboard", "projects", "project", "episode", "clone",
+    _PAGE_KINDS: ClassVar[list[object]] = ["dashboard", "projects", "project", "episode", "clone",
                    "face_swap", "merger", "previz", "chatedit"]
 
     def _make_page(self, kind: str):
@@ -295,9 +305,9 @@ class MainWindow(QMainWindow):
         哪种语言切换后就永远停在旧语言(而且不报错)。_PAGE_KINDS 里的每个键
         都要能在这里造出来,tests/test_lang_switch.py 守着这条。
         """
+        from .episode_page import EpisodePage
         from .project_page import ProjectPage
         from .projects_page import ProjectsPage
-        from .episode_page import EpisodePage
         drama_id = getattr(self, "_cur_drama_id", 0)
         episode_id = getattr(self, "_cur_episode_id", 0)
         if kind == "dashboard":
@@ -346,10 +356,8 @@ class MainWindow(QMainWindow):
             old = getattr(self, "chat_edit_page", None)
             sid = getattr(getattr(old, "panel", None), "_session_id", None)
             if sid:
-                try:
+                with contextlib.suppress(Exception):
                     p.panel.load_session(sid)
-                except Exception:  # noqa: BLE001 —— 恢复失败就从头开始,不炸重建
-                    pass
             return p
         return None
 
@@ -367,7 +375,7 @@ class MainWindow(QMainWindow):
         p.needSettings.connect(self._open_settings)
         p.openDesktopApp.connect(self._open_photocraft_desktop)
 
-    _PAGE_ATTR = {
+    _PAGE_ATTR: ClassVar[dict[str, str]] = {
         "dashboard": "dashboard",
         "projects": "projects_page", "project": "project_page", "episode": "episode_page",
         "clone": "clone_page",
@@ -643,15 +651,16 @@ class MainWindow(QMainWindow):
         self.chat_edit_page.add_external_result(out_path)
 
     def _open_photocraft_desktop(self):
-        from ..ai.photocraft_bridge import resolve_app_path
         import os
+
+        from ..ai.photocraft_bridge import resolve_app_path
         p = resolve_app_path()
         if not p:
             from .toast import err
             err(tr("chat_edit_cli_missing"))
             return
         try:
-            os.startfile(p)  # noqa: Windows
+            os.startfile(p)  # Windows
         except Exception as exc:  # noqa: BLE001
             from .toast import err
             err(str(exc)[:200])
@@ -673,9 +682,10 @@ class MainWindow(QMainWindow):
         - 每行可点 → 跳到设置页(未就绪行才跳转,避免对已配置项做无效跳转);
         - 标题/说明/按钮文案全部走 tr(),多语言同步。
         """
-        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
         from PySide6.QtCore import Qt
-        from ..ai.registry import readiness, SVC_CN_LABEL
+        from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout
+
+        from ..ai.registry import readiness
 
         dlg = QDialog(self)
         dlg.setWindowTitle(tr("install_help_title"))
@@ -733,9 +743,8 @@ class MainWindow(QMainWindow):
 
         # PhotoCraft 桌面端单独一行 —— 检测逻辑跟 readiness() 不同(它不查表),
         # 直接读 db 的 photocraft_install_dir + photocraft_cli_path
-        from ..ai.photocraft_bridge import PHOTOCRAFT_URL
-        from ..core import db as _db
         from ..ai import photocraft_bridge as _pcb
+        from ..ai.photocraft_bridge import PHOTOCRAFT_URL
         pc_ok = bool(_pcb.resolve_app_path() or _pcb.resolve_cli_path())
         row = QHBoxLayout()
         row.setSpacing(8)
@@ -836,10 +845,8 @@ class MainWindow(QMainWindow):
         from .settings_dialog import SettingsDialog
         dlg = SettingsDialog(self, on_language_changed=self._on_language_changed,
                              on_theme_changed=self._apply_theme_cb)
-        try:
+        with contextlib.suppress(Exception):
             dlg.tabs_nav.setCurrentRow(tab_idx)
-        except Exception:  # noqa: BLE001
-            pass
         dlg.exec()
         self._refresh_ai_banner()
 
@@ -873,6 +880,7 @@ def _playable_video(src: str) -> str:
     15 秒片子转码不到 1 秒。其他编码原样返回,不白折腾一次转码。
     """
     import subprocess
+
     from ..core import config
     # Path("") 会变成 "."(当前目录)且 exists() 为真 —— 直接拿去 ffmpeg 会白跑一次,
     # 空串必须在这里挡掉。
@@ -990,7 +998,7 @@ class _RefVideoDialog(QDialog):
                                           Path(str(self._path)).name or "参考视频.mp4")
             if p:
                 ok(tr("download_ok") + ": " + p.name)
-        except Exception as exc:  # 失败必须可见,不能静默
+        except Exception as exc:  # 失败必须可见,不能静默  # noqa: BLE001
             err(str(exc)[:200])
 
     def _close_and_stop(self):
@@ -1033,7 +1041,7 @@ class _RefVideoWidget(QWidget):
         try:
             from ..ai.jev_gate import get_jev_gate
             on = bool(get_jev_gate().usable)
-        except Exception:
+        except Exception:  # noqa: BLE001
             on = False
         self.jev_tag.setText(("● " if on else "○ ")
                              + tr("jev_on" if on else "jev_off"))
@@ -1055,7 +1063,7 @@ class _RefVideoWidget(QWidget):
             # 别只丢一条红 toast(实测:点「看原视频」什么都不发生)。
             import os
             try:
-                os.startfile(self._path)  # noqa: Windows 默认播放器
+                os.startfile(self._path)  # Windows 默认播放器
             except OSError:
                 err(tr("无法播放参考视频:"))
         except Exception as exc:  # noqa: BLE001
@@ -1570,8 +1578,8 @@ class ClonePage(QWidget):
             ok(tr("download_ok") + ": " + p.name)
 
     def _delete_shot_video(self, n: int):
-        from .confirm import ask
         from ..pipeline import video_clone
+        from .confirm import ask
         if not ask(self, tr("删除该镜视频"),
                    tr("确认删除这一镜的视频?文件会一并删除。继续?"), danger=True):
             return
@@ -1591,6 +1599,7 @@ class ClonePage(QWidget):
     def _download_merged(self, path: str):
         """成片下载到本地(另存为对话框,文件名自动带时间戳)。"""
         from datetime import datetime
+
         from ..core import download as dl_mod
         day = datetime.now().strftime("%m%d_%H%M")
         p = dl_mod.download_media_ask(self, path, f"克_成片_{day}.mp4")
@@ -1598,8 +1607,8 @@ class ClonePage(QWidget):
             ok(tr("download_ok") + ": " + p.name)
 
     def _delete_merge(self, path: str):
-        from .confirm import ask
         from ..pipeline import video_clone
+        from .confirm import ask
         if not ask(self, tr("delete"),
                    tr("确认删除这一合并成片?文件与海报会一并删除。继续?"), danger=True):
             return
@@ -2120,13 +2129,15 @@ class ClonePage(QWidget):
                     dlg, url, f"首帧_{board_number:02d}{Path(url).suffix or '.png'}")
                 if p:
                     ok(tr("download_ok") + ": " + p.name)
-            except Exception as exc:  # 失败必须可见
+            except Exception as exc:  # 失败必须可见  # noqa: BLE001
                 err(str(exc)[:200])
 
         def _replace(dlg):
-            from PySide6.QtWidgets import QFileDialog
             import shutil
             import uuid
+
+            from PySide6.QtWidgets import QFileDialog
+
             from ..pipeline import video_clone
             p, _ = QFileDialog.getOpenFileName(
                 dlg, tr("替换图片"), "", "Images (*.png *.jpg *.jpeg *.webp)")
@@ -2245,10 +2256,10 @@ class ClonePage(QWidget):
         通过自检才覆盖正式场景图。原「挑帧→抹人→图生图」整链只在
         「提取场景图/检测参数」时跑。
         """
-        from ..pipeline import video_clone
-        from ..core import taskmgr as TM
         import shutil
-        import uuid
+
+        from ..core import taskmgr as TM
+        from ..pipeline import video_clone
         # 在 UI 线程先快照弹窗字段(worker 线程绝不碰 Qt 控件)
         loc = dlg.location.text() if dlg is not None and hasattr(dlg, "location") else ""
         light = dlg.lighting.toPlainText() if dlg is not None and hasattr(dlg, "lighting") else ""
@@ -2385,7 +2396,7 @@ class ClonePage(QWidget):
             # 样貌/妆造自愈:角色行空但 clone 文字锚有值(惰性提取成功)→ 回填,
             # 详情字段与「最终提示词 · AI 生成」才有内容可吃(实测出镜人物两栏
             # 全空 —— 提取曾失败,后来补齐只写了 metadata,角色表没跟上)。
-            if not (str(row.get("appearance") or "").strip()
+            if not (str(row.get("appearance") or "").strip()  # noqa: SIM102  (嵌套 if 各带注释说明,合并成 and 会丢掉可读性)
                     or str(row.get("styling") or "").strip()):
                 if (clone_meta.get("presenter_desc") or "").strip():
                     db.ex("UPDATE characters SET appearance=?, styling=?, updated_at=? WHERE id=?",
@@ -2577,8 +2588,9 @@ class ClonePage(QWidget):
         """本镜重绘备注:用户对这一镜画面问题的硬要求(如「只允许一只手」),
         存进分镜条目、随下一轮重绘注入提示词 —— 修图能力留在软件里,用户
         自己写一句、点重绘即修,不必改代码。"""
-        from ..pipeline import video_clone
         from PySide6.QtWidgets import QInputDialog
+
+        from ..pipeline import video_clone
         b = next((x for x in video_clone._clone_storyboards(self.drama_id)
                   if int(x.get("number", 0)) == n), None)
         if b is None:
@@ -2600,8 +2612,9 @@ class ClonePage(QWidget):
         """本镜口播编辑:推测口播是模型猜的,难免有偏(换产品后尤其容易留着
         旧产品的说法),用户改一句比重新拆解便宜得多 —— 改完随视频合成与配音走。
         """
-        from ..pipeline import video_clone
         from PySide6.QtWidgets import QInputDialog
+
+        from ..pipeline import video_clone
         b = next((x for x in video_clone._clone_storyboards(self.drama_id)
                   if int(x.get("number", 0)) == n), None)
         if b is None:
@@ -2626,8 +2639,9 @@ class ClonePage(QWidget):
         「出镜人物」),名字对不上 → 这一镜的参考图就裁错了(实测绑定失锚,
         人物/场景/产品逐镜漂)。改一句比重跑拆解便宜得多,改完立即生效。
         """
-        from ..pipeline import video_clone
         from PySide6.QtWidgets import QDialogButtonBox
+
+        from ..pipeline import video_clone
         b = next((x for x in video_clone._clone_storyboards(self.drama_id)
                   if int(x.get("number", 0)) == n), None)
         if b is None:
@@ -2926,8 +2940,9 @@ class ClonePage(QWidget):
         互相踩限流(QThreadPool 上限 6 线程,6 镜齐发大概率触发上游拥塞);
         每镜完成即刷新,完成标签旁的「▶ 播放」当场可用。
         """
-        from ..pipeline import video_clone
         from PySide6.QtWidgets import QMessageBox
+
+        from ..pipeline import video_clone
         boards = video_clone._clone_storyboards(self.drama_id)
         if not boards:
             err(tr("还没有分镜,请先运行 AI 分镜"))

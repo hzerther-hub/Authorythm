@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜参考图引用:单一真相源(对齐原版 buildShotReferenceList,修复序号错位 bug)。
 
 原版修复要点(67adf7a):
@@ -16,7 +15,7 @@ from __future__ import annotations
 
 import re
 
-from ..core import config, db
+from ..core import db
 
 
 def ref_image_limit(provider: str | None = None, model: str | None = None) -> int:

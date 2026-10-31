@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """资产图去重影:白底单人立绘的确定性后处理。
 
 **为什么需要它(实测)**:Agnes Image 在「参考图 + 要求单主体」这个组合下有稳定的
@@ -89,7 +88,7 @@ def strip_ghosting(src: str | Path, dst: str | Path | None = None,
     # 主体列:前景数 ≥ 峰值 35% 的连续区段(人体躯干那段最宽)
     strong = cols >= peak * 0.35
     segs, start = [], None
-    for i, v in enumerate(list(strong) + [False]):
+    for i, v in enumerate([*list(strong), False]):
         if v and start is None:
             start = i
         elif not v and start is not None:

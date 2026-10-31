@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把「不在 app/ui 里、但会显示给用户看」的中文登记进语言包。
 
 sweep 只扫 app/ui,像 NOVEL_STYLES 这种住在 pipeline/ 里、直接当标签显示的预设名会漏掉。

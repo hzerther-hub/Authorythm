@@ -1,6 +1,7 @@
-# -*- coding: utf-8 -*-
 """阶段⑤:剧本 → 漫画格(comic_board Agent)+ 旁白补齐 + 长条图拼接。"""
 from __future__ import annotations
+
+from typing import cast
 
 from ..agents import runner
 from ..core import config, db
@@ -107,7 +108,7 @@ def split_panels(episode_id: int, text_config_id: int | None = None, lang: str |
               + "  scene_id: int 或 null      本格主场景的 id(无明确场景则 null)\n"
               + "  prop_ids: [int,...]        本格出现的道具 id 列表(无道具则空数组)\n"
               + "没有的字段就当 null / 空数组,缺字段的格子仍会被保留(不会丢掉)。")
-    data = runner.run_agent_json("comic_board", prompt, lang=lang, config_id=text_config_id)
+    data = cast(dict, runner.run_agent_json("comic_board", prompt, lang=lang, config_id=text_config_id))
     # 兼容三种返回形态:{"panels":[…]} / {"parameters":{"panels":[…]}} / 裸数组
     if isinstance(data, list):
         panels = data
@@ -343,6 +344,7 @@ def _single_pose_ref(path_str: str) -> str:
     文件名变化,缓存自然失效,不需要额外失效逻辑。
     """
     from pathlib import Path
+
     from PIL import Image
     p = Path(path_str)
     try:
@@ -510,7 +512,7 @@ def panel_reference_images(panel_id: int, *, prev_image_url: str | None = None) 
     # 现在给 prev 留一个**固定槽位**:资产参考按顺序裁,prev 永远在。
     max_refs = 8
     if prev_ref:
-        return out[:max_refs - 1] + [prev_ref]
+        return [*out[:max_refs - 1], prev_ref]
     return out[:max_refs]
 
 
@@ -529,14 +531,13 @@ def panel_image_prompt(panel_id: int, drama_id: int, text_config_id: int | None 
     panel_reference_images() 把它们的镜像作为 reference_images 传入,跨格
     一致性靠这两层锚点同时锁。
     """
-    from pathlib import Path
     p = db.q1("SELECT * FROM comic_panels WHERE id=?", (panel_id,))
     if not p:
         # 调试:把收到的 id 与此刻所有 panel id 范围打出来
         try:
             r = db.q1("SELECT MIN(id) lo, MAX(id) hi, COUNT(*) c FROM comic_panels")
             print(f"[comic] panel_id={panel_id!r} not found; table has {r['c']} rows, ids {r['lo']}..{r['hi']}", flush=True)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f"[comic] panel_id={panel_id!r} not found; re-probe failed: {e}", flush=True)
         raise RuntimeError("漫画格不存在")
     style = _style_for(drama_id, style_value=style_value)
@@ -559,8 +560,8 @@ def panel_image_prompt(panel_id: int, drama_id: int, text_config_id: int | None 
 画面: {p['description']}
 构图: {p['composition']}
 台词(画面内以对话气泡呈现): {p['dialogue']}"""
-    data = runner.run_agent_json("prompt_generator", prompt, config_id=text_config_id,
-                                 lang=config.resolve_content_language(drama_id))
+    data = cast(dict, runner.run_agent_json("prompt_generator", prompt, config_id=text_config_id,
+                                 lang=config.resolve_content_language(drama_id)))
     fp = _pick_prompt_text(data)
     if not fp:
         # 模型没给出可用字段(键名随模型自由发挥,见过 final_prompt / panel_prompt / prompt)
@@ -614,7 +615,7 @@ def panel_similar_pairs(episode_id: int, threshold: float = _PANEL_SIMILAR_THRES
         if not txt_i:
             continue
         for j in range(i + 1, len(sigs)):
-            id_j, num_j, txt_j = sigs[j]
+            id_j, _num_j, txt_j = sigs[j]
             if not txt_j:
                 continue
             score = difflib.SequenceMatcher(None, txt_i, txt_j).ratio()

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """测试**不许往用户真实库里写数据**,也不许留下垃圾行。
 
 实测踩过两次:
@@ -44,6 +43,7 @@ def test_isolation_must_patch_config_db_path_not_env(tmp_path, monkeypatch):
 def test_cleanup_is_in_finally_not_after_assert():
     """清理语句必须在 finally 里,断言失败也要清。"""
     import re
+
     from tests import test_split_models as tsm
     src = inspect.getsource(tsm)
     # 每个 INSERT INTO dramas 都应处在一个含 finally 的 try 里

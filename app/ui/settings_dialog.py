@@ -1,22 +1,44 @@
-# -*- coding: utf-8 -*-
 """设置对话框:AI 服务 / 通用(15 语言+主题)/ 风格预设 / Agent 配置 / 存储 / 关于更新。"""
 from __future__ import annotations
 
+import contextlib
 import json
+from typing import ClassVar
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFrame,
-                               QFileDialog, QFormLayout, QGridLayout, QHBoxLayout, QLabel,
-                               QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-                               QSpinBox, QStackedWidget, QTabWidget, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFileDialog,
+    QFormLayout,
+    QFrame,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QScrollArea,
+    QSizePolicy,
+    QSpinBox,
+    QStackedWidget,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
-from .confirm import ask, warn
 from ..agents import prompts
 from ..ai import face_swap as fs_mod
 from ..ai import registry
-from ..ai.registry import SVC_CN
 from ..ai.image_client import test_config as img_test
+from ..ai.jev_client import test_config as jev_test
+from ..ai.registry import SVC_CN
 from ..ai.text_client import test_config as text_test
 from ..ai.tts_client import test_config as tts_test
 from ..ai.video_client import test_config as video_test
@@ -25,9 +47,9 @@ from ..core.i18n import LANGS, tr
 from ..core.theme import SLATE_FORM_QSS
 from . import widgets as W
 from .braille import WaitingButton
-from .toast import err, ok as ok_toast
-
-from ..ai.jev_client import test_config as jev_test  # noqa: E402
+from .confirm import ask, warn
+from .toast import err
+from .toast import ok as ok_toast
 
 
 def _stockphoto_test(cfg: dict) -> tuple[bool, str]:
@@ -502,7 +524,7 @@ class SettingsDialog(QDialog):
     # 三个免费图库的 key 与「AI 服务 → 图库」是**同一份**配置
     # (ai_service_configs, service_type='stockphoto'),两处任改其一即可,
     # 这里只是给「图片处理 / 聊天改图」这类入口一个就近的修改位置。
-    STOCK_SOURCES = [
+    STOCK_SOURCES: ClassVar[list[object]] = [
         ("unsplash", "Unsplash", "https://api.unsplash.com", "search/photos"),
         ("pexels", "Pexels", "https://api.pexels.com", "v1/search"),
         ("pixabay", "Pixabay", "https://pixabay.com", "api/"),
@@ -518,7 +540,7 @@ class SettingsDialog(QDialog):
 
         self._stock_edits: dict[str, QLineEdit] = {}
         self._stock_status: dict[str, QLabel] = {}
-        for prov, name, base, model in self.STOCK_SOURCES:
+        for prov, name, _base, _model in self.STOCK_SOURCES:
             row = QHBoxLayout()
             row.setSpacing(6)
             row.addWidget(W.muted(f"{name}:"))
@@ -606,7 +628,6 @@ class SettingsDialog(QDialog):
         TASKMGR.submit("image", job, done)
 
     def _pick_photocraft_dir(self):
-        from PySide6.QtWidgets import QFileDialog
         d = QFileDialog.getExistingDirectory(self, tr("chat_edit_install_dir"),
                                               self.pc_dir_edit.text())
         if d:
@@ -620,13 +641,11 @@ class SettingsDialog(QDialog):
         d = self.pc_dir_edit.text().strip()
         if d and Path(d).is_dir():
             try:
-                os.startfile(d)  # noqa
+                os.startfile(d)
             except Exception as exc:  # noqa: BLE001
                 self.pc_status.setText(str(exc)[:160])
 
     def _pick_photocraft_cli(self):
-        from PySide6.QtWidgets import QFileDialog
-        from pathlib import Path
         start = self.pc_dir_edit.text() or ""
         f, _ = QFileDialog.getOpenFileName(
             self, tr("chat_edit_cli_path"),
@@ -677,7 +696,8 @@ class SettingsDialog(QDialog):
         fam = self.font_combo.currentData() or ""
         db.set_setting("ui_font", fam)
         from PySide6.QtWidgets import QApplication
-        from ..core.theme import apply_theme, db_get_setting
+
+        from ..core.theme import apply_theme
         mode = db.get_setting("theme", "light")
         if mode == "system":
             mode = "light"
@@ -792,7 +812,7 @@ class SettingsDialog(QDialog):
             return
         row_max = db.q1("SELECT MAX(sort_order) m FROM style_presets WHERE style_type=?",
                         (d["style_type"],))
-        order = int((row_max["m"] if row_max and row_max["m"] is not None else 0)) + 1
+        order = int(row_max["m"] if row_max and row_max["m"] is not None else 0) + 1
         db.ex("""INSERT INTO style_presets(name,value,prompt,description,work_type,style_type,
                       sort_order,is_active,created_at) VALUES(?,?,?,?,?,?,?,?,?)""",
               (d["name"] or value, value, d["prompt"] or "", d["description"],
@@ -977,7 +997,6 @@ class SettingsDialog(QDialog):
     # ── 存储 ──
     def _page_storage(self) -> QWidget:
         """存储用量卡(对齐参考项目 routes/storage.ts):分桶统计 + 剩余空间 + 打开目录。"""
-        from ..core import storage
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(20, 16, 20, 16)
@@ -988,7 +1007,7 @@ class SettingsDialog(QDialog):
         self._storage_labels: dict[str, QLabel] = {}
         self._refresh_storage(f)
         open_btn = QPushButton(tr("打开数据目录"))
-        open_btn.clicked.connect(lambda: __import__("os").startfile(str(config.DATA_DIR)))  # noqa
+        open_btn.clicked.connect(lambda: __import__("os").startfile(str(config.DATA_DIR)))
         f.addRow("", open_btn)
         lay.addWidget(box)
         hint = W.muted(tr("用量每 60 秒刷新一次;数据库文件(含 WAL)单独计数,不在目录遍历里"))
@@ -1114,6 +1133,7 @@ class SettingsDialog(QDialog):
     def _do_update(self):
         """下载并应用更新,完成后询问重启。"""
         from PySide6.QtCore import QThread
+
         from ..core import updater
         url = self._upd_result.get("url", "")
         if not url:
@@ -1631,7 +1651,6 @@ class ServiceDialog(QDialog):
         # 服务商:模板 label 与自定义合并为一个下拉(对齐原版 26c7d00,消除两处选供应商的困惑)
         self.provider_combo = QComboBox()
         self._tpl_by_index: dict[int, dict] = {}
-        CUSTOM = "__custom__"
         for p in registry.PROVIDER_PRESETS.get(st, []):
             idx = self.provider_combo.count()
             self.provider_combo.addItem(p["name"])       # 显示模板 label,如「MiniMax 官方」
@@ -1772,10 +1791,8 @@ class ServiceDialog(QDialog):
         temp_raw = self.temperature.text().strip()
         temperature = None
         if temp_raw:
-            try:
+            with contextlib.suppress(ValueError):
                 temperature = float(temp_raw)
-            except ValueError:
-                pass
         models = self.models_editor.models or [""]
 
         def _int_or_none(raw: str):

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成文本乱码防护的回归测试。
 
 真实故障:章节正文整段变成 ``æ□®e□³□``。成因是 UTF-8 字节被按 latin-1/GBK 解了
@@ -16,8 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.core.encoding import (MojibakeError, ensure_text, looks_mojibake,
-                               repair)
+from app.core.encoding import MojibakeError, ensure_text, looks_mojibake, repair
 
 GOOD = "陈默摘下工牌的时候，指尖在塑料卡套边缘停了一下。会议室里的中央空调嗡嗡响。" * 10
 LATIN1 = GOOD.encode("utf-8").decode("latin-1")
@@ -90,7 +88,7 @@ def test_text_client_gate():
     from app.ai.text_client import _guarded
     assert _guarded(GOOD) == GOOD
     assert _guarded(LATIN1) == GOOD
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017
         _guarded(GBK_LOSSY)
 
 
@@ -104,7 +102,7 @@ def test_error_text_decoder_does_not_use_guessed_encoding():
 
     class FakeResp:
         # 模拟 requests 无 charset 时猜错:resp.text 是乱码,content 是正确 UTF-8
-        content = "生成失败:上游返回非 UTF-8 内容".encode("utf-8")
+        content = "生成失败:上游返回非 UTF-8 内容".encode()
         text = "ç¡æµŽè¯·ä¸ªæµŽæ­¤"
 
     out = _err_text(FakeResp())

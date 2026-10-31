@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Loading 基座:按钮内嵌 spinner + 忙碌守卫(对齐原版 Loader2 / running 态)。"""
 from __future__ import annotations
 

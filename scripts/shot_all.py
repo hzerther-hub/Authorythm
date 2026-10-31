@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """离屏截图:批量抓取各页面(项目列表 / 项目详情 / 制作台各步骤 / 任务抽屉)。
 
 用法:py -3.13 -X utf8 scripts/shot_all.py <out_dir> [dark]

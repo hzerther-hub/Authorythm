@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PhotoCraft 手动改图监听:打开图片到桌面端,文件改了自动回调。
 
 # 背景
@@ -26,6 +25,7 @@ w.stop()
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 from pathlib import Path
@@ -117,14 +117,10 @@ class PhotoCraftWatcher(QObject):
     def stop(self) -> None:
         """停监听(不主动杀 PhotoCraft 进程)。"""
         if self._watcher:
-            try:
+            with contextlib.suppress(Exception):
                 self._watcher.fileChanged.disconnect(self._on_file_changed)
-            except Exception:  # noqa: BLE001
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 self._watcher.directoryChanged.disconnect(self._on_dir_changed)
-            except Exception:  # noqa: BLE001
-                pass
             self._watcher.deleteLater()
             self._watcher = None
         if self._timer:

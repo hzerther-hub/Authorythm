@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """从原版(xiaoshuo)迁移 AI 服务配置到 PySide6 重写版。
 
 原版 `ai_service_configs` 字段 → 本版映射:
@@ -19,8 +18,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.ai import registry  # noqa: E402
-from app.core import db  # noqa: E402
+from app.ai import registry
+from app.core import db
 
 SOURCE_DB = Path(r"E:\xiaoshuo\data\yihao.sqlite3")
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """novel_review_flow 路径测试:不依赖 LangGraph 真包,验证 routing + fallback 路径。
 """
 from __future__ import annotations

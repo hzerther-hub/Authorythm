@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """结构化日志:JSON 落盘 + 紧凑 stderr + 密钥脱敏。
 
 设计要点:
@@ -25,7 +24,7 @@ import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-
+from typing import ClassVar
 
 # ── 公开 API ──────────────────────────────────────────────────────────────
 
@@ -80,7 +79,7 @@ class _SecretsFilter(logging.Filter):
 
     PATTERNS = _SECRET_PATTERNS
 
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: A003
+    def filter(self, record: logging.LogRecord) -> bool:
         try:
             msg = record.getMessage()
         except Exception:  # noqa: BLE001
@@ -99,7 +98,7 @@ class _JsonFormatter(logging.Formatter):
     extra={...} 透传到 JSON 的 ctx 字段;失败时降级,不抛异常。
     """
 
-    RESERVED = {
+    RESERVED: ClassVar[dict[str, object]] = {
         "name", "msg", "args", "levelname", "levelno", "pathname", "filename",
         "module", "exc_info", "exc_text", "stack_info", "lineno", "funcName",
         "created", "msecs", "relativeCreated", "thread", "threadName",

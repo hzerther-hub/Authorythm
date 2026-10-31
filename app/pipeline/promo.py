@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """宣传线:按平台+格式生成宣传文案(promo_writer Agent)。"""
 from __future__ import annotations
 

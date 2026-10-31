@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """流式生成:后台线程逐块收文本,推给界面实时显示。
 
 用 QThread + 信号(Qt 队列连接,自动跨线程投递到 GUI 线程),不用手工加锁。
@@ -53,7 +52,7 @@ class StreamWorker(QThread):
         """请求停止(下一个数据块到达时生效)。"""
         self.cancelled = True
 
-    def run(self) -> None:                       # noqa: D102  (QThread 入口)
+    def run(self) -> None:
         try:
             for kind, chunk in text_stream.chat_stream(
                     self._prompt, system=self._system, config_id=self._config_id,

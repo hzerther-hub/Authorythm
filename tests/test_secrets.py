@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """API Key 加密 (secrets.py) 的回归护栏。
 
 覆盖:
@@ -14,12 +13,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 
 import pytest
 
-from app.core import secrets
-from app.core import db
+from app.core import db, secrets
 
 
 @pytest.fixture

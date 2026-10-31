@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """封面:项目封面 / 单章封面(对齐原版 detail.vue 的项目封面区 + generate-episode-cover)。
 
 项目封面区:3:4 竖版展示 + 提示词输入 + 生成按钮 + 点击放大;
@@ -6,20 +5,22 @@
 """
 from __future__ import annotations
 
-import time
-from pathlib import Path as _PPath
-
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import (QColorDialog, QComboBox, QDialog, QHBoxLayout,
-                               QLabel, QLineEdit, QMessageBox, QPlainTextEdit,
-                               QPushButton, QSlider, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ..core import config, db
+from ..core import db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
 from . import widgets as W
-from .braille import WaitingButton, BrailleSpinner
+from .braille import BrailleSpinner, WaitingButton
 from .toast import err, ok
 
 
@@ -158,9 +159,9 @@ class CoverPanel(QWidget):
         self.gen_btn.layout().addWidget(self.status)
 
         def job(tid):
-            from ..pipeline import novel as novel_pipe
             # 同上:不传配置会打到额度耗尽的默认服务(429)
             from ..core.db import selected_config_id
+            from ..pipeline import novel as novel_pipe
             return novel_pipe.generate_cover(self.drama_id, self.prompt.text().strip(),
                                              config_id=selected_config_id("image"))
 

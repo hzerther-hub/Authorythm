@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """10 个 AI Agent 的默认 System Prompt(对齐原版 DEFAULT_PROMPTS)。
 
 语言机制(对齐原版并按需求补全到 15 种):

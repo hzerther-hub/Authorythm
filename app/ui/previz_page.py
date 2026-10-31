@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """导演台预演页:内嵌 DirectorDesk 原版 web 构建(QWebEngineView)。
 
 「效果不低于原版」的实现方式:**渲染/动画/视频导出跑的就是原版那一份代码**
@@ -193,7 +192,7 @@ class PrevizPage(QWidget):
             item.accept()
             ok(tr("previz_export_saved").format(name=item.downloadFileName()))
             log.info("预演导出:%s/%s", EXPORT_DIR, item.downloadFileName())
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             err(tr("previz_fail").format(err=str(exc)[:120]))
 
     # ── 动作 ───────────────────────────────────────────────────────

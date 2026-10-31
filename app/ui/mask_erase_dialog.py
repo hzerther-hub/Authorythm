@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """蒙版擦除对话框 —— 画笔涂抹要擦掉的区域,导出 alpha 蒙版交给 erase.erase_region。
 
 契约与参考项目一致:「透明底 + 不透明白色笔迹」,形状在 alpha 通道(RGB 不参与)。
@@ -6,12 +5,19 @@
 """
 from __future__ import annotations
 
-import io
+import contextlib
 
-from PySide6.QtCore import Qt, QPoint, QBuffer
-from PySide6.QtGui import (QImage, QPainter, QPen, QPixmap)
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QSlider,
-                               QVBoxLayout, QWidget)
+from PySide6.QtCore import QBuffer, QPoint, Qt
+from PySide6.QtGui import QImage, QPainter, QPen
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core.i18n import tr
 
@@ -80,10 +86,8 @@ class MaskCanvas(QWidget):
 
     def _notify(self):
         if self.on_strokes_changed is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self.on_strokes_changed()
-            except Exception:  # noqa: BLE001 —— 回调异常不能拖垮画布
-                pass
 
     def _stroke(self, a: QPoint, b: QPoint) -> None:
         p = QPainter(self._mask)
@@ -101,7 +105,7 @@ class MaskCanvas(QWidget):
     def paintEvent(self, _e):
         p = QPainter(self)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        view = self.size()
+        self.size()
         p.drawImage(self.rect(), self._base, self._base.rect())
         # 半透明红罩显示已涂区域(蒙版 alpha → 红色覆盖层)
         p.setOpacity(0.45)

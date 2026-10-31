@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """本地生图服务(ComfyUI / SD WebUI / Fooocus)—— 对齐参考项目 0117459(移植自 uu889-drama)。
 
 三个零云额度、数据不出本机的图片 provider:
@@ -23,7 +22,6 @@
 """
 from __future__ import annotations
 
-import io
 import json
 import math
 import random
@@ -32,7 +30,6 @@ import uuid
 from pathlib import Path
 
 import requests
-from PIL import Image
 
 from .text_client import AIError
 
@@ -417,7 +414,7 @@ def gen_comfyui(cfg: dict, prompt: str, negative: str | None, size: str | None,
     refs = _parse_refs(reference_images)[:MAX_REFERENCE_IMAGES]
     values: dict = {
         "prompt": (prompt or "").strip(),
-        "negative_prompt": text_setting(settings.get("comfyui_negative_prompt"), LOCAL_DEFAULT_NEGATIVE_PROMPT) if not negative else negative,
+        "negative_prompt": negative if negative else text_setting(settings.get("comfyui_negative_prompt"), LOCAL_DEFAULT_NEGATIVE_PROMPT),
         "seed": random.randrange(2 ** 32),
         "width": width, "height": height,
         "steps": round(number_setting(settings.get("image_steps"), 25, 1, 150)),

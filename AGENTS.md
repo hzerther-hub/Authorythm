@@ -392,6 +392,44 @@ def some_new_entry(..., config_id: int | None = None):
 - 主题有三套(light/dark/slate),改样式要同步 `app/core/theme.py` 的三处 QSS。
 - 改 `QSS` 后重启要清 `__pycache__`,否则会加载旧字节码。
 
+## CI 门禁(2026-10-18 起真正生效)
+
+```bash
+ruff check .      # 0 error 才算过
+mypy              # 0 error 才算过
+python -m pytest tests/ -q
+```
+
+- **ruff / mypy 必须钉死版本上限**(`requirements-dev.txt`):两者规则集只增不减,
+  写 `>=` 意味着 CI 每次装当时最新版 → 同一份代码「昨天绿今天红」,而没人改过
+  lint 配置。**实测:无上限的 ruff 在两周内长出 1660 个错误,CI 从上线起没绿过。**
+  升级流程:改 requirements-dev.txt 的上限 → 本地跑一遍 ruff/mypy → 一起提交。
+- **CI 的 Windows job 必须用 bash**(`ci.yml` 里的 `defaults.run.shell: bash`):
+  Windows 默认 pwsh 对原生命令的非零退出码**既不中断也不传播**,会让 lint
+  步骤显示 success —— 三平台里唯一的假绿。
+- **CI 不加 `-x`**:首败即停会让三平台每次只暴露第一个失败,修错效率低。
+- **不要在 CI 里设没人读的��境变量**:曾经的 `PYDRAMA_TEST_MODE` /
+  `PYDRAMA_OFFLINE` 全仓无代码读取,「不联网」纯靠桩写得好,没有代码背书。
+
+### ruff 规则集的两个「必须全局豁免」
+
+- **N815**:Qt 的 Property/Signal 名必须 camelCase(`imageSaved` / `needSettings`),
+  改成 snake_case 会**静默失效**(属性读不到、信号连不上,无报错)。
+- **N812 / N814 / N806**:短别名(`taskmgr as _TM`)与 SDK 的 API 名当局部变量
+  (`StateGraph` / `END`)是本仓既有约定,改名只增 churn。
+
+### mypy 的分层(渐进式)
+
+门禁目前只覆盖 **app/core + app/agents**(基础层,23 个源文件)。
+`app/pipeline` / `app/ai` 的**存量类型债约 250 条**,集中在三类:
+1. `run_agent_json` 返回 `dict | list`,调用方未窄化 → 用 `typing.cast` 收口;
+2. `sqlite3.Row` 当 dict 用(`row.get(...)`);
+3. PySide6 的 stub 与运行时枚举名不一致(`QPalette.Window` 运行时可用、
+   stub 只有 `QPalette.ColorRole.Window`)→ `# type: ignore[attr-defined]`。
+
+上层按模块逐步还债;`pyproject.toml` 里 `follow_imports = "silent"` 保证
+上层存量不会通过 import 链混进基础层的门禁。
+
 ## 日志 / 指标 / 密钥(三件套)
 
 - **结构化日志**:`app/core/logging_setup.py` 提供 `setup_logging()` / `get_logger(name)`。

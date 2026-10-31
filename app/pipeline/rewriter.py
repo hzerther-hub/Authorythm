@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """阶段②:小说原文 → 格式化剧本(script_rewriter Agent)。"""
 from __future__ import annotations
 

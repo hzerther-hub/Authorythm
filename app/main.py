@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """易好短剧 · PySide6 版 入口。
 
 运行:python app/main.py(Python 3.10+)
@@ -88,7 +87,7 @@ def main() -> int:
     # 僵尸任务看门狗:启动清理只跑一次,运行期新生的孤儿无人回收,界面会永远
     # 停在「生成中」(对齐参考项目 3e1a3f2)
     db.start_stuck_task_watchdog(db.get_db())
-    from .ai.registry import seed_tts_default, seed_faceswap_default, seed_jev_default
+    from .ai.registry import seed_faceswap_default, seed_jev_default, seed_tts_default
     seed_tts_default()
     seed_faceswap_default()
     seed_jev_default()      # 仅当环境变量给了 JEV_API_KEY 才落一条启用配置
@@ -129,7 +128,8 @@ _UP_THREADS: list = []
 
 def _schedule_update_check(win) -> None:
     """启动后静默检查更新:有新版才 toast 提示(可在「关于更新」关闭)。"""
-    from PySide6.QtCore import QTimer, QThread
+    from PySide6.QtCore import QThread, QTimer
+
     from .core import updater
     from .ui.toast import ToastManager
 

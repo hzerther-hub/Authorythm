@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """「漫画重拆 = 彻底清空重来 + 二次确认」的回归测试。
 
 用户要求(2026-10-20):漫画的重拆要和视频一样 —— 重拆就删掉以前的,
@@ -226,7 +225,7 @@ def test_comic_resplit_has_confirmation_dialog():
 
 def test_comic_resplit_confirm_text_covers_all_languages():
     """确认文案要 15 语言齐全(补充词典以中文基准句为 key)。"""
-    from app.core.ui_strings import S, LANGS
+    from app.core.ui_strings import LANGS, S
     key = ("本集已有 {n} 个漫画格(含 {v} 个已出图、{f} 个生成文件,共约 {size})。\n\n"
            "重新拆分会删除全部旧漫画格、已生成的格子图片与整话长图(不可恢复),"
            "并从零重新拆分。\n\n确定继续?")
@@ -252,6 +251,7 @@ def test_comic_resplit_confirm_reports_real_counts_and_cancel_does_not_split(
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+
     from app.ui import episode_page as EP
 
     QApplication.instance() or QApplication([])
@@ -298,6 +298,7 @@ def test_comic_resplit_stats_counts_stitch_in_files(monkeypatch, tmp_path):
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     from PySide6.QtWidgets import QApplication
+
     from app.ui import episode_page as EP
 
     QApplication.instance() or QApplication([])

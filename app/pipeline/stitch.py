@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """漫画长条图拼接(Pillow 竖向拼接,格间距白底,可加旁白条)。"""
 from __future__ import annotations
 

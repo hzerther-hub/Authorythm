@@ -1,15 +1,17 @@
-# -*- coding: utf-8 -*-
 """SQLite 数据层:29 张表 DDL(对齐原版 schema)+ 风格种子 + 示例项目种子。"""
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
 import threading
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+
 
 class Row(sqlite3.Row):
     """带 .get() 的 Row —— sqlite3.Row 原生没有 .get(),业务代码里
@@ -67,10 +69,8 @@ def _acquire_db_lock() -> bool:
         return True
     if _lock_fd is not None:
         # 测试里 monkeypatch 了 DB_PATH,换库前先放掉旧锁
-        try:
+        with contextlib.suppress(OSError):
             os.close(_lock_fd[1])
-        except OSError:
-            pass
         _lock_fd = None
     try:
         Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +83,9 @@ def _acquire_db_lock() -> bool:
             msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
         else:
             import fcntl
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            # fcntl 只存在于 POSIX;本分支只在非 Windows 走,但 mypy 按
+            # 当前平台(win32)推断 fcntl 没有这些属性 → 显式忽略。
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
     except OSError:
         os.close(fd)
         return False
@@ -106,29 +108,27 @@ def get_db() -> sqlite3.Connection:
     return conn
 
 
-def q(sql: str, args: tuple = ()) -> list[Row]:
-    return get_db().execute(sql, args).fetchall()
+def q(sql: str, args: Sequence = ()) -> list[Row]:
+    return get_db().execute(sql, tuple(args)).fetchall()
 
 
-def q1(sql: str, args: tuple = ()) -> Row | None:
-    return get_db().execute(sql, args).fetchone()
+def q1(sql: str, args: Sequence = ()) -> Row | None:
+    return get_db().execute(sql, tuple(args)).fetchone()
 
 
-def ex(sql: str, args: tuple = ()) -> int:
+def ex(sql: str, args: Sequence = ()) -> int:
     db = get_db()
     try:
-        cur = db.execute(sql, args)
+        cur = db.execute(sql, tuple(args))
         db.commit()
-        return cur.lastrowid
+        return int(cur.lastrowid or 0)
     except Exception:
         # 写失败**必须回滚**:sqlite3 的 legacy 事务模式不会自动回滚,
         # 失败后事务一直开着,本线程的连接继续持有 RESERVED 写锁 →
         # 其它 worker 线程的写全部阻塞 30 秒后报 "database is locked"
         # (实测:一次 UNIQUE 冲突就能把整台机器的写库堵死)。
-        try:
+        with contextlib.suppress(Exception):
             db.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         raise
 
 
@@ -140,10 +140,8 @@ def exmany(sql: str, rows: list[tuple]) -> None:
     except Exception:
         # executemany 中途失败时,前 N-1 行已经进了未提交的事务 ——
         # 不回滚的话,同线程下一次 ex() 的 commit 会把这份半截数据**一起提交**。
-        try:
+        with contextlib.suppress(Exception):
             db.rollback()
-        except Exception:  # noqa: BLE001
-            pass
         raise
 
 
@@ -364,7 +362,7 @@ INDEXES = [
 ]
 
 # ── 风格预设种子(完整复刻原版 stylePresetSeeds,电影质感锚点) ──
-STYLE_PRESETS: list[dict] = [
+STYLE_PRESETS: list[tuple[str, str, int, str, str, str]] = [
     ("3D 漫剧", "3d", 1, "drama,novel,comic",
      "high-quality 3D CG animation still, modern game-engine cinematic render, Unreal Engine and Pixar grade quality, semi-realistic stylized characters with refined facial features, clean sculpted anatomy, detailed skin shader with subtle subsurface scattering, PBR materials with crisp detailed textures, volumetric cinematic lighting with soft rim light, rich depth of field, polished film color grading, detailed environment art, sharp focus, consistent character design across shots, avoid flat lighting, avoid plastic waxy skin, avoid low-poly blurry look, avoid 2D flat cel shading, avoid anime line art",
      "游戏引擎级 3D 渲染,半写实角色,当前短剧主流的 3D 漫剧质感"),
@@ -642,10 +640,8 @@ def init_db() -> None:
                 # try/except 吞掉(幂等)。
                 "ALTER TABLE style_presets ADD COLUMN style_type TEXT DEFAULT 'visual'",
                 "ALTER TABLE ai_service_configs ADD COLUMN api_format TEXT DEFAULT 'openai'"):
-        try:
+        with contextlib.suppress(Exception):
             db.execute(col)
-        except Exception:  # noqa: BLE001
-            pass
     # 风格种子(幂等:存在则跳过;value UNIQUE 保证不覆盖用户编辑)
     for name, value, order, wt, prompt, desc in STYLE_PRESETS:
         db.execute(
@@ -773,7 +769,11 @@ def style_prompt(style_value: str, ethnicity: str = "", content_lang: str = "") 
     row = q1("SELECT prompt FROM style_presets WHERE value=? AND is_active=1", (style_value,))
     base = row["prompt"] if row else ""
     if not ethnicity:
-        from ..pipeline.ethnicity import LANG_TO_ETHNICITY, DEFAULT_ETHNICITY, append_ethnicity_fragment
+        from ..pipeline.ethnicity import (
+            DEFAULT_ETHNICITY,
+            LANG_TO_ETHNICITY,
+            append_ethnicity_fragment,
+        )
         ethnicity = LANG_TO_ETHNICITY.get((content_lang or "").lower(), DEFAULT_ETHNICITY)
     from ..pipeline.ethnicity import append_ethnicity_fragment
     return append_ethnicity_fragment(base, ethnicity)
@@ -934,10 +934,8 @@ def style_options(style_type: str) -> list[tuple[str, str]]:
     builtin = _builtin_values(style_type)
     if builtin:
         ph = ",".join("?" * len(builtin))   # 占位符个数由内置常量决定,不是用户输入
-        try:
+        with contextlib.suppress(Exception):
             rows = list(rows) + q(f"SELECT * FROM style_presets WHERE value IN ({ph})", builtin)
-        except Exception:  # noqa: BLE001 —— 取不到就只用已查到的行
-            pass
     return merge_style_options(rows, style_type)
 
 
@@ -955,7 +953,7 @@ def jload(text: str | None, default=None):
         return default
     try:
         return json.loads(text)
-    except Exception:
+    except Exception:  # noqa: BLE001
         return default
 
 

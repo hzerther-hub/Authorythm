@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """视频请求契约:入参归一化 + 上限校验 + 错误分类 + retry_at 跟随。
 
 对齐参考项目 `backend/src/routes/tasks.ts` 的 normalizeVideoRequest / validateVideoRequest

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """分镜按场景分批的回归测试。
 
 背景见 docs/分镜拆分失败-根因与修复交接.md 第十节:
@@ -9,7 +8,6 @@
 import pathlib
 
 from app.pipeline import storyboard as sb
-
 
 SCRIPT = "".join(
     f"## S{i:02d} | 场景{i} | 清晨\n" + ("这是一段剧本内容。" * 30) + "\n"

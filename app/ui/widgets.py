@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """通用 UI 组件:卡片/标签/头像/图片按钮等。"""
 from __future__ import annotations
 
@@ -7,11 +6,17 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPixmap
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import config
-from ..core.i18n import tr
 
 
 def make_card() -> QFrame:
@@ -42,7 +47,7 @@ def muted(text: str) -> QLabel:
 # Director's Slate:共享 helper —— 按钮在 slate 风的 dialog / panel 里的统一外观
 # 用法:`btn = slate_button("REFRESH"); btn.clicked.connect(...)`
 # 默认排他(主操作),可选 primary=True 走拍板黑底白字
-def slate_button(text: str, *, primary: bool = False) -> "QPushButton":
+def slate_button(text: str, *, primary: bool = False) -> QPushButton:
     """返回带 slate 风 QSS 的 QPushButton;不破坏其他按钮。"""
     from PySide6.QtWidgets import QPushButton
     btn = QPushButton(text)
@@ -69,7 +74,7 @@ def slate_button(text: str, *, primary: bool = False) -> "QPushButton":
     return btn
 
 
-def slate_status_label(text: str = "") -> "QLabel":
+def slate_status_label(text: str = "") -> QLabel:
     """Status bar mono 风的 QLabel:暗色 + letter-spacing,适配场记板。"""
     lab = QLabel(text)
     lab.setObjectName("slateStatus")
@@ -115,7 +120,6 @@ def icon_btn(icon, tooltip: str = "", size: int = 20,
     fallback 仅在平台缺该标准图标时兜底;优先用图标。
     """
     from PySide6.QtCore import QSize
-    from PySide6.QtWidgets import QStyle
     b = QPushButton(fallback if isinstance(icon, str) else "")
     b.setObjectName("iconBtn")
     b.setCursor(Qt.PointingHandCursor)

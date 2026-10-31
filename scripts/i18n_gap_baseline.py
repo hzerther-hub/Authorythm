@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成 i18n 缺口基线快照(tests/_i18n_gaps.json)。
 
 用法:

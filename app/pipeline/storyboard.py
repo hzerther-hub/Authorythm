@@ -1,9 +1,9 @@
-# -*- coding: utf-8 -*-
 """阶段④:剧本 → 镜头级分镜(storyboard_breaker Agent)+ 批量视频提示词。"""
 from __future__ import annotations
 
 import json
 import re
+from typing import cast
 
 from ..agents import prompts, runner
 from ..core import db
@@ -82,9 +82,9 @@ def _boards_for_part(ep, aspect: str, assets: str, part: str, label: str, *,
                                 total=2 if len(blocks) > 1 else 1)
     reason = ""
     try:
-        data = runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
+        data = cast(dict, runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
                                      config_id=config_id,
-                                     max_tokens=STORYBOARD_MAX_TOKENS)
+                                     max_tokens=STORYBOARD_MAX_TOKENS))
         got = _extract_boards(data)
         if got:
             return got
@@ -191,7 +191,7 @@ def _save_board(b: dict, num: int, episode_id: int, ts: str, name_to_id: dict,
         db.ex("""UPDATE storyboards SET title=?, shot_type=?, angle=?, movement=?, location=?,
                   time=?, description=?, result=?, atmosphere=?, image_prompt=?, video_prompt=?,
                   bgm_prompt=?, sound_effect=?, scene_id=?, setting_tags=?, content=?, duration=?,
-                  updated_at=? WHERE id=?""", vals + (ts, existing["id"]))
+                  updated_at=? WHERE id=?""", (*vals, ts, existing["id"]))
         sb_id = existing["id"]
     else:
         sb_id = db.ex(
@@ -199,7 +199,7 @@ def _save_board(b: dict, num: int, episode_id: int, ts: str, name_to_id: dict,
                movement,location,time,description,result,atmosphere,image_prompt,video_prompt,
                bgm_prompt,sound_effect,scene_id,setting_tags,content,duration,status,created_at,updated_at)
                VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',?,?)""",
-            (episode_id, num) + vals + (ts, ts))
+            (episode_id, num, *vals, ts, ts))
     _bind_assets(sb_id, b, name_to_id, prop_by_id, prop_names, ts, episode_id)
     sid_row = db.q1("SELECT scene_id FROM storyboards WHERE id=?", (sb_id,))
     if sid_row and sid_row["scene_id"]:
@@ -323,8 +323,8 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
     # 不抢着生图(避免一次性烧光 token),用户进「造型变体」对话框手动点重生。
     try:
         from .variant_detector import (
-            ensure_variants_for_storyboard,
             detect_emotions_in_storyboard,
+            ensure_variants_for_storyboard,
         )
         drama_id = db.q1("SELECT drama_id FROM episodes WHERE id=?",
                           (episode_id,))["drama_id"]
@@ -341,9 +341,9 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                     import json as _json
                     try:
                         old = _json.loads(old_row["emotion_tags"])
-                    except Exception:
+                    except Exception:  # noqa: BLE001
                         old = []
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             new = detect_emotions_in_storyboard(sb)
             merged = sorted(set((old or []) + new))
@@ -675,7 +675,7 @@ def gen_video_prompts(episode_id: int, config_id: int | None = None, lang: str |
 分镜 #{r['storyboard_number']}:
 {(r['description'] or r['content'] or '')[:1500]}"""
         try:
-            data = runner.run_agent_json("prompt_generator", prompt, lang=lang, config_id=config_id)
+            data = cast(dict, runner.run_agent_json("prompt_generator", prompt, lang=lang, config_id=config_id))
             vp = data.get("video_prompt") if isinstance(data, dict) else None
             if vp:
                 db.ex("UPDATE storyboards SET video_prompt=?, updated_at=? WHERE id=?", (vp, db.now(), r["id"]))
@@ -832,7 +832,7 @@ def split_storyboards_bg(episode_id: int, aspect: str = "9:16", config_id: int |
                 msg += f";已清理 {removed} 个残缺行"
             TM.finish_task(tid, "completed", result_url=str(n), local_path=msg)
             return n
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             TM.finish_task(tid, "failed", error=str(e)[:500])
             raise
 

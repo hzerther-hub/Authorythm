@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """离屏截图:打开某一集制作页并保存 PNG(用于对齐原版界面的目视检查)。
 
 用法:py -3.13 -X utf8 scripts/shot_episode.py <drama_id> <episode_id> <out.png> [dark]

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """静态检查:函数体内使用的名字是否在作用域内可见(抓 NameError 类漏导入)。
 
 背景:本项目连续踩了两次同类的坑 ——
@@ -32,7 +31,7 @@ def _bound_names(node: ast.AST, extra: set[str] | None = None) -> set[str]:
             names.add(n.arg)
         elif isinstance(n, ast.ExceptHandler) and n.name:
             names.add(n.name)
-        elif isinstance(n, ast.Global) or isinstance(n, ast.Nonlocal):
+        elif isinstance(n, (ast.Global, ast.Nonlocal)):
             names.update(n.names)
     return names
 

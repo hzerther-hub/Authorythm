@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """i18n 自动补翻(并发版):三级引擎降级 + ThreadPool 8 线程。
 
 用法:
@@ -36,9 +35,7 @@ def to_translate(row: list[str], lang_idx: int) -> bool:
         return True
     if cur.strip() == row[0].strip():
         return True
-    if lang not in ("zh", "ja") and any("一" <= c <= "鿿" for c in cur):
-        return True
-    return False
+    return bool(lang not in ("zh", "ja") and any("一" <= c <= "鿿" for c in cur))
 
 
 def seed_missing() -> int:
@@ -66,7 +63,10 @@ def main() -> int:
     args = sys.argv[1:]
     workers, dry = 8, False
     if "--workers" in args:
-        i = args.index("--workers"); workers = int(args[i + 1]); del args[i:i + 2]
+        i = args.index("--workers")
+        workers = int(args[i + 1])
+        del args[i:i + 2]
+
     if "--dry-run" in args:
         dry = True
 

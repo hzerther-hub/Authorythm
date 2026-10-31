@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把参考项目(E:\\xiaoshuo)的所有 AI 模型配置迁到 pydrama。
 
 策略(幂等,可重跑):
@@ -42,7 +41,7 @@ def main() -> None:
             if isinstance(parsed, list):
                 models_list = models
                 models = parsed[0]
-        except Exception:
+        except Exception:  # noqa: BLE001
             parsed = None
 
         old = conn.execute(

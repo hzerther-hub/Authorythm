@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """TypeSafe AI / Jev 客户端 —— 状态台账门控与预审软建议。
 
 对齐参考项目 backend/src/services/adapters/moderation/jev.ts。
@@ -68,7 +67,7 @@ class JevClient:
         self.api_key = (cfg or {}).get("api_key") or api_key or os.environ.get("JEV_API_KEY", "").strip()
         # 环境变量双命名:JEV_BASE_URL(本仓库惯例)/ JEV_API_URL(兼容配置名)
         self.base_url = ((cfg or {}).get("base_url")
-                         or api_key and base_url
+                         or (api_key and base_url)
                          or os.environ.get("JEV_BASE_URL")
                          or os.environ.get("JEV_API_URL")
                          or base_url

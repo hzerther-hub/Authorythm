@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """图库检索(Unsplash / Pexels /        _only_test_rows(monkeypatch)
 _only_test_rows(monk    _only_test_rows(    _only_test_rows(monkeypatch)
 monkeypatch)
@@ -14,9 +13,9 @@ ly_test_rows(monkeypatch)
 「图片处理」「聊天改图」的改图主流程。
 """
 from __future__ import annotations
-from pathlib import Path
 
 import json
+from pathlib import Path
 
 import pytest
 import requests
@@ -401,7 +400,6 @@ def test_use_this_local_copy_feeds_signal(monkeypatch, tmp_path):
 
 def test_adopt_stock_image_sets_chat_current(tmp_path):
     """聊天侧:下载完成 → 设为当前图 + 对话流气泡。"""
-    import app.ai.stock_photo as sp
     from PySide6.QtWidgets import QApplication
     QApplication.instance() or QApplication([])
     from app.ui.chat_edit_drawer import ChatEditPanel

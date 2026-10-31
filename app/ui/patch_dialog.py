@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """局部修补:涂抹要改的区域,只填这一块,其余像素原样复制。
 
 为什么不用 AI 改图做这件事:参考式图生图每次都重新生成**整张**图,实测
@@ -13,8 +12,15 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QImage, QPixmap
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPushButton, QWidget,
-                               QSlider, QVBoxLayout)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..core import config
 from ..core.i18n import tr

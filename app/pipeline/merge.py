@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """视频合并模块 —— 并入 golanse/easymerger 核心逻辑:
 
   能用无损合并就绝不用转码。
@@ -60,7 +59,7 @@ def probe(path: str | Path) -> dict:
         num, _, den = v["avg_frame_rate"].partition("/")
         try:
             rate = int(num) / int(den or 1)
-            fps = str(int(round(rate))) if abs(rate - round(rate)) < 0.05 else f"{rate:.3f}"
+            fps = str(round(rate)) if abs(rate - round(rate)) < 0.05 else f"{rate:.3f}"
         except Exception:  # noqa: BLE001
             fps = v.get("r_frame_rate", "0")
     return {
@@ -334,16 +333,15 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
             except Exception:  # noqa: BLE001
                 fps_v = 30.0
             clip = _intro.render_intro_clip(intro, fps_hint=fps_v)
-            path, channel = auto_merge([str(clip)] + [str(p) for p in shots], out,
+            path, _channel = auto_merge([str(clip)] + [str(p) for p in shots], out,
                                        progress, stop_check)
             merged = path
-            channel = "无损拼接 + 片头标题卡"
         elif intro or has_narr:
             merged = _merge_filtered(shots, narrations, out, intro, stop_check)
-            channel = ("统一参数拼接" if not has_narr else "统一参数拼接 + 旁白混音") \
+            ("统一参数拼接" if not has_narr else "统一参数拼接 + 旁白混音") \
                       + (" + 片头叠加" if intro and intro.get("overlay") else (" + 片头" if intro else ""))
         else:
-            path, channel = auto_merge([str(p) for p in shots], out, progress, stop_check)
+            path, _channel = auto_merge([str(p) for p in shots], out, progress, stop_check)
             merged = path
         dur = probe(merged).get("duration") or 0
         db.ex("UPDATE video_merges SET merged_url=?, status='completed', duration=?, updated_at=? WHERE id=?",
@@ -353,7 +351,7 @@ def merge_episode(episode_id: int, only_ids: list[int] | None = None,
         if progress:
             progress(1, 1, str(merged))
         return merged
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         db.ex("UPDATE video_merges SET status='failed', error_msg=?, updated_at=? WHERE id=?",
               (str(e)[:500], db.now(), merge_id))
         raise

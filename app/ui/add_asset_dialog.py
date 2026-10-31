@@ -1,12 +1,19 @@
-# -*- coding: utf-8 -*-
 """手动新增资产对话框(对齐参考项目 episode.vue openAssetCreate/saveAssetCreate)。
 
 角色: 名称/定位/样貌/妆造;场景: 地点/时间/描述/光照;道具: 名称/类型/描述。
 """
 from __future__ import annotations
 
-from PySide6.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout,
-                               QLineEdit, QPlainTextEdit, QPushButton, QVBoxLayout)
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QFormLayout,
+    QHBoxLayout,
+    QLineEdit,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+)
 
 from ..core import db
 from ..core.i18n import tr

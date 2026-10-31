@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """Agnes 视频生成的参数契约回归测试。
 
 对着官方文档(https://agnes-ai.com/zh-Hans/docs/agnes-video-25 与
@@ -21,14 +20,27 @@ from __future__ import annotations
 
 import pytest
 
-from app.ai.agnes_video import (VALID_RATIOS, adapt_seconds, build_generate_body,
-                                create_endpoint, effective_size, is_flash,
-                                normalize_aspect_ratio, normalize_seconds,
-                                parse_create_response, parse_poll_response,
-                                poll_endpoint, ratio_from_image_bytes)
-from app.ai.prompt_guards import (CAMERA_MARKER, CONSISTENCY_MARKER,
-                                  VIDEO_CAMERA_GUARD, VIDEO_CONSISTENCY_GUARD,
-                                  apply_video_guards)
+from app.ai.agnes_video import (
+    VALID_RATIOS,
+    adapt_seconds,
+    build_generate_body,
+    create_endpoint,
+    effective_size,
+    is_flash,
+    normalize_aspect_ratio,
+    normalize_seconds,
+    parse_create_response,
+    parse_poll_response,
+    poll_endpoint,
+    ratio_from_image_bytes,
+)
+from app.ai.prompt_guards import (
+    CAMERA_MARKER,
+    CONSISTENCY_MARKER,
+    VIDEO_CAMERA_GUARD,
+    VIDEO_CONSISTENCY_GUARD,
+    apply_video_guards,
+)
 from app.ai.text_client import AIError
 
 FULL = "agnes-video-2.5"
@@ -366,6 +378,7 @@ def test_agnes_image_endpoint_has_no_double_v1():
     实测踩过:HTTP 404 {"error":{"message":"Invalid URL (POST /v1/v1/images/generations)"}}
     """
     import inspect
+
     from app.ai import image_client
     src = inspect.getsource(image_client.generate_image)
     # 端点拼接必须先判断 base_url 是否已以 /v1 结尾

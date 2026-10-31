@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """通用蒙版擦除/恢复(panel / character / scene / prop 全资产)—— 对齐参考 ecda917 + 9272acf。
 
 前端 lightbox 画笔涂抹 → 导出「透明底 + 不透明白色笔迹」的 mask PNG(alpha 通道即形状);

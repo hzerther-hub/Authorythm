@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """手动换画风:把一张已有的资产图转成项目画风(或另一个指定画风)。
 
 **为什么做成"手动"而不是自动**:实测模型在图生图时会持续往画面里加东西 ——
@@ -15,7 +14,6 @@ from __future__ import annotations
 
 import pathlib
 import uuid
-
 from pathlib import Path
 
 from ..core import config, db

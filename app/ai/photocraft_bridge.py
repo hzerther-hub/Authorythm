@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PhotoCraft CLI 桥接:把自然语言聊天的修图指令落到本地可执行文件的 `run` 命令。
 
 设计要点:
@@ -17,7 +16,7 @@ import subprocess
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from ..core import config, db
 
@@ -113,7 +112,7 @@ class PhotocraftCLI:
 
     # ── 命令清单(缓存 5 分钟) ──
 
-    _cmds_cache: dict[str, Any] = {}
+    _cmds_cache: ClassVar[: dict[str, Any]] = {}
     _cmds_cache_ts: float = 0.0
 
     def list_commands(self, refresh: bool = False) -> list[dict]:
@@ -127,7 +126,7 @@ class PhotocraftCLI:
                 [self.cli_path, "commands", "--json"],
                 capture_output=True, text=True, timeout=30,
                 encoding="utf-8", errors="replace")
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise PhotocraftError(f"无法列举命令:{exc}") from exc
         if r.returncode != 0:
             raise PhotocraftError(f"commands --json 退出码 {r.returncode}: {(r.stderr or '')[:300]}")
@@ -181,7 +180,7 @@ class PhotocraftCLI:
                 encoding="utf-8", errors="replace")
         except subprocess.TimeoutExpired as exc:
             raise PhotocraftError(f"CLI 调用超时,失败:{exc}") from exc
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise PhotocraftError(f"CLI 调用失败:{exc}") from exc
         if r.returncode != 0:
             stderr = (r.stderr or "").strip()[:600]
@@ -441,11 +440,11 @@ _WL_RULES: list[_WhitelistRule] = [
                      lambda m, v: _build({"cmd": "image.adjustments.hueSaturation",
                                           "params": {"saturation": -25},
                                           "reason": "降饱和 -25"})),
-    _WhitelistRule(re.compile(rf"对比\s*强|对比\s*拉满|高对比"),
+    _WhitelistRule(re.compile(r"对比\s*强|对比\s*拉满|高对比"),
                      lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
                                           "params": {"contrast": 50},
                                           "reason": "对比 +50"})),
-    _WhitelistRule(re.compile(rf"对比\s*弱|对比\s*拉低|低对比|平对比"),
+    _WhitelistRule(re.compile(r"对比\s*弱|对比\s*拉低|低对比|平对比"),
                      lambda m, v: _build({"cmd": "image.adjustments.brightnessContrast",
                                           "params": {"contrast": -30},
                                           "reason": "对比 -30"})),
@@ -649,10 +648,7 @@ def _llm_command_catalog(cli: PhotocraftCLI) -> str:
         buckets: dict[tuple[str, str], list[str]] = {}
         for cid in extra_ids:
             parts = cid.split(".")
-            if len(parts) >= 3:
-                bucket = (parts[0], parts[1])
-            else:
-                bucket = (parts[0], "_")
+            bucket = (parts[0], parts[1]) if len(parts) >= 3 else (parts[0], "_")
             buckets.setdefault(bucket, []).append(cid)
         lines.append("")
         lines.append("【全量命令注册表(按桶分块,需要查具体参数时再翻 schema)】")
@@ -819,9 +815,7 @@ def _wants_batch_analysis(text: str) -> bool:
     if _BATCH_RE_DO.search(t):
         return True
     # 「先分析...再执行」也要认(用户没明说数量就给默认 3)
-    if _BATCH_RE_FLOW.search(t) and ("分析" in t or "看" in t):
-        return True
-    return False
+    return bool(_BATCH_RE_FLOW.search(t) and ("分析" in t or "看" in t))
 
 
 def _wants_batch_n(text: str) -> int:
@@ -1307,7 +1301,7 @@ def remove_text(image_path: str, out_file: str | None = None,
         config.STATIC_DIR / "processed" / f"notext_{int(time.time())}.png")
     out.parent.mkdir(parents=True, exist_ok=True)
     if _opencv_available():
-        ok, err = inpaint_regions_opencv(image_path, regions, str(out))
+        ok, _err = inpaint_regions_opencv(image_path, regions, str(out))
         if ok:
             return str(out), ""
     return remove_text_by_inpaint(image_path, regions, out_file=str(out))

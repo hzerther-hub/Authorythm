@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """残缺分镜自动补全(对齐原版 daa17d0 / storyboard-repair.ts)。
 
 storyboard_breaker 拆分整集时中途失败(超时/限流/重启)会留下"半成品分镜":
