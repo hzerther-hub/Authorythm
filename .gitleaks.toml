@@ -1,0 +1,48 @@
+# gitleaks 配置 —— 本仓库是 public,任何提交过的 key 都等同公开泄露。
+#
+# 参照:https://docs.gitleaks.io/configuration/
+#
+# 默认规则集覆盖 150+ 种密钥格式(云厂商 / AI 服务 / 数据库 / 私钥 …),
+# 这里只做**本仓库特有的收窄与放行**:
+#   1. 放行测试夹具里的假 key(它们不是真凭证,长��像);
+#   2. 放行本仓自己的文档里出现的**示例**串;
+#   3. 收窄个别规则,避免把正常的哈希/UUID 误报成密钥。
+
+title = "pydrama gitleaks 配置"
+
+[extend]
+# 用 gitleaks 默认规则集作为基线
+useDefault = true
+
+# ── 放行:测试夹具里的假 key ──────────────────────────────────────────────
+# tests/ 里为了测「加解密 / 脱敏」必须放一些**假的** key 形态串。
+# 它们是写死的假值,不是任何真实服务的凭证 —— 放行,但仍然要人看一眼。
+[[allowlists]]
+description = "测试夹具里的假密钥(非真实凭证)"
+paths = [
+  '''tests/test_secrets\.py''',
+  '''tests/test_logging_setup\.py''',
+]
+
+# ── 放行:文档 / 配置里的示例串 ──────────────────────────────────────────
+[[allowlists]]
+description = "文档与脚本里的示例串"
+paths = [
+  '''^docs/''',
+  '''^AGENTS\.md$''',
+  '''^README\.md$''',
+  '''^PROGRESS\.md$''',
+]
+
+# ── 收窄:通用密钥规则在本仓的噪声较大 ───────────────────────────────────
+# 本仓大量使用 sha1/fingerprint 派生串(secrets.py 的机器指纹)与 UUID,
+# 通用 "generic-api-key" 规则会把它们误报。保留规则但排除已知噪声路径。
+[[allowlists]]
+description = "secrets 派生串 / 机器指纹等非凭证"
+paths = [
+  '''^app/core/secrets\.py$''',
+]
+# 注意:这里**不要**为任何具体密钥串写 allowlist —— 那等于把密钥又抄了一份
+# 放进代码树(2026-10-18 那轮就是在这上面栽的:为了压住历史告警而写了
+# 密钥串,结果 key 又回到了当前树)。历史里真有过的密钥应该用
+# filter-repo 从历史里清除,而不是在配置里"放行"它。
