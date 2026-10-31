@@ -536,9 +536,9 @@ def panel_image_prompt(panel_id: int, drama_id: int, text_config_id: int | None 
         # 调试:把收到的 id 与此刻所有 panel id 范围打出来
         try:
             r = db.q1("SELECT MIN(id) lo, MAX(id) hi, COUNT(*) c FROM comic_panels")
-            print(f"[comic] panel_id={panel_id!r} not found; table has {r['c']} rows, ids {r['lo']}..{r['hi']}", flush=True)
+            log.info(f"panel_id={panel_id!r} not found; table has {r['c']} rows, ids {r['lo']}..{r['hi']}")
         except Exception as e:  # noqa: BLE001
-            print(f"[comic] panel_id={panel_id!r} not found; re-probe failed: {e}", flush=True)
+            log.error(f"panel_id={panel_id!r} not found; re-probe failed: {e}")
         raise RuntimeError("漫画格不存在")
     style = _style_for(drama_id, style_value=style_value)
     chars, scenes, props = _panel_bound_assets(panel_id)

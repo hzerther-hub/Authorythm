@@ -353,10 +353,10 @@ def split_storyboards(episode_id: int, aspect: str = "9:16", config_id: int | No
                       (_json.dumps(merged, ensure_ascii=False), ts, sb["id"]))
                 n_e += 1
         if n_v or n_e:
-            print(f"[variant_detector] EP{episode_id} 新建 {n_v} 变体 / "
-                  f"{n_e} 镜打情绪标", flush=True)
+            log.info(f"EP{episode_id} 新建 {n_v} 变体 / "
+                  f"{n_e} 镜打情绪标")
     except Exception as e:                                # noqa: BLE001
-        print(f"[variant_detector] 检测失败,忽略:{e}", flush=True)
+        log.error(f"检测失败,忽略:{e}")
     return saved
 
 

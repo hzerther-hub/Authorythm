@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from ..core import config, db
 from ..core.i18n import LANGS, on_change, set_language, tr
+from ..core.logging_setup import get_logger
 from ..core.taskmgr import TASKMGR
 from ..core.theme import apply_theme
 from . import widgets as W
@@ -36,6 +37,8 @@ from .project_page import ProjectPage
 from .projects_page import ProjectsPage
 from .settings_dialog import SettingsDialog
 from .toast import err, ok, warn
+
+log = get_logger(__name__)
 
 
 class MainWindow(QMainWindow):
@@ -1591,7 +1594,7 @@ class ClonePage(QWidget):
                     try:
                         v.unlink()
                     except OSError as exc:
-                        print(f"[clone] 视频文件删除失败({exc})", flush=True)
+                        log.error(f"视频文件删除失败({exc})")
                 x["video"] = None
         video_clone._save_meta(self.drama_id, meta)
         self.reload()
@@ -1844,7 +1847,7 @@ class ClonePage(QWidget):
                     src, ta, swap_cfg_id=video_clone._selected_swap_cfg())
             except Exception as exc:  # noqa: BLE001
                 swapped = False
-                print(f"[clone] 三视图换脸失败({exc}),保留生成底图", flush=True)
+                log.error(f"三视图换脸失败({exc}),保留生成底图")
             return {"path": str(ta), "swapped": swapped}
 
         def done(tid, result, error):
@@ -2305,7 +2308,7 @@ class ClonePage(QWidget):
             if best is None:
                 raise RuntimeError("场景图生成失败")
             if best_n > 0:
-                print(f"[clone] 场景重生成人数={best_n},已选人数最少的一张", flush=True)
+                log.info(f"场景重生成人数={best_n},已选人数最少的一张")
             _final = (video_clone.config.STATIC_DIR / "images" /
                       f"clone_scene_{self.drama_id}.png")
             _final.parent.mkdir(parents=True, exist_ok=True)
@@ -2882,8 +2885,8 @@ class ClonePage(QWidget):
                     n = video_clone._count_people_in_image(
                         ff, config_id=video_clone._selected_text_cfg())
                     if n is not None and n > 1:
-                        print(f"[clone] 分镜#{b.get('number')} 首帧自检={n}人,"
-                              f"纳入自动重绘", flush=True)
+                        log.info(f"分镜#{b.get('number')} 首帧自检={n}人,"
+                              f"纳入自动重绘")
                         todo.append(b)
                 total = len(todo)
             for b in todo:
@@ -2895,7 +2898,7 @@ class ClonePage(QWidget):
                         self.drama_id, n, d["style"], config_id=cfg_id)
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
-                    print(f"[clone] 分镜#{n} 首帧失败: {exc}", flush=True)
+                    log.error(f"分镜#{n} 首帧失败: {exc}")
                 # 无论成败都要清「生成中」并推进进度,否则失败的镜会永远卡在等待态
                 _set_busy(done_n, True)
                 # **生成一张显示一张**:回主线程只刷这一张缩略图。
@@ -3060,7 +3063,7 @@ class ClonePage(QWidget):
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
                     failed += 1
-                    print(f"[clone] 分镜#{n} 视频失败: {exc}", flush=True)
+                    log.error(f"分镜#{n} 视频失败: {exc}")
                 _set_busy(done_n, True)
 
                 def _refresh():

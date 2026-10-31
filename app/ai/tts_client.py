@@ -31,6 +31,7 @@ from pathlib import Path
 import requests
 
 from ..core import config
+from ..core.metrics import observed_client
 from . import registry
 from .text_client import AIError
 
@@ -564,6 +565,7 @@ def _synthesize_edge(text: str, voice: str = EDGE_DEFAULT_FEMALE,
     return out
 
 
+@observed_client("tts")
 def synthesize(text: str, voice: str | None = None, config_id: int | None = None,
                target_duration: float | None = None, speed: float = 1.0,
                gender: str = "female", subdir: str = "narration") -> Path:

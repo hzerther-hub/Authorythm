@@ -11,6 +11,8 @@ import requests
 from PIL import Image
 
 from ..core import config
+from ..core.logging_setup import get_logger
+from ..core.metrics import observed_client
 from . import registry
 from .prompt_guards import (  # noqa: F401  (re-export,保持既有调用点可用)
     IMAGE_NEGATIVE_GUARD,
@@ -18,6 +20,8 @@ from .prompt_guards import (  # noqa: F401  (re-export,保持既有调用点可�
     build_image_quality_guard,
 )
 from .text_client import AIError
+
+log = get_logger(__name__)
 
 
 def _utf8_text(resp, limit: int = 400) -> str:
@@ -59,8 +63,8 @@ def _download(url: str, out: Path, headers: dict | None = None,
             return out
         except Exception as exc:  # noqa: BLE001 —— 网络类异常统一退避重试
             last = exc
-            print(f"[image] 下载结果图失败({i + 1}/{len(attempts)}):"
-                  f"{str(exc)[:160]}", flush=True)
+            log.error(f"下载结果图失败({i + 1}/{len(attempts)}):"
+                  f"{str(exc)[:160]}")
     raise last
 
 
@@ -224,9 +228,8 @@ def supports_reference_images(provider: str | None) -> bool:
             hint = None
         if hint is not None:
             _ref_hint_cache[key] = hint
-    print(f"[image] provider={key or '(空)'} 不在参考图白名单 → 不支持"
-          f"(退化为纯文生图)。要接入请实测后加入 REFERENCE_CAPABLE_PROVIDERS。",
-          flush=True)
+    log.info(f"provider={key or '(空)'} 不在参考图白名单 → 不支持"
+          f"(退化为纯文生图)。要接入请实测后加入 REFERENCE_CAPABLE_PROVIDERS。")
     return False
 
 
@@ -264,12 +267,12 @@ def generate_image_with_retry(*args, **kwargs):
             last = exc
             if not _is_rate_limited(exc) or i == len(_RATE_LIMIT_BACKOFF) - 1:
                 raise
-            print(f"[image] 触发限流,{wait}s 后重试({i + 1}/{len(_RATE_LIMIT_BACKOFF)})",
-                  flush=True)
+            log.info(f"触发限流,{wait}s 后重试({i + 1}/{len(_RATE_LIMIT_BACKOFF)})")
             _time.sleep(wait)
     raise last      # pragma: no cover
 
 
+@observed_client("image")
 def generate_image(prompt: str, out_name: str | None = None,
                    config_id: int | None = None, size: str | None = None,
                    reference_images: list[str] | None = None,

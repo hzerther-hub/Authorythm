@@ -12,7 +12,10 @@ from ..ai import (
 )
 from ..core import config, db
 from ..core.i18n import LANG_OUTPUT_NAME, tr  # 分批阶段提示文案(漏导入会让整批 NameError)
+from ..core.logging_setup import get_logger
 from . import character_spec, script_quality
+
+log = get_logger(__name__)
 
 # 写法风格预设(逐字对齐原版 episode.vue 的 NOVEL_STYLES):选中值全文写入 dramas.novel_style
 # 清单本体放在 core.db.NOVEL_STYLE_PRESETS —— 与 style_presets 表里 novel 类的种子
@@ -464,7 +467,7 @@ def _extract_characters_for_volume(drama_id: int, chapters: list[dict],
             "novel_planner", "\n\n".join(parts),
             lang=config.resolve_content_language(drama_id), config_id=config_id))
     except Exception as exc:  # noqa: BLE001
-        print(f"[novel] 第 {vol.get('title') or ''} 卷角色抽取调用失败({exc})", flush=True)
+        log.error(f"第 {vol.get('title') or ''} 卷角色抽取调用失败({exc})")
         return []
     chars = _extract_characters_payload(data)
     if not chars:
@@ -569,17 +572,17 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
             except Exception as exc:
                 if attempt == len(budgets) - 1:
                     raise
-                print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
-                      f"升到 {budgets[attempt + 1]} 预算重试", flush=True)
+                log.error(f"第 {start}-{start + cnt - 1} 章请求失败({exc}),"
+                      f"升到 {budgets[attempt + 1]} 预算重试")
                 continue
             data = runner.extract_json(raw) or {}
             batch = _clean_chapter_list(data.get("chapters"), cnt)
             if batch:
                 break
-            print(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
+            log.info(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
                   f"(预算 {budget},解析 0 章),"
                   + (f"升到 {budgets[attempt + 1]} 重试" if attempt < len(budgets) - 1
-                     else "放弃"), flush=True)
+                     else "放弃"))
         if not batch:
             # 空批次直接报错:继续往下跑只会让用户等完才看到「什么都没有」。
             # 已产出的批次已经在下面逐批落库,不会丢。
@@ -604,7 +607,7 @@ def generate_chapters_for_volume(drama_id: int, volume_no: int,
         except Exception as exc:  # noqa: BLE001
             # 角色抽取失败不该让已生成的章节计划前功尽弃
             char_error = str(exc)
-            print(f"[novel] 第 {volume_no} 卷角色抽取失败({exc}),章节计划已保留", flush=True)
+            log.error(f"第 {volume_no} 卷角色抽取失败({exc}),章节计划已保留")
         if not chars and not char_error:
             # 抽到 0 个也算失败:角色设定是写作红线的第 5 步,缺它一章都写不了。
             # 以前这里静默返回空列表,用户看到「主要角色」一片空白却不知道原因。
@@ -649,17 +652,17 @@ def generate_chapters_batched(drama_id: int, chapter_count: int | None = None,
             except Exception as exc:
                 if attempt == len(budgets) - 1:
                     raise
-                print(f"[novel] 第 {start}-{start + cnt - 1} 章请求失败({exc}),"
-                      f"升到 {budgets[attempt + 1]} 预算重试", flush=True)
+                log.error(f"第 {start}-{start + cnt - 1} 章请求失败({exc}),"
+                      f"升到 {budgets[attempt + 1]} 预算重试")
                 continue
             data = runner.extract_json(raw) or {}
             batch = _clean_chapter_list(data.get("chapters"), n)
             if batch:
                 break
-            print(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
+            log.info(f"[novel] 第 {start}-{start + cnt - 1} 章返回 {len(raw)} 字符"
                   f"(预算 {budget},解析 0 章),"
                   + (f"升到 {budgets[attempt + 1]} 重试" if attempt < len(budgets) - 1
-                     else "放弃"), flush=True)
+                     else "放弃"))
         if not batch:
             raise RuntimeError(f"第 {start}-{start + cnt - 1} 章生成失败"
                                f"(返回 {len(raw)} 字,疑似被截断)")
@@ -1382,7 +1385,7 @@ def _save_with_title(episode_id: int, content: str) -> str:
         if row and is_placeholder_episode_title(row["title"], row["episode_number"]):
             gen_chapter_title(episode_id)
     except Exception as exc:  # noqa: BLE001
-        print(f"[novel] 章节自动标题失败(可稍后 Ctrl+T 补): {exc}", flush=True)
+        log.error(f"章节自动标题失败(可稍后 Ctrl+T 补): {exc}")
     return text
 
 
@@ -2174,7 +2177,7 @@ chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重�
         skel = [c for c in (data.get("chapters") or []) if isinstance(c, dict) and c.get("range")]
         if skel:
             break
-        print(f"[novel] 分卷骨架第 {attempt + 1} 次返回 {len(raw or '')} 字符,重试", flush=True)
+        log.info(f"分卷骨架第 {attempt + 1} 次返回 {len(raw or '')} 字符,重试")
     if not skel:
         raise RuntimeError(
             f"分卷骨架生成失败(重试 2 次,末次响应 {len(raw or '')} 字符,"
@@ -2231,7 +2234,7 @@ chapters 的 range 必须**连续覆盖第 1 章到第 {total_ch} 章**,不重�
                 if (c.get("goal") or "").strip() or (c.get("key_events") or []):
                     expanded += 1
         except Exception as exc:  # noqa: BLE001
-            print(f"[novel] 分卷第 {i + 1}-{i + len(group)} 卷细节失败({exc}),保留骨架", flush=True)
+            log.error(f"分卷第 {i + 1}-{i + len(group)} 卷细节失败({exc}),保留骨架")
         done += len(group)
         if on_progress:
             on_progress(done, len(skel))
@@ -2615,8 +2618,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
             failed += 1
             # 失败原因必须落日志:批量面板只显示「失败 N」,不打印原因的话
             # 排查只能靠猜(实测 EP28-31 四连失败,原因无从查起)
-            print(f"[novel] 第 {r['episode_number']} 章写作失败: {str(exc)[:200]}",
-                  flush=True)
+            log.error(f"第 {r['episode_number']} 章写作失败: {str(exc)[:200]}")
         # 小说体改造:写完→自动标题后把脚本体转成叙述正文(发布用)。
         # 已是小说体(对白行 <20%)自动跳过;失败不阻断 —— 保留脚本体,
         # 可之后单章「小说体改造」手动补。批量写出的章**先转体再进台账**,
@@ -2627,8 +2629,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
                 TM.set_stage(task_id, "prose")
             convert_chapter_to_prose(r["id"], lang=lang)
         except Exception as exc:  # noqa: BLE001
-            print(f"[novel] 第 {r['episode_number']} 章小说体改造失败(保留脚本体): {exc}",
-                  flush=True)
+            log.error(f"第 {r['episode_number']} 章小说体改造失败(保留脚本体): {exc}")
         # 状态台账:每章写完后更新「世界状态」事实层(提取 → 合并 → Jev 门控)。
         # 失败只记不抛 —— 台账是增强项,绝不阻断批量写作主流程。
         try:

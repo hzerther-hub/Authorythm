@@ -11,6 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+from .logging_setup import get_logger
+
+log = get_logger(__name__)
 
 
 class Row(sqlite3.Row):
@@ -673,7 +676,7 @@ def init_db() -> None:
             "WHERE (first_frame_image IS NOT NULL AND first_frame_image != '') "
             "AND (image_status IS NULL OR image_status='none')")
         if cur.rowcount:
-            print(f"🖼️ {cur.rowcount} 条历史分镜首帧图已回填为 approved")
+            log.info(f"🖼️ {cur.rowcount} 条历史分镜首帧图已回填为 approved")
     except Exception:  # noqa: BLE001 —— 列还没建出来时忽略(全新库走 DDL 默认值)
         pass
     db.commit()
@@ -992,7 +995,7 @@ def settle_interrupted_tasks(conn, ts: str, reason: str = "启动清理",
                          (ORPHAN_TASK_ERROR, ts, r["id"]))
             failed += 1
     if rows:
-        print(f"[reap] {reason}:已收尾 {len(rows)} 个中断任务"
+        log.error(f"[reap] {reason}:已收尾 {len(rows)} 个中断任务"
               f"(已完成 {done} / 失败 {failed})")
     sb_rows = _settle_storyboard_status(conn, ts, min_age_s=min_age_s)
     # 必须在函数内自己提交:启动路径后面还有 init_db 兜底 commit,但运行期巡检
@@ -1029,7 +1032,7 @@ def _settle_storyboard_status(conn, ts: str, min_age_s: float = 0.0) -> int:
         conn.execute("UPDATE storyboards SET status=?, updated_at=? WHERE id=?",
                      ("completed" if has_output else "failed", ts, r["id"]))
     if rows:
-        print(f"[reap] 已收尾 {len(rows)} 个中断分镜(状态从 processing 归位)")
+        log.info(f"[reap] 已收尾 {len(rows)} 个中断分镜(状态从 processing 归位)")
     return len(rows)
 
 
@@ -1073,7 +1076,7 @@ def start_stuck_task_watchdog(conn=None, interval_s: float = REAP_INTERVAL_S):
             settle_interrupted_tasks(get_db(), now(), reason="运行期巡检",
                                      min_age_s=interval_s)
         except Exception as exc:  # noqa: BLE001
-            print(f"[reap] 巡检失败: {exc}")
+            log.error(f"[reap] 巡检失败: {exc}")
         finally:
             t = threading.Timer(interval_s, _tick)
             t.daemon = True

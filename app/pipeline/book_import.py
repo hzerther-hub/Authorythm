@@ -15,7 +15,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..agents import runner
 from ..core import config, db
+from ..core.logging_setup import get_logger
 from . import character_spec
+
+log = get_logger(__name__)
 
 MIN_CHARS = 1000
 MAX_CHARS = 100_000_000
@@ -283,7 +286,7 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None, resume: bool 
                 chunk_summaries[i] = item
                 skipped += 1
         if skipped:
-            print(f"[analyze] 断点续跑:跳过已成功 {skipped}/{len(groups)} 组", flush=True)
+            log.info(f"[analyze] 断点续跑:跳过已成功 {skipped}/{len(groups)} 组")
 
     # 并发档位按 pause_count 动态降档(原版:0→3,1→2,≥2→1),错峰同步加大
     concurrency = 3 if pause_count == 0 else 2 if pause_count == 1 else 1
@@ -337,7 +340,7 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None, resume: bool 
                     state["failed"] += 1
                     failed_indexes.append(idx)
                     done_now = state["done"] + state["failed"]
-                    print(f"[analyze] 第 {idx + 1} 组失败({exc})", flush=True)
+                    log.error(f"[analyze] 第 {idx + 1} 组失败({exc})")
                     # 安全阀:失败率≥30% 且样本≥50 → 暂停,不烧光上游配额
                     if (done_now >= FAIL_MIN_SAMPLES
                             and state["failed"] / done_now >= FAIL_THRESHOLD):
@@ -367,8 +370,8 @@ def run_analysis(drama_id: int, on_progress=None, stop_check=None, resume: bool 
         return {"status": "paused", "done": state["done"],
                 "total": state["done"] + state["failed"], "failed": state["failed"]}
     if failed_indexes:
-        print(f"[analyze] 部分组失败 {len(failed_indexes)}/{len(groups)}:"
-              f"{failed_indexes[:10]}", flush=True)
+        log.error(f"[analyze] 部分组失败 {len(failed_indexes)}/{len(groups)}:"
+              f"{failed_indexes[:10]}")
     # Reduce:只用成功组(失败组混入会把空摘要当真,污染档案);格式化文本不截断
     ok = [c for c in chunk_summaries if c is not None]
     raw = runner.run_agent("novel_reviewer",

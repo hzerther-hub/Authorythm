@@ -18,7 +18,10 @@ from __future__ import annotations
 
 import os
 
+from ..core.logging_setup import get_logger
 from .jev_gate import JevBreaker, get_jev_gate
+
+log = get_logger(__name__)
 
 # 判定"是否真支持参考图"的提问。
 #
@@ -88,9 +91,9 @@ def reference_capable(provider: str, base_url: str = "", model: str = "") -> boo
         return None
     strict = (answers.get("strictness") or {}).get("score")
     capable = val >= REF_THRESHOLD
-    print(f"[jev] 参考图能力线索 {provider} bind={val} strict={strict} "
+    log.info(f"[jev] 参考图能力线索 {provider} bind={val} strict={strict} "
           f"-> {'疑似支持' if capable else '疑似不支持'}"
-          f"(仅供参考,需实测验证后再写进白名单)", flush=True)
+          f"(仅供参考,需实测验证后再写进白名单)")
     return capable
 
 
@@ -158,7 +161,7 @@ def pick_video_provider(visual_need: str,
         picked = max(dist, key=lambda k: dist[k] if isinstance(dist[k], (int, float)) else -1)
     if picked not in cands:
         return None
-    print(f"[jev] 视频供应商建议 {picked} dist={dist}(候选 {len(cands)})", flush=True)
+    log.info(f"[jev] 视频供应商建议 {picked} dist={dist}(候选 {len(cands)})")
     return picked, dist
 
 

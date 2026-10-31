@@ -15,6 +15,9 @@ from pathlib import Path
 from ..agents import runner
 from ..ai import image_client, text_client, tts_client, video_client
 from ..core import config, db
+from ..core.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 # 单镜**内容**字数上限(不含风格前缀与尾部一致性约束)。
 #
@@ -86,7 +89,7 @@ def refresh_clone_prompts(drama_id: int) -> str | None:
     try:
         return str(prompts_gen.character_prompt(row["id"]))
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 最终提示词重生成失败({exc})", flush=True)
+        log.error(f"最终提示词重生成失败({exc})")
         return None
 
 
@@ -138,8 +141,7 @@ def replace_material(drama_id: int, kind: str, image_path: str | Path,
                 config_id=config_id)
             if new_boards and new_boards != boards:
                 clone["storyboards"] = new_boards
-                print("[clone] 产品已更换,分镜文本(action/口播)已按新产品重写",
-                      flush=True)
+                log.info("产品已更换,分镜文本(action/口播)已按新产品重写")
     else:
         # 换出镜照 = 换了人:旧三视图还是**上一张脸**,必须作废重生成,否则分镜
         # 参考锁的仍是旧人(实测:换照后首帧出的是前一张脸);描述同样作废,
@@ -245,7 +247,7 @@ def read_presenter_desc(presenter_path: str | Path,
             return None
         return {"appearance": app_, "styling": sty}
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 人物描述提取失败: {exc}", flush=True)
+        log.error(f"人物描述提取失败: {exc}")
         return None
 
 
@@ -396,11 +398,10 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
             # 失败时必须留下诊断:此前只打一行「改写失败」,而真实原因是模型返回了
             # 16KB 的 <think> 推理块把 max_tokens(4096)吃光、正文 JSON 被截断 ——
             # 排查时完全看不出是哪一步断的。
-            print(f"[clone] 分镜表改写失败(响应 {len(raw or '')} 字符,"
+            log.error(f"分镜表改写失败(响应 {len(raw or '')} 字符,"
                   f"解析后类型 {type(data).__name__},"
-                  f"storyboards 镜数 {len(out) if isinstance(out, list) else 0}),保留原表",
-                  flush=True)
-            print(f"[clone] 响应尾部 200 字: {(raw or '')[-200:]!r}", flush=True)
+                  f"storyboards 镜数 {len(out) if isinstance(out, list) else 0}),保留原表")
+            log.info(f"响应尾部 200 字: {(raw or '')[-200:]!r}")
             return boards
         # 逐镜对齐:模型可能改 number/漏镜,按原表顺序兜底,宁可少改不可丢镜
         merged = []
@@ -443,15 +444,15 @@ def rewrite_boards_for_product(boards: list[dict], product_desc: str,
         # 整份改写被丢弃、用户白跑一次拆解。宁可漏报不可误杀。
         stale = _residual_by_llm(rewritten_only, product_desc, config_id)
         if stale:
-            print(f"[clone] ⚠ 改写结果仍含原片产品:{stale};判定为改写失败,丢弃本次改写", flush=True)
+            log.warning(f"⚠ 改写结果仍含原片产品:{stale};判定为改写失败,丢弃本次改写")
             return boards
-        print(f"[clone] 分镜表已按新产品改写 {len(rewritten_only)}/{len(merged)} 镜", flush=True)
+        log.info(f"分镜表已按新产品改写 {len(rewritten_only)}/{len(merged)} 镜")
         # 这里**不再**调 _warn_if_product_mismatch:它靠 2-gram 词表判定,
         # 与 _residual_by_llm 同属启发式,重复报警只会制造噪音(实测拿旧描述
         # 比出「的佩」这种无意义的告警)。语义层面的残留判定已由上面的模型调用负责。
         return merged
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 分镜表改写异常({exc}),保留原表", flush=True)
+        log.error(f"分镜表改写异常({exc}),保留原表")
         return boards
 
 
@@ -633,9 +634,9 @@ def regenerate_script(drama_id: int, config_id: int | None = None,
         data = runner.extract_json(raw)
         out = data.get("storyboards") if isinstance(data, dict) else data
         if not isinstance(out, list) or not out:
-            print(f"[clone] 镜头脚本补写失败(响应 {len(raw or '')} 字符,解析后类型 "
-                  f"{type(data).__name__}),原表不动", flush=True)
-            print(f"[clone] 响应尾部 200 字: {(raw or '')[-200:]!r}", flush=True)
+            log.error(f"镜头脚本补写失败(响应 {len(raw or '')} 字符,解析后类型 "
+                  f"{type(data).__name__}),原表不动")
+            log.info(f"响应尾部 200 字: {(raw or '')[-200:]!r}")
             return 0
         # 逐镜对齐:模型可能漏镜或改号,按**镜号**对上,对不上再退回顺序兜底。
         by_no = {int(x.get("number") or 0): x for x in out
@@ -661,10 +662,10 @@ def regenerate_script(drama_id: int, config_id: int | None = None,
             meta = _meta(drama_id)
             meta.setdefault("clone", {})["storyboards"] = boards
             _save_meta(drama_id, meta)
-        print(f"[clone] 镜头脚本补写 {done}/{len(boards)} 镜", flush=True)
+        log.info(f"镜头脚本补写 {done}/{len(boards)} 镜")
         return done
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 镜头脚本补写异常({exc}),原表不动", flush=True)
+        log.error(f"镜头脚本补写异常({exc}),原表不动")
         return 0
 
 
@@ -1000,7 +1001,7 @@ def standing_ref_of(turnaround_path) -> Path | None:
         from .comic import _single_pose_ref
         return Path(_single_pose_ref(str(ta)))
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 三视图切格失败({exc}),整图兜底", flush=True)
+        log.error(f"三视图切格失败({exc}),整图兜底")
         return ta
 
 
@@ -1142,15 +1143,15 @@ def sync_assets(drama_id: int,
                                      swap_cfg_id=_selected_swap_cfg())
             except Exception as exc:  # noqa: BLE001
                 swapped = False
-                print(f"[clone] 三视图换脸失败({exc}),保留生成底图,"
-                      f"可在界面点「手动换脸」重试", flush=True)
+                log.error(f"三视图换脸失败({exc}),保留生成底图,"
+                      f"可在界面点「手动换脸」重试")
             clone["turnaround_image"] = str(ta)
             clone["turnaround_swapped"] = swapped
             clone["clone_turnaround_at"] = ts
-            print(f"[clone] 人物三视图已生成(换脸{'成功' if swapped else '失败'}):"
-                  f"{Path(str(ta)).name}", flush=True)
+            log.error(f"人物三视图已生成(换脸{'成功' if swapped else '失败'}):"
+                  f"{Path(str(ta)).name}")
         except Exception as exc:  # noqa: BLE001
-            print(f"[clone] 三视图生成失败({exc})", flush=True)
+            log.error(f"三视图生成失败({exc})")
     # 资产图两列都写**三视图整张**。image_url 曾写「三视图切出的单人立绘」,
     # 用户已定版废弃单人全身展示(实测:重建后角色资产页变成单人全身,被质疑
     # 「早就不用了为什么还弹」)。切格立绘只在管线内部由 standing_ref_of 即时
@@ -1180,7 +1181,7 @@ def sync_assets(drama_id: int,
                    "prompt": clone.get("scene_prompt") or "",
                    "lighting": clone.get("scene_lighting") or "",
                    "created_at": ts}, id_key="scene_asset_id")
-    print(f"[clone] 资产已同步:出镜人物={cid} 主推产品={pid} 场景={sid}", flush=True)
+    log.info(f"资产已同步:出镜人物={cid} 主推产品={pid} 场景={sid}")
     # 必须写回 meta:三视图路径、场景图等只改了局部 clone 字典,调用方
     # (analyze_reference)拿的是自己那份引用,不会自动落库 —— 实测生成了
     # clone_turnaround.png 但 DB 里 turnaround_image 仍是空,等于白生成。
@@ -1219,7 +1220,7 @@ def _residual_by_llm(rewritten: list[dict], product_desc: str,
         d = runner.extract_json(raw) or {}
         return str(d.get("residual") or "").strip()
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 残留检测调用失败({exc}),按无残留放行", flush=True)
+        log.error(f"残留检测调用失败({exc}),按无残留放行")
         return ""
 
 
@@ -1415,7 +1416,7 @@ def analyze_reference(drama_id: int, extra_hint: str = "", config_id: int | None
         if sid:
             clone["scene_asset_id"] = sid
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 资产同步失败({exc}),退回 metadata 原图", flush=True)
+        log.error(f"资产同步失败({exc}),退回 metadata 原图")
     meta["clone"] = clone
     _save_meta(drama_id, meta)
     # 场景锚:分析阶段就从原视频提取(挑帧→环境描述→空景图),第一镜生成时
@@ -1440,7 +1441,7 @@ def prepare_presenter(drama_id: int, style_value: str, config_id: int | None = N
     clone = meta.get("clone", {})
     user_uploaded = _resolve_local(clone.get("presenter_uploaded") or clone.get("presenter_src"))
     if user_uploaded:
-        print("[clone] 已上传出镜照,跳过 AI 生成模特(不覆盖用户素材)", flush=True)
+        log.info("已上传出镜照,跳过 AI 生成模特(不覆盖用户素材)")
         return str(user_uploaded)
     prompt_prefix = db.style_prompt(style_value)
     prompt = (f"{prompt_prefix}, 单人全身模特形象参考图,正面站姿,纯白背景,柔和影棚光, "
@@ -1576,14 +1577,14 @@ def _erase_subjects_from_frame(frame: Path, out: Path,
                 mask = np.zeros((h, w), np.uint8)
             mask[y1:y2, x1:x2] = 255
         if mask is None:
-            print("[clone] 场景帧未定位到商品/人物区域,保留原帧", flush=True)
+            log.info("场景帧未定位到商品/人物区域,保留原帧")
             return False
         cleaned = cv2.inpaint(img, mask, 6, cv2.INPAINT_TELEA)
         out.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(out), cleaned)
         return True
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 原产品抹除失败({str(exc)[:140]}),保留原帧", flush=True)
+        log.error(f"原产品抹除失败({str(exc)[:140]}),保留原帧")
         return False
 
 
@@ -1630,7 +1631,7 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
         lighting = str(d.get("lighting") or "").strip()
         prompt = str(d.get("prompt") or "").strip()
         if not prompt:
-            print("[clone] 场景描述为空,跳过场景锚提取", flush=True)
+            log.info("场景描述为空,跳过场景锚提取")
             return False
         _drow = db.q1("SELECT style FROM dramas WHERE id=?", (drama_id,))
         style = db.style_prompt((_drow["style"] if _drow else "") or "")
@@ -1698,7 +1699,7 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             if _erase_subjects_from_frame(cand, _nosubj,
                                           text_cfg_id=text_cfg_id):
                 _ref_frame = _nosubj
-                print(f"[clone] 场景帧已抹除商品/人物: {_nosubj.name}", flush=True)
+                log.info(f"场景帧已抹除商品/人物: {_nosubj.name}")
             clean = False
             if on_stage:
                 on_stage(f"生成空景(候选帧 {cand.name},{len(candidates)} 选第 {_i2} 组)…")
@@ -1715,13 +1716,12 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
                     if attempt == 3:
                         raise
                     import time as _t
-                    print(f"[clone] 场景锚生图第{attempt}次失败({str(exc)[:120]}),"
-                          "3 秒后重试", flush=True)
+                    log.error(f"场景锚生图第{attempt}次失败({str(exc)[:120]}),"
+                          "3 秒后重试")
                     _t.sleep(3)
                     continue
                 if _scene_dirty(out):
-                    print(f"[clone] 空景图第{attempt}次仍有人体/商品残留",
-                          flush=True)
+                    log.info(f"空景图第{attempt}次仍有人体/商品残留")
                     continue
                 clean = True
                 break
@@ -1729,8 +1729,7 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
                 used = _ref_frame
                 clean_any = True
                 break
-            print(f"[clone] 帧 {cand.name} 连续 3 次生成不干净,换下一候选帧",
-                  flush=True)
+            log.info(f"帧 {cand.name} 连续 3 次生成不干净,换下一候选帧")
         if not clean_any:
             # ── 最终兜底:纯文字空景(2026-10-28 实测补)──
             # 带货视频可能**没有一帧是干净的**(全片人物+商品在画),参考帧再
@@ -1738,8 +1737,7 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             # 底帧抹干净了,成图口红照在)。甩掉参考帧纯文字生成:没有参考就
             # 没有可照抄的内容,原产品必然消失;代价是机位不再严格对齐原片
             # (干净 > 对齐)。
-            print("[clone] 候选帧全部失败 → 退回纯文字空景(不带参考帧)",
-                  flush=True)
+            log.error("候选帧全部失败 → 退回纯文字空景(不带参考帧)")
             if on_stage:
                 on_stage("候选帧全不干净,退回纯文字生成…")
             _txt_body = ("An empty establishing shot of this location, wide view: "
@@ -1757,19 +1755,17 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
                     if attempt == 2:
                         raise
                     import time as _t
-                    print(f"[clone] 纯文字空景第{attempt}次失败({str(exc)[:120]}),"
-                          "3 秒后重试", flush=True)
+                    log.error(f"纯文字空景第{attempt}次失败({str(exc)[:120]}),"
+                          "3 秒后重试")
                     _t.sleep(3)
                     continue
                 if not _scene_dirty(out):
                     clean_any = True
                     used = None
                     break
-                print(f"[clone] 纯文字空景第{attempt}次仍有人体/商品残留",
-                      flush=True)
+                log.info(f"纯文字空景第{attempt}次仍有人体/商品残留")
             if not clean_any:
-                print("[clone] ⚠ 空景图多轮尝试仍有人体/商品残留,保留最后一张",
-                      flush=True)
+                log.warning("⚠ 空景图多轮尝试仍有人体/商品残留,保留最后一张")
         # 转正规则:只有通过内容门的候选才覆盖正式场景图;全失败时**保留上一张
         # 场景图**(旧图再旧也干净,好过带人的新图毒化每镜)。
         if clean_any:
@@ -1782,7 +1778,7 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
             _prev = _resolve_local(clone.get("scene_image"))
             if _prev:
                 out = _prev
-                print(f"[clone] 保留原场景图(候选全不合格): {_prev.name}", flush=True)
+                log.info(f"保留原场景图(候选全不合格): {_prev.name}")
         pick = used
         clone["scene_image"] = str(out)
         clone["scene_location"] = location
@@ -1797,12 +1793,11 @@ def extract_scene_anchor(drama_id: int, config_id: int | None = None,
         meta = _meta(drama_id)
         meta["clone"] = clone
         _save_meta(drama_id, meta)
-        print(f"[clone] 场景锚已从原视频提取:"
-              f"{pick.name if pick else '纯文字兜底'} → 空景图 {out.name}",
-              flush=True)
+        log.info(f"场景锚已从原视频提取:"
+              f"{pick.name if pick else '纯文字兜底'} → 空景图 {out.name}")
         return True
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 场景锚提取失败({exc}),退回纯文字锚", flush=True)
+        log.error(f"场景锚提取失败({exc}),退回纯文字锚")
         return False
 
 
@@ -2001,7 +1996,7 @@ def _count_people_in_image(path, config_id: int | None = None) -> int | None:
         data = runner.extract_json(raw) or {}
         return int(data.get("people") or 0)
     except Exception as exc:  # noqa: BLE001
-        print(f"[clone] 人数自检跳过({exc})", flush=True)
+        log.info(f"人数自检跳过({exc})")
         return None
 
 
@@ -2038,14 +2033,13 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                                       config_id=_selected_text_cfg())
         except Exception as exc:  # noqa: BLE001
             _pd = None
-            print(f"[clone] 人物描述惰性提取失败({exc}),本镜用兜底描述", flush=True)
+            log.error(f"人物描述惰性提取失败({exc}),本镜用兜底描述")
         if _pd and _pd.get("appearance"):
             clone["presenter_desc"] = _pd["appearance"]
             clone.pop("presenter_styling", None)   # 出镜照不提供服装描述(用户要求)
             meta["clone"] = clone
             _save_meta(drama_id, meta)
-            print(f"[clone] 人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字",
-                  flush=True)
+            log.info(f"人物文字锚已补齐:外观 {len(clone['presenter_desc'])} 字")
         presenter_desc = clone.get("presenter_desc") or presenter_desc
     # ── 服装文字锚(数据驱动,纯读不补写)──
     # characters.styling 是短剧同款的妆造字段;复刻项目此前被「出镜照不提供
@@ -2061,8 +2055,7 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             if _prow0 and (_prow0["styling"] or "").strip():
                 _presenter_style_text = " ".join(_prow0["styling"].split())[:80]
         except Exception as exc:  # noqa: BLE001
-            print(f"[clone] 服装锚读取失败,本镜无服装文字锚({str(exc)[:120]})",
-                  flush=True)
+            log.error(f"服装锚读取失败,本镜无服装文字锚({str(exc)[:120]})")
     # ── 参考图:1 张主图 + 最多 4 张参考图,靠**名字**在提示词里关联 ──
     #
     # 官方能力(agnes-image-25-flash 文档):`image` 是 string[],明确支持
@@ -2179,8 +2172,8 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     if not refs:                       # 主图缺失 → 退回另一类资产,再退回空
         refs = [p for p in (_asset_img("presenter"), _asset_img("product"))
                 if p][:1]
-    print(f"[clone] 分镜#{board_number} 景别={_shot_kind or '未标'} "
-          f"主图={main_kind} 参考图={len(refs)}张", flush=True)
+    log.info(f"分镜#{board_number} 景别={_shot_kind or '未标'} "
+          f"主图={main_kind} 参考图={len(refs)}张")
     # B) 一致性校验:**只报不补**。提示词里描述了人物却只给了产品参照(反之亦然),
     # 模型会自己补一个不存在的人 → 双重人像(实测:中景人物镜配了产品图,
     # 产出"一个人 + 一个半透明重影")。自动补第二张图又会踩"双图对称融合"的坑,
@@ -2194,8 +2187,8 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     if any(w in _shot_kind for w in ("特写", "微距")) and             not _shot_mentions_face(_shot_text):
         _has_person_words = False
     if _has_person_words and main_kind != "presenter":
-        print(f"[clone] ⚠ 分镜#{board_number} 提示词描述了人物,但主图是产品参考图"
-              f"(景别={_shot_kind or '未标'}),可能出现多余人物。", flush=True)
+        log.warning(f"⚠ 分镜#{board_number} 提示词描述了人物,但主图是产品参考图"
+              f"(景别={_shot_kind or '未标'}),可能出现多余人物。")
     has_product_ref = bool(_asset_img("product"))
     has_presenter_ref = bool(_asset_img("presenter"))
     # 一致性约束必须**逐项点名**具体锁定对象,不能只说「必须与参考图一致」。
@@ -2324,7 +2317,7 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
     # 模型看不到「白色纸盒」「口红」,于是 6 镜全画成同一张「沙发上女性」插画
     # (实测:提示词两两差异很大,出的图却几乎一样)。这就是根因。
     if len(core) > SHOT_PROMPT_MAX_CHARS:
-        print(f"[clone] 分镜#{board_number} 内容超 {SHOT_PROMPT_MAX_CHARS} 字,已截断", flush=True)
+        log.info(f"分镜#{board_number} 内容超 {SHOT_PROMPT_MAX_CHARS} 字,已截断")
         core = core[:SHOT_PROMPT_MAX_CHARS]
     # ── 参考图分工 + 身份锁定块(移植短剧首帧 shot_tools.generate_first_frame
     # 的做法 —— 用户实测短剧分镜没有发型/服装/陈设漂移,让复刻照抄):在提示词
@@ -2416,8 +2409,8 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             if attempt == 2:
                 raise
             import time as _t
-            print(f"[clone] 分镜#{board_number} 生图第{attempt}次失败"
-                  f"({str(exc)[:120]}),3 秒后重试", flush=True)
+            log.error(f"分镜#{board_number} 生图第{attempt}次失败"
+                  f"({str(exc)[:120]}),3 秒后重试")
             _t.sleep(3)
     # 记录首帧
     for x in boards:
@@ -2434,8 +2427,8 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
             _vcfg = _selected_text_cfg()
             n = _count_people_in_image(out, config_id=_vcfg)
             if n is not None and n > 1:
-                print(f"[clone] 分镜#{board_number} 人数自检={n},与单人物规则冲突,"
-                      f"自动重绘(最多再试 2 次)", flush=True)
+                log.info(f"分镜#{board_number} 人数自检={n},与单人物规则冲突,"
+                      f"自动重绘(最多再试 2 次)")
                 # 实测 agnes 对某些镜**连续**出双人(一次重试不够):最多再生成
                 # 2 次,数人头取最优;全不合格保留人数最少的一张,日志如实记录。
                 best, best_n = out, n
@@ -2454,11 +2447,10 @@ def generate_shot_image(drama_id: int, board_number: int, style_value: str,
                         break
                 out = best
                 if best_n > 1:
-                    print(f"[clone] 分镜#{board_number} 重绘后人数仍={best_n},"
-                          f"已选人数最少的一张;建议改写该镜分镜描述或换生图模型",
-                          flush=True)
+                    log.info(f"分镜#{board_number} 重绘后人数仍={best_n},"
+                          f"已选人数最少的一张;建议改写该镜分镜描述或换生图模型")
         except Exception as exc:  # noqa: BLE001
-            print(f"[clone] 人数自检失败({exc}),跳过", flush=True)
+            log.error(f"人数自检失败({exc}),跳过")
     # 场景锚不再在这里固化:旧实现拿首镜生成图当 scene_image(图里带人,当参考
     # 会抄出第二人)、scene_prompt 硬编码一句与原片无关的描述。现在锚在**分析
     # 阶段**就从原视频提取(见 extract_scene_anchor),首镜同样享受场景参考。
@@ -2603,7 +2595,7 @@ def synth_shot_narration(drama_id: int, board_number: int) -> Path:
             if op.exists() and op != Path(p):
                 op.unlink()
         except OSError as exc:
-            print(f"[clone] 旧旁白音频删除失败({exc})", flush=True)
+            log.error(f"旧旁白音频删除失败({exc})")
     return p
 
 
@@ -2661,7 +2653,7 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
             ref_w, ref_h = merge_mod._majority_size(shots)
             intro = _intro.build_intro_spec(drama_id, ref_w=ref_w, ref_h=ref_h)
         except Exception as exc:  # noqa: BLE001
-            print(f"[clone] 片头配置异常({exc}),本次合并不带片头", flush=True)
+            log.error(f"片头配置异常({exc}),本次合并不带片头")
             intro = None
     # **无条件走统一参数拼接**:音频归一 + 可选片头(标题卡前置/文字叠加)
     #
@@ -2688,7 +2680,7 @@ def merge_clone(drama_id: int, out: str | Path | None = None, progress=None) -> 
                 try:
                     f.unlink()
                 except OSError as exc:
-                    print(f"[clone] 旧成片删除失败({exc}): {f}", flush=True)
+                    log.error(f"旧成片删除失败({exc}): {f}")
     clone["merges"] = merges[:8]
     meta["clone"] = clone
     _save_meta(drama_id, meta)
@@ -2713,7 +2705,7 @@ def delete_clone_merge(drama_id: int, path: str) -> int:
                 try:
                     f.unlink()
                 except OSError as exc:
-                    print(f"[clone] 成片文件删除失败({exc}): {f}", flush=True)
+                    log.error(f"成片文件删除失败({exc}): {f}")
     clone["merges"] = kept
     meta["clone"] = clone
     _save_meta(drama_id, meta)

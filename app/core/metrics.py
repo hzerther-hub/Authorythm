@@ -210,3 +210,44 @@ NAMING_HINT = {
     "novel": "novel.chapter.{event} / novel.review.{event}",
     "video_clone": "video_clone.shot.{event} / video_clone.merge.{event}",
 }
+
+
+def observed_client(kind: str):
+    """给 AI 客户端入口挂 metrics 埋点(延迟 + 成败 + provider 维度)。
+
+    用法:
+        @observed_client("image")
+        def generate_image(...) -> tuple[Path, str]: ...
+
+    埋点:
+        ai.{kind}.completed / ai.{kind}.failed
+        ai.{kind}.{provider}.completed      (返回值是 (结果, provider) 元组时)
+        ai.{kind}.latency_ms
+
+    为什么放 core 而不是 ai:core 是最底层,ai → core 是允许的方向;
+    放在 core 才能让三个客户端共用同一套埋点口径。
+    装饰器用 functools.wraps 保留原签名 —— mypy 仍能看到真实类型。
+    """
+    import functools
+    import time
+
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            t0 = time.perf_counter()
+            try:
+                result = fn(*args, **kwargs)
+            except Exception:
+                incr(f"ai.{kind}.failed")
+                observe(f"ai.{kind}.latency_ms", int((time.perf_counter() - t0) * 1000))
+                raise
+            provider = ""
+            if isinstance(result, tuple) and len(result) >= 2:
+                provider = str(result[1] or "")
+            if provider:
+                incr(f"ai.{kind}.{provider}.completed")
+            incr(f"ai.{kind}.completed")
+            observe(f"ai.{kind}.latency_ms", int((time.perf_counter() - t0) * 1000))
+            return result
+        return wrapper
+    return deco

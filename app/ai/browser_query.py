@@ -20,6 +20,10 @@ import os
 import threading
 import time
 
+from ..core.logging_setup import get_logger
+
+log = get_logger(__name__)
+
 # jev-ultrafast 的 model.py 直接读进程环境变量;Agent 跑在 worker 线程里,
 # 改 env 是进程级操作,加锁避免与其它线程的 LLM 调用互相踩
 _ENV_LOCK = threading.Lock()
@@ -151,7 +155,7 @@ def _run_once(goal: str, url: str, max_seconds: int) -> dict | None:
             steps += 1
             status = snap.get("status") or status
             if time.monotonic() - started > max_seconds:
-                print(f"[browser_query] 超时({max_seconds}s),取半程结果", flush=True)
+                log.info(f"[browser_query] 超时({max_seconds}s),取半程结果")
                 break
         final_url = ""
         with contextlib.suppress(Exception):
@@ -189,7 +193,7 @@ def query(goal: str, url: str, max_seconds: int = _MAX_SECONDS) -> dict | None:
         return None
     ok, reason = available()
     if not ok:
-        print(f"[browser_query] 不可用:{reason}", flush=True)
+        log.info(f"[browser_query] 不可用:{reason}")
         return None
     with _ENV_LOCK:
         last_exc = None
@@ -201,9 +205,7 @@ def query(goal: str, url: str, max_seconds: int = _MAX_SECONDS) -> dict | None:
                 return _run_once(goal, url, max_seconds)
             except Exception as exc:  # noqa: BLE001 —— Chrome 没连/harness 挂/网络,全兜
                 last_exc = exc
-                print(f"[browser_query] 第 {attempt} 次失败:{str(exc)[:160]}",
-                      flush=True)
+                log.error(f"[browser_query] 第 {attempt} 次失败:{str(exc)[:160]}")
                 os.environ.pop("BU_CDP_WS", None)   # 强制下一轮重拉 Chrome
-        print(f"[browser_query] 两次均失败,落回网页搜索:{str(last_exc)[:120]}",
-              flush=True)
+        log.error(f"[browser_query] 两次均失败,落回网页搜索:{str(last_exc)[:120]}")
         return None

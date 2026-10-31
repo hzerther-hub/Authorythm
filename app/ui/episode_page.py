@@ -46,6 +46,7 @@ from ..ai import image_client, registry, tts_client, video_client
 from ..ai.jev_gate import JevBreaker
 from ..core import config, db
 from ..core.i18n import tr
+from ..core.logging_setup import get_logger
 from ..core.taskmgr import TASKMGR
 from ..core.theme import (
     SLATE_ASSET_QSS,
@@ -66,6 +67,8 @@ from .braille import WaitingButton
 from .confirm import ask
 from .project_page import _chapter_name_missing
 from .toast import err, info, ok, warn
+
+log = get_logger(__name__)
 
 STEPS = ["raw", "rewrite", "assets", "storyboard", "comic", "export"]
 STEP_LABELS = {"raw": "raw_content", "rewrite": "ai_rewrite", "assets": "production",
@@ -5819,7 +5822,7 @@ class EpisodePage(QWidget):
 
     def _one_tts_selected(self):
         # 没选中分镜时此前是静默返回 —— 点了毫无反应,用户以为按钮坏了(实测)
-        print(f"[tts] 点击合成配音 sb={self._sb_id}", flush=True)
+        log.info(f"点击合成配音 sb={self._sb_id}")
         if self._gen_blocked("tts", "配音"):
             return
         if not self._sb_id:
@@ -5827,9 +5830,9 @@ class EpisodePage(QWidget):
             return
         try:
             self._one_tts(self._sb_id)
-            print(f"[tts] TTS 任务已提交 sb={self._sb_id}", flush=True)
+            log.info(f"TTS 任务已提交 sb={self._sb_id}")
         except Exception as exc:  # noqa: BLE001 —— 提交前的崩溃此前全部静默
-            print(f"[tts] 提交失败: {exc}", flush=True)
+            log.error(f"提交失败: {exc}")
             err(f"合成配音无法开始:{str(exc)[:200]}")
 
     def _ai_sb_prompt(self):
@@ -6561,7 +6564,7 @@ class EpisodePage(QWidget):
             _err(f"批量视频无法开始:{str(exc)[:200]}")
 
     def _batch_video_impl(self):
-        print("[batch_video] 进入批量流程", flush=True)
+        log.info("[batch_video] 进入批量流程")
         if self._gen_blocked("video", "视频"):
             return
         all_ids = [dict(r) for r in db.q(
@@ -6613,7 +6616,7 @@ class EpisodePage(QWidget):
             QMessageBox.information(self, tr("batch_video"), tr("全部镜头已有视频"))
             return
         rows = ids
-        print(f"[batch_video] 选定 {len(rows)} 镜: {rows}", flush=True)
+        log.info(f"[batch_video] 选定 {len(rows)} 镜: {rows}")
         # 二次确认:镜头数 / 总时长 / 模型 / 分辨率(对齐原版)
         marks = ",".join("?" * len(ids))
         total = db.q1(f"SELECT COALESCE(SUM(duration),0) s FROM storyboards WHERE id IN ({marks})",
@@ -6650,11 +6653,11 @@ class EpisodePage(QWidget):
                 if i:
                     _time.sleep(3)
                 _TM.set_stage(tid, f"{i + 1}/{len(rows)}")   # 任务面板显示进行到第几镜
-                print(f"[batch_video] 开始第 {i + 1}/{len(rows)} 镜 sb={sb_id}", flush=True)
+                log.info(f"[batch_video] 开始第 {i + 1}/{len(rows)} 镜 sb={sb_id}")
                 try:
                     self._gen_one_video(sb_id, res=snap_res, config_id=snap_cfg,
                                         image_cfg=snap_img)
-                    print(f"[batch_video] 第 {i + 1} 镜完成 sb={sb_id}", flush=True)
+                    log.info(f"[batch_video] 第 {i + 1} 镜完成 sb={sb_id}")
                     done_n += 1
                 except Exception as exc:  # noqa: BLE001
                     msg = str(exc).replace("\n", " ")[:120]
@@ -6687,7 +6690,7 @@ class EpisodePage(QWidget):
         if btn:
             btn.busy(tr("in_progress"))
         tid = TASKMGR.submit("video", job, done, episode_id=self.episode_id, drama_id=self.drama_id)
-        print(f"[batch_video] 任务已提交 tid={tid}(tid=0 表示就绪校验没过)", flush=True)
+        log.info(f"[batch_video] 任务已提交 tid={tid}(tid=0 表示就绪校验没过)")
         # 批量心跳:任务行/统计胶囊/按钮进度每 2.5s 同步一次(不用等全部跑完),
         # 当前正在生成的行会转圈,一眼看出进行到哪一镜
         if tid:
@@ -7120,7 +7123,7 @@ class EpisodePage(QWidget):
             try:
                 similar_by_panel = comic_pipe.panel_similar_pairs(self.episode_id)
             except Exception as e:  # noqa: BLE001
-                print(f"[comic] panel_similar_pairs 失败(忽略警告):{e}", flush=True)
+                log.warning(f"panel_similar_pairs 失败(忽略警告):{e}")
                 similar_by_panel = {}
         busy_ids = getattr(self, "_comic_busy", set())
         for i, r in enumerate(rows):

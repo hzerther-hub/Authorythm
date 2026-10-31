@@ -23,6 +23,9 @@ import json
 
 from ..agents import prompts, runner
 from ..core import db
+from ..core.logging_setup import get_logger
+
+log = get_logger(__name__)
 
 # 硬下限。appearance 取 extractor.md 的 150 字口径;styling 原文没给数字,
 # 但要求「逐件列出服装 + 颜色 + 材质 + 穿着方式 + 配饰 + 使用痕迹」,80 字是
@@ -167,7 +170,7 @@ def expand_many(characters, *, config_id: int | None = None,
     try:
         fixed = _repair(todo, config_id=config_id, lang=lang)
     except Exception as exc:  # noqa: BLE001  补写是增强,失败不能拖垮提取/策划
-        print(f"[character_spec] 补写失败,保留原值: {str(exc)[:160]}", flush=True)
+        log.error(f"[character_spec] 补写失败,保留原值: {str(exc)[:160]}")
         return chars
     by_name = {str(c.get("name") or "").strip(): c for c in fixed}
     changed: list[dict] = []
@@ -182,8 +185,8 @@ def expand_many(characters, *, config_id: int | None = None,
             if new and len(new) >= len(old):
                 c[key] = new
         if needs_work(c):
-            print(f"[character_spec] 仍不达标: {c.get('name')} "
-                  f"{audit(c.get('appearance'), c.get('styling'))}", flush=True)
+            log.info(f"[character_spec] 仍不达标: {c.get('name')} "
+                  f"{audit(c.get('appearance'), c.get('styling'))}")
         else:
             changed.append(c)
     if persist and drama_id and changed:
@@ -220,5 +223,5 @@ def ensure_for_prompt(row, *, config_id: int | None = None,
         return (str(got.get("appearance") or ap).strip(),
                 str(got.get("styling") or st).strip())
     except Exception as exc:  # noqa: BLE001
-        print(f"[character_spec] 出图前补写失败,用原值: {str(exc)[:160]}", flush=True)
+        log.error(f"[character_spec] 出图前补写失败,用原值: {str(exc)[:160]}")
         return ap, st

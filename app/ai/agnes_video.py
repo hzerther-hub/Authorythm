@@ -25,7 +25,10 @@ from urllib.parse import urlencode, urlparse
 
 import requests
 
+from ..core.logging_setup import get_logger
 from .text_client import AIError
+
+log = get_logger(__name__)
 
 
 def _utf8_text(resp, limit: int = 400) -> str:
@@ -101,7 +104,7 @@ def effective_size(model: str, resolution: str | None) -> str:
         raw = (resolution or "").strip()
         tier = tiers[0]
         if raw:
-            print(f"[agnes] size={raw!r} 对 {model} 不可用,按 {tier} 下发", flush=True)
+            log.info(f"size={raw!r} 对 {model} 不可用,按 {tier} 下发")
     return tier
 
 # 轮询需要 model_name,而创建响应只回 taskId —— 创建时把 model 编码进 taskId
@@ -447,7 +450,7 @@ def generate_agnes(cfg: dict, base: str, headers: dict, *, prompt: str,
     ratio, ratio_note = normalize_aspect_ratio(
         aspect_ratio, size, first_frame=inline_first, data_url_reader=_ratio_reader)
     if ratio_note:
-        print(f"[agnes] {ratio_note}", flush=True)
+        log.info(f"{ratio_note}")
 
     body = build_generate_body(
         cfg, prompt=prompt, resolution=resolution, duration=duration,

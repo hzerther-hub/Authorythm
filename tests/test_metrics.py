@@ -88,3 +88,60 @@ def test_observe_caps_at_2000_samples():
     assert snap["timers"]["test.burst"]["count"] == 2000
     # max 应该是 2999(最新)
     assert snap["timers"]["test.burst"]["max"] == 2999.0
+
+
+# ── observed_client 装饰器(AI 客户端埋点口径)─────────────────────────────
+
+def test_observed_client_success_path():
+    """成功:记 ai.{kind}.completed + ai.{kind}.{provider}.completed + 延迟。"""
+    from app.core.metrics import observed_client
+
+    @observed_client("demo")
+    def ok(a, b=1):
+        return "out", "prov-x"
+
+    metrics.reset()
+    assert ok(1, b=2) == ("out", "prov-x")
+    snap = metrics.snapshot()
+    assert snap["counters"]["ai.demo.completed"] == 1
+    assert snap["counters"]["ai.demo.prov-x.completed"] == 1
+    assert "ai.demo.latency_ms" in snap["timers"]
+
+
+def test_observed_client_failure_path():
+    """失败:记 ai.{kind}.failed 并**原样抛出**(不能吞异常)。"""
+    from app.core.metrics import observed_client
+
+    @observed_client("demo")
+    def bad(a):
+        raise RuntimeError("boom")
+
+    metrics.reset()
+    with pytest.raises(RuntimeError, match="boom"):
+        bad(1)
+    snap = metrics.snapshot()
+    assert snap["counters"]["ai.demo.failed"] == 1
+    assert "ai.demo.completed" not in snap["counters"]
+    # 失败路径也要记延迟
+    assert "ai.demo.latency_ms" in snap["timers"]
+
+
+def test_observed_client_preserves_signature():
+    """functools.wraps 保留原签名 —— mypy 仍能看到真实类型,调用方不受影响。"""
+    from app.core.metrics import observed_client
+
+    @observed_client("demo")
+    def fn(prompt: str, size: str | None = None) -> tuple[str, str]:
+        return prompt, size or ""
+
+    assert fn.__name__ == "fn"
+    assert fn("hi") == ("hi", "")
+
+
+def test_three_ai_clients_are_instrumented():
+    """image / video / tts 三个主入口都挂上了埋点装饰器。"""
+    from app.ai import image_client, tts_client, video_client
+
+    for fn in (image_client.generate_image, video_client.generate_video,
+               tts_client.synthesize):
+        assert hasattr(fn, "__wrapped__"), f"{fn} 未挂 observed_client"

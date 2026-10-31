@@ -23,10 +23,13 @@ from PySide6.QtWidgets import (
 
 from ..core import db
 from ..core.i18n import tr
+from ..core.logging_setup import get_logger
 from ..core.taskmgr import TASKMGR, short_error
 from . import widgets as W
 from .braille import WaitingButton
 from .toast import err, ok, warn
+
+log = get_logger(__name__)
 
 # 策划板块的生成顺序与前置依赖
 # 顺序同参考项目向导:项目设定 → 总纲 → 世界观 → 故事合约 → 分卷战略 → 章节计划 → 主要角色
@@ -914,7 +917,7 @@ class NovelPlanDialog(QDialog):
             def _log(line: str):
                 # 控制台永远留痕:UI 更新若因事件循环繁忙而丢失,
                 # 控制台这一行仍在,排查时不至于完全无线索。
-                print(f"[novel][分卷] {line}", flush=True)
+                log.info(f"[分卷] {line}")
                 cur = editor.textCursor()
                 cur.movePosition(cur.MoveOperation.End)
                 cur.insertText(line + "\n")
@@ -936,7 +939,7 @@ class NovelPlanDialog(QDialog):
                         on_progress=on_prog, on_stage=_log)
                 except Exception as exc:  # noqa: BLE001
                     import traceback
-                    print(f"[novel] 分卷起草异常: {exc}", flush=True)
+                    log.error(f"分卷起草异常: {exc}")
                     traceback.print_exc()
                     _log(tr('{}起草失败:{}').format(name, str(exc)[:160]))
                     failed(tr('{}起草失败:{}').format(name, str(exc)[:160]))

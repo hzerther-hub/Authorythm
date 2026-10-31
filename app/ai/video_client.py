@@ -11,6 +11,7 @@ from pathlib import Path
 import requests
 
 from ..core import config
+from ..core.metrics import observed_client
 from . import registry
 from .text_client import AIError
 
@@ -278,6 +279,7 @@ def suggest_video_config(visual_need: str) -> tuple[int, dict, bool] | None:
         return None
 
 
+@observed_client("video")
 def generate_video(prompt: str, resolution: str = "720p", duration: int | None = None,
                    first_frame: str | None = None, config_id: int | None = None,
                    reference_images: list[str] | None = None,
