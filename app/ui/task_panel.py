@@ -54,6 +54,7 @@ TASK_TYPE_LABEL = {
     "clone_script": "克隆 · 重写镜头脚本",
     "clone_prompt": "克隆 · AI 生成视频提示词",
     "tts": "配音 · 合成旁白",
+    "book_settings": "整书导入 · 生成小说设定",
     "clone_redraw_all": "克隆 · 一键重绘",
     "clone_merge": "克隆 · 合并成片",
 }

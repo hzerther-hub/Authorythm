@@ -314,11 +314,15 @@ UI_FONT_CANDIDATES = [
 
 
 def load_bundled_fonts(app) -> list[str]:
-    """注册 assets/fonts/ 下的打包字体(片头标题卡用);返回已注册 family。"""
-    from pathlib import Path
+    """注册 assets/fonts/ 下的打包字体(片头标题卡用);返回已注册 family。
 
+    资源目录走 `config.assets_dir()` —— 打包后从 PyInstaller 解包目录读。
+    """
     from PySide6.QtGui import QFontDatabase
-    fonts_dir = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+
+    from . import config
+
+    fonts_dir = config.assets_dir() / "fonts"
     families: list[str] = []
     if fonts_dir.exists():
         for f in sorted(fonts_dir.glob("*")):

@@ -1748,8 +1748,10 @@ class EpisodePage(QWidget):
         cid = cid.currentData() if cid is not None else None
 
         def job(tid):
+            # persist=False:不直接落库,把原稿/改稿交回逐段对比合并视图
             return novel_pipe.convert_chapter_to_prose(
-                self.episode_id, config_id=cid, lang=getattr(self, "_drama_lang", None))
+                self.episode_id, config_id=cid,
+                lang=getattr(self, "_drama_lang", None), persist=False)
 
         def done(tid, result, error):
             if btn is not None:
@@ -1761,12 +1763,28 @@ class EpisodePage(QWidget):
             if not r.get("converted"):
                 info(tr("本章已是小说体,无需改造"))
                 return
-            self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
-            self.raw_edit.setPlainText(self._ep["content"] or "")
-            ok(tr("已改写成小说体({}→{} 字),请通读检查后保存").format(
-                r.get("before", 0), r.get("after", 0)))
-            self._update_prose_label()
-            self._reload_raw()
+            # 逐段对比选版本(学 Pagekin MergeView):每处改动由用户拍板
+            # 原稿/改稿,底部可手动编辑,确认才写回(不再整章静默覆盖)。
+            from .prose_merge_dialog import ProseMergeDialog
+
+            def _save(merged: str):
+                from ..pipeline import novel as _np
+                _np.snapshot_chapters_git(self.drama_id, "小说体改造 前")
+                title_line = r.get("title_line") or ""
+                new_text = (title_line + merged) if title_line else merged
+                db.ex("UPDATE episodes SET content=?, updated_at=? WHERE id=?",
+                      (new_text, db.now(), self.episode_id))
+                _np._bump_prose_count(self.episode_id)
+                self._ep = db.q1("SELECT * FROM episodes WHERE id=?", (self.episode_id,))
+                self.raw_edit.setPlainText(new_text)
+                ok(tr("已按逐段选择合并并保存({}→{} 字)").format(
+                    r.get("before", 0), len(merged)))
+                self._update_prose_label()
+                self._reload_raw()
+
+            dlg = ProseMergeDialog(self, r.get("original") or "",
+                                   r.get("revised") or "", _save)
+            dlg.exec()
 
         TASKMGR.submit("novel_edit", job, done,
                        episode_id=self.episode_id, drama_id=self.drama_id)

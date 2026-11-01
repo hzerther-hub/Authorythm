@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -35,6 +36,13 @@ def tmp_db(tmp_path, monkeypatch):
     if conn is not None:
         conn.close()
         db._local.conn = None
+
+
+@pytest.fixture
+def qapp():
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([])
 
 
 def _mk_drama(work_type: str = "novel") -> int:
@@ -348,3 +356,153 @@ def test_generate_book_meta_samples_first_three_chapters(tmp_db, monkeypatch):
     bi.generate_book_meta(drama_id)
     assert "MARK1" in got["prompt"]
     assert "MARK2" in got["prompt"] and "MARK3" in got["prompt"]
+
+
+# ── 导入书的设定补齐(照原书总结,与仿写是两条路)────────────────────────
+
+_BOOK_SETTINGS_JSON = json.dumps({
+    "genre": "都市重生",
+    "description": "落魄主厨重生回灶台前,靠一手爆炒翻盘。",
+    "world": {"text": "现代都市,餐饮江湖。",
+              "structured": {"era": "当代", "location": "江城美食街",
+                             "power_system": "厨艺",
+                             "factions": [{"name": "鼎香楼", "desc": "老字号"}],
+                             "note": ""}},
+    "contract": {"text": "第三人称限知,每章 2000-2600 字。",
+                 "structured": {"pov": "third_limited",
+                                "tones": ["烟火气", "爽感"],
+                                "rules": ["不写内心独白", "每章一个冲突"],
+                                "word_range": [2000, 2600], "note": ""}},
+    "characters": [{"name": "陈灶", "identity": "主厨",
+                    "personality": "倔", "arc": "重开老店"}],
+}, ensure_ascii=False)
+
+
+def _done_analysis(drama_id: int) -> None:
+    db.ex("UPDATE dramas SET novel_meta=? WHERE id=?", (
+        json.dumps({"analysis": {"status": "done", "chapters": 40,
+                                 "profile": {"genre": "都市"},
+                                 "plot_timeline": [
+                                     {"chapters": [1, 20], "summary": "前段",
+                                      "beats": ["b1", "b2"]},
+                                     {"chapters": [21, 40], "summary": "后段",
+                                      "beats": ["b3"]}],
+                                 "analyzed_at": db.now()}}, ensure_ascii=False),
+        drama_id))
+
+
+def test_book_settings_written_for_this_project(tmp_db, monkeypatch):
+    """导入书的设定 = 照原书总结,写进**本项目**:四段设定 + 简介/题材 + 结构化镜像。
+
+    与仿写的根本区别:仿写另开新项目;这里项目里躺着的就是这本书,
+    novel_outline 等描述的必须是这本书本身(不改名、不改情节)。
+    """
+    drama_id = _mk_drama()
+    _seed_chapters(drama_id, 3)
+    _done_analysis(drama_id)
+
+    def fake(agent_type, prompt, **kw):
+        assert agent_type == "novel_planner"
+        if "提炼这本书本身的设定" in prompt:
+            return _BOOK_SETTINGS_JSON
+        if "全书总纲" in prompt:
+            return json.dumps({"outline": "照原书总结的总纲正文"}, ensure_ascii=False)
+        return json.dumps({"volumes": "### 第1卷 上半场(第1-20章)"}, ensure_ascii=False)
+
+    monkeypatch.setattr(bi.runner, "run_agent", fake)
+    monkeypatch.setattr(bi.character_spec, "expand_many", lambda seed, lang=None: seed)
+    out = bi.generate_book_settings(drama_id)
+    assert out["outline"] > 0 and out["characters"] == 1
+    row = db.q1("SELECT novel_outline, novel_world, novel_contract, novel_volume,"
+                " novel_meta, metadata FROM dramas WHERE id=?", (drama_id,))
+    assert "照原书总结的总纲正文" in (row["novel_outline"] or "")
+    assert "现代都市,餐饮江湖" in (row["novel_world"] or "")
+    assert "第三人称限知" in (row["novel_contract"] or "")
+    assert "第1卷" in (row["novel_volume"] or "")
+    # 结构化镜像进 novel_meta(写作门控/叙事人称读)
+    nm = db.jload(row["novel_meta"], {})
+    assert nm["world"]["power_system"] == "厨艺"
+    assert nm["contract"]["pov"] == "third_limited"
+    # 简介/题材写进 metadata(与「项目说明」共用槽位)
+    md = db.jload(row["metadata"], {})
+    assert md["genre"] == "都市重生"
+    assert "爆炒" in md["intro"]
+    # 主要角色入资产
+    ch = db.q1("SELECT name, role_type FROM characters WHERE drama_id=?", (drama_id,))
+    assert ch and ch["name"] == "陈灶" and ch["role_type"] == "lead"
+
+
+def test_book_settings_requires_done_analysis(tmp_db):
+    drama_id = _mk_drama()
+    with pytest.raises(RuntimeError, match="先完成章节分析"):
+        bi.generate_book_settings(drama_id)
+
+
+def test_book_settings_never_duplicates_characters(tmp_db, monkeypatch):
+    """重跑/重复导入不插重复角色行 —— 角色行是用户可编辑的资产,覆盖会毁掉
+    用户改过的样貌/妆造。已有角色时直接跳过。"""
+    drama_id = _mk_drama()
+    _seed_chapters(drama_id, 2)
+    _done_analysis(drama_id)
+    ts = db.now()
+    db.ex("INSERT INTO characters(drama_id,name,role_type,created_at,updated_at)"
+          " VALUES(?,?,?,?,?)", (drama_id, "用户手建", "lead", ts, ts))
+
+    def fake(agent_type, prompt, **kw):
+        if "提炼这本书本身的设定" in prompt:
+            return _BOOK_SETTINGS_JSON
+        if "全书总纲" in prompt:
+            return json.dumps({"outline": "总纲"}, ensure_ascii=False)
+        return json.dumps({"volumes": ""}, ensure_ascii=False)
+
+    monkeypatch.setattr(bi.runner, "run_agent", fake)
+    out = bi.generate_book_settings(drama_id)
+    assert out["characters"] == 0
+    n = db.q1("SELECT COUNT(*) AS n FROM characters WHERE drama_id=?", (drama_id,))
+    assert n["n"] == 1, "已有角色时不得再插"
+
+
+def test_book_settings_prompts_describe_this_book(tmp_db, monkeypatch):
+    """三段提示词必须是「总结这本书」,不得出现仿写的三条铁律(专名全换等)
+    —— 那会把导入项目的设定写成另一本书。"""
+    drama_id = _mk_drama()
+    _seed_chapters(drama_id, 2)
+    _done_analysis(drama_id)
+    prompts = []
+
+    def fake(agent_type, prompt, **kw):
+        prompts.append(prompt)
+        if "提炼这本书本身的设定" in prompt:
+            return _BOOK_SETTINGS_JSON
+        if "全书总纲" in prompt:
+            return json.dumps({"outline": "总纲"}, ensure_ascii=False)
+        return json.dumps({"volumes": "### 第1卷"}, ensure_ascii=False)
+
+    monkeypatch.setattr(bi.runner, "run_agent", fake)
+    monkeypatch.setattr(bi.character_spec, "expand_many", lambda seed, lang=None: seed)
+    bi.generate_book_settings(drama_id)
+    assert len(prompts) == 3
+    for p in prompts:
+        assert "专名全换" not in p, "混入了仿写铁律"
+    # 设定与总纲阶段都要带节拍时间线(总结必须贴着原书情节)
+    assert "情节节拍时间线" in prompts[1]
+    assert "情节节拍时间线" in prompts[2]
+
+
+def test_new_project_dialog_carries_book_src_only_for_novel(qapp):
+    """「整书导入(可选)」只在写小说时出现、书路径只随 novel 传出 ——
+    剧/漫/宣传/复刻不吃整本书正文。"""
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from app.ui.new_project_dialog import NewProjectDialog
+    dlg = NewProjectDialog()
+    dlg._radios["novel"].setChecked(True)
+    assert not dlg.book_row_host.isHidden(), "novel 应显示导入行"
+    dlg.name_edit.setText("测试书")
+    dlg._book_path = "C:/books/x.txt"
+    assert dlg.result_data()["book_src"] == "C:/books/x.txt"
+    dlg2 = NewProjectDialog()
+    dlg2._radios["drama"].setChecked(True)
+    assert dlg2.book_row_host.isHidden(), "drama 不应显示导入行"
+    dlg2.name_edit.setText("测试剧")
+    dlg2._book_path = "C:/books/x.txt"
+    assert dlg2.result_data()["book_src"] == ""

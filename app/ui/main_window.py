@@ -543,9 +543,25 @@ class MainWindow(QMainWindow):
                 video_clone.upload_material(drama_id, "product", src["product_src"])
             if src.get("presenter_src"):
                 video_clone.upload_material(drama_id, "presenter", src["presenter_src"])
+        # ── 整书导入(新建项目弹窗,仅小说):建完立刻切章入库,再后台
+        # 「分析 → 照原书总结出小说设定」。设定生成前**跳过首集自动生成** ——
+        # 导入的章节就是正文,auto_generate 再跑一次会把 AI 编的首集内容
+        # 盖到导入的第 1 章上(两套内容打架)。
+        book_src = str(data.get("book_src") or "").strip()
+        if data["work_type"] == "novel" and book_src:
+            from ..pipeline import book_import as _bi
+            try:
+                with open(book_src, "rb") as f:
+                    _bi.import_book(drama_id, data=f.read())
+            except Exception as exc:  # noqa: BLE001 —— 导入失败不阻断建项目
+                err(tr("整书导入失败:{}").format(str(exc)[:200]))
+                book_src = ""
+            else:
+                self._start_book_settings(drama_id)
         # 首集自动生成(对齐 auto-generate.ts):建完就后台跑一次对应 Agent,
-        # 用户不用手动点每一步;失败只记任务,不阻断建项目。clone 不生成(分镜来自参考视频拆解)。
-        if data["work_type"] != "video_clone":
+        # 用户不用手动点每一步;失败只记任务,不阻断建项目。clone 不生成(分镜来自参考视频拆解);
+        # 带整书导入的项目也不生成(见上:章节已就位,设定走「分析→总结」那条路)。
+        if data["work_type"] != "video_clone" and not book_src:
             try:
                 from ..core.preflight import ensure_ready
                 from ..pipeline import auto_generate
@@ -555,6 +571,31 @@ class MainWindow(QMainWindow):
                 pass
         self.projects_page.reload()
         self._open_drama(drama_id)
+
+    def _start_book_settings(self, drama_id: int):
+        """后台跑「章节分析 → 照原书总结小说设定」(整书导入的收尾段)。
+
+        分析是大活(全书 12 章一组并发抽节拍),必须后台;完成后 toast 提示
+        去哪里看。失败详情落 sys_task(任务面板可见),不弹栈。
+        """
+
+        def job(tid):
+            from ..core import taskmgr
+            from ..pipeline import book_import
+            book_import.run_analysis(
+                drama_id,
+                on_progress=lambda done_n, total, label: taskmgr.set_stage(
+                    tid, tr("{} · {}/{} 组").format(label, done_n, total)))
+            return book_import.generate_book_settings(
+                drama_id, on_progress=lambda msg: taskmgr.set_stage(tid, msg))
+
+        def done(tid, result, error):
+            if error:
+                err(tr("book_settings_failed") + ": " + str(error)[:220])
+                return
+            ok(tr("book_settings_done"))
+
+        TASKMGR.submit("book_settings", job, done, drama_id=drama_id)
 
     def _open_project_settings(self, drama_id: int):
         """项目卡「⋯ → 项目设置」:按项目类型打开对应页面。

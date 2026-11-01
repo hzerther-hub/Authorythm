@@ -24,7 +24,7 @@ def test_array_model_response_does_not_crash(monkeypatch):
 
     out = sl.update_state_ledger(1, 9)
 
-    assert out == {"changes": 0, "jev": {}}
+    assert out == {"changes": 0, "jev": {}, "foreshadow": 0}
 
 
 def test_dict_response_still_parsed(monkeypatch):

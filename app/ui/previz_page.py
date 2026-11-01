@@ -130,10 +130,22 @@ class PrevizPage(QWidget):
         self.guide.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.guide.setWordWrap(True)
         self.stack.addWidget(self.guide)
-        from PySide6.QtWebEngineWidgets import QWebEngineView
-        self.view = QWebEngineView()
-        self.view.page().profile().downloadRequested.connect(self._on_download)
-        self.stack.addWidget(self.view)
+        # QtWebEngine 是**可选重依赖**(打包后约 200MB),而且本页还额外需要
+        # DirectorDesk 的 web 构建(12MB,由 scripts/fetch_directordesk.py 拉取,
+        # 不在仓库里)。因此缺失时**降级成提示**,不能让它把整个 App 拖崩 ——
+        # 打包默认不带 WebEngine(见 app.spec 的 excludes),源码运行时通常有。
+        try:
+            from PySide6.QtWebEngineWidgets import QWebEngineView
+        except ImportError as e:  # pragma: no cover —— 仅缺 WebEngine 的环境
+            self.view = None
+            self.guide.setText(
+                f"{tr('previz_need_fetch')}\n"
+                f"(QtWebEngine 未安装:{e})")
+            log.warning("QtWebEngine 不可用,导演台预演页降级为提示:%s", e)
+        else:
+            self.view = QWebEngineView()
+            self.view.page().profile().downloadRequested.connect(self._on_download)
+            self.stack.addWidget(self.view)
         host = QWidget()
         host.setLayout(self.stack)
         root.addWidget(host, 1)
@@ -172,6 +184,8 @@ class PrevizPage(QWidget):
 
     # ── web 内核 ───────────────────────────────────────────────────
     def _load_app(self):
+        if self.view is None:
+            return          # QtWebEngine 缺失(见 __init__ 的降级分支)
         entry = _vendor_meta().get("entry")  # 形如 "dist/index.html"
         if not entry:
             return

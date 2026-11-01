@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import cast
 
@@ -367,7 +368,8 @@ def chapters_prompt(drama_id: int, chapter_count: int | None = None,
 
 # 长篇分批生成:一次请求只让模型写一批(单批 40 章,JSON 体积可控),
 # 循环累积直到 n 章 —— 999 章单次请求会超出 token 预算,模型只能吐散文,解析全废。
-CHAPTER_BATCH = 40
+CHAPTER_BATCH = 10   # 40/20 章一批实测 JSON 半截断裂(重前提上下文更肥);
+                     # 10 章一批单次输出 ≈3-4k 字,稳定且逐批落库进度更细
 # 章节计划的「升级预算」。实测(deepseek-v4-pro,40 章/批):默认 8192 全部
 # 被 reasoning 吃掉,finish_reason=length、content=0 字,整批报废;同样提示词
 # 给 32768 则一次返回 40 章(约 7k 字 JSON)。先按配置值跑,空了再升级 ——
@@ -1134,6 +1136,25 @@ def chapter_prompt(episode_id: int) -> str:
                   ORDER BY episode_number DESC LIMIT 1""",
                 (ep["drama_id"], ep["episode_number"]))
     prev_summary = (prev[0]["content"] or "")[-800:] if prev else "(本章为第一章)"
+    # 未回收伏笔清单(Goink 强制自查思路):写新章时让模型看到该回收什么
+    try:
+        from . import state_ledger as _sl
+        _items = (db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (ep["drama_id"],))["novel_meta"], {}) or {}).get("ledger") or []
+        _open = [f"- {it.get('text','')}" for it in _items
+                 if isinstance(it, dict) and not it.get("closed") and it.get("text")][:8]
+        foreshadow_ctx = ("\n未回收伏笔(本章若推进/回收,必须自然衔接):\n" + "\n".join(_open) + "\n") if _open else ""
+    except Exception:  # noqa: BLE001
+        foreshadow_ctx = ""
+    # 前文相关段落(FTS5 检索,远距离一致性:第 90 章也能找到第 15 章的伏笔原文)
+    passages_ctx = ""
+    try:
+        from . import retrieval as _rt
+        _hits = _rt.passages_for_chapter_plan(ep["drama_id"], plan or {})
+        if _hits:
+            passages_ctx = ("\n前文相关段落(事实参考,不得照抄原文):\n" + "\n".join(
+                f"- (第{h.get('episode_number')}集){h.get('snippet')}" for h in _hits) + "\n")
+    except Exception:  # noqa: BLE001
+        passages_ctx = ""
     prompt = f"""小说设定:
 总纲: {(d['novel_outline'] or '')[:600]}
 世界观: {(d['novel_world'] or '')[:600]}
@@ -1144,7 +1165,7 @@ def chapter_prompt(episode_id: int) -> str:
 人物状态台账(硬约束,不得无交代地跳变): {_ledger_ctx(ep['drama_id'])}
 目标字数: {ep['target_words'] or 2500}
 上一章结尾(衔接用): {prev_summary}
-
+{foreshadow_ctx}{passages_ctx}
 请输出本章正文。
 
 正文硬约束(违反即不合格):
@@ -2457,8 +2478,50 @@ def _sensory_overdose(text: str, limit: int = 5) -> bool:
     return len(_SENSE_WORDS.findall(text or "")) > limit
 
 
+def snapshot_chapters_git(drama_id: int, label: str) -> str | None:
+    """把全书章节导出到 data/book_history/{drama_id}/ 并 git commit(安全网)。
+
+    学 Goink 的版本回退思路:任何整章覆盖(批量重写/小说体改造)前先落一版
+    快照,出问题可回退。git 不可用/任何异常都静默返回 None,绝不阻断主流程。
+    正文是纯文本,git diff 天然可读。
+    """
+    try:
+        import subprocess
+        d = db.q1("SELECT title FROM dramas WHERE id=?", (drama_id,))
+        if not d:
+            return None
+        hist = config.STATIC_DIR.parent / "book_history" / str(drama_id)
+        hist.mkdir(parents=True, exist_ok=True)
+        out = hist / "chapters.txt"
+        eps = db.q("SELECT episode_number, title, content FROM episodes "
+                   "WHERE drama_id=? ORDER BY episode_number", (drama_id,))
+        parts = [f"《{d['title']}》 快照 {db.now()} — {label}\n"]
+        for r in eps:
+            parts.append(f"\n===== 第{r['episode_number']}章 {r['title']} =====\n")
+            parts.append((r["content"] or "") + "\n")
+        out.write_text("".join(parts), encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "pydrama",
+               "GIT_AUTHOR_EMAIL": "pydrama@local",
+               "GIT_COMMITTER_NAME": "pydrama",
+               "GIT_COMMITTER_EMAIL": "pydrama@local"}
+
+        def _run(*args):
+            subprocess.run(["git", *args], cwd=str(hist), env=env,
+                           capture_output=True, timeout=30, check=False)
+
+        if not (hist / ".git").exists():
+            _run("init", "-q")
+        _run("add", "-A")
+        _run("commit", "-q", "-m", f"{label} ({db.now()})")
+        return str(out)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[novel] 章节快照跳过({exc})", flush=True)
+        return None
+
+
 def convert_chapter_to_prose(episode_id: int, config_id: int | None = None,
-                             lang: str | None = None) -> dict:
+                             lang: str | None = None,
+                             persist: bool = True) -> dict:
     """把脚本体章节(人名:(动作)台词)改写成**小说体叙述正文**(发布用)。
 
     为什么需要:写作线沿短剧基因,产出 56-72% 对白行的脚本体 —— 平台审核
@@ -2534,6 +2597,12 @@ def convert_chapter_to_prose(episode_id: int, config_id: int | None = None,
         break
     if last_err:
         raise RuntimeError("小说体改写两次均不合格(" + last_err + "),请重试或换文本模型")
+    if not persist:
+        # 逐段对比模式(P1):不落库不计数,把原稿/改稿/标题行交回调用方,
+        # 由用户在合并视图里逐段拍板后再写回(见 ProseMergeDialog)。
+        return {"converted": True, "original": body, "revised": prose,
+                "title_line": title_line, "before": len(body), "after": len(prose)}
+    snapshot_chapters_git(ep["drama_id"], "小说体改造 前")
     new_text = title_line + prose if title_line else prose
     # 改造次数计数(用户要求标明「改造过 N 次」):存 episodes.metadata
     times = _bump_prose_count(episode_id)
@@ -2588,6 +2657,7 @@ def batch_write_chapters(drama_id: int, episode_ids: list[int], force: bool = Fa
     另有:默认已有正文的章节整批拒绝(force=True 才放行);续写红线(前章无正文拒写)。
     """
     _enforce_novel_gate(drama_id)
+    snapshot_chapters_git(drama_id, "批量写章 前")
     rows = [r for r in (db.q1("SELECT id, episode_number, title, content FROM episodes WHERE id=?", (i,))
                         for i in episode_ids)]
     rows = [r for r in rows if r]

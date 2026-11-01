@@ -40,7 +40,7 @@ DUR_RANGE = (1.0, 10.0)
 
 
 def font_dir() -> Path:
-    return config.ROOT_DIR / "app" / "assets" / "fonts"
+    return config.assets_dir() / "fonts"
 
 
 def list_fonts() -> list[dict]:

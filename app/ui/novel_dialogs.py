@@ -193,8 +193,16 @@ class NovelPlanDialog(QDialog):
                 pov_row.addStretch(1)
                 lay.addLayout(pov_row)
             lay.addWidget(edit, 1)
-            self.tabs.addTab(page, name)
-        self.tabs.addTab(self._build_plan_tab(d), tr("章节计划"))
+            self._tab_titles = getattr(self, "_tab_titles", {})
+            self._tab_titles[key] = name
+            self._tab_index = getattr(self, "_tab_index", {})
+            self._tab_index[key] = self.tabs.addTab(page, name)
+        # 显式确认徽标 + 计数(学 Pagekin:只有完整确认才算数,部分完成不算)
+        self._plan_tab_index = self.tabs.addTab(self._build_plan_tab(d), tr("章节计划"))
+        self._tab_titles["plan"] = tr("章节计划")
+        self._confirm_lab = W.muted("")
+        head.insertWidget(head.count(), self._confirm_lab)
+        self._refresh_confirm_badges()
         root.addWidget(self.tabs, 1)
 
         bottom = QHBoxLayout()
@@ -1074,6 +1082,52 @@ class NovelPlanDialog(QDialog):
             head_btn.clicked.connect(_toggle)
             lay.addWidget(box)
 
+    def _confirm_state(self) -> dict[str, bool]:
+        """各节确认状态(复用红线双口径:文本列 ≥30 字或结构化数据非空)。"""
+        from ..pipeline.novel import SETTING_TEXT_MIN
+        d = db.q1("SELECT novel_outline, novel_world, novel_contract, novel_volume, "
+                  "novel_chapters, novel_meta FROM dramas WHERE id=?", (self.drama_id,))
+        meta = db.jload((d or {}).get("novel_meta"), {}) or {}
+        vols = db.jload((d or {}).get("novel_volume"), None)
+        vols = vols if isinstance(vols, list) else (meta.get("volume_chapters") or [])
+        chs = db.jload((d or {}).get("novel_chapters"), []) or []
+        chars = meta.get("main_characters") or []
+        return {
+            "outline": len(((d or {}).get("novel_outline") or "").strip()) >= SETTING_TEXT_MIN,
+            "world": len(((d or {}).get("novel_world") or "").strip()) >= SETTING_TEXT_MIN,
+            "contract": len(((d or {}).get("novel_contract") or "").strip()) >= SETTING_TEXT_MIN,
+            "volume": bool(vols),
+            "plan": bool(chs),
+            "chars": bool(chars),
+        }
+
+    def _refresh_confirm_badges(self):
+        """页签 ✓/○ 前缀 + 顶部「设定确认 X / N」徽标(学 Pagekin 确认制)。"""
+        try:
+            st = self._confirm_state()
+        except Exception:  # noqa: BLE001
+            return
+        order = [("outline", "总纲"), ("world", "世界观"), ("contract", "故事合约"),
+                 ("volume", "分卷战略"), ("plan", "章节计划"), ("chars", "主要角色")]
+        titles = getattr(self, "_tab_titles", {})
+        idx = getattr(self, "_tab_index", {})
+        for key, name in order:
+            mark = "✓ " if st.get(key) else "○ "
+            if key in idx and key in titles:
+                self.tabs.setTabText(idx[key], mark + titles[key])
+        done = sum(1 for k, _ in order[:4] if st.get(k))      # 四个核心设定节
+        total = 4
+        self._confirm_lab.setText(
+            f"设定确认 {done} / {total}"
+            + ("  ·  全部确认,可进入章节计划" if done == total
+               else "  ·  全部确认后才能生成章节计划"))
+        # 软门禁:核心三节(总纲/世界观/合约)未齐 → 章节计划生成置灰
+        core = st["outline"] and st["world"] and st["contract"]
+        btn = getattr(self, "chapters_btn", None)
+        if btn is not None:
+            btn.setEnabled(core)
+            btn.setToolTip("" if core else tr("请先确认 总纲/世界观/故事合约(各节有实质内容)"))
+
     def _save_section(self, key: str, quiet: bool = False):
         """保存单个板块。**不关闭对话框** —— 手动点「保存」也要留在当前页签
         连着改下一个板块,否则每存一次就要重新打开。
@@ -1085,6 +1139,7 @@ class NovelPlanDialog(QDialog):
         if not quiet:
             ok(tr('{}已保存').format(self.SECTION_CN[key]))
             self._reload_tabs()
+        self._refresh_confirm_badges()
 
     def _autosave(self, key: str):
         """编辑停止 1.2s 后自动落库(防抖)。

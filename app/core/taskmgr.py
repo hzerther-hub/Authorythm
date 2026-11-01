@@ -368,6 +368,8 @@ class TaskManager(QObject):
         "clone_understand": "text",
         # 新建项目的「项目说明」:从一句想法生成 名称/简介/创意描述/题材
         "concept": "text",
+        # 整书导入的收尾:章节分析 → 照原书总结小说设定(都走文本模型)
+        "book_settings": "text",
         # 海外题材改写:诊断 / 改写 / 整书(都走文本模型)
         "overseas_diag": "text", "overseas_rewrite": "text",
         "overseas_batch": "text",

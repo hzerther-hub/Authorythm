@@ -562,7 +562,147 @@ def run_imitation(drama_id: int, title: str = "", on_progress=None) -> dict:
             "planned_chapters": settings["planned"], "characters": len(settings["characters"])}
 
 
+# ── 导入书的设定补齐(与仿写是两条路)──────────────────────────────────
+#
+# 仿写 = 拿这本书的骨架写一本**新书**(专名全换、情节重新设计,产出另一个项目);
+# 设定补齐 = 项目里躺着的就是这本书的章节,把「项目设置/小说设定」**照原书总结**
+# 出来 —— 简介/题材/总纲/世界观/合约/分卷描述的都是这本书本身。此前只有仿写
+# 这条路,导入完设定栏全空,后续 AI 起草/写章对不上导入的内容(用户实测反馈
+# 「导入后项目设置小说设定的功能不对,没有意义」)。
+#
+# 产物与「AI 起草」persist_draft 同构:novel_outline/novel_volume 存纯文本,
+# novel_world/novel_contract 列存可读全文、结构化部分镜像进 novel_meta
+# (写作门控读 meta["world"]/meta["contract"],叙事人称读 meta["contract"]["pov"])。
+BOOK_SETTINGS_PROMPT = """你是资深网文策划。下面是一本小说的**结构分析档案**,请提炼这本书本身的设定。
+这是「总结」不是「创作」:人名、地名、术语、情节一律照原书,不要改名,不要新造原书没有的设定。
+档案: {profile}
+原书共 {chapters} 章。
+
+输出 JSON:
+{{"genre":"题材","description":"一句话简介≤120字",
+ "world":{{"text":"完整世界观全文(照原书总结,不设字数上限)","structured":{{"era":"时代背景","location":"主要地点","power_system":"力量/能力体系","factions":[{{"name":"","desc":""}}],"note":""}}}},
+ "contract":{{"text":"完整故事合约全文(照原书总结)","structured":{{"pov":"first|second|third_limited|third_omni","tones":["基调"],"rules":["该书叙事硬约束3-6条"],"word_range":[1800,2600],"note":""}}}},
+ "characters":[{{"name":"","identity":"","personality":"","arc":"成长线"}}]}}
+只输出 JSON。角色最多 12 个,只收原书里真实出现的主要角色。"""
+
+BOOK_OUTLINE_PROMPT = """基于这本书的情节节拍时间线,写**这本书的全书总纲**(1500-3000 字):
+按原书实际情节写 —— 起承转合、主线暗线、结局,全部照原书,不得另编结局或新增情节。
+{settings}
+{timeline}
+只输出 JSON:{{"outline":"总纲正文"}}"""
+
+BOOK_VOLUMES_PROMPT = """按情节节拍时间线给这本书划分卷册(每卷 30-80 章,按原书实际结构),markdown 格式:
+### 第N卷 卷名(第X-Y章)
+- 情节:本卷讲了什么(照原书)
+- 关键事件:
+{settings}
+{timeline}
+只输出 JSON:{{"volumes":"markdown 正文"}}"""
+
+
+def generate_book_settings(drama_id: int, on_progress=None) -> dict:
+    """导入的书 → 本项目自己的小说设定(总纲/世界观/合约/分卷 + 简介/题材 + 主要角色)。
+
+    前置:章节分析已完成(novel_meta.analysis.status == done)。三阶段
+    settings→outline→volumes,每阶段独立重试(与 run_imitation 同款)。
+    """
+    d = db.q1("SELECT * FROM dramas WHERE id=?", (drama_id,))
+    analysis = (db.jload(d["novel_meta"], {}) or {}).get("analysis") or {}
+    if analysis.get("status") != "done" or not analysis.get("profile"):
+        raise RuntimeError("请先完成章节分析")
+    profile = json.dumps(analysis["profile"], ensure_ascii=False)[:12000]
+    timeline = _timeline_digest(analysis)
+    lang = config.resolve_content_language(drama_id)
+
+    def stage(msg):
+        if on_progress:
+            on_progress(msg)
+
+    def _ask(prompt: str):
+        return _with_retry(lambda: runner.run_agent(
+            "novel_planner", prompt, temperature=0.3, lang=lang))
+
+    stage("提炼设定")
+    raw = _ask(BOOK_SETTINGS_PROMPT.format(
+        profile=profile, chapters=analysis.get("chapters") or "未知"))
+    st = runner.extract_json(raw) or {}
+    if not isinstance(st, dict):
+        raise RuntimeError("设定阶段模型输出不是 JSON 对象,请重试")
+    world = st.get("world") or {}
+    contract = st.get("contract") or {}
+    # text 缺失时退回结构化的 JSON 文本 —— 列里空着比塞一段 JSON 更难看,
+    # 但「有内容」优先:结构化字段至少给写作门控与用户一个可改的起点。
+    world_text = (str(world.get("text") or "").strip()
+                  or json.dumps(world.get("structured") or {}, ensure_ascii=False))
+    contract_text = (str(contract.get("text") or "").strip()
+                     or json.dumps(contract.get("structured") or {}, ensure_ascii=False))
+    genre = str(st.get("genre") or "").strip()
+    desc = str(st.get("description") or "").strip()
+    settings_ctx = json.dumps({"genre": genre, "description": desc,
+                               "world": world.get("structured") or {},
+                               "contract": contract.get("structured") or {}},
+                              ensure_ascii=False)
+
+    stage("生成总纲")
+    raw = _ask(BOOK_OUTLINE_PROMPT.format(settings=settings_ctx, timeline=timeline))
+    outline = ((runner.extract_json(raw) or {}).get("outline") or "")[:8000]
+
+    stage("生成分卷")
+    raw = _ask(BOOK_VOLUMES_PROMPT.format(settings=settings_ctx, timeline=timeline))
+    volumes = ((runner.extract_json(raw) or {}).get("volumes") or "")[:12000]
+
+    stage("写入项目")
+    ts = db.now()
+    db.ex("""UPDATE dramas SET novel_outline=?, novel_world=?, novel_contract=?,
+             novel_volume=?, updated_at=? WHERE id=?""",
+          (outline, world_text, contract_text, volumes, ts, drama_id))
+    # 结构化镜像(persist_draft 同款):写作门控读 meta["world"]/meta["contract"]
+    meta = db.jload(d["novel_meta"], {}) or {}
+    if isinstance(world.get("structured"), dict) and world["structured"]:
+        meta["world"] = world["structured"]
+    if isinstance(contract.get("structured"), dict) and contract["structured"]:
+        meta["contract"] = contract["structured"]
+    meta["book_settings_at"] = ts
+    db.ex("UPDATE dramas SET novel_meta=?, updated_at=? WHERE id=?",
+          (json.dumps(meta, ensure_ascii=False), ts, drama_id))
+    # 简介/题材合并进 metadata —— 与「项目说明」共用 meta["intro"]/meta["genre"]
+    # 槽位(extractor / AI 起草 / 写章上下文都按这两个键读),不另开新列。
+    md = db.jload(d["metadata"], {}) or {}
+    if genre:
+        md["genre"] = genre
+    if desc:
+        md["intro"] = desc
+    db.ex("UPDATE dramas SET metadata=? WHERE id=?",
+          (json.dumps(md, ensure_ascii=False), drama_id))
+    # 主要角色入资产(只补缺:重复导入/重跑不插重复行 —— 角色行是用户可编辑
+    # 的资产,覆盖会毁掉用户改过的样貌/妆造)
+    have = db.q1("SELECT COUNT(*) AS n FROM characters WHERE drama_id=? AND deleted_at IS NULL",
+                 (drama_id,))
+    inserted = 0
+    if have and int(have["n"] or 0) == 0:
+        seed = []
+        for idx, c in enumerate(st.get("characters") or []):
+            name = str(c.get("name") or "").strip()
+            if not name:
+                continue
+            material = "；".join(
+                x for x in (c.get("identity"), c.get("personality"), c.get("arc")) if x)
+            seed.append({"name": name, "role": "lead" if idx == 0 else "supporting",
+                         "appearance": material, "styling": ""})
+        seed = character_spec.expand_many(seed, lang=lang)
+        for idx, c in enumerate(seed):
+            db.ex("""INSERT INTO characters(drama_id,name,role_type,appearance,styling,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                  (drama_id, c["name"], "lead" if idx == 0 else "supporting",
+                   c.get("appearance") or "", c.get("styling") or "", ts, ts))
+            inserted += 1
+    log.info("book_settings.done drama=%s outline=%d volumes=%d chars=%d",
+             drama_id, len(outline), len(volumes), inserted)
+    return {"outline": len(outline), "volumes": len(volumes), "characters": inserted}
+
+
 META_PROMPT = """提炼下面这部作品的项目信息,输出 JSON:
+
 {"genre":"题材,2-8字,例 都市情感 / 仙侠 / 悬疑",
  "description":"一句话简介,≤60字,点出主角+处境+核心冲突",
  "creative_description":"故事是什么,2-3句,≤150字,写清主线与结局走向"}

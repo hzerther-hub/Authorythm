@@ -429,9 +429,58 @@ def reset_skill(skill_id: str) -> None:
 
 
 def seed_prompt_files() -> None:
-    """首次启动把内置提示词落盘为 workspace/prompts/*.md(仅补缺失,不覆盖用户已改内容)。"""
+    """首次启动把提示词与技能落盘到用户可写的 workspace/(仅补缺失,不覆盖用户已改内容)。
+
+    两步:
+    1. **打包副本优先**:PyInstaller 打包后 exe 同级没有 workspace/,而
+       load_prompt / load_skills 只读用户目录 → 不把包内那份只读副本播种过去,
+       16 语言提示词与 11 组技能会全部退化成中文内置版。
+       所以先把 `BUNDLED_WORKSPACE_DIR` 里的 prompts/ 与 skills/ 复制过来
+       (**只补缺失**,用户改过的文件不动)。
+    2. **内置兜底**:再把 DEFAULT_PROMPTS 的中文基准写进缺失的 zh 文件
+       (源码运行时没有包内副本,靠这一步保证至少有中文提示词可用)。
+    """
+    _seed_bundled_workspace()
     for agent in FILE_AGENTS:
         path = prompt_file(agent, "zh")
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(DEFAULT_PROMPTS[agent], encoding="utf-8")
+
+
+def _seed_bundled_workspace() -> None:
+    """把打包进程序的只读 workspace 复制到用户可写目录(只补缺失)。
+
+    源码运行时 `BUNDLED_WORKSPACE_DIR` 与 `WORKSPACE_DIR` 是同一个目录,
+    复制会变成"自己复制自己" → 这里显式跳过。
+    """
+    import shutil
+
+    from ..core import config
+
+    src_root = config.BUNDLED_WORKSPACE_DIR
+    dst_root = config.WORKSPACE_DIR
+    if not src_root.exists():
+        return
+    try:
+        if src_root.resolve() == dst_root.resolve():
+            return          # 源码运行:同一目录,无需复制
+    except OSError:
+        pass
+    for sub in ("prompts", "skills"):
+        src = src_root / sub
+        if not src.is_dir():
+            continue
+        dst = dst_root / sub
+        for f in src.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(src_root)
+            target = dst_root / rel
+            if target.exists():
+                continue          # 用户可能改过,不覆盖
+            try:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(f, target)
+            except OSError:
+                continue

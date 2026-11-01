@@ -35,18 +35,23 @@ def test_volume_batch_retries_with_bigger_budget(monkeypatch):
 
     budgets: list[int | None] = []
     attempts = 0
+    next_start = 1
 
     def fake_run_agent(agent, prompt, **kw):
-        nonlocal attempts
+        nonlocal attempts, next_start
         attempts += 1
         budgets.append(kw.get("max_tokens"))
         if attempts == 1:          # 推理吃空预算:content 为空
             return ""
-        base = 1 if attempts == 2 else 41
+        # 批大小跟随 nv.CHAPTER_BATCH(40→10 调整后仍成立):
+        # 每次成功调用按请求的批次起点连续返回 CHAPTER_BATCH 章
+        nonlocal next_start
+        base = next_start
+        next_start = base + nv.CHAPTER_BATCH
         return json.dumps({"chapters": [
             {"number": i, "title": f"第{i}章", "goal": "g",
              "events": "e", "cliffhanger": "c"}
-            for i in range(base, base + 40)]}, ensure_ascii=False)
+            for i in range(base, base + nv.CHAPTER_BATCH)]}, ensure_ascii=False)
 
     monkeypatch.setattr(nv.runner, "run_agent", fake_run_agent)
 

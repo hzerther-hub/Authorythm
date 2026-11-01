@@ -107,6 +107,48 @@ workspace/skills/  技能文件
 删掉代码里的常量**不等于**安全 —— 它还在 git 历史里,必须去服务端作废重发。
 新接外部服务前先自查:`git grep -nIE "[\"'](sk-[A-Za-z0-9]{16,}|[0-9a-f]{40,})[\"']" -- '*.py'`。
 
+### 密钥进过历史怎么办(2026-10-31 实操过一遍)
+
+「删掉代码里的常量」只解决当前树;历史里仍然可检出。要真正清掉:
+
+```bash
+# 0) 先备份(放在仓库外!filter-repo 会清掉 reflog,没有备份就回不去了)
+git bundle create ../pydrama-pre-filter.bundle --all
+git bundle verify ../pydrama-pre-filter.bundle     # 确认 "records a complete history"
+
+# 1) 写替换表:每行「原文==>替换为」
+printf 'THEKEY==>***REMOVED-LEAKED-KEY***\n' > /tmp/replace.txt
+
+# 2) 改写历史(会重写所有 SHA;filter-repo 会顺手删掉 origin remote)
+git filter-repo --replace-text /tmp/replace.txt --force
+
+# 3) 验证:全量 blob 扫描,不能只看 git log -S
+git rev-list --objects --all | awk '{print $1}' \
+  | git cat-file --batch-check='%(objectname) %(objecttype)' \
+  | awk '$2=="blob"{print $1}' > /tmp/blobs.txt
+while read o; do git cat-file blob "$o" | grep -q 'THEKEY' && echo "FOUND $o"; done < /tmp/blobs.txt
+
+# 4) 确认文件内容零变化(改写只该动 SHA)
+git ls-tree -r <旧SHA> | awk '{print $3,$4}' | sort > /tmp/old.txt
+git ls-tree -r HEAD      | awk '{print $3,$4}' | sort > /tmp/new.txt
+diff /tmp/old.txt /tmp/new.txt        # 应无输出
+
+# 5) 恢复 remote 并强推(--force-with-lease 精确指定远端当前 SHA,远端一动就拒绝)
+git remote add origin https://github.com/hzerther-hub/Authorythm.git
+git push --force-with-lease=master:<远端当前SHA> origin master
+```
+
+**血泪教训(本轮真踩了)**:
+- **不要在 gitleaks 配置里为某个具体密钥写 allowlist** —— 那等于把密钥又抄一份
+  放进代码树。本轮就是"为了压住历史告警而写了密钥串",结果 key 又回到了当前树,
+  只好 amend + 再跑一遍 filter-repo。**历史里有过的密钥应该用 filter-repo 清除,
+  而不是"放行"它。**
+- `--force-with-lease` 一定要**显式写远端当前 SHA**(`--force-with-lease=master:<sha>`),
+  不写的话 filter-repo 刚清过 remote-tracking ref,lease 判定会失真。
+- 改写后**所有协作者都要重新 clone**(SHA 全变);本仓库的 remote 已从
+  `PySide6_drama` 迁到 `Authorythm`,用新地址。
+- CI 已有 gitleaks job(扫全历史)兜底:新提交里再有密钥会立刻红。
+
 ## 线程模型(最容易踩)
 
 `TASKMGR.submit(type, job, done)` 把 `job` 丢进 QThreadPool(上限 6)。

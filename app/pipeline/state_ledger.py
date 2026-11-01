@@ -37,17 +37,35 @@ WORLD_DIMENSIONS = ["时间线", "主线进度"]
 
 _breaker = JevBreaker("state-ledger")   # 按作用域独立熔断(对齐 jev-gate)
 
-EXTRACT_PROMPT = """请从本章正文中提取「人物状态变化」与「世界状态变化」,用于维护长篇的人物状态台账。
-人物维度限定:{dims};世界维度限定:{wdims}。
-只收本章确实发生的变化(无变化输出空数组 changes/world),不要推测。每条附一句原文依据 quote(≤40字)。
+OPS_PROMPT = """你是长篇小说的**状态台账管理员**。读完本章正文后,按下面的**强制自查清单**逐项过一遍,
+只对**确实发生**的变化输出操作(没有就输出 no_change),不要推测、不要凑数。
+
+【强制自查清单】
+① 角色设定变化 —— 性格/财产/位置/关系/外貌/年纪/功法 有没有变化?
+② 世界/时间线 —— 故事时间推进了多少?主线进度走到哪了?
+③ 新伏笔 —— 本章埋下了什么需要后文回收的钩子?
+④ 旧伏笔回收 —— 本章回收了哪些之前埋下的伏笔(对照【未回收伏笔】清单)?
+⑤ 全部没有 → 只输出一个 no_change 操作。
+
+人物维度限定:{dims};世界维度限定:{wdims}。每条附一句原文依据 quote(≤40字)。
 
 【当前状态台账】
 {ledger}
 
+【未回收伏笔】
+{foreshadow}
+
 【本章正文】
 {text}
 
-只输出 JSON:{{"changes":[{{"character":"人名","dimension":"年纪|功法|性格|财产|外貌|位置|关系","from":"旧值(无则空串)","to":"新值","target":"关系对象(仅关系维度)","quote":"原文依据"}}],"world":[{{"dimension":"时间线|主线进度","from":"","to":"","quote":""}}]}}"""
+只输出 JSON(ops 数组,每项一种操作):
+{{"ops":[
+ {{"op":"update_character","character":"人名","dimension":"年纪|功法|性格|财产|外貌|位置|关系","from":"旧值(无则空串)","to":"新值","target":"关系对象(仅关系维度)","quote":"原文依据"}},
+ {{"op":"update_world","dimension":"时间线|主线进度","from":"","to":"","quote":"原文依据"}},
+ {{"op":"open_foreshadow","text":"伏笔内容一句话(≤40字)","quote":"原文依据"}},
+ {{"op":"resolve_foreshadow","text":"要回收的伏笔内容(与【未回收伏笔】清单里的表述接近)","quote":"原文依据"}},
+ {{"op":"no_change"}}
+]}}"""
 
 GATE_QUESTIONS = {
     "conflict": {
@@ -192,6 +210,58 @@ def resolve_text_config_id_for_model(model: str | None) -> int | None:
     return None
 
 
+def _open_foreshadow_ctx(drama_id: int) -> str:
+    """未回收伏笔清单(给台账模型的自查对照)。空返回占位文案。"""
+    try:
+        meta = _meta(drama_id)
+        items = meta.get("ledger") or []
+        open_items = [f"- {it.get('text', '')}" for it in items
+                      if isinstance(it, dict) and not it.get("closed") and it.get("text")]
+        return "\n".join(open_items[:12]) if open_items else "(无未回收伏笔)"
+    except Exception:  # noqa: BLE001
+        return "(无未回收伏笔)"
+
+
+def _apply_foreshadow_ops(drama_id: int, ops: list, chapter_hint: int | None = None) -> int:
+    """把 open_foreshadow / resolve_foreshadow 操作落到伏笔台账。
+
+    伏笔数据在 novel_meta.ledger(novel.py 管理);这里惰性导入它的去重/封顶
+    逻辑避免循环导入。返回应用的条数。
+    """
+    if not ops:
+        return 0
+    try:
+        from . import novel as _novel
+    except Exception:  # noqa: BLE001
+        return 0
+    meta = _meta(drama_id)
+    items = meta.get("ledger") or []
+    applied = 0
+    chapter = chapter_hint or 0
+    for kind, txt, _quote in ops:
+        if kind == "open_foreshadow":
+            items.append({"text": txt, "open_chapter": chapter,
+                          "closed": False, "closed_chapter": None, "stale": False})
+            applied += 1
+        elif kind == "resolve_foreshadow":
+            # 按文本相似匹配未回收项(与 dedup 同款 LCS 判同思路,这里宽松包含匹配)
+            hit = next((it for it in items
+                        if isinstance(it, dict) and not it.get("closed")
+                        and (txt[:10] in str(it.get("text", ""))
+                             or str(it.get("text", ""))[:10] in txt)), None)
+            if hit is not None:
+                hit["closed"] = True
+                hit["closed_chapter"] = chapter or hit.get("open_chapter")
+                hit["stale"] = False
+                applied += 1
+    if applied:
+        items = _novel.dedup_ledger(items)
+        items = _novel.cap_ledger(items)
+        meta["ledger"] = items
+        _save_meta(drama_id, meta)
+    return applied
+
+
 def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = None,
                         model: str | None = None) -> dict | None:
     """章节正文完成后调用(批量流水线每章一次;也可手动重跑)。返回 {changes, jev} 或 None。"""
@@ -202,10 +272,12 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     meta = _meta(drama_id)
     ledger = meta.get("state_ledger") or {"characters": {}, "world": {}}
 
-    # 1) 提取
-    prompt = EXTRACT_PROMPT.format(
+    # 1) 提取(工具化:模型按自查清单决定输出哪种台账操作)
+    foreshadow_ctx = _open_foreshadow_ctx(drama_id)
+    prompt = OPS_PROMPT.format(
         dims="/".join(CHARACTER_DIMENSIONS), wdims="/".join(WORLD_DIMENSIONS),
-        ledger=json.dumps(ledger, ensure_ascii=False)[:2500], text=text[:6000])
+        ledger=json.dumps(ledger, ensure_ascii=False)[:2500],
+        foreshadow=foreshadow_ctx, text=text[:6000])
     # 提取模型跟随本次写作选中的文本模型(顶栏下拉),与正文同一模型保持判断口径一致;
     # 只给了模型名时反查承载它的配置,防配错网关。
     if config_id is None and model:
@@ -222,23 +294,59 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
         return None
 
     changes_raw = []
-    for c in (parsed.get("changes") or [])[:20]:
-        if not isinstance(c, dict):
-            continue
-        item = {
-            "character": str(c.get("character") or "").strip(),
-            "dimension": str(c.get("dimension") or "").strip(),
-            "from": str(c.get("from") or ""),
-            "to": str(c.get("to") or ""),
-            "target": str(c.get("target") or "").strip() or None,
-            "quote": str(c.get("quote") or "")[:60],
-        }
-        if item["character"] and item["to"]:
-            changes_raw.append(item)
+    world_ops = []               # update_world 操作(旧格式从 parsed["world"] 取)
+    foreshadow_ops = []          # open/resolve 交给伏笔台账
+    ops = parsed.get("ops")
+    if isinstance(ops, list):
+        # 工具化输出:模型按自查清单自己决定调哪种操作
+        for op in ops[:24]:
+            if not isinstance(op, dict):
+                continue
+            kind = str(op.get("op") or "").strip()
+            if kind == "update_character":
+                changes_raw.append({
+                    "character": str(op.get("character") or "").strip(),
+                    "dimension": str(op.get("dimension") or "").strip(),
+                    "from": str(op.get("from") or ""),
+                    "to": str(op.get("to") or ""),
+                    "target": str(op.get("target") or "").strip() or None,
+                    "quote": str(op.get("quote") or "")[:60],
+                })
+            elif kind == "update_world":
+                world_ops.append({
+                    "character": "世界",
+                    "dimension": str(op.get("dimension") or "").strip(),
+                    "from": str(op.get("from") or ""),
+                    "to": str(op.get("to") or ""),
+                    "quote": str(op.get("quote") or "")[:60],
+                })
+            elif kind in ("open_foreshadow", "resolve_foreshadow"):
+                txt = str(op.get("text") or "").strip()
+                if txt:
+                    foreshadow_ops.append((kind, txt,
+                                           str(op.get("quote") or "")[:60]))
+            elif kind == "no_change":
+                pass
+    else:
+        # 旧格式兼容:模型没按 ops 输出时仍认 {"changes":[...]}
+        for c in (parsed.get("changes") or [])[:20]:
+            if not isinstance(c, dict):
+                continue
+            changes_raw.append({
+                "character": str(c.get("character") or "").strip(),
+                "dimension": str(c.get("dimension") or "").strip(),
+                "from": str(c.get("from") or ""),
+                "to": str(c.get("to") or ""),
+                "target": str(c.get("target") or "").strip() or None,
+                "quote": str(c.get("quote") or "")[:60],
+            })
     # 无效变更过滤:from == to(模型偶尔把「未变化」也报上来,如 位置:旅店→旅店)
     changes = [c for c in changes_raw if not (c["from"] and c["to"] and c["from"] == c["to"])]
+    # 伏笔操作:借道 novel.py 的伏笔台账(去重/封顶都在那边),惰性导入防循环
+    foreshadow_applied = _apply_foreshadow_ops(drama_id, chapter_hint=None,
+                                               ops=foreshadow_ops) if foreshadow_ops else 0
     world = []
-    for w in (parsed.get("world") or [])[:6]:
+    for w in ([*world_ops, *(parsed.get("world") or [])][:6]):
         if not isinstance(w, dict):
             continue
         dim = str(w.get("dimension") or "").strip()
@@ -269,7 +377,8 @@ def update_state_ledger(drama_id: int, episode_id: int, config_id: int | None = 
     _save_meta(drama_id, meta)
     if jev.get("verdict") == "conflict":
         _write_back_conflict(episode_id, all_changes, jev)
-    return {"changes": len(all_changes), "jev": jev}
+    return {"changes": len(all_changes), "jev": jev,
+            "foreshadow": foreshadow_applied}
 
 
 def _write_back_conflict(episode_id: int, changes: list, jev: dict):

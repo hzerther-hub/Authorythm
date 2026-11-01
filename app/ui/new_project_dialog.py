@@ -71,6 +71,7 @@ class NewProjectDialog(QDialog):
         self._ref_video = ""
         self._product_img = ""
         self._presenter_img = ""
+        self._book_path = ""
         # 「项目说明」生成的 简介/创意描述/题材 —— 不可见,随表单一起落库
         self._concept: dict = {}
         root = QVBoxLayout(self)
@@ -125,6 +126,28 @@ class NewProjectDialog(QDialog):
         root.addLayout(more)
         root.addWidget(W.muted(tr("ratio_note")))
 
+        # ── 整书导入(仅「写小说」显示)──
+        # 导入的书 = 这个项目的章节;创建后自动切章入库并**照原书总结**出
+        # 小说设定(简介/题材/总纲/世界观/合约/分卷)—— 此前导入只在项目页,
+        # 导入完设定栏全空,后续 AI 起草对不上导入的内容(用户实测反馈)。
+        self.book_row_host = QWidget()
+        bl = QVBoxLayout(self.book_row_host)
+        bl.setContentsMargins(0, 4, 0, 0)
+        bl.setSpacing(4)
+        bl.addWidget(W.muted(tr("book_import_optional")))
+        brow = QHBoxLayout()
+        self.book_edit = QLineEdit()
+        self.book_edit.setPlaceholderText(tr("book_import_pick"))
+        brow.addWidget(self.book_edit, 1)
+        self.book_pick_btn = QPushButton(tr("选择文件"))
+        self.book_pick_btn.clicked.connect(self._pick_book)
+        brow.addWidget(self.book_pick_btn)
+        bl.addLayout(brow)
+        self.book_hint = W.muted(tr("book_import_hint"))
+        self.book_hint.setWordWrap(True)
+        bl.addWidget(self.book_hint)
+        root.addWidget(self.book_row_host)
+
         root.addStretch(1)
 
         btns = QHBoxLayout()
@@ -142,10 +165,12 @@ class NewProjectDialog(QDialog):
 
         for rb in self._radios.values():
             rb.toggled.connect(self._rebuild_dynamic)
+            rb.toggled.connect(self._sync_book_row)
         # 项目名变化 → 「项目说明」按钮可用性(没名字就没种子,AI 只能凭空瞎编)
         self.name_edit.textChanged.connect(self._sync_concept_btn)
         self._rebuild_dynamic()
         self._sync_concept_btn()
+        self._sync_book_row()
 
     # ── 项目说明 ──
     def _sync_concept_btn(self, *_):
@@ -290,6 +315,18 @@ class NewProjectDialog(QDialog):
             self._presenter_img = p
             self.presenter_btn.setText("👤 " + p.split("/")[-1].split("\\")[-1])
 
+    def _sync_book_row(self, *_):
+        """整书导入只对「写小说」有意义:导入的章节就是小说正文,
+        设定/写章/转剧全都吃它;剧/漫/宣传/复刻不吃整本书正文。"""
+        self.book_row_host.setVisible(self.work_type() == "novel")
+
+    def _pick_book(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("选择小说 TXT"), "", tr("文本文件 (*.txt);;所有文件 (*)"))
+        if path:
+            self._book_path = path
+            self.book_edit.setText(path.split("/")[-1].split("\\")[-1])
+
     def work_type(self) -> str:
         for wt, rb in self._radios.items():
             if rb.isChecked():
@@ -343,4 +380,6 @@ class NewProjectDialog(QDialog):
             "metadata": json.dumps(meta, ensure_ascii=False),
             # 创意描述是 dramas 表上的独立列
             "creative_description": self._concept.get("creative_description", ""),
+            # 整书导入(仅 novel):创建后切章入库 + 生成小说设定(main_window 消费)
+            "book_src": self._book_path if wt == "novel" else "",
         }

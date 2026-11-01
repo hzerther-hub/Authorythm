@@ -8,7 +8,11 @@ data/
 *.sqlite3-shm
 dist/
 build/
+# PyInstaller 生成的临时 spec(自动生成,不入库);
+# 但**我们自己的** app.spec 必须入库 —— 之前这条规则把打包配置一起封死了,
+# 导致「有 pyinstaller 依赖却没有任何打包配置」的状态。
 *.spec
+!app.spec
 .DS_Store
 # Agent skills(工具无关约定:实体在 .agents/skills,各工具目录做 junction)
 .agents/

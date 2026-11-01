@@ -138,6 +138,14 @@ class BookImportDialog(QDialog):
         row3.addWidget(self.imitate_stat)
         row3.addStretch(1)
         l3.addLayout(row3)
+        # ── 不仿写,只要「本项目自己的」设定:导入的书就是本项目正文,把
+        # 项目设置/小说设定照原书总结出来(简介/题材/总纲/世界观/合约/分卷)。
+        # 与仿写互不影响:仿写另开新项目,这里只填当前项目的设定栏。
+        self.selfsettings_btn = WaitingButton(tr("为本项目生成小说设定"))
+        W.set_icon(self.selfsettings_btn, "doc")
+        self.selfsettings_btn.setToolTip(tr("按这本书的实际内容总结出简介/题材/总纲/世界观/合约/分卷(不改章节)"))
+        self.selfsettings_btn.clicked.connect(self._do_self_settings)
+        l3.addWidget(self.selfsettings_btn)
         root.addWidget(box3)
         root.addStretch(1)
 
@@ -178,6 +186,8 @@ class BookImportDialog(QDialog):
         self.analyze_btn.setToolTip("" if n else tr("先导入整本书"))
         self.imitate_btn.setEnabled(bool(prof))
         self.imitate_btn.setToolTip("" if prof else tr("先完成章节分析"))
+        self.selfsettings_btn.setEnabled(bool(prof))
+        self.selfsettings_btn.setToolTip("" if prof else tr("先完成章节分析"))
 
     # ── 段① ──
     def _pick(self):
@@ -255,6 +265,29 @@ class BookImportDialog(QDialog):
             self._refresh_state()
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+    def _do_self_settings(self):
+        """照原书总结**本项目**的小说设定(不新建项目、不动章节)。"""
+        from ..core.preflight import ensure_ready
+        if not ensure_ready("text", None):
+            return
+        btn = self.selfsettings_btn
+        btn.busy(tr("生成设定中"))
+
+        def job(tid):
+            from ..core import taskmgr
+            from ..pipeline import book_import
+            return book_import.generate_book_settings(
+                self.drama_id, on_progress=lambda msg: taskmgr.set_stage(tid, msg))
+
+        def done(tid, result, error):
+            btn.idle()
+            if error:
+                err(error)
+                return
+            ok(tr("book_settings_done"))
+
+        TASKMGR.submit("book_settings", job, done, drama_id=self.drama_id)
 
     # ── 段③ ──
     def _do_imitate(self):
