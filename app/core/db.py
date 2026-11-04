@@ -429,6 +429,33 @@ STYLE_PRESETS: list[tuple[str, str, int, str, str, str]] = [
     ("真人写实", "live", 120, "all",
      "ultra-realistic cinematic live-action look, professional film photography, natural skin tones with detailed pores and realistic texture, true human anatomy and proportions, shallow depth of field with creamy bokeh, cinematic three-point lighting, subtle film grain, 35mm lens cinematic framing, true-to-life color grading, detailed real-world environments, consistent actor appearance across shots, avoid cartoon or anime features, avoid 3D render look, avoid illustration style, avoid plastic waxy skin, avoid over-smoothing beauty filter",
      "电影级真人质感(注意:真人影像过不了部分平台真人内容审核)"),
+    # ── 上美影五风格(对标 liangdabiao/smy-seedance-storyboard 的风格指南)──
+    #
+    # 配方取自该仓库 references/上美影风格指南.md(单一事实来源)。关键取舍:
+    # 本项目 style_prompt() 的**同一份前缀**既进生图也进出视频提示词,而源仓库
+    # 图片块(§2.1 咆哮体「绝对不要阴影渐变」)与视频行(§2.3 v3「精准反3D」)配方
+    # 明确分开、互相套用会翻车 —— 绝对化「无阴影无渐变」在视频端连手绘肌理
+    # 一起杀掉(源仓库三轮实测结论)。所以统一取 **v3 视频行配方为基底**
+    # (双端安全:平涂靠正向词「水粉平涂上色」锚定,否定词只打击真敌
+    # 3D/写实/体积光),再补英文负面锚与跨镜一致性句,格式与其余预设对齐。
+    # 色盘取 §3.1 主四色(青瓷绿/朱砂红/鎏金/墨黑)逐字进前缀 —— 防跨镜跑色的
+    # 主抓手就是「所有提示词逐字引用同一色盘字符串」;子风格按题材各加 0-2 个
+    # §3.2 扩展色。子风格只换「媒介质感」短语,其余逐字保留(源仓库子风格表)。
+    ("上美影手绘", "shangmeiying", 10, "drama,novel,comic,mtv",
+     "上海美术电影制片厂经典手绘动画风格，手绘墨线轮廓，水粉平涂上色、保留颜料笔触与手工感，传统矿物颜料色（主色：青瓷绿、朱砂红、鎏金、墨黑），大胆概括的造型轮廓，装饰性平面背景纹样，平面化构图，模拟动画胶片颗粒感，浓郁的中国传统幻想美学；不要3D渲染、不要写实感、不要体积光，avoid 3D render look, avoid photorealism, avoid volumetric lighting, avoid soft glow, avoid gradient shading, avoid japanese anime cel shading, avoid thick western comic outlines, flat 2D hand-drawn animation, generous negative space, consistent character design across shots",
+     "上美影复古手绘动画(大闹天宫式工笔重彩+装饰线,矿颜平涂,纯2D)"),
+    ("上美影·敦煌重彩", "smy_dunhuang", 11, "drama,novel,comic,mtv",
+     "上海美术电影制片厂经典手绘动画风格，手绘墨线轮廓，陈年壁画矿物重彩，斑驳壁画肌理与轻微颜料过渡，传统矿物颜料色（主色：青瓷绿、朱砂红、鎏金、墨黑，扩展：石青、赭石），大胆概括的造型轮廓，装饰性平面背景纹样，平面化构图，模拟动画胶片颗粒感，浓郁的中国传统幻想美学；不要3D渲染、不要写实感、不要体积光，avoid 3D render look, avoid photorealism, avoid volumetric lighting, avoid soft glow, avoid gradient shading, avoid japanese anime cel shading, avoid thick western comic outlines, flat 2D hand-drawn animation, consistent character design across shots",
+     "九色鹿式敦煌壁画重彩,斑驳矿物肌理"),
+    ("上美影·水墨淡彩", "smy_ink_wash", 12, "drama,novel,comic,mtv",
+     "上海美术电影制片厂经典手绘动画风格，写意墨线轮廓，墨色浓淡晕染与淡彩过渡，传统矿物颜料色（主色：青瓷绿、朱砂红、鎏金、墨黑，扩展：月白），大胆概括的造型轮廓，装饰性平面背景纹样，平面化构图，模拟动画胶片颗粒感，浓郁的中国传统幻想美学；不要3D渲染、不要写实感、不要体积光，avoid 3D render look, avoid photorealism, avoid volumetric lighting, avoid soft glow, avoid gradient shading, avoid japanese anime cel shading, avoid thick western comic outlines, flat 2D hand-drawn animation, consistent character design across shots",
+     "小蝌蚪找妈妈式写意水墨淡彩"),
+    ("上美影·剪纸", "smy_paper_cut", 13, "drama,novel,comic,mtv",
+     "上海美术电影制片厂经典手绘动画风格，分层剪纸剪影，对称装饰纹样，实色平涂刻线边缘，传统矿物颜料色（主色：青瓷绿、朱砂红、鎏金、墨黑，扩展：汤红），大胆概括的造型轮廓，装饰性平面背景纹样，平面化构图，模拟动画胶片颗粒感，浓郁的中国传统幻想美学；不要3D渲染、不要写实感、不要体积光，avoid 3D render look, avoid photorealism, avoid volumetric lighting, avoid soft glow, avoid gradient shading, avoid japanese anime cel shading, avoid thick western comic outlines, flat 2D paper-cut animation, consistent character design across shots",
+     "葫芦兄弟式分层剪纸风"),
+    ("上美影·石蓝淡墨", "smy_blue_ink", 14, "drama,novel,comic,mtv",
+     "上海美术电影制片厂经典手绘动画风格，淡雅磨砂平涂，强线条感，小面积怪色点缀，传统矿物颜料色（主色：青瓷绿、朱砂红、鎏金、墨黑，扩展：石青、巧粉），大胆概括的造型轮廓，装饰性平面背景纹样，平面化构图，模拟动画胶片颗粒感，浓郁的中国传统幻想美学；不要3D渲染、不要写实感、不要体积光，avoid 3D render look, avoid photorealism, avoid volumetric lighting, avoid soft glow, avoid gradient shading, avoid japanese anime cel shading, avoid thick western comic outlines, flat 2D hand-drawn animation, consistent character design across shots",
+     "石蓝淡墨绘本,强线条感+小面积怪色点缀"),
 ]
 
 # ── 风格预设三分类(style_type)──────────────────────────────────────────

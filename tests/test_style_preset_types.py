@@ -51,7 +51,9 @@ CONTRACT_NOVEL = {
 _LATIN_LANGS = ("en", "fr", "de", "es", "pt", "it", "tr", "vi", "id")
 _HAS_CJK = re.compile(r"[一-鿿]")
 # 这些内置名在繁体里字形与简体相同(没有对应异体字),出现同样字形是正确的
-_ZH_HANT_SAME = {"皮克斯 3D", "日漫", "美漫", "水彩", "黑白", "粗描", "教育卡通"}
+_ZH_HANT_SAME = {"皮克斯 3D", "日漫", "美漫", "水彩", "黑白", "粗描", "教育卡通",
+                   # 上美影子风格:这两条繁体字形与简体相同(无对应异体字)
+                   "上美影·敦煌重彩", "上美影·水墨淡彩"}
 # 本轮新增的界面文案(16 语言必须齐全)
 _NEW_KEYS = (
     "style_category", "style_type_visual", "style_type_comic", "style_type_novel",
