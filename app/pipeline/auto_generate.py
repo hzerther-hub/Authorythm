@@ -85,6 +85,19 @@ def build_message(drama: dict, work_type: str) -> str:
         dur = mtv.get("song_duration")
         if dur:
             lines.append(f"歌曲总时长:{int(dur)} 秒(全片镜头时长之和必须与之相等)")
+        timed = mtv.get("lyrics_timed")
+        if timed:
+            # 打轴时间窗(歌词打轴器产出):分镜切点尽量落在窗口边界上,
+            # 画面切换与唱到的歌词行同步 —— 这是「歌词与画面同步」的关键
+            rows = "\n".join(f"{x.get('start', 0):.1f}-{x.get('end', 0):.1f}秒 {x.get('text', '')}"
+                             for x in timed)
+            lines.append("歌词打轴(每行的时间窗,分镜切点尽量与窗口边界对齐,"
+                         "让画面切换与唱到的歌词行同步):\n" + rows)
+        elif mtv.get("lyrics") and dur:
+            n = len([x for x in str(mtv["lyrics"]).splitlines() if x.strip()])
+            per = int(dur) / max(1, n)
+            lines.append(f"未打轴:歌词共 {n} 行,每行约 {per:.1f} 秒,"
+                         "分镜切点尽量与歌词行边界对齐。")
     if (drama.get("creative_description") or "").strip():
         lines.append(f"创意描述:{drama['creative_description'].strip()[:600]}")
     tail = PROMPT_TAIL.get(work_type)

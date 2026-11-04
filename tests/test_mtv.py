@@ -305,3 +305,34 @@ def test_set_song_subtitle_persists(tmp_db):
     assert mtv.mtv_meta(did)["subtitle"] is True
     mtv.set_song_subtitle(did, False)
     assert mtv.mtv_meta(did)["subtitle"] is False
+
+
+def test_save_lyrics_timed_roundtrip(tmp_db):
+    """打轴结果落库:空文本行丢弃、end<=start 抬到 start+1、非法行丢弃。"""
+    did = _mk_drama(metadata={"mtv": {"lyrics": "a\nb\nc", "song_duration": 30}})
+    mtv.save_lyrics_timed(did, [
+        {"text": "第一行", "start": 0.0, "end": 8.5},
+        {"text": "  "},
+        {"text": "第二行", "start": 8.5, "end": 8.4},   # end<=start → 抬到 9.5
+        {"text": "第三行", "start": "abc", "end": 12},  # 非法 → 丢弃
+    ])
+    timed = mtv.mtv_meta(did)["lyrics_timed"]
+    assert [x["text"] for x in timed] == ["第一行", "第二行"]
+    assert timed[0]["end"] == 8.5
+    assert timed[1]["end"] == 9.5 and timed[1]["start"] == 8.5
+
+
+def test_build_lyrics_ass_timed_overrides_even(tmp_db, tmp_path):
+    """打了轴的歌词按打轴时间出字幕(不再平分)—— 歌词与唱到的行同步。"""
+    did = _mk_drama(metadata={"mtv": {"lyrics": "a\nb", "song_duration": 60}})
+    mtv.save_lyrics_timed(did, [
+        {"text": "第一句", "start": 0, "end": 7.2},
+        {"text": "第二句", "start": 7.2, "end": 14.6},
+    ])
+    m = mtv.mtv_meta(did)
+    ass = mtv.build_lyrics_ass(str(m["lyrics"]), 60, tmp_path / "t.ass",
+                               w=720, h=1280, timed=mtv.timed_lines(m))
+    text = ass.read_text(encoding="utf-8")
+    assert "0:00:00.00,0:00:07.20" in text, "第一行应按打轴 0-7.2s"
+    assert "0:00:07.20,0:00:14.60" in text, "第二行应按打轴 7.2-14.6s"
+    assert "0:00:45.00" not in text, "不应再出现平分模式的时间点"

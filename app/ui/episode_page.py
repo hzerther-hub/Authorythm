@@ -7699,6 +7699,20 @@ class EpisodePage(QWidget):
         W.set_icon(self.lyrics_btn, "doc")
         self.lyrics_btn.clicked.connect(self._edit_mtv_lyrics)
         song_row.addWidget(self.lyrics_btn)
+        # 歌词打轴(逐行时间)与对口型(唱段镜头/成片):2026-11-04 用户要求,
+        # 对齐小说线「按功能迭代」的形态 —— 打轴驱动字幕/分镜/对口型三处。
+        self.sync_btn = QPushButton(tr("mtv_sync"))
+        W.set_icon(self.sync_btn, "clock")
+        self.sync_btn.clicked.connect(self._open_lyric_sync)
+        song_row.addWidget(self.sync_btn)
+        self.lipsync_btn = QPushButton(tr("mtv_lipsync"))
+        W.set_icon(self.lipsync_btn, "bolt")
+        self.lipsync_btn.clicked.connect(self._gen_lipsync_shots)
+        song_row.addWidget(self.lipsync_btn)
+        self.lipsync_merge_btn = QPushButton(tr("mtv_lipsync_merge"))
+        W.set_icon(self.lipsync_merge_btn, "magic")
+        self.lipsync_merge_btn.clicked.connect(self._merge_lipsync)
+        song_row.addWidget(self.lipsync_merge_btn)
         self.song_sub_check = QCheckBox(tr("mtv_subtitles"))
         self.song_sub_check.setToolTip(tr("mtv_subtitles_tip"))
         self.song_sub_check.toggled.connect(self._save_song_subtitle)
@@ -8170,6 +8184,83 @@ class EpisodePage(QWidget):
         """歌词字幕开关落库:合并铺歌时按此决定是否把歌词烧进画面。"""
         from ..pipeline import mtv as mtv_pipe
         mtv_pipe.set_song_subtitle(self.drama_id, bool(on))
+
+    # ── 歌词打轴 / 对口型(2026-11-04)────────────────────────────────────
+    def _open_lyric_sync(self):
+        """歌词打轴器:逐行定起止时间(字幕/分镜切点/对口型音频切分共用)。"""
+        from ..pipeline import mtv as mtv_pipe
+        from .lyric_sync_dialog import LyricSyncDialog
+        m = mtv_pipe.mtv_meta(self.drama_id)
+        song = mtv_pipe._resolve_song(m.get("song_url"))
+        if not song:
+            err(tr("mtv_sync_need_song"))
+            return
+        dur = float(m.get("song_duration") or 0)
+        if dur <= 0:
+            dur = float(mtv_pipe.probe_audio_duration(str(song)))
+        lines = [ln.strip() for ln in str(m.get("lyrics") or "").splitlines() if ln.strip()]
+        dlg = LyricSyncDialog(self, self.drama_id, str(song), dur,
+                              timed=m.get("lyrics_timed"), fallback_lines=lines)
+        if dlg.exec():
+            ok(tr("mtv_sync_saved"))
+
+    def _gen_lipsync_shots(self):
+        """逐行生成对口型镜头(批量串行,已生成的行跳过;关窗后台继续)。"""
+        from ..core.taskmgr import on_main
+        from ..pipeline import mtv as mtv_pipe
+        m = mtv_pipe.mtv_meta(self.drama_id)
+        if not mtv_pipe.timed_lines(m):
+            err(tr("mtv_lipsync_need_timed"))
+            return
+        self.lipsync_btn.setEnabled(False)
+        self.lipsync_btn.setText(tr("mtv_lipsync_running"))
+
+        def job(tid):
+            return mtv_pipe.generate_singing_shots(
+                self.episode_id, config_id=self._mtv_video_cfg(),
+                progress=lambda a, b, s: on_main(
+                    lambda: self.lipsync_btn.setText(
+                        tr("mtv_lipsync_running_n").format(a, b))))
+
+        def done(tid, result, error):
+            from ..core.taskmgr import on_main as _om
+            def _restore():
+                self.lipsync_btn.setEnabled(True)
+                self.lipsync_btn.setText(tr("mtv_lipsync"))
+                r = result if isinstance(result, dict) else {}
+                if error:
+                    err(tr("mtv_lipsync_failed") + str(error)[:200])
+                else:
+                    ok(tr("mtv_lipsync_done").format(r.get("done", 0), r.get("total", 0)))
+            _om(_restore)
+
+        TASKMGR.submit("video", job, done, episode_id=self.episode_id)
+
+    def _merge_lipsync(self):
+        """合成对口型 MV:按歌词行序拼接唱段镜头,铺原歌。"""
+        from ..pipeline import mtv as mtv_pipe
+        if not mtv_pipe.singing_clips(self.drama_id):
+            err(tr("mtv_lipsync_none"))
+            return
+        self.lipsync_merge_btn.setEnabled(False)
+        self.lipsync_merge_btn.setText(tr("merging"))
+
+        def job(tid):
+            return mtv_pipe.merge_singing(self.episode_id)
+
+        def done(tid, result, error):
+            from ..core.taskmgr import on_main as _om
+            def _restore():
+                self.lipsync_merge_btn.setEnabled(True)
+                self.lipsync_merge_btn.setText(tr("mtv_lipsync_merge"))
+                if error:
+                    err(str(error)[:250])
+                else:
+                    ok(tr("mtv_lipsync_merged"))
+                    self._reload_export()
+            _om(_restore)
+
+        TASKMGR.submit("video", job, done, episode_id=self.episode_id)
 
     def _on_intro_toggle(self, on: bool):
         self.intro_title.setVisible(on)

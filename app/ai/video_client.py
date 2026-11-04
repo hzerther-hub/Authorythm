@@ -285,14 +285,17 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
                    reference_images: list[str] | None = None,
                    aspect_ratio: str | None = None,
                    last_frame: str | None = None, seed=None,
-                   on_progress=None) -> tuple[Path, str]:
+                   on_progress=None,
+                   audios: list[str] | None = None) -> tuple[Path, str]:
     """文生视频 / 图生视频(first_frame 本地路径)。
 
     reference_images:@角色 形象参考图本地路径列表(角色一致性)。
     aspect_ratio:项目画幅(如 9:16)。对齐参考项目 `ratio: record.aspectRatio || 'adaptive'`
     —— 不传时 seedance 默认出 1:1 方图,竖屏项目全变方块,必须显式下发。
     agnes 走多模态参考注入;volcengine 以 reference_image 角色注入;minimax/aliyun 忽略。
-    返回 (本地路径, provider)。
+    audios:音频驱动(agnes 参考模式 reference_audios)—— 人物口型/演唱跟随该
+    音频,MTV 对口型用。注意 keyframe 模式(first_frame/last_frame)与 audios
+    互斥(官方规则),两者都传时 audios 会被上游忽略。返回 (本地路径, provider)。
 
     last_frame / seed / on_progress 是为 agnes 官方文档能力加的**全可选**参数:
     只有 agnes 会真正用它们,其余 provider 忽略(其余分支照旧)。不传 = 行为与
@@ -333,13 +336,33 @@ def generate_video(prompt: str, resolution: str = "720p", duration: int | None =
         lambda: _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                                first_frame, refs, config_id, reference_images or [],
                                aspect_ratio, max_side, quality,
-                               last_frame, seed, on_progress))
+                               last_frame, seed, on_progress,
+                               audios=[_audio_data_url(a) for a in (audios or [])]))
+
+
+def _audio_data_url(path: str) -> str:
+    """本地音频 → data URL(对口型 audios 用;公网 http(s) 原样透传)。
+
+    mime 按后缀:mp3/m4a/wav;其它后缀按 audio/x-自定义兜底。音频不做图像
+    那套压缩(压的是画面,音频压了就不对了)。
+    """
+    s = str(path).replace("\\", "/")
+    if s.startswith(("http://", "https://", "data:")):
+        return s
+    mime = {".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".wav": "audio/wav",
+            ".flac": "audio/flac", ".aac": "audio/aac", ".ogg": "audio/ogg"}.get(
+        Path(s).suffix.lower(), "audio/mpeg")
+    from pathlib import Path as _P
+    b = _P(s).read_bytes()
+    import base64 as _b64
+    return f"data:{mime};base64," + _b64.b64encode(b).decode()
 
 
 def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                    first_frame, refs, config_id, reference_images, aspect_ratio=None,
                    max_side=None, quality=None,
-                   last_frame=None, seed=None, on_progress=None):
+                   last_frame=None, seed=None, on_progress=None,
+                   audios: list[str] | None = None):
     """按 provider 分发一次(不含重试)。"""
     provider = cfg["provider"]
     if provider == "volcengine":
@@ -439,6 +462,7 @@ def _dispatch_once(cfg, base, headers, prompt, resolution, duration,
                                duration=duration, first_frame=first_frame,
                                last_frame=last_frame,
                                reference_images=reference_images,
+                               reference_audios=audios,
                                aspect_ratio=aspect_ratio, seed=seed,
                                ref_side=max_side, ref_quality=quality,
                                on_progress=on_progress)
