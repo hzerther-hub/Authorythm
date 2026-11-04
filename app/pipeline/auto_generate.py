@@ -5,6 +5,7 @@
     drama     → episodes.script_content         (script_rewriter / script)
     comic     → comic_panels(JSON 数组)         (comic_board / comic_panels)
     promotion → episodes.content                (promo_writer / promo)
+    mtv       → episodes.script_content         (mtv_writer / mtv_script,无对白)
     clone     → 不生成(分镜来自参考视频拆解)
 
 全程走 sys_task 记录进度;失败只记任务不阻断建项目。
@@ -25,6 +26,8 @@ AGENT_FOR = {
     "comic": ("comic_board", "comic_panels"),
     "promotion": ("promo_writer", "promo"),
     "video_clone": ("novel_writer", "clone_understand"),
+    # MTV:纯画面叙事剧本(无对白),落 script_content 走分镜/出图/出视频既有链路
+    "mtv": ("mtv_writer", "mtv_script"),
 }
 
 PROMPT_TAIL = {
@@ -35,6 +38,9 @@ PROMPT_TAIL = {
     "comic": "输出漫画分镜格数组 JSON:[{description, dialogue, composition, image_prompt}],建议 4-6 格",
     "promotion": ("请输出至少 3 个版本的推广文案(悬念版/情绪版/利益版),"
                   "每版结构:钩子 → 卖点展开 → CTA,用分隔线区分"),
+    "mtv": ("输出 MV 剧本:场景头 `## S01 | 内景 · 地点 | 时间` + 每场一行"
+            "「【时长:N秒】」(8-12 秒/镜,总和=歌曲总时长)。全片无对白无旁白,"
+            "故事全部由画面讲述;开头一段「主体形象统一描述」定主角形象"),
 }
 
 
@@ -70,6 +76,15 @@ def build_message(drama: dict, work_type: str) -> str:
             lines.append(f"目标平台:{meta['platform']}")
         if meta.get("format"):
             lines.append(f"输出格式:{meta['format']}")
+    if work_type == "mtv":
+        # MTV 的创作上下文 = 歌词 + 歌曲时长(存 metadata.mtv,建项目时写入);
+        # 没有它们,mtv_writer 只能凭项目名瞎编,画面与歌完全对不上
+        mtv = meta.get("mtv") or {}
+        if mtv.get("lyrics"):
+            lines.append("歌词:\n" + str(mtv["lyrics"]))
+        dur = mtv.get("song_duration")
+        if dur:
+            lines.append(f"歌曲总时长:{int(dur)} 秒(全片镜头时长之和必须与之相等)")
     if (drama.get("creative_description") or "").strip():
         lines.append(f"创意描述:{drama['creative_description'].strip()[:600]}")
     tail = PROMPT_TAIL.get(work_type)
@@ -81,7 +96,9 @@ def build_message(drama: dict, work_type: str) -> str:
 def _persist(episode_id: int, work_type: str, text: str) -> int:
     """把 Agent 输出落到对应表;返回写入条数(正文类记 1)。"""
     ts = db.now()
-    if work_type == "drama":
+    if work_type in ("drama", "mtv"):
+        # MTV 与短剧同落 script_content:下游「重新拆分分镜 → 出图 → 出视频」
+        # 整条链路读的都是这一列,不用为 MTV 另开一条
         db.ex("UPDATE episodes SET script_content=?, updated_at=? WHERE id=?",
               (text, ts, episode_id))
         return 1
@@ -137,6 +154,12 @@ def auto_generate_first_episode(drama_id: int, episode_id: int, config_id: int |
             last = text
         if not (text or "").strip():
             raise RuntimeError(f"首集生成返回空内容({last[:80]})")
+        # 剥思维链:推理型模型先吐一大段 <think> 再给正文,直接落库的话正文里
+        # 98% 是推理(实测 MTV 首集 60449 字里 57946 字是 think),界面、
+        # 分镜拆解、资产提取全都读到脏数据。
+        text = runner.strip_think(text)
+        if not text.strip():
+            raise RuntimeError(f"首集生成剥掉思维链后没有正文({last[:80]})")
         if work_type == "drama":
             # 可拍性质量门:满篇画外音/单人独角戏的首集剧本判失败(不落库)。
             # 剧本要拿去分镜和生成视频,一个人在一间屋里自说自话的稿子拍不出来。

@@ -7679,6 +7679,36 @@ class EpisodePage(QWidget):
         self.intro_row = intro_row
         body.addLayout(intro_row)
 
+        # ── MTV 歌曲条(仅 MTV 项目显示)──
+        # 对齐交接文档平台的歌曲条:歌曲名+时长 / 播放暂停 / 换歌 / 歌词编辑 /
+        # 歌词字幕开关(合并铺歌时烧进画面)。歌是 MTV 成片唯一的音频(全静音合并)。
+        song_row = QHBoxLayout()
+        song_row.setSpacing(8)
+        self.song_lab = QLabel(tr("mtv_no_song"))
+        self.song_lab.setObjectName("muted")
+        song_row.addWidget(self.song_lab)
+        self.song_play_btn = QPushButton(tr("mtv_play"))
+        self.song_play_btn.setVisible(False)
+        self.song_play_btn.clicked.connect(self._toggle_song)
+        song_row.addWidget(self.song_play_btn)
+        self.song_replace_btn = QPushButton(tr("mtv_replace_song"))
+        W.set_icon(self.song_replace_btn, "volume")
+        self.song_replace_btn.clicked.connect(self._replace_song)
+        song_row.addWidget(self.song_replace_btn)
+        self.lyrics_btn = QPushButton(tr("mtv_edit_lyrics"))
+        W.set_icon(self.lyrics_btn, "doc")
+        self.lyrics_btn.clicked.connect(self._edit_mtv_lyrics)
+        song_row.addWidget(self.lyrics_btn)
+        self.song_sub_check = QCheckBox(tr("mtv_subtitles"))
+        self.song_sub_check.setToolTip(tr("mtv_subtitles_tip"))
+        self.song_sub_check.toggled.connect(self._save_song_subtitle)
+        song_row.addWidget(self.song_sub_check)
+        song_row.addStretch(1)
+        self._song_row_host = QWidget()
+        self._song_row_host.setLayout(song_row)
+        self._song_row_host.setVisible(False)
+        body.addWidget(self._song_row_host)
+
         self.shot_scroll = C.scroll_host(QWidget())
         self.shot_host = self.shot_scroll.widget()
         self.shot_grid = QGridLayout(self.shot_host)
@@ -8050,6 +8080,96 @@ class EpisodePage(QWidget):
             # 行内片头名只回写标题字段(对齐参考 onExportIntroTitle → 保存 intro_title)
             self.intro_title.editingFinished.connect(self._save_intro_title)
             self._intro_title_wired = True
+        # ── MTV 歌曲条:仅 MTV 项目显示,进页即刷新歌曲名/时长/字幕开关 ──
+        wt_row = db.q1("SELECT work_type FROM dramas WHERE id=?", (self.drama_id,))
+        is_mtv = bool(wt_row and wt_row["work_type"] == "mtv")
+        self._song_row_host.setVisible(is_mtv)
+        if is_mtv:
+            self._load_song_state()
+
+    # ── MTV 歌曲条 ──
+    def _load_song_state(self):
+        from ..pipeline import mtv as mtv_pipe
+        m = mtv_pipe.mtv_meta(self.drama_id)
+        dur = int(m.get("song_duration") or 0)
+        name = Path(str(m.get("song_url") or "")).name if m.get("song_url") else ""
+        if name:
+            mm, ss = divmod(max(0, dur), 60)
+            self.song_lab.setText(f"🎵 {name} · {mm}:{ss:02d}")
+            self.song_play_btn.setVisible(True)
+        else:
+            self.song_lab.setText(tr("mtv_no_song"))
+            self.song_play_btn.setVisible(False)
+        self.song_sub_check.blockSignals(True)
+        self.song_sub_check.setChecked(bool(m.get("subtitle")))
+        self.song_sub_check.blockSignals(False)
+
+    def _toggle_song(self):
+        """播放/暂停歌曲(试听用:确认换歌成功、对轴歌词)。"""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtMultimedia import QMediaPlayer
+        from ..pipeline import mtv as mtv_pipe
+        from ..core import config as _cfg
+        m = mtv_pipe.mtv_meta(self.drama_id)
+        url = str(m.get("song_url") or "")
+        if not url:
+            return
+        if not hasattr(self, "_song_player"):
+            from PySide6.QtMultimedia import QAudioOutput
+            self._song_player = QMediaPlayer(self)
+            self._song_audio = QAudioOutput()
+            self._song_player.setAudioOutput(self._song_audio)
+            s = url.replace("\\", "/")
+            p = _cfg.media_url_to_path(s) if s.startswith(("/static/", "static/")) \
+                else Path(s)
+            if not p.exists():
+                err(tr("mtv_no_song"))
+                return
+            self._song_player.setSource(QUrl.fromLocalFile(str(p)))
+        if self._song_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._song_player.pause()
+            self.song_play_btn.setText(tr("mtv_play"))
+        else:
+            self._song_player.play()
+            self.song_play_btn.setText(tr("mtv_pause"))
+
+    def _replace_song(self):
+        """换歌:新 MP3 拷入素材库、实测时长回填,合并铺歌立即生效。"""
+        from PySide6.QtWidgets import QFileDialog
+        from ..pipeline import mtv as mtv_pipe
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("mtv_pick_song"), "", "Audio (*.mp3 *.m4a *.wav *.flac);;所有文件 (*)")
+        if not path:
+            return
+        try:
+            mtv_pipe.save_song(self.drama_id, song_path=path)
+        except Exception as exc:  # noqa: BLE001
+            err(str(exc)[:200])
+            return
+        # 换了歌必须停掉旧播放源,不然 _song_player 还引用旧文件
+        if hasattr(self, "_song_player"):
+            self._song_player.stop()
+            del self._song_player
+        self._load_song_state()
+        ok(tr("mtv_song_saved"))
+
+    def _edit_mtv_lyrics(self):
+        """编辑歌词:字幕烧录用,也决定画面情绪(改完不重生成剧本)。"""
+        from PySide6.QtWidgets import QInputDialog
+        from ..pipeline import mtv as mtv_pipe
+        m = mtv_pipe.mtv_meta(self.drama_id)
+        text, okd = QInputDialog.getMultiLineText(
+            self, tr("mtv_edit_lyrics"), tr("mtv_lyrics_editor_tip"),
+            str(m.get("lyrics") or ""))
+        if not okd:
+            return
+        mtv_pipe.save_song(self.drama_id, lyrics=text.strip())
+        ok(tr("mtv_lyrics_saved"))
+
+    def _save_song_subtitle(self, on: bool):
+        """歌词字幕开关落库:合并铺歌时按此决定是否把歌词烧进画面。"""
+        from ..pipeline import mtv as mtv_pipe
+        mtv_pipe.set_song_subtitle(self.drama_id, bool(on))
 
     def _on_intro_toggle(self, on: bool):
         self.intro_title.setVisible(on)
@@ -8156,11 +8276,21 @@ class EpisodePage(QWidget):
         self.merge_btn.setEnabled(False)
         self.merge_btn.setText("⠋ " + tr("merging"))
 
+        # MTV 项目走专用合并(见 job 内分支);同按钮同成片卡,只有音频策略不同
+        _wt_row = db.q1("SELECT d.work_type FROM dramas d JOIN episodes e "
+                        "ON e.drama_id=d.id WHERE e.id=?", (self.episode_id,))
+
         def job(tid):
-            out = merge_pipe.merge_episode(
-                self.episode_id, ids,
-                intro_title=intro_title,
-                intro_card=intro_card, intro_overlay=intro_overlay)
+            # MTV 项目走专用合并:全静音(镜头原声/旁白一律不要)+ 铺歌;
+            # 普通项目走原合并(旁白混音/片头)。两者返回值同构(成片本地路径)。
+            if _wt_row and _wt_row["work_type"] == "mtv":
+                from ..pipeline.mtv import merge_mtv
+                out = merge_mtv(self.episode_id, ids)
+            else:
+                out = merge_pipe.merge_episode(
+                    self.episode_id, ids,
+                    intro_title=intro_title,
+                    intro_card=intro_card, intro_overlay=intro_overlay)
             # 拼接完立刻抽海报帧。少了这一步成片卡永远拿不到缩略图 ——
             # poster_url() 返回 None 后又回退去把 mp4 当图片喂 pixmap_from_media,
             # 读不出来就是一块灰。分镜视频那条路径本来就有抽帧,合并这条漏了。

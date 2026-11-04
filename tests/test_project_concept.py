@@ -150,9 +150,14 @@ def test_generate_truncates_long_fields(monkeypatch):
 
 
 def test_extract_fields_loose_salvages_broken_json():
-    """JSON 彻底解析不出来时,逐字段正则兜底能救回残缺结果。"""
+    """JSON 彻底解析不出来时,逐字段正则兜底能救回残缺结果。
+
+    兜底解析已收敛到 runner.extract_json(fields=...)(CLAUDE.md:唯一 JSON 解析入口),
+    project_concept 不再自带一份实现。
+    """
     raw = 'title: "时光邮局"\ndescription: "一个关于旧邮局的故事"\n'
-    out = pc._extract_fields_loose(raw, pc.CONCEPT_FIELDS)
+    out = pc.runner.extract_json(raw, fields=list(pc.CONCEPT_FIELDS))
+    assert isinstance(out, dict)
     assert out["title"] == "时光邮局"
     assert out["description"] == "一个关于旧邮局的故事"
 

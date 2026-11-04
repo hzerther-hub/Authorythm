@@ -15,12 +15,249 @@ from . import prompts
 log = get_logger(__name__)
 
 
-def extract_json(text: str) -> dict | list | None:
+def _balanced_json_objects(raw: str) -> list[str]:
+    """抠出原始输出里所有**顶层平衡**的 JSON 片段(字符串感知的括号配对)。
+
+    为什么不能只取「首个 { 到最后一个 }」:模型输出 `{"a":1}\\n说明\\n{"b":2}` 时,
+    首尾一夹把中间说明文字也框进去,JSON.parse 必炸「Unexpected non-whitespace
+    character after JSON」。逐个平衡配对才能把真载荷捞出来。
+
+    配对时必须感知字符串状态:JSON 字符串里可能有 } 或 ](如正文里写 "…}…"),
+    不感知就会在字符串内部误判深度,提前闭合。
+    """
+    out: list[str] = []
+    stack: list[str] = []
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(raw):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch in "{[":
+            if not stack:
+                start = i
+            stack.append("}" if ch == "{" else "]")
+            continue
+        if ch in "}]":
+            if not stack:
+                continue
+            stack.pop()
+            if not stack and start >= 0:
+                out.append(raw[start:i + 1])
+                start = -1
+    return out
+
+
+def _close_truncated_json(frag: str) -> str:
+    """截断挽救:输出被 max_tokens/连接掐断时,补齐未闭合的字符串引号与括号栈。
+
+    上游 novel.ts 的 tryCloseTruncatedJson 同款。长输出(总纲 1500-3000 字、
+    分卷战略)被截断在正文中间是常态 —— 补齐后能捞回大半内容,而不是整段作废。
+    """
+    stack: list[str] = []
+    in_str = False
+    esc = False
+    for ch in frag:
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+            continue
+        if ch in "{[":
+            stack.append("}" if ch == "{" else "]")
+        elif ch in "}]" and stack:
+            stack.pop()
+    fixed = frag
+    if esc:
+        fixed = fixed[:-1]        # 尾部悬空反斜杠先去掉,否则补引号后仍是非法转义
+    if in_str:
+        fixed += '"'
+    while stack:
+        fixed += stack.pop()
+    return fixed
+
+
+def _repair_json_text(src: str) -> str:
+    """修 JSON 字符串字面量内部的**裸换行/回车/制表符**,顺带去掉结构尾部多余逗号。
+
+    模型写中文长句时经常在 JSON 字符串里直接换行,JSON.parse 直接报
+    "Unterminated string in JSON" —— 补 \\n 就好,补引号救不了。
+
+    **刻意不做的事**:把中文弯引号 “ ” 批量换成 ASCII 双引号。正文里 “……” 是
+    正常内容(她说“我不同意”),一换就会把字符串提前闭合,反而制造新的解析错误。
+    """
+    out: list[str] = []
+    in_str = False
+    esc = False
+    i = 0
+    n = len(src)
+    while i < n:
+        ch = src[i]
+        if in_str:
+            if esc:
+                out.append(ch)
+                esc = False
+                i += 1
+                continue
+            if ch == "\\":
+                out.append(ch)
+                esc = True
+                i += 1
+                continue
+            if ch == '"':
+                in_str = False
+                out.append(ch)
+                i += 1
+                continue
+            if ch == "\n":
+                out.append("\\n")
+            elif ch == "\r":
+                out.append("\\r")
+            elif ch == "\t":
+                out.append("\\t")
+            elif ord(ch) < 0x20:
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            # 字符串外的尾逗号:看向后第一个非空白字符,是 } 或 ] 就把这个逗号丢掉
+            j = i + 1
+            while j < n and src[j].isspace():
+                j += 1
+            if j < n and src[j] in "}]":
+                i += 1
+                continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _extract_fields_loose(raw: str, fields: list[str]) -> dict | None:
+    """逐字段正则兜底:JSON 彻底解析不出来时,按 "key": "value" 逐个抠字段。
+
+    只给「宁可给残缺结果也别让用户白等」的场景用(字段清单由调用方给)。
+    四种写法依次尝试(越往后越宽松):
+      "key": "value" / "key": value / key: "value" / key: value
+    """
+    out: dict[str, str] = {}
+    found = 0
+    for f in fields:
+        patterns = [
+            (re.compile(r'"' + re.escape(f) + r'"\s*:\s*"((?:[^"\\]|\\.)*)"', re.S), True),
+            (re.compile(r'"' + re.escape(f) + r'"\s*:\s*([^\n\r,}]{1,600})'), False),
+            (re.compile(r'(?:^|[\n\r{,])[ \t]*' + re.escape(f)
+                        + r'[ \t]*:[ \t]*"([^"\n\r]*)"', re.I), True),
+            (re.compile(r'(?:^|[\n\r{,])[ \t]*' + re.escape(f)
+                        + r'[ \t]*:[ \t]*([^\n\r,}]{1,600})', re.I), False),
+        ]
+        val: str | None = None
+        quoted = False
+        for rx, is_quoted in patterns:
+            m = rx.search(raw)
+            if not m:
+                continue
+            val = m.group(1)
+            quoted = is_quoted
+            break
+        if val is None:
+            continue
+        val = val.strip()
+        if not quoted:
+            val = val.strip("\"'").strip()
+        else:
+            val = val.replace("\\n", "\n").replace("\\t", "\t")
+            val = val.replace('\\"', '"').replace("\\\\", "\\")
+        if not val:
+            continue
+        out[f] = val
+        found += 1
+    return out if found else None
+
+
+# 思考行启发式:剥掉 <think> 后正文前粘着的推理行(中英)
+_THINK_LINE = re.compile(
+    r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?"
+    r"(wait|actually|let me|let'?s|hmm|okay|so i|i need|i should|i will|i'?ll|"
+    r"the user|user wants|looking at|storyboard description|duration:|atmosphere:|"
+    r"character:|scene:|shot \d|\d+s?, so|but the user|let me draft|"
+    r"[一-鿿]{0,4}(让我|我想|首先|我需要|我应该|推理))",
+    re.I)
+
+
+def strip_think(content: str) -> str:
+    """剥掉模型混进正文通道的思维链(<think>…</think>),只留可用正文。
+
+    推理型模型(glm / minimax-M3)先吐一整段推理再给正文;extract_json 内部
+    会剥,但**拿纯文本**的调用方(auto_generate 首集剧本、流式草稿)此前
+    直接落库 —— 2026-11-02 实测:MTV 首集剧本 60449 字里 57946 字是
+    <think>,界面"看不到剧本"。
+    处理顺序:成对块 → 未闭合尾巴(正文在思考后,行级启发式剥思考行)→
+    工具调用残留 → 英文元思考前缀。与 ui.episode_page._strip_model_think
+    同源(pipeline 层不能反向 import UI,故下沉到 runner 供两边共用)。
+    """
+    text = content or ""
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    if "<think>" in text:
+        tail = text.rsplit("<think>", 1)[-1]
+        if "</think>" not in tail:
+            lines = tail.splitlines()
+            while lines and (not lines[0].strip() or _THINK_LINE.match(lines[0])):
+                lines.pop(0)
+            text = "\n".join(lines)
+    text = re.sub(r"<tool_call>.*?(?:</tool_call>|$)", "", text, flags=re.S)
+    text = re.sub(
+        r"(?s)^\s*(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\."
+        r"(\s+|(Wait|Actually|Let me|Hmm|Okay|So I)[^.]*\.)+",
+        "", text)
+    return text.strip()
+
+
+def extract_json(text: str, fields: list[str] | None = None, *,                salvage: bool = False) -> dict | list | None:
     """从模型输出中稳健提取 JSON(容忍 ```json 围栏、<think> 推理块与前后杂文)。
 
     **必须先剥 <think> 再找 JSON**:推理型模型(glm-5.3 / MiniMax-M3 等)会先吐一整段
     带花括号的思维链,「首个 { 到最后一个 }」会把推理连同正文一起框进来,必然解析失败。
     实测 comic_board 正是栽在这里。
+
+    分层降级(上游 novel.ts 的 parseJsonLoose 同款移植):
+      L0 现有候选(围栏 / 整体 / 首尾截取 / 去尾逗号)
+      L1 平衡对象逐个解析,取**最大的**可解析载荷
+      L2 L1 的每个候选先修「字符串内裸换行」再解析
+      L3 截断挽救:补齐未闭合的引号与括号栈 —— **仅 salvage=True 时启用**
+      L4 逐字段正则兜底(需传 fields)
+
+    **L0 全败才走 L1-L4**:现有候选的顺序与优先级原样保留,凡是今天能解析出来的
+    输出,解析结果与改前逐字节一致 —— 加固只影响「今天返回 None」的那批。
+
+    ## 为什么 L3(截断挽救)要 opt-in
+    预算阶梯(_call_budgeted)靠「解析失败 + 判定被截断」来**升预算重试**:
+    截断的输出必须解析失败,阶梯才会往上爬。L3 若默认开启,被掐断的 JSON 会被
+    抢救成「半个对象」并被当成成功,阶梯就不爬了 —— max_tokens 永远停在起始档
+    (实测 test_agent_budget 的阶梯断言就是这么红的)。
+    所以 L3 默认关;只有「没有阶梯、只能靠这一次输出」的调用点(整书导入仿写的
+    长总纲/分卷)才显式 salvage=True,拿回被截断的大半正文。
     """
     if not text:
         return None
@@ -55,6 +292,41 @@ def extract_json(text: str) -> dict | list | None:
             return json.loads(cand)
         except Exception:  # noqa: BLE001
             continue
+
+    # ── L1/L2:平衡对象提取(原文多段 JSON / 夹带说明文字时,L0 会整体失败) ──
+    objs = _balanced_json_objects(text)
+    for repair in (False, True):
+        best = None
+        best_len = -1
+        for cand in objs:
+            try:
+                parsed = json.loads(_repair_json_text(cand) if repair else cand)
+            except Exception:  # noqa: BLE001
+                continue
+            # 真载荷通常是最大的那个:前面的小对象常是模型的自我说明
+            if len(cand) > best_len:
+                best = parsed
+                best_len = len(cand)
+        if best is not None:
+            return best
+
+    # ── L3:截断挽救(输出被 max_tokens 掐断 —— 长总纲/分卷的常态) ──
+    if salvage:
+        starts = [i for i in (text.find("{"), text.find("[")) if i >= 0]
+        if starts:
+            frag = text[min(starts):]
+            try:
+                return json.loads(_close_truncated_json(_repair_json_text(frag)))
+            except Exception:  # noqa: BLE001
+                pass
+
+    # ── L4:逐字段正则兜底 ──
+    if fields:
+        loose = _extract_fields_loose(text, fields)
+        if loose:
+            log.warning("extract_json.field_fallback fields=%s raw=%d字符",
+                        ",".join(fields), len(text))
+            return loose
     return None
 
 
@@ -211,7 +483,7 @@ def _budget_ladder(start: int, ceiling: int) -> list[int]:
 
 
 def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
-                   system, start_budget: int, parse, accept):
+                   system, start_budget: int, parse, accept, temperature: float = 0.4):
     """按预算阶梯调用模型,直到 parse() 拿到 accept() 认可的结果。
 
     阶梯中途遇到 AIError(供应商拒绝该预算,通常 400)就把天花板压到这一档 ——
@@ -232,7 +504,7 @@ def _call_budgeted(agent_type: str, prompt: str, *, lang, config_id, image_urls,
                  agent_type, budget, i + 1, len(ladder), _timeout_for(budget))
         try:
             raw, meta = cast(tuple, run_agent(agent_type, prompt, lang=lang, json_output=True,
-                                  temperature=0.4, config_id=config_id,
+                                  temperature=temperature, config_id=config_id,
                                   image_urls=image_urls, system=system,
                                   max_tokens=budget, timeout=_timeout_for(budget),
                                   with_meta=True))
@@ -271,7 +543,9 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
                    config_id: int | None = None,
                    image_urls: list[str] | None = None,
                    system: str | None = None,
-                   max_tokens: int | None = None) -> dict | list:
+                   max_tokens: int | None = None,
+                   temperature: float = 0.4,
+                   fields: list[str] | None = None) -> dict | list:
     """跑 Agent 并解析 JSON;解析失败时抛 RuntimeError(带原始输出片段)。
 
     **总是把「只输出 JSON」写进用户消息**:部分网关要求 messages 里出现 json 字样才肯用
@@ -282,6 +556,9 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
     「调用工具保存」的 Agent 必须用 JSON 专用 system,否则拿到的是工具调用。
     max_tokens:起始输出预算(**不是上限**,被截断时仍会往上自适应升)。
     不传则读该服务配置里手填的值,留空用 8192。
+    temperature:采样温度(默认 0.4)。结构化抽取宜低(0.2),创作类可高些。
+    fields:逐字段兜底清单 —— 连 JSON 都解析不出来时按 "key": "value" 抠,
+    宁可给残缺结果也别让用户白等(上游 askConceptJson 同款)。
 
     失败时按「输出是否被截断」自适应升预算重试(见 _looks_truncated / _budget_ladder),
     对推理型与非推理型模型一视同仁,不需要为单个供应商调参。
@@ -293,6 +570,7 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
         system=system, start_budget=start,
         parse=extract_json,
         accept=lambda d: not _looks_like_tool_call(d),
+        temperature=temperature,
     )
     if data is None:
         # 不是预算问题(模型照着带工具的 prompt 回了工具调用 / JSON 写坏):
@@ -303,7 +581,7 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
         try:
             base_system = system if system is not None else prompts.load_prompt(agent_type, lang or "")
             raw2 = run_agent(agent_type, prompt, lang=lang, json_output=True,
-                             temperature=0.4, config_id=config_id, image_urls=image_urls,
+                             temperature=temperature, config_id=config_id, image_urls=image_urls,
                              system=base_system + _NO_TOOL_HINT, max_tokens=start,
                              # 重试必须用同一套放大后的超时:start 是 65536 时默认
                              # 300s 根本不够,实测重试就是死在 300s 的 ReadTimeout
@@ -313,7 +591,8 @@ def run_agent_json(agent_type: str, user_prompt: str, *, lang: str | None = None
         except (AIError, ValueError, OSError) as e:
             log.warning("agent.retry.failed agent=%s err=%s", agent_type, str(e)[:200])
             raw2 = None
-        d2 = extract_json(cast(str, raw2)) if raw2 else None
+        # fields 兜底:连 JSON 都解析不出来时,逐字段抠出能抠的(宁可残缺也别空手)
+        d2 = extract_json(cast(str, raw2), fields=fields) if raw2 else None
         if d2 is not None and not _looks_like_tool_call(d2):
             return d2
         log.warning("agent.parse.failed agent=%s finish_unparsed raw_head=%r raw_tail=%r",

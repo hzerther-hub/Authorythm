@@ -15,9 +15,9 @@ ROLE_MAP = {"lead": "lead", "supporting": "supporting", "extra": "extra",
 # 本仓 runner 只是单次 chat,没有工具:不覆盖 system 时模型会返回
 # {"name": "read_script_for_extraction", "arguments": {...}} —— 合法 JSON,
 # 但调用方拿不到 characters/scenes/props,表现为「提取 0 条」或解析失败。
-# 预算给 32768:MiniMax-M3 这类推理模型在 8192 下会把预算全烧在 <think> 上,
-# 正文 JSON 根本没开始写(实测两次 extract 任务都是 reasoning-only)。
-EXTRACT_MAX_TOKENS = 32768
+# **不传 max_tokens**:输出预算一律由服务配置的 max_tokens 决定(用户定版:
+# 所有文本模型的最大输出 token 都从配置里获取;推理模型预算不够就去设置页调,
+# run_agent_json 的阶梯只在真截断时才自适应升档)。
 _EXTRACT_JSON_SUFFIX = """
 
 【本次运行环境没有工具】不要调用 read_script_for_extraction / read_existing_* /
@@ -95,7 +95,7 @@ def extract_assets(episode_id: int, config_id: int | None = None, lang: str | No
     system = (prompts.load_prompt("extractor", lang) + _EXTRACT_JSON_SUFFIX
               + "\n\n" + character_spec.rules_for(lang))
     data = cast(dict, runner.run_agent_json("extractor", prompt, lang=lang, config_id=config_id,
-                                 system=system, max_tokens=EXTRACT_MAX_TOKENS))
+                                 system=system))
     # 落库前统一校验 + 定向补写:提示词只是软约束,实测 68 字的逗号串照样入库。
     # expand_many 只对不达标角色发一次批量调用,失败原样返回,不阻断提取。
     data["characters"] = character_spec.expand_many(

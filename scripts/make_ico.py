@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """从 app/assets/logo-512.png 生成 Windows 用的 .ico(多尺寸)。
 
 用法:python -m scripts.make_ico

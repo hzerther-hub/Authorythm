@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """小说体改造 · 逐段对比合并视图(学 Pagekin MergeView)。
 
 原稿/改稿按段落对齐切成 same|hunk 段;每处改动可单选「用原稿 / 用改稿」,
@@ -9,9 +8,16 @@ from __future__ import annotations
 
 import difflib
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPlainTextEdit,
-                               QPushButton, QRadioButton, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (
+    QDialog,
+    QHBoxLayout,
+    QLabel,
+    QPlainTextEdit,
+    QPushButton,
+    QRadioButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from . import widgets as W
 from .toast import err

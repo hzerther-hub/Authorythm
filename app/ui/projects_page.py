@@ -49,7 +49,7 @@ from .toast import err, ok
 
 # 模块级求值 tr() 会在 import 时定死语言,切语言后不跟着变 → 改成函数按需查
 WT_KEYS = {"novel": "wt_novel", "drama": "wt_drama", "comic": "wt_comic",
-           "promotion": "wt_promotion", "video_clone": "wt_clone"}
+           "promotion": "wt_promotion", "mtv": "wt_mtv", "video_clone": "wt_clone"}
 
 
 def wt_label(work_type: str) -> str:

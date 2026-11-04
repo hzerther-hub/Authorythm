@@ -370,6 +370,8 @@ class TaskManager(QObject):
         "concept": "text",
         # 整书导入的收尾:章节分析 → 照原书总结小说设定(都走文本模型)
         "book_settings": "text",
+        # MTV 首集剧本(歌词 → 纯画面叙事剧本)
+        "mtv_script": "text",
         # 海外题材改写:诊断 / 改写 / 整书(都走文本模型)
         "overseas_diag": "text", "overseas_rewrite": "text",
         "overseas_batch": "text",

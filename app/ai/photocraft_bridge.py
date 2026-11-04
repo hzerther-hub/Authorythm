@@ -698,7 +698,7 @@ class IntentParser:
             image_urls = [image_url] if image_url else None
             raw = text_client.chat(
                 user_prompt, system=system, config_id=config_id,
-                temperature=0.2, max_tokens=2048, json_mode=True,
+                temperature=0.2, json_mode=True,
                 timeout=60, image_urls=image_urls)
         except text_client.AIError as exc:
             return [], "", f"LLM 调用失败:{exc}"
@@ -902,7 +902,7 @@ def analyze_and_plan(image_path: str, user_intent: str, n: int = 3,
     try:
         raw = text_client.chat(
             ask, system=_ANALYZE_PLAN_SYSTEM,
-            config_id=config_id, temperature=0.5, max_tokens=8000,
+            config_id=config_id, temperature=0.5,
             json_mode=True, timeout=timeout, image_urls=[data_url])
     except text_client.AIError as exc:
         return "", [], f"LLM 调用失败:{exc}"
@@ -1015,7 +1015,7 @@ def locate_text_regions(image_path: str, config_id: int | None = None,
     try:
         raw = text_client.chat(
             ask, system=_LOCATE_SYSTEM,
-            config_id=config_id, temperature=0.1, max_tokens=8000,
+            config_id=config_id, temperature=0.1,
             json_mode=True, timeout=timeout, image_urls=[data_url])
     except text_client.AIError as exc:
         return [], f"识图模型调用失败:{exc}"

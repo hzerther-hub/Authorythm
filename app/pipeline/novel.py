@@ -1138,7 +1138,6 @@ def chapter_prompt(episode_id: int) -> str:
     prev_summary = (prev[0]["content"] or "")[-800:] if prev else "(本章为第一章)"
     # 未回收伏笔清单(Goink 强制自查思路):写新章时让模型看到该回收什么
     try:
-        from . import state_ledger as _sl
         _items = (db.jload(db.q1("SELECT novel_meta FROM dramas WHERE id=?", (ep["drama_id"],))["novel_meta"], {}) or {}).get("ledger") or []
         _open = [f"- {it.get('text','')}" for it in _items
                  if isinstance(it, dict) and not it.get("closed") and it.get("text")][:8]

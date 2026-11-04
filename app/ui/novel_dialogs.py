@@ -1111,7 +1111,7 @@ class NovelPlanDialog(QDialog):
                  ("volume", "分卷战略"), ("plan", "章节计划"), ("chars", "主要角色")]
         titles = getattr(self, "_tab_titles", {})
         idx = getattr(self, "_tab_index", {})
-        for key, name in order:
+        for key, _name in order:
             mark = "✓ " if st.get(key) else "○ "
             if key in idx and key in titles:
                 self.tabs.setTabText(idx[key], mark + titles[key])

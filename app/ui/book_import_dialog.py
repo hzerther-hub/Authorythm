@@ -24,9 +24,10 @@ from PySide6.QtWidgets import (
 from ..core import db
 from ..core.i18n import tr
 from ..core.taskmgr import TASKMGR
+from . import confirm
 from . import widgets as W
 from .braille import BrailleBar, WaitingButton
-from .toast import err, ok
+from .toast import err, ok, warn
 
 
 class BookImportDialog(QDialog):
@@ -171,23 +172,35 @@ class BookImportDialog(QDialog):
     def _refresh_state(self):
         n = self._chapter_count()
         analysis = self._analysis()
+        status = str(analysis.get("status") or "")
         self.import_stat.setText(tr('当前 {} 章').format(n) if n else tr("尚未导入任何章节"))
-        prof = analysis.get("profile")
-        if prof:
-            self.profile_view.setPlainText(json.dumps(prof, ensure_ascii=False, indent=1))
-        elif analysis.get("status") == "paused":
+        if status == "done":
+            self.profile_view.setPlainText(json.dumps(analysis.get("profile") or {},
+                                                      ensure_ascii=False, indent=1))
+        elif status == "paused":
             self.profile_view.setPlainText(
                 tr('(已暂停:失败 {}/{} 组,成功 {} 组。点「▶ 恢复分析」从已成功处续跑,已成功的组不再重跑)').format(
                     analysis.get('failed'), analysis.get('total'), analysis.get('done')))
-        # 依赖:导入 → 分析 → 仿写;暂停态按钮切成「恢复分析」(断点续跑)
-        paused = analysis.get("status") == "paused" and n
+        elif status == "running":
+            # running 落盘 = 上一轮分析跑到一半进程没了(崩溃/被强杀)。
+            # 心跳每 10 秒落一次盘,已成功的组都还在 —— 直接续跑,不从头再来。
+            self.profile_view.setPlainText(
+                tr('book_analysis_interrupted').format(analysis.get('done') or 0))
+        else:
+            self.profile_view.clear()
+        # 依赖:导入 → 分析 → 仿写;暂停/中断态按钮切成「恢复分析」(断点续跑)
+        paused = status in ("paused", "running") and n
         self.analyze_btn.setText(tr("▶ 恢复分析") if paused else tr("▶ 开始分析"))
         self.analyze_btn.setEnabled(bool(n))
         self.analyze_btn.setToolTip("" if n else tr("先导入整本书"))
-        self.imitate_btn.setEnabled(bool(prof))
-        self.imitate_btn.setToolTip("" if prof else tr("先完成章节分析"))
-        self.selfsettings_btn.setEnabled(bool(prof))
-        self.selfsettings_btn.setToolTip("" if prof else tr("先完成章节分析"))
+        # 仿写/设定放行看**档案状态是 done**,不是看 profile 在不在(上游
+        # analysisReady 同款口径)。重跑分析期间旧档案会被清掉,只看 profile 会
+        # 让按钮亮着、点下去却报「请先完成章节分析」。
+        ready = status == "done"
+        self.imitate_btn.setEnabled(ready)
+        self.imitate_btn.setToolTip("" if ready else tr("先完成章节分析"))
+        self.selfsettings_btn.setEnabled(ready)
+        self.selfsettings_btn.setToolTip("" if ready else tr("先完成章节分析"))
 
     # ── 段① ──
     def _pick(self):
@@ -212,12 +225,25 @@ class BookImportDialog(QDialog):
             enc = ""
         if not ensure_ready("text", None):
             return
+        # 破坏性二次确认(上游同款):导入语义是「本项目改当源书」,会清掉既有全部
+        # 章节与分镜 —— 上游是软删可恢复,本仓是硬删不可逆,所以这一层确认更该有。
+        # 确认后带 confirm=True 重发,pipeline 侧还有一道 confirm 护栏兜底。
+        confirmed = False
+        n_exist = self._chapter_count()
+        if n_exist:
+            confirmed = confirm.ask(
+                self, tr("book_import_confirm_title"),
+                tr("book_import_confirm_body").format(n_exist),
+                danger=True)
+            if not confirmed:
+                return
         btn = self.import_btn
         btn.busy(tr("切章入库中"))
 
         def job(tid):
             from ..pipeline import book_import
-            return book_import.import_book(self.drama_id, data=data, encoding=enc)
+            return book_import.import_book(self.drama_id, data=data, encoding=enc,
+                                           confirm=confirmed)
 
         def done(tid, result, error):
             btn.idle()
@@ -235,7 +261,9 @@ class BookImportDialog(QDialog):
         from ..core.preflight import ensure_ready
         if not ensure_ready("text", None):
             return
-        resume = self._analysis().get("status") == "paused"
+        # paused = 失败率安全阀主动暂停;running = 上次跑着跑着进程没了(心跳落盘的
+        # 中断态)。两种都能从断点续跑 —— 上游 analyze-resume 认这两种状态。
+        resume = self._analysis().get("status") in ("paused", "running")
         btn = self.analyze_btn
         btn.busy(tr("分析中"))
         self.analyze_bar.start()
@@ -285,7 +313,11 @@ class BookImportDialog(QDialog):
             if error:
                 err(error)
                 return
-            ok(tr("book_settings_done"))
+            missing = (result or {}).get("missing") if isinstance(result, dict) else None
+            if missing:
+                warn(tr("book_settings_partial").format("、".join(missing)))
+            else:
+                ok(tr("book_settings_done"))
 
         TASKMGR.submit("book_settings", job, done, drama_id=self.drama_id)
 
@@ -325,5 +357,25 @@ class BookImportDialog(QDialog):
             # 清空书名输入:不清的话第二次仿写沿用旧书名,建出两本同名书分不清;
             # 清空后下一本默认回到「AI 依档案重新起名」
             self.imit_title.clear()
+            # 仿写完直接进新书(上游同款:仿写完成自动跳到新书第 1 章)。
+            # 不跳的话用户得自己回列表找刚建的那本 —— 尤其「一份档案仿 N 本」时
+            # 很容易分不清哪本是刚生成的。
+            self._goto_drama(result.get("drama_id"))
 
         TASKMGR.submit("prompt", job, done, drama_id=self.drama_id)
+
+    def _goto_drama(self, drama_id) -> None:
+        """跳到指定项目(仿写完成后用)。
+
+        对话框的 parent 是项目页,项目页的 parent 是 QStackedWidget,再往上是
+        主窗口 —— 沿 parent 链找带 _open_drama 的那个即可,不必硬依赖具体层级。
+        """
+        if not drama_id:
+            return
+        w = self.parent()
+        while w is not None:
+            fn = getattr(w, "_open_drama", None)
+            if callable(fn):
+                fn(drama_id)
+                return
+            w = w.parent()

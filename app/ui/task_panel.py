@@ -55,6 +55,7 @@ TASK_TYPE_LABEL = {
     "clone_prompt": "克隆 · AI 生成视频提示词",
     "tts": "配音 · 合成旁白",
     "book_settings": "整书导入 · 生成小说设定",
+    "mtv_script": "MV · 生成剧本",
     "clone_redraw_all": "克隆 · 一键重绘",
     "clone_merge": "克隆 · 合并成片",
 }

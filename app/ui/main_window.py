@@ -543,6 +543,20 @@ class MainWindow(QMainWindow):
                 video_clone.upload_material(drama_id, "product", src["product_src"])
             if src.get("presenter_src"):
                 video_clone.upload_material(drama_id, "presenter", src["presenter_src"])
+        # ── MTV 歌曲(新建项目弹窗,仅 MTV):歌词/时长/MP3 落 metadata.mtv。
+        # 歌是合并阶段铺的(全静音成片 + 歌),这里先存好;探时长以 MP3 实测为准。
+        if data["work_type"] == "mtv":
+            try:
+                from ..pipeline.mtv import save_song
+                meta0 = db.jload(data["metadata"], {}) or {}
+                m0 = meta0.get("mtv") or {}
+                song_src = str(data.get("song_src") or "").strip()
+                save_song(drama_id,
+                          lyrics=str(m0.get("lyrics") or ""),
+                          duration=m0.get("song_duration"),
+                          song_path=song_src or None)
+            except Exception as exc:  # noqa: BLE001 —— 存歌失败不阻断建项目
+                err(tr("mtv_song_save_failed") + ": " + str(exc)[:200])
         # ── 整书导入(新建项目弹窗,仅小说):建完立刻切章入库,再后台
         # 「分析 → 照原书总结出小说设定」。设定生成前**跳过首集自动生成** ——
         # 导入的章节就是正文,auto_generate 再跑一次会把 AI 编的首集内容
@@ -593,7 +607,11 @@ class MainWindow(QMainWindow):
             if error:
                 err(tr("book_settings_failed") + ": " + str(error)[:220])
                 return
-            ok(tr("book_settings_done"))
+            missing = (result or {}).get("missing") if isinstance(result, dict) else None
+            if missing:
+                warn(tr("book_settings_partial").format("、".join(missing)))
+            else:
+                ok(tr("book_settings_done"))
 
         TASKMGR.submit("book_settings", job, done, drama_id=drama_id)
 

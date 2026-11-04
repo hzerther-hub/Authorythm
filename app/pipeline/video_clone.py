@@ -235,7 +235,7 @@ def read_presenter_desc(presenter_path: str | Path,
 2. 服装按照片**如实描述**(款式/颜色/材质)—— 换照后服装一致性靠它锁定;
 3. 不要写背景描述。"""
     try:
-        raw = text_client.chat(prompt, temperature=0.3, max_tokens=1024,
+        raw = text_client.chat(prompt, temperature=0.3,
                                json_mode=True, config_id=config_id,
                                image_urls=[_image_data_url(p, mime)])
         data = runner.extract_json(raw) or {}
@@ -266,7 +266,8 @@ def read_product_desc(product_path: str | Path, config_id: int | None = None) ->
 - 1-3 个最有辨识度的外观细节
 - 适合画面呈现的一句话使用场景
 只输出 JSON:{"product_desc": "一句话中文描述(60字内),串起上述要点,不含品牌名"}"""
-    raw = text_client.chat(prompt, temperature=0.3, max_tokens=512, json_mode=True,
+    # 不传 max_tokens:输出预算由服务配置决定(用户定版:一律从配置里获取)
+    raw = text_client.chat(prompt, temperature=0.3, json_mode=True,
                            config_id=config_id, image_urls=[_image_data_url(p, mime)])
     data = runner.extract_json(raw)
     if isinstance(data, dict):
@@ -1990,7 +1991,8 @@ def _count_people_in_image(path, config_id: int | None = None) -> int | None:
     prompt = ("数一数这张图片里有几个人(只数真人,海报/照片/镜中倒影不算)。"
               '只输出 JSON:{"people": 数字}')
     try:
-        raw = text_client.chat(prompt, temperature=0, max_tokens=256, json_mode=True,
+        # 不传 max_tokens:输出预算由服务配置决定(用户定版:一律从配置里获取)
+        raw = text_client.chat(prompt, temperature=0, json_mode=True,
                                config_id=config_id,
                                image_urls=[_image_data_url(p, mime)])
         data = runner.extract_json(raw) or {}

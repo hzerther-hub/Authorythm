@@ -14,9 +14,9 @@ log = get_logger(__name__)
 
 # 单次调用的输出预算:整集分镜一次要吐 20-30 镜 × (description 3-6 句 + atmosphere
 # 2-4 句 + video_prompt 每 3 秒一段),实测一集 26 镜 = 50,787 completion tokens /
-# 115k 字符,且**波动极大** —— 同一条 prompt 换一次跑就顶满 65,536 被 length 截断
-# (128,980 字符全是半截 JSON)。上限按用户定版抬到 128000,配合按场景分批。
-STORYBOARD_MAX_TOKENS = 128000
+# 115k 字符,且**波动极大**。**不传 max_tokens**:预算由服务配置的 max_tokens 决定
+# (用户定版:所有文本模型的最大输出 token 都从配置里获取),截断时
+# run_agent_json 的预算阶梯自适应升档兜底。
 # 每批剧本的字数上限:一集 8 场 ≈ 3000 字拆 3-4 批,单批 ≈ 6-8 镜 ≈ 20-30k 输出 tokens。
 # 1400 字那档实测单批就吐了 42,984 tokens / 453s,太接近上限,所以收紧到 900。
 STORYBOARD_CHUNK_CHARS = 900
@@ -83,8 +83,7 @@ def _boards_for_part(ep, aspect: str, assets: str, part: str, label: str, *,
     reason = ""
     try:
         data = cast(dict, runner.run_agent_json("storyboard_breaker", prompt, lang=lang,
-                                     config_id=config_id,
-                                     max_tokens=STORYBOARD_MAX_TOKENS))
+                                     config_id=config_id))
         got = _extract_boards(data)
         if got:
             return got

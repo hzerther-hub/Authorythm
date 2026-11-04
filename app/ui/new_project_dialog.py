@@ -9,8 +9,10 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QHBoxLayout,
     QLineEdit,
+    QPlainTextEdit,
     QPushButton,
     QRadioButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -25,6 +27,7 @@ WORK_TYPES = [
     ("drama", "▷", "wt_drama", "wt_drama_desc"),
     ("comic", "▤", "wt_comic", "wt_comic_desc"),
     ("promotion", "◈", "wt_promotion", "wt_promotion_desc"),
+    ("mtv", "♪", "wt_mtv", "wt_mtv_desc"),
     ("video_clone", "▷", "wt_clone", "wt_clone_desc"),
 ]
 ASPECTS = [("16:9", "u_ratio_16_9"), ("9:16", "u_ratio_9_16"), ("1:1", "u_ratio_1_1"),
@@ -72,6 +75,7 @@ class NewProjectDialog(QDialog):
         self._product_img = ""
         self._presenter_img = ""
         self._book_path = ""
+        self._song_path = ""
         # 「项目说明」生成的 简介/创意描述/题材 —— 不可见,随表单一起落库
         self._concept: dict = {}
         root = QVBoxLayout(self)
@@ -242,6 +246,11 @@ class NewProjectDialog(QDialog):
             if i >= 0:
                 self.style_combo.setCurrentIndex(i)
         self.style_combo.blockSignals(False)
+        # MTV 默认 9:16 竖屏(MV 几乎全是竖屏投放;交接文档:画幅必须全程一致)
+        if wt == "mtv":
+            j = self.aspect_combo.findData("9:16")
+            if j >= 0:
+                self.aspect_combo.setCurrentIndex(j)
 
         if wt == "promotion":
             self.platform_combo = QComboBox()
@@ -256,6 +265,34 @@ class NewProjectDialog(QDialog):
             box = QWidget()
             box.setLayout(lay)
             self.dynamic.addWidget(box)
+        elif wt == "mtv":
+            # MTV:歌词 + 歌曲时长 + MP3(可选)。歌词是 mtv_writer 的创作蓝本,
+            # 时长决定镜头数(8-12 秒/镜),MP3 在合并阶段铺歌(全静音成片 + 歌)。
+            from PySide6.QtWidgets import QScrollArea
+            self.lyrics_edit = QPlainTextEdit()
+            self.lyrics_edit.setPlaceholderText(tr("mtv_lyrics_ph"))
+            self.lyrics_edit.setMinimumHeight(120)
+            self.song_dur_spin = QSpinBox()
+            self.song_dur_spin.setRange(10, 900)
+            self.song_dur_spin.setValue(120)
+            self.song_dur_spin.setSuffix(" s")
+            self.song_btn = QPushButton(tr("mtv_pick_song"))
+            W.set_icon(self.song_btn, "volume")
+            self.song_btn.clicked.connect(self._pick_song)
+            lay = QFormLayout()
+            lay.addRow(tr("mtv_lyrics"), self.lyrics_edit)
+            lay.addRow(tr("mtv_duration"), self.song_dur_spin)
+            lay.addRow(tr("mtv_song"), self.song_btn)
+            lay.addRow(W.muted(tr("mtv_song_hint")))
+            box = QWidget()
+            box.setLayout(lay)
+            # 歌词框较高,动态区整体可滚,别把弹窗顶出屏幕
+            host = QScrollArea()
+            host.setWidget(box)
+            host.setWidgetResizable(True)
+            host.setFrameShape(QScrollArea.NoFrame)
+            host.setMinimumHeight(260)
+            self.dynamic.addWidget(host, 1)
         elif wt == "video_clone":
             lay = QFormLayout()
             self.ref_btn = QPushButton(tr("📹 选择参考视频…"))
@@ -320,6 +357,21 @@ class NewProjectDialog(QDialog):
         设定/写章/转剧全都吃它;剧/漫/宣传/复刻不吃整本书正文。"""
         self.book_row_host.setVisible(self.work_type() == "novel")
 
+    def _pick_song(self):
+        """选歌曲 MP3(可选):存本地路径,建项目时拷入 uploads;顺手探时长回填。"""
+        path, _ = QFileDialog.getOpenFileName(
+            self, tr("mtv_pick_song"), "", "Audio (*.mp3 *.m4a *.wav *.flac);;所有文件 (*)")
+        if path:
+            self._song_path = path
+            self.song_btn.setText(path.split("/")[-1].split("\\")[-1])
+            try:
+                from ..pipeline.mtv import probe_audio_duration
+                dur = probe_audio_duration(path)
+                if dur > 0:
+                    self.song_dur_spin.setValue(int(dur))
+            except Exception:  # noqa: BLE001 —— 探时长失败不影响选歌
+                pass
+
     def _pick_book(self):
         path, _ = QFileDialog.getOpenFileName(
             self, tr("选择小说 TXT"), "", tr("文本文件 (*.txt);;所有文件 (*)"))
@@ -350,6 +402,14 @@ class NewProjectDialog(QDialog):
         if wt == "promotion":
             meta = {"platform": self.platform_combo.currentData(),
                     "format": self.fmt_combo.currentData()}
+        elif wt == "mtv":
+            # 歌词/时长随 metadata 落库(建项目后 mtv_writer 与合并铺歌都读它);
+            # MP3 传本地路径,main_window 建库后拷入 uploads(与参考视频同一套路)
+            lyrics = ""
+            if hasattr(self, "lyrics_edit"):
+                lyrics = self.lyrics_edit.toPlainText().strip()
+            dur = int(self.song_dur_spin.value()) if hasattr(self, "song_dur_spin") else 0
+            meta = {"mtv": {"lyrics": lyrics, "song_duration": dur}}
         elif wt == "video_clone":
             clone = {"reference_src": self._ref_video,
                      "product_src": self._product_img,
@@ -382,4 +442,6 @@ class NewProjectDialog(QDialog):
             "creative_description": self._concept.get("creative_description", ""),
             # 整书导入(仅 novel):创建后切章入库 + 生成小说设定(main_window 消费)
             "book_src": self._book_path if wt == "novel" else "",
+            # 歌曲 MP3(仅 mtv):创建后拷入 uploads 并探时长(main_window 消费)
+            "song_src": self._song_path if wt == "mtv" else "",
         }

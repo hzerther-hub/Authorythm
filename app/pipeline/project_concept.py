@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import base64
 import mimetypes
-import re
 from pathlib import Path
 
 from ..agents import prompts, runner
@@ -81,45 +80,6 @@ def _data_url(path: str | Path) -> str:
     return f"data:{mime};base64," + base64.b64encode(p.read_bytes()).decode()
 
 
-def _extract_fields_loose(raw: str, fields: tuple[str, ...]) -> dict:
-    """逐字段正则兜底:JSON 彻底解析不出来时,直接按 "key": "value" 逐个抠字段。
-
-    四种写法依次尝试(越往后越宽松):
-        "key": "value"   —— 标准 JSON
-        "key": value     —— 键带引号、值是裸文本
-        key: "value"     —— 键是裸文本、值带引号
-        key: value       —— 全裸文本(模型输出退化时的最后一道防线)
-    """
-    out: dict = {}
-    for f in fields:
-        patterns = [
-            (re.compile(r'"' + f + r'"\s*:\s*"((?:[^"\\]|\\.)*)"', re.S), True),
-            (re.compile(r'"' + f + r'"\s*:\s*([^\n\r,}]{1,600})'), False),
-            (re.compile(r'(?:^|[\n\r{,])[ \t]*' + f + r'[ \t]*:[ \t]*"([^"\n\r]*)"', re.I), True),
-            (re.compile(r'(?:^|[\n\r{,])[ \t]*' + f + r'[ \t]*:([^\n\r,}]{1,600})', re.I), False),
-        ]
-        val: str | None = None
-        quoted = False
-        for rx, is_quoted in patterns:
-            m = rx.search(raw or "")
-            if not m:
-                continue
-            val = m.group(1)
-            quoted = is_quoted
-            break
-        if val is None:
-            continue
-        val = val.strip()
-        if not quoted:
-            val = val.lstrip("\"'").rstrip("\"'").strip()
-        else:
-            val = (val.replace("\\n", "\n").replace("\\t", "\t")
-                      .replace('\\"', '"').replace("\\\\", "\\"))
-        if val:
-            out[f] = val
-    return out
-
-
 def _ask_concept_json(prompt: str, *, config_id: int | None, lang: str | None) -> dict:
     """跑一次「项目说明」并保证四个字段齐全。
 
@@ -160,8 +120,10 @@ def _ask_concept_json(prompt: str, *, config_id: int | None, lang: str | None) -
                                config_id=config_id,
                                system=prompts.with_language_suffix(SYSTEM_PROMPT, lang))
         # run_agent 带 with_meta 时会返回 (content, meta) 元组,这里不用 meta
-        loose = _extract_fields_loose(raw, CONCEPT_FIELDS) if isinstance(raw, str) else {}
-        if all(str(loose.get(f) or "").strip() for f in CONCEPT_FIELDS):
+        loose = (runner.extract_json(raw, fields=list(CONCEPT_FIELDS))
+                  if isinstance(raw, str) else {})
+        if isinstance(loose, dict) and all(str(loose.get(f) or "").strip()
+                                            for f in CONCEPT_FIELDS):
             return loose
     except Exception as e:  # noqa: BLE001
         last_err = e
@@ -181,7 +143,7 @@ def _read_ref_images(ref_images: list[str], ref_notes: list[str],
     for i, path in enumerate(ref_images):
         note = ""
         try:
-            raw = text_client.chat(_VISION_PROMPT, temperature=0.2, max_tokens=1024,
+            raw = text_client.chat(_VISION_PROMPT, temperature=0.2,
                                    config_id=config_id, image_urls=[_data_url(path)])
             note = (raw.strip()[:2000] if isinstance(raw, str) else "")
         except Exception as e:  # noqa: BLE001 —— 识图失败不阻断整体

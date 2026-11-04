@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """PyInstaller 打包入口。
 
 **为什么需要这个文件**:打包不能直接用 `app/main.py` —— 那个文件用的是
@@ -12,7 +11,6 @@
 from __future__ import annotations
 
 import multiprocessing
-import sys
 
 
 def main() -> int:

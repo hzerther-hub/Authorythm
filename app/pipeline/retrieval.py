@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """FTS5 前文检索(零新依赖):建索引/搜索/注入写作提示词。
 
 BGE 向量升级路径:本模块预留 Embedder 接口;若检测到 onnxruntime + 本地
@@ -6,7 +5,6 @@ BGE 模型文件,可加向量通道(本期只实现 FTS5 trigram,零新依赖)�
 """
 from __future__ import annotations
 
-import json
 import re
 
 from ..core import db
